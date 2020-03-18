@@ -1,0 +1,655 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>chordview.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;chordview.h&quot;</a>
+<a name="ln14">#include &quot;piano.h&quot;</a>
+<a name="ln15">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/noteevent.h&quot;</a>
+<a name="ln18">#include &quot;preferences.h&quot;</a>
+<a name="ln19">#include &quot;musescore.h&quot;</a>
+<a name="ln20">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln21">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">namespace Ms {</a>
+<a name="ln24"> </a>
+<a name="ln25">static const int CHORD_MAP_OFFSET = 50;</a>
+<a name="ln26">static const int grip = 7;</a>
+<a name="ln27"> </a>
+<a name="ln28">//---------------------------------------------------------</a>
+<a name="ln29">//   GripItem</a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31"> </a>
+<a name="ln32">GripItem::GripItem(int type, ChordView* v)</a>
+<a name="ln33">   : QGraphicsRectItem()</a>
+<a name="ln34">      {</a>
+<a name="ln35">      _gripType = type;</a>
+<a name="ln36">      _view     = v;</a>
+<a name="ln37">      setFlags(flags() | ItemIsSelectable | ItemIsFocusable</a>
+<a name="ln38">         | ItemIgnoresTransformations | ItemIsMovable);</a>
+<a name="ln39">      setRect(-grip, -grip, grip*2, grip*2);</a>
+<a name="ln40">      setPos(0, 0);</a>
+<a name="ln41">      _event = 0;</a>
+<a name="ln42">      }</a>
+<a name="ln43"> </a>
+<a name="ln44">//---------------------------------------------------------</a>
+<a name="ln45">//   paint</a>
+<a name="ln46">//---------------------------------------------------------</a>
+<a name="ln47"> </a>
+<a name="ln48">void GripItem::paint(QPainter* p, const QStyleOptionGraphicsItem*, QWidget*)</a>
+<a name="ln49">      {</a>
+<a name="ln50">      QPen pen(MScore::defaultColor);</a>
+<a name="ln51">      pen.setWidthF(2.0);</a>
+<a name="ln52">      p-&gt;setPen(pen);</a>
+<a name="ln53">      p-&gt;setBrush(isSelected() ? QBrush(Qt::blue) : Qt::NoBrush);</a>
+<a name="ln54">      p-&gt;drawRect(-grip, -grip, grip*2, grip*2);</a>
+<a name="ln55">      }</a>
+<a name="ln56"> </a>
+<a name="ln57">//---------------------------------------------------------</a>
+<a name="ln58">//   mouseMoveEvent</a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60"> </a>
+<a name="ln61">void GripItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event)</a>
+<a name="ln62">      {</a>
+<a name="ln63">      QPointF np = mapToScene(event-&gt;pos());</a>
+<a name="ln64">      if (_event) {</a>
+<a name="ln65">            NoteEvent* ne = _event-&gt;event();</a>
+<a name="ln66">            if (_gripType == 0) {</a>
+<a name="ln67">                  qreal x = ChordView::pix2pos(np.x());</a>
+<a name="ln68">                  int x2  = ne-&gt;ontime() + ne-&gt;len();</a>
+<a name="ln69">                  ne-&gt;setOntime(x);</a>
+<a name="ln70">                  ne-&gt;setLen(x2 - x);</a>
+<a name="ln71">                  _event-&gt;setPos(ChordView::pos2pix(x), _event-&gt;pos().y());</a>
+<a name="ln72">                  setPos(0.0, pos().y());</a>
+<a name="ln73">                  GripItem* rg = _view-&gt;rightGrip();</a>
+<a name="ln74">                  rg-&gt;setPos(x2-x, rg-&gt;pos().y());</a>
+<a name="ln75">                  }</a>
+<a name="ln76">            else {</a>
+<a name="ln77">                  qreal x = np.x() - _event-&gt;pos().x();</a>
+<a name="ln78">                  setPos(x, pos().y());</a>
+<a name="ln79">                  _event-&gt;event()-&gt;setLen(x);</a>
+<a name="ln80">                  }</a>
+<a name="ln81">            _view-&gt;setDirty(true);</a>
+<a name="ln82">            _event-&gt;update();</a>
+<a name="ln83">            }</a>
+<a name="ln84">      }</a>
+<a name="ln85"> </a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87">//   ChordItem</a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89"> </a>
+<a name="ln90">ChordItem::ChordItem(ChordView* v, Note* n, NoteEvent* e)</a>
+<a name="ln91">   : QGraphicsRectItem(), _view(v), _note(n), _event(e)</a>
+<a name="ln92">      {</a>
+<a name="ln93">      setFlags(flags() | ItemIsSelectable | ItemIsMovable);</a>
+<a name="ln94">      _current  = false;</a>
+<a name="ln95">      int pitch = _event-&gt;pitch() + n-&gt;pitch();</a>
+<a name="ln96">      int len   = _event-&gt;len();</a>
+<a name="ln97">      setRect(0, 0, len, keyHeight/2);</a>
+<a name="ln98">      setBrush(QBrush());</a>
+<a name="ln99">      setSelected(n-&gt;selected());</a>
+<a name="ln100">      setData(0, QVariant::fromValue&lt;void*&gt;(n));</a>
+<a name="ln101"> </a>
+<a name="ln102">      setPos(ChordView::pos2pix(e-&gt;ontime()), ChordView::pitch2y(pitch) + keyHeight / 4);</a>
+<a name="ln103">      }</a>
+<a name="ln104"> </a>
+<a name="ln105">//---------------------------------------------------------</a>
+<a name="ln106">//   mouseMoveEvent</a>
+<a name="ln107">//---------------------------------------------------------</a>
+<a name="ln108"> </a>
+<a name="ln109">void ChordItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event)</a>
+<a name="ln110">      {</a>
+<a name="ln111">      QPointF np = mapToScene(event-&gt;pos());</a>
+<a name="ln112">      int pitch  = ChordView::y2pitch(np.y());</a>
+<a name="ln113">      int y = ChordView::pitch2y(pitch);</a>
+<a name="ln114">      setPos(pos().x(), y + keyHeight / 4);</a>
+<a name="ln115">      _event-&gt;setPitch(pitch - _note-&gt;pitch());</a>
+<a name="ln116">      }</a>
+<a name="ln117"> </a>
+<a name="ln118">//---------------------------------------------------------</a>
+<a name="ln119">//   paint</a>
+<a name="ln120">//---------------------------------------------------------</a>
+<a name="ln121"> </a>
+<a name="ln122">void ChordItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*)</a>
+<a name="ln123">      {</a>
+<a name="ln124">      int len = _event-&gt;len();</a>
+<a name="ln125">      painter-&gt;setPen(pen());</a>
+<a name="ln126">      if (_view-&gt;curNote() == _note)</a>
+<a name="ln127">            painter-&gt;setBrush(_current ? Qt::yellow : Qt::blue);</a>
+<a name="ln128">      else</a>
+<a name="ln129">            painter-&gt;setBrush(Qt::gray);</a>
+<a name="ln130">      painter-&gt;drawRect(0.0, 0.0, len, keyHeight / 2);</a>
+<a name="ln131">      }</a>
+<a name="ln132"> </a>
+<a name="ln133">//---------------------------------------------------------</a>
+<a name="ln134">//   setCurrent</a>
+<a name="ln135">//---------------------------------------------------------</a>
+<a name="ln136"> </a>
+<a name="ln137">void ChordItem::setCurrent(bool val)</a>
+<a name="ln138">      {</a>
+<a name="ln139">      _current = val;</a>
+<a name="ln140">      update();</a>
+<a name="ln141">      }</a>
+<a name="ln142"> </a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144">//   ChordView</a>
+<a name="ln145">//---------------------------------------------------------</a>
+<a name="ln146"> </a>
+<a name="ln147">ChordView::ChordView()</a>
+<a name="ln148">   : QGraphicsView()</a>
+<a name="ln149">      {</a>
+<a name="ln150">      setScene(new QGraphicsScene);</a>
+<a name="ln151">      setTransformationAnchor(QGraphicsView::AnchorUnderMouse);</a>
+<a name="ln152">      setResizeAnchor(QGraphicsView::AnchorUnderMouse);</a>
+<a name="ln153">      // setMouseTracking(true);</a>
+<a name="ln154">      setRubberBandSelectionMode(Qt::IntersectsItemBoundingRect);</a>
+<a name="ln155">      setDragMode(QGraphicsView::RubberBandDrag);</a>
+<a name="ln156">      magStep   = 2;</a>
+<a name="ln157">      chord     = 0;</a>
+<a name="ln158">      _curNote   = 0;</a>
+<a name="ln159">      _evenGrid = true;</a>
+<a name="ln160">      lg        = 0;</a>
+<a name="ln161">      rg        = 0;</a>
+<a name="ln162">      curEvent  = 0;</a>
+<a name="ln163">      ticks     = 1000;</a>
+<a name="ln164">      _dirty    = false;</a>
+<a name="ln165"> </a>
+<a name="ln166">      scale(6.0, 1.0);</a>
+<a name="ln167">      QAction* a = getAction(&quot;delete&quot;);</a>
+<a name="ln168">      addAction(a);</a>
+<a name="ln169">      connect(a, SIGNAL(triggered()), SLOT(deleteItem()));</a>
+<a name="ln170">      connect(scene(), SIGNAL(selectionChanged()), SLOT(selectionChanged()));</a>
+<a name="ln171">      }</a>
+<a name="ln172"> </a>
+<a name="ln173">//---------------------------------------------------------</a>
+<a name="ln174">//   drawBackground</a>
+<a name="ln175">//---------------------------------------------------------</a>
+<a name="ln176"> </a>
+<a name="ln177">void ChordView::drawBackground(QPainter* p, const QRectF&amp; r)</a>
+<a name="ln178">      {</a>
+<a name="ln179">      if (chord == 0)</a>
+<a name="ln180">            return;</a>
+<a name="ln181">      QRectF r1(-1000000.0,               0.0, 1000000.0+CHORD_MAP_OFFSET, 1000000.0);</a>
+<a name="ln182">      QRectF r2(ticks + CHORD_MAP_OFFSET, 0.0, 1000000.0, 1000000.0);</a>
+<a name="ln183">      QRectF r3(-1000000.0,     127*keyHeight, 1000000.0+CHORD_MAP_OFFSET, keyHeight);</a>
+<a name="ln184">      QRectF r4(ticks + CHORD_MAP_OFFSET,  127*keyHeight, 1000000.0,        keyHeight);</a>
+<a name="ln185"> </a>
+<a name="ln186">      QColor bg(0x71, 0x8d, 0xbe);</a>
+<a name="ln187">      QColor bg1 = bg.darker(150);</a>
+<a name="ln188">      QColor bg2 = bg.lighter(150);</a>
+<a name="ln189">      QColor bg3 = bg.darker(75);</a>
+<a name="ln190"> </a>
+<a name="ln191">      p-&gt;fillRect(r, bg);</a>
+<a name="ln192">      p-&gt;fillRect(r.intersected(r1), bg1);</a>
+<a name="ln193">      p-&gt;fillRect(r.intersected(r2), bg1);</a>
+<a name="ln194"> </a>
+<a name="ln195">      foreach (const Note* n, chord-&gt;notes()) {</a>
+<a name="ln196">            p-&gt;fillRect(QRect(CHORD_MAP_OFFSET, (127 - n-&gt;pitch()) * keyHeight,</a>
+<a name="ln197">               1000, keyHeight), bg2);</a>
+<a name="ln198">            }</a>
+<a name="ln199"> </a>
+<a name="ln200">      p-&gt;fillRect(r.intersected(r3), bg3);</a>
+<a name="ln201">      p-&gt;fillRect(r.intersected(r4), bg3);</a>
+<a name="ln202"> </a>
+<a name="ln203">      //---------------------------------------------------</a>
+<a name="ln204">      // draw horizontal grid lines</a>
+<a name="ln205">      //---------------------------------------------------</a>
+<a name="ln206"> </a>
+<a name="ln207">      qreal y1 = r.y();</a>
+<a name="ln208">      qreal y2 = y1 + r.height();</a>
+<a name="ln209">      qreal x1 = r.x();</a>
+<a name="ln210">      qreal x2 = x1 + r.width();</a>
+<a name="ln211"> </a>
+<a name="ln212">      int key = floor(y1 / keyHeight);</a>
+<a name="ln213">      qreal y = key * keyHeight;</a>
+<a name="ln214"> </a>
+<a name="ln215">      for (; key &lt; 127; ++key, y += keyHeight) {</a>
+<a name="ln216">            if (y &lt; y1)</a>
+<a name="ln217">                  continue;</a>
+<a name="ln218">            if (y &gt; y2)</a>
+<a name="ln219">                  break;</a>
+<a name="ln220">            p-&gt;setPen(QPen((key % 6) == 5 ? Qt::lightGray : Qt::gray));</a>
+<a name="ln221">            p-&gt;drawLine(QLineF(x1, y, x2, y));</a>
+<a name="ln222">            }</a>
+<a name="ln223"> </a>
+<a name="ln224">      //---------------------------------------------------</a>
+<a name="ln225">      //    draw raster</a>
+<a name="ln226">      //---------------------------------------------------</a>
+<a name="ln227"> </a>
+<a name="ln228">      if (_evenGrid) {</a>
+<a name="ln229">            for (int x = 0; x &lt;= 1000; x += 50) {</a>
+<a name="ln230">                  if (x % 250)</a>
+<a name="ln231">                        p-&gt;setPen(Qt::lightGray);</a>
+<a name="ln232">                  else</a>
+<a name="ln233">                        p-&gt;setPen(Qt::black);</a>
+<a name="ln234">                  p-&gt;drawLine(pos2pix(x), y1, pos2pix(x), y2);</a>
+<a name="ln235">                  }</a>
+<a name="ln236">            }</a>
+<a name="ln237">      else {</a>
+<a name="ln238">            double step1 = 1000.0 / 3;</a>
+<a name="ln239">            double step2 = step1 / 4;</a>
+<a name="ln240">            for (int i = 0; i &lt; 3; ++i) {</a>
+<a name="ln241">                  p-&gt;setPen(Qt::lightGray);</a>
+<a name="ln242">                  for (int k = 1; k &lt; 4; ++k) {</a>
+<a name="ln243">                        int x = lrint(i * step1 + k * step2);</a>
+<a name="ln244">                        p-&gt;drawLine(pos2pix(x), y1, pos2pix(x), y2);</a>
+<a name="ln245">                        }</a>
+<a name="ln246">                  p-&gt;setPen(Qt::black);</a>
+<a name="ln247">                  int x = lrint(i * step1);</a>
+<a name="ln248">                  p-&gt;drawLine(pos2pix(x), y1, pos2pix(x), y2);</a>
+<a name="ln249">                  }</a>
+<a name="ln250">            }</a>
+<a name="ln251">      }</a>
+<a name="ln252"> </a>
+<a name="ln253">//---------------------------------------------------------</a>
+<a name="ln254">//   setChord</a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256"> </a>
+<a name="ln257">void ChordView::setChord(Chord* c)</a>
+<a name="ln258">      {</a>
+<a name="ln259">      chord    = c;</a>
+<a name="ln260">      _dirty   = false;</a>
+<a name="ln261">      _pos     = 0;</a>
+<a name="ln262">      _locator = 0;</a>
+<a name="ln263"> </a>
+<a name="ln264">      scene()-&gt;blockSignals(true);</a>
+<a name="ln265">      scene()-&gt;clear();</a>
+<a name="ln266">      locatorLine = new QGraphicsLineItem(QLineF(0.0, 0.0, 0.0, keyHeight * 127.0 * 5));</a>
+<a name="ln267">      QPen pen(Qt::red);</a>
+<a name="ln268">      pen.setWidth(2);</a>
+<a name="ln269">      locatorLine-&gt;setPen(pen);</a>
+<a name="ln270">      locatorLine-&gt;setZValue(1000);       // set stacking order</a>
+<a name="ln271">      locatorLine-&gt;setFlag(QGraphicsItem::ItemIgnoresTransformations, true);</a>
+<a name="ln272">      scene()-&gt;addItem(locatorLine);</a>
+<a name="ln273"> </a>
+<a name="ln274">      curEvent = 0;</a>
+<a name="ln275">      _curNote  = 0;</a>
+<a name="ln276">      foreach(Note* note, c-&gt;notes()) {</a>
+<a name="ln277">            if (note-&gt;selected() &amp;&amp; _curNote == 0)</a>
+<a name="ln278">                  _curNote = note;</a>
+<a name="ln279">            int n = note-&gt;playEvents().size();</a>
+<a name="ln280">            for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln281">                  NoteEvent* e = &amp;note-&gt;playEvents()[i];</a>
+<a name="ln282">                  ChordItem* item = new ChordItem(this, note, e);</a>
+<a name="ln283">                  if (_curNote == note &amp;&amp; curEvent == 0)</a>
+<a name="ln284">                        curEvent = item;</a>
+<a name="ln285">                  scene()-&gt;addItem(item);</a>
+<a name="ln286">                  }</a>
+<a name="ln287">            }</a>
+<a name="ln288">      lg = new GripItem(0, this);</a>
+<a name="ln289">      rg = new GripItem(1, this);</a>
+<a name="ln290">      lg-&gt;setZValue(100);</a>
+<a name="ln291">      rg-&gt;setZValue(101);</a>
+<a name="ln292">      lg-&gt;setVisible(false);</a>
+<a name="ln293">      rg-&gt;setVisible(false);</a>
+<a name="ln294">      scene()-&gt;addItem(lg);</a>
+<a name="ln295">      scene()-&gt;addItem(rg);</a>
+<a name="ln296"> </a>
+<a name="ln297">      scene()-&gt;blockSignals(false);</a>
+<a name="ln298">      setCurItem(curEvent);</a>
+<a name="ln299">      // selectionChanged();</a>
+<a name="ln300"> </a>
+<a name="ln301">      scene()-&gt;setSceneRect(0.0, 0.0, double(ticks + CHORD_MAP_OFFSET * 2), keyHeight * 127);</a>
+<a name="ln302"> </a>
+<a name="ln303">      moveLocator();</a>
+<a name="ln304"> </a>
+<a name="ln305">      //</a>
+<a name="ln306">      // move to something interesting</a>
+<a name="ln307">      //</a>
+<a name="ln308">      QList&lt;QGraphicsItem*&gt; items = scene()-&gt;selectedItems();</a>
+<a name="ln309">      QRectF boundingRect;</a>
+<a name="ln310">      foreach(QGraphicsItem* item, items) {</a>
+<a name="ln311">            Note* note = static_cast&lt;Note*&gt;(item-&gt;data(0).value&lt;void*&gt;());</a>
+<a name="ln312">            if (note)</a>
+<a name="ln313">                  boundingRect |= item-&gt;mapToScene(item-&gt;boundingRect()).boundingRect();</a>
+<a name="ln314">            }</a>
+<a name="ln315">      centerOn(boundingRect.center());</a>
+<a name="ln316">      scene()-&gt;update();</a>
+<a name="ln317">      }</a>
+<a name="ln318"> </a>
+<a name="ln319">//---------------------------------------------------------</a>
+<a name="ln320">//   moveLocator</a>
+<a name="ln321">//---------------------------------------------------------</a>
+<a name="ln322"> </a>
+<a name="ln323">void ChordView::moveLocator()</a>
+<a name="ln324">      {</a>
+<a name="ln325">      if (_locator &gt;= 0) {</a>
+<a name="ln326">            locatorLine-&gt;setVisible(true);</a>
+<a name="ln327">            qreal x = qreal(pos2pix(_locator));</a>
+<a name="ln328">            locatorLine-&gt;setPos(QPointF(x, 0.0));</a>
+<a name="ln329">            }</a>
+<a name="ln330">      else</a>
+<a name="ln331">            locatorLine-&gt;setVisible(false);</a>
+<a name="ln332">      }</a>
+<a name="ln333"> </a>
+<a name="ln334">//---------------------------------------------------------</a>
+<a name="ln335">//   wheelEvent</a>
+<a name="ln336">//---------------------------------------------------------</a>
+<a name="ln337"> </a>
+<a name="ln338">void ChordView::wheelEvent(QWheelEvent* event)</a>
+<a name="ln339">      {</a>
+<a name="ln340">      int step    = event-&gt;delta() / 120;</a>
+<a name="ln341">      double xmag = transform().m11();</a>
+<a name="ln342">      double ymag = transform().m22();</a>
+<a name="ln343"> </a>
+<a name="ln344">      if (event-&gt;modifiers() == Qt::ControlModifier) {</a>
+<a name="ln345">            if (step &gt; 0) {</a>
+<a name="ln346">                  for (int i = 0; i &lt; step; ++i) {</a>
+<a name="ln347">                        if (xmag &gt; 10.0)</a>
+<a name="ln348">                              break;</a>
+<a name="ln349">                        scale(1.1, 1.0);</a>
+<a name="ln350">                        xmag *= 1.1;</a>
+<a name="ln351">                        }</a>
+<a name="ln352">                  }</a>
+<a name="ln353">            else {</a>
+<a name="ln354">                  for (int i = 0; i &lt; -step; ++i) {</a>
+<a name="ln355">                        if (xmag &lt; 0.001)</a>
+<a name="ln356">                              break;</a>
+<a name="ln357">                        scale(.9, 1.0);</a>
+<a name="ln358">                        xmag *= .9;</a>
+<a name="ln359">                        }</a>
+<a name="ln360">                  }</a>
+<a name="ln361">            emit magChanged(xmag, ymag);</a>
+<a name="ln362"> </a>
+<a name="ln363">            int tpix  = 1000 * xmag;</a>
+<a name="ln364">            magStep = -5;</a>
+<a name="ln365">            if (tpix &lt;= 4000)</a>
+<a name="ln366">                  magStep = -4;</a>
+<a name="ln367">            if (tpix &lt;= 2000)</a>
+<a name="ln368">                  magStep = -3;</a>
+<a name="ln369">            if (tpix &lt;= 1000)</a>
+<a name="ln370">                  magStep = -2;</a>
+<a name="ln371">            if (tpix &lt;= 500)</a>
+<a name="ln372">                  magStep = -1;</a>
+<a name="ln373">            if (tpix &lt;= 128)</a>
+<a name="ln374">                  magStep = 0;</a>
+<a name="ln375">            if (tpix &lt;= 64)</a>
+<a name="ln376">                  magStep = 1;</a>
+<a name="ln377">            if (tpix &lt;= 32)</a>
+<a name="ln378">                  magStep = 2;</a>
+<a name="ln379">            if (tpix &lt;= 16)</a>
+<a name="ln380">                  magStep = 3;</a>
+<a name="ln381">            if (tpix &lt;= 8)</a>
+<a name="ln382">                  magStep = 4;</a>
+<a name="ln383">            if (tpix &lt;= 4)</a>
+<a name="ln384">                  magStep = 5;</a>
+<a name="ln385">            if (tpix &lt;= 2)</a>
+<a name="ln386">                  magStep = 6;</a>
+<a name="ln387"> </a>
+<a name="ln388">            //</a>
+<a name="ln389">            // if xpos &lt;= 0, then the scene is centered</a>
+<a name="ln390">            // there is no scroll bar anymore sending</a>
+<a name="ln391">            // change signals, so we have to do it here:</a>
+<a name="ln392">            //</a>
+<a name="ln393">            double xpos = -(mapFromScene(QPointF()).x());</a>
+<a name="ln394">            if (xpos &lt;= 0)</a>
+<a name="ln395">                  emit xposChanged(xpos);</a>
+<a name="ln396">            }</a>
+<a name="ln397">      else if (event-&gt;modifiers() == Qt::ShiftModifier) {</a>
+<a name="ln398">            QWheelEvent we(event-&gt;pos(), event-&gt;delta(), event-&gt;buttons(), 0, Qt::Horizontal);</a>
+<a name="ln399">            QGraphicsView::wheelEvent(&amp;we);</a>
+<a name="ln400">            }</a>
+<a name="ln401">      else if (event-&gt;modifiers() == 0) {</a>
+<a name="ln402">            QGraphicsView::wheelEvent(event);</a>
+<a name="ln403">            }</a>
+<a name="ln404">      else if (event-&gt;modifiers() == (Qt::ShiftModifier | Qt::ControlModifier)) {</a>
+<a name="ln405">            if (step &gt; 0) {</a>
+<a name="ln406">                  for (int i = 0; i &lt; step; ++i) {</a>
+<a name="ln407">                        if (ymag &gt; 3.0)</a>
+<a name="ln408">                              break;</a>
+<a name="ln409">                        scale(1.0, 1.1);</a>
+<a name="ln410">                        ymag *= 1.1;</a>
+<a name="ln411">                        }</a>
+<a name="ln412">                  }</a>
+<a name="ln413">            else {</a>
+<a name="ln414">                  for (int i = 0; i &lt; -step; ++i) {</a>
+<a name="ln415">                        if (ymag &lt; 0.4)</a>
+<a name="ln416">                              break;</a>
+<a name="ln417">                        scale(1.0, .9);</a>
+<a name="ln418">                        ymag *= .9;</a>
+<a name="ln419">                        }</a>
+<a name="ln420">                  }</a>
+<a name="ln421">            emit magChanged(xmag, ymag);</a>
+<a name="ln422">            }</a>
+<a name="ln423">      }</a>
+<a name="ln424"> </a>
+<a name="ln425">//---------------------------------------------------------</a>
+<a name="ln426">//   y2pitch</a>
+<a name="ln427">//---------------------------------------------------------</a>
+<a name="ln428"> </a>
+<a name="ln429">int ChordView::y2pitch(int y)</a>
+<a name="ln430">      {</a>
+<a name="ln431">      return 127 - (y / keyHeight);</a>
+<a name="ln432">      }</a>
+<a name="ln433"> </a>
+<a name="ln434">//---------------------------------------------------------</a>
+<a name="ln435">//   pitch2y</a>
+<a name="ln436">//---------------------------------------------------------</a>
+<a name="ln437"> </a>
+<a name="ln438">int ChordView::pitch2y(int pitch)</a>
+<a name="ln439">      {</a>
+<a name="ln440">      return keyHeight * (127 - pitch);</a>
+<a name="ln441">      }</a>
+<a name="ln442"> </a>
+<a name="ln443">//---------------------------------------------------------</a>
+<a name="ln444">//   mousePressEvent</a>
+<a name="ln445">//---------------------------------------------------------</a>
+<a name="ln446"> </a>
+<a name="ln447">void ChordView::mousePressEvent(QMouseEvent* event)</a>
+<a name="ln448">      {</a>
+<a name="ln449">      if (event-&gt;modifiers() &amp; Qt::ControlModifier) {</a>
+<a name="ln450">            QPointF p(mapToScene(event-&gt;pos()));</a>
+<a name="ln451">            int pitch = y2pitch(int(p.y()));</a>
+<a name="ln452">            int tick  = int(p.x()) - CHORD_MAP_OFFSET;</a>
+<a name="ln453">            int tcks = 1000 - tick;</a>
+<a name="ln454">            foreach(const NoteEvent&amp; e, _curNote-&gt;playEvents()) {</a>
+<a name="ln455">                  if (e.pitch() != pitch)</a>
+<a name="ln456">                        continue;</a>
+<a name="ln457">                  if (tick &gt;= e.ontime() &amp;&amp; tick &lt; e.offtime()) {</a>
+<a name="ln458">                        return;     // cannot place an event here</a>
+<a name="ln459">                        }</a>
+<a name="ln460">                  int nticks = e.ontime() - tick;</a>
+<a name="ln461">                  if (nticks &gt; 0)</a>
+<a name="ln462">                        tcks = qMin(tcks, nticks);</a>
+<a name="ln463">                  }</a>
+<a name="ln464"> </a>
+<a name="ln465">            NoteEvent ne;</a>
+<a name="ln466">            ne.setPitch(pitch);</a>
+<a name="ln467">            ne.setOntime(tick);</a>
+<a name="ln468">            ne.setLen(tcks);</a>
+<a name="ln469">            _curNote-&gt;playEvents().append(ne);</a>
+<a name="ln470">            NoteEvent* pne = &amp;_curNote-&gt;playEvents()[_curNote-&gt;playEvents().size()-1];</a>
+<a name="ln471">            ChordItem* item = new ChordItem(this, _curNote, pne);</a>
+<a name="ln472">            scene()-&gt;addItem(item);</a>
+<a name="ln473">            setCurItem(item);</a>
+<a name="ln474">            _dirty = true;</a>
+<a name="ln475">            }</a>
+<a name="ln476">      QGraphicsView::mousePressEvent(event);</a>
+<a name="ln477">      }</a>
+<a name="ln478"> </a>
+<a name="ln479">//---------------------------------------------------------</a>
+<a name="ln480">//   mouseMoveEvent</a>
+<a name="ln481">//---------------------------------------------------------</a>
+<a name="ln482"> </a>
+<a name="ln483">void ChordView::mouseMoveEvent(QMouseEvent* event)</a>
+<a name="ln484">      {</a>
+<a name="ln485">      QPointF p(mapToScene(event-&gt;pos()));</a>
+<a name="ln486">      int pitch = y2pitch(int(p.y()));</a>
+<a name="ln487">      emit pitchChanged(pitch);</a>
+<a name="ln488">      int tick = int(p.x()) - CHORD_MAP_OFFSET;</a>
+<a name="ln489">      if (tick &lt; 0) {</a>
+<a name="ln490">            tick = 0;</a>
+<a name="ln491">            _pos = -1;</a>
+<a name="ln492">            }</a>
+<a name="ln493">      else</a>
+<a name="ln494">            _pos = tick;</a>
+<a name="ln495">      emit posChanged(_pos);</a>
+<a name="ln496">      QGraphicsView::mouseMoveEvent(event);</a>
+<a name="ln497">      }</a>
+<a name="ln498"> </a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500">//   leaveEvent</a>
+<a name="ln501">//---------------------------------------------------------</a>
+<a name="ln502"> </a>
+<a name="ln503">void ChordView::leaveEvent(QEvent* event)</a>
+<a name="ln504">      {</a>
+<a name="ln505">      emit pitchChanged(-1);</a>
+<a name="ln506">      emit posChanged(-1);</a>
+<a name="ln507">      _pos = -1;</a>
+<a name="ln508">      QGraphicsView::leaveEvent(event);</a>
+<a name="ln509">      }</a>
+<a name="ln510"> </a>
+<a name="ln511">//---------------------------------------------------------</a>
+<a name="ln512">//   ensureVisible</a>
+<a name="ln513">//---------------------------------------------------------</a>
+<a name="ln514"> </a>
+<a name="ln515">void ChordView::ensureVisible(int tick)</a>
+<a name="ln516">      {</a>
+<a name="ln517">      tick += CHORD_MAP_OFFSET;</a>
+<a name="ln518">      QPointF pt = mapToScene(0, height() / 2);</a>
+<a name="ln519">      QGraphicsView::ensureVisible(qreal(tick), pt.y(), 240.0, 1.0);</a>
+<a name="ln520">      }</a>
+<a name="ln521"> </a>
+<a name="ln522">//---------------------------------------------------------</a>
+<a name="ln523">//   pos2pix</a>
+<a name="ln524">//---------------------------------------------------------</a>
+<a name="ln525"> </a>
+<a name="ln526">int ChordView::pos2pix(int pos)</a>
+<a name="ln527">      {</a>
+<a name="ln528">      return pos + CHORD_MAP_OFFSET;</a>
+<a name="ln529">      }</a>
+<a name="ln530"> </a>
+<a name="ln531">//---------------------------------------------------------</a>
+<a name="ln532">//   pix2pos</a>
+<a name="ln533">//---------------------------------------------------------</a>
+<a name="ln534"> </a>
+<a name="ln535">int ChordView::pix2pos(int pix)</a>
+<a name="ln536">      {</a>
+<a name="ln537">      return pix - CHORD_MAP_OFFSET;</a>
+<a name="ln538">      }</a>
+<a name="ln539"> </a>
+<a name="ln540">//---------------------------------------------------------</a>
+<a name="ln541">//   selectionChanged</a>
+<a name="ln542">//---------------------------------------------------------</a>
+<a name="ln543"> </a>
+<a name="ln544">void ChordView::selectionChanged()</a>
+<a name="ln545">      {</a>
+<a name="ln546">      QList&lt;QGraphicsItem*&gt; items = scene()-&gt;selectedItems();</a>
+<a name="ln547">      if (items.isEmpty())</a>
+<a name="ln548">            setCurItem(0);</a>
+<a name="ln549">      else {</a>
+<a name="ln550">            QGraphicsItem* item = items[0];</a>
+<a name="ln551">            if (item-&gt;type() == ChordTypeItem) {</a>
+<a name="ln552">                  ChordItem* ci = static_cast&lt;ChordItem*&gt;(item);</a>
+<a name="ln553">                  setCurItem(ci);</a>
+<a name="ln554">                  }</a>
+<a name="ln555">            }</a>
+<a name="ln556">      }</a>
+<a name="ln557"> </a>
+<a name="ln558">//---------------------------------------------------------</a>
+<a name="ln559">//   deleteItem</a>
+<a name="ln560">//---------------------------------------------------------</a>
+<a name="ln561"> </a>
+<a name="ln562">void ChordView::deleteItem()</a>
+<a name="ln563">      {</a>
+<a name="ln564">      QList&lt;QGraphicsItem*&gt; items = scene()-&gt;selectedItems();</a>
+<a name="ln565">      foreach(QGraphicsItem* item, items) {</a>
+<a name="ln566">            if (item-&gt;type() == ChordTypeItem) {</a>
+<a name="ln567">                  ChordItem* ci = static_cast&lt;ChordItem*&gt;(item);</a>
+<a name="ln568">                  if (curEvent == ci)</a>
+<a name="ln569">                        setCurItem(0);</a>
+<a name="ln570">                  NoteEvent* event = ci-&gt;event();</a>
+<a name="ln571">                  ci-&gt;note()-&gt;playEvents().removeOne(*event);</a>
+<a name="ln572"> </a>
+<a name="ln573">                  scene()-&gt;removeItem(item);</a>
+<a name="ln574">                  delete item;</a>
+<a name="ln575">                  _dirty = true;</a>
+<a name="ln576">                  }</a>
+<a name="ln577">            }</a>
+<a name="ln578">      }</a>
+<a name="ln579"> </a>
+<a name="ln580">//---------------------------------------------------------</a>
+<a name="ln581">//   setCurItem</a>
+<a name="ln582">//---------------------------------------------------------</a>
+<a name="ln583"> </a>
+<a name="ln584">void ChordView::setCurItem(ChordItem* item)</a>
+<a name="ln585">      {</a>
+<a name="ln586">      if (curEvent)</a>
+<a name="ln587">            curEvent-&gt;setCurrent(false);</a>
+<a name="ln588">      curEvent = item;</a>
+<a name="ln589">      bool visible = item != 0;</a>
+<a name="ln590">      lg-&gt;setVisible(visible);</a>
+<a name="ln591">      rg-&gt;setVisible(visible);</a>
+<a name="ln592">      lg-&gt;setEvent(item);</a>
+<a name="ln593">      rg-&gt;setEvent(item);</a>
+<a name="ln594">      lg-&gt;setParentItem(item);</a>
+<a name="ln595">      rg-&gt;setParentItem(item);</a>
+<a name="ln596">      if (visible) {</a>
+<a name="ln597">            lg-&gt;setPos(0,   keyHeight / 4);</a>
+<a name="ln598">            rg-&gt;setPos(item-&gt;event()-&gt;len(), keyHeight / 4);</a>
+<a name="ln599">            item-&gt;setCurrent(true);</a>
+<a name="ln600">            if (item-&gt;note() != _curNote) {</a>
+<a name="ln601">                  _curNote = item-&gt;note();</a>
+<a name="ln602">                  _curNote-&gt;score()-&gt;select(_curNote);</a>
+<a name="ln603">                  _curNote-&gt;score()-&gt;update();</a>
+<a name="ln604">                  }</a>
+<a name="ln605">            }</a>
+<a name="ln606">      }</a>
+<a name="ln607">}</a>
+<a name="ln608"> </a>
+
+</code></pre>
+<div class="balloon" rel="147"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _locator, _pos, locatorLine.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

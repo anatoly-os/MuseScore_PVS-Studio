@@ -1,0 +1,539 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>exampleview.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENSE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;exampleview.h&quot;</a>
+<a name="ln14">#include &quot;preferences.h&quot;</a>
+<a name="ln15">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/element.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/page.h&quot;</a>
+<a name="ln18">#include &quot;libmscore/system.h&quot;</a>
+<a name="ln19">#include &quot;libmscore/icon.h&quot;</a>
+<a name="ln20">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln21">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">namespace Ms {</a>
+<a name="ln24"> </a>
+<a name="ln25">//---------------------------------------------------------</a>
+<a name="ln26">//   ExampleView</a>
+<a name="ln27">//---------------------------------------------------------</a>
+<a name="ln28"> </a>
+<a name="ln29">ExampleView::ExampleView(QWidget* parent)</a>
+<a name="ln30">   : QFrame(parent)</a>
+<a name="ln31">      {</a>
+<a name="ln32">      _score = 0;</a>
+<a name="ln33">      setAcceptDrops(true);</a>
+<a name="ln34">      setFocusPolicy(Qt::StrongFocus);</a>
+<a name="ln35">      resetMatrix();</a>
+<a name="ln36">      _fgPixmap = nullptr;</a>
+<a name="ln37">      if (preferences.getBool(PREF_UI_CANVAS_FG_USECOLOR))</a>
+<a name="ln38">            _fgColor = preferences.getColor(PREF_UI_CANVAS_FG_COLOR);</a>
+<a name="ln39">      else {</a>
+<a name="ln40">            _fgPixmap = new QPixmap(preferences.getString(PREF_UI_CANVAS_FG_WALLPAPER));</a>
+<a name="ln41">            if (_fgPixmap == 0 || _fgPixmap-&gt;isNull())</a>
+<a name="ln42">                  qDebug(&quot;no valid pixmap %s&quot;, qPrintable(preferences.getString(PREF_UI_CANVAS_FG_WALLPAPER)));</a>
+<a name="ln43">            }</a>
+<a name="ln44">      // setup drag canvas state</a>
+<a name="ln45">      sm          = new QStateMachine(this);</a>
+<a name="ln46">      QState* stateActive = new QState;</a>
+<a name="ln47"> </a>
+<a name="ln48">      QState* s1 = new QState(stateActive);</a>
+<a name="ln49">      s1-&gt;setObjectName(&quot;example-normal&quot;);</a>
+<a name="ln50">      s1-&gt;assignProperty(this, &quot;cursor&quot;, QCursor(Qt::ArrowCursor));</a>
+<a name="ln51"> </a>
+<a name="ln52">      QState* s = new QState(stateActive);</a>
+<a name="ln53">      s-&gt;setObjectName(&quot;example-drag&quot;);</a>
+<a name="ln54">      s-&gt;assignProperty(this, &quot;cursor&quot;, QCursor(Qt::SizeAllCursor));</a>
+<a name="ln55">      QEventTransition* cl = new QEventTransition(this, QEvent::MouseButtonRelease);</a>
+<a name="ln56">      cl-&gt;setTargetState(s1);</a>
+<a name="ln57">      s-&gt;addTransition(cl);</a>
+<a name="ln58">      s1-&gt;addTransition(new DragTransitionExampleView(this));</a>
+<a name="ln59"> </a>
+<a name="ln60"> </a>
+<a name="ln61">      sm-&gt;addState(stateActive);</a>
+<a name="ln62">      stateActive-&gt;setInitialState(s1);</a>
+<a name="ln63">      sm-&gt;setInitialState(stateActive);</a>
+<a name="ln64"> </a>
+<a name="ln65">      sm-&gt;start();</a>
+<a name="ln66">      }</a>
+<a name="ln67"> </a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69">//   ~ExampleView</a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71"> </a>
+<a name="ln72">ExampleView::~ExampleView()</a>
+<a name="ln73">      {</a>
+<a name="ln74">      if (_fgPixmap)</a>
+<a name="ln75">            delete _fgPixmap;</a>
+<a name="ln76">      }</a>
+<a name="ln77"> </a>
+<a name="ln78">//---------------------------------------------------------</a>
+<a name="ln79">//   resetMatrix</a>
+<a name="ln80">//    used to reset scrolling in case time signature num or denom changed</a>
+<a name="ln81">//---------------------------------------------------------</a>
+<a name="ln82"> </a>
+<a name="ln83">void ExampleView::resetMatrix()</a>
+<a name="ln84">      {</a>
+<a name="ln85">      double mag = 0.9 * guiScaling * (DPI_DISPLAY / DPI);  // 90% of nominal</a>
+<a name="ln86">      qreal _spatium = SPATIUM20 * mag;</a>
+<a name="ln87">      // example would normally be 10sp from top of page; this leaves 3sp margin above</a>
+<a name="ln88">      _matrix  = QTransform(mag, 0.0, 0.0, mag, _spatium, -_spatium * 7.0);</a>
+<a name="ln89">      imatrix  = _matrix.inverted();</a>
+<a name="ln90">      }</a>
+<a name="ln91"> </a>
+<a name="ln92">void ExampleView::layoutChanged()</a>
+<a name="ln93">      {</a>
+<a name="ln94">      }</a>
+<a name="ln95"> </a>
+<a name="ln96">void ExampleView::dataChanged(const QRectF&amp;)</a>
+<a name="ln97">      {</a>
+<a name="ln98">      }</a>
+<a name="ln99"> </a>
+<a name="ln100">void ExampleView::updateAll()</a>
+<a name="ln101">      {</a>
+<a name="ln102">      update();</a>
+<a name="ln103">      }</a>
+<a name="ln104"> </a>
+<a name="ln105">void ExampleView::adjustCanvasPosition(const Element* /*el*/, bool /*playBack*/)</a>
+<a name="ln106">      {</a>
+<a name="ln107">      }</a>
+<a name="ln108"> </a>
+<a name="ln109">//---------------------------------------------------------</a>
+<a name="ln110">//   setScore</a>
+<a name="ln111">//---------------------------------------------------------</a>
+<a name="ln112"> </a>
+<a name="ln113">void ExampleView::setScore(Score* s)</a>
+<a name="ln114">      {</a>
+<a name="ln115">      delete _score;</a>
+<a name="ln116">      _score = s;</a>
+<a name="ln117">      _score-&gt;addViewer(this);</a>
+<a name="ln118">      _score-&gt;setLayoutMode(LayoutMode::LINE);</a>
+<a name="ln119"> </a>
+<a name="ln120">      ScoreLoad sl;</a>
+<a name="ln121">      _score-&gt;doLayout();</a>
+<a name="ln122">      update();</a>
+<a name="ln123">      }</a>
+<a name="ln124"> </a>
+<a name="ln125">void ExampleView::removeScore()</a>
+<a name="ln126">      {</a>
+<a name="ln127">      }</a>
+<a name="ln128"> </a>
+<a name="ln129">void ExampleView::changeEditElement(Element*)</a>
+<a name="ln130">      {</a>
+<a name="ln131">      }</a>
+<a name="ln132"> </a>
+<a name="ln133">QCursor ExampleView::cursor() const</a>
+<a name="ln134">      {</a>
+<a name="ln135">      return QCursor();</a>
+<a name="ln136">      }</a>
+<a name="ln137"> </a>
+<a name="ln138">void ExampleView::setCursor(const QCursor&amp;)</a>
+<a name="ln139">      {</a>
+<a name="ln140">      }</a>
+<a name="ln141"> </a>
+<a name="ln142">void ExampleView::setDropRectangle(const QRectF&amp;)</a>
+<a name="ln143">      {</a>
+<a name="ln144">      }</a>
+<a name="ln145"> </a>
+<a name="ln146">void ExampleView::cmdAddSlur(Note* /*firstNote*/, Note* /*lastNote*/)</a>
+<a name="ln147">      {</a>
+<a name="ln148">      }</a>
+<a name="ln149"> </a>
+<a name="ln150">Element* ExampleView::elementNear(QPointF)</a>
+<a name="ln151">      {</a>
+<a name="ln152">      return 0;</a>
+<a name="ln153">      }</a>
+<a name="ln154"> </a>
+<a name="ln155">void ExampleView::drawBackground(QPainter* p, const QRectF&amp; r) const</a>
+<a name="ln156">      {</a>
+<a name="ln157">      if (_fgPixmap == 0 || _fgPixmap-&gt;isNull())</a>
+<a name="ln158">            p-&gt;fillRect(r, _fgColor);</a>
+<a name="ln159">      else {</a>
+<a name="ln160">            p-&gt;drawTiledPixmap(r, *_fgPixmap, r.topLeft()</a>
+<a name="ln161">               - QPoint(lrint(_matrix.dx()), lrint(_matrix.dy())));</a>
+<a name="ln162">            }</a>
+<a name="ln163">      }</a>
+<a name="ln164"> </a>
+<a name="ln165">//---------------------------------------------------------</a>
+<a name="ln166">//   drawElements</a>
+<a name="ln167">//---------------------------------------------------------</a>
+<a name="ln168"> </a>
+<a name="ln169">void ExampleView::drawElements(QPainter&amp; painter, const QList&lt;Element*&gt;&amp; el)</a>
+<a name="ln170">      {</a>
+<a name="ln171">      for (Element* e : el) {</a>
+<a name="ln172">            e-&gt;itemDiscovered = 0;</a>
+<a name="ln173">            QPointF pos(e-&gt;pagePos());</a>
+<a name="ln174">            painter.translate(pos);</a>
+<a name="ln175">            e-&gt;draw(&amp;painter);</a>
+<a name="ln176">            painter.translate(-pos);</a>
+<a name="ln177">            }</a>
+<a name="ln178">      }</a>
+<a name="ln179"> </a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181">//   paintEvent</a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183"> </a>
+<a name="ln184">void ExampleView::paintEvent(QPaintEvent* ev)</a>
+<a name="ln185">      {</a>
+<a name="ln186">      if (_score) {</a>
+<a name="ln187">            QPainter p(this);</a>
+<a name="ln188">            p.setRenderHint(QPainter::Antialiasing, preferences.getBool(PREF_UI_CANVAS_MISC_ANTIALIASEDDRAWING));</a>
+<a name="ln189">            p.setRenderHint(QPainter::TextAntialiasing, true);</a>
+<a name="ln190">            const QRect r(ev-&gt;rect());</a>
+<a name="ln191"> </a>
+<a name="ln192">            drawBackground(&amp;p, r);</a>
+<a name="ln193"> </a>
+<a name="ln194">            p.setTransform(_matrix);</a>
+<a name="ln195">            QRectF fr = imatrix.mapRect(QRectF(r));</a>
+<a name="ln196"> </a>
+<a name="ln197">            QRegion r1(r);</a>
+<a name="ln198">            Page* page = _score-&gt;pages().front();</a>
+<a name="ln199">            QList&lt;Element*&gt; ell = page-&gt;items(fr);</a>
+<a name="ln200">            qStableSort(ell.begin(), ell.end(), elementLessThan);</a>
+<a name="ln201">            drawElements(p, ell);</a>
+<a name="ln202">            }</a>
+<a name="ln203">      QFrame::paintEvent(ev);</a>
+<a name="ln204">      }</a>
+<a name="ln205"> </a>
+<a name="ln206">//---------------------------------------------------------</a>
+<a name="ln207">//   dragEnterEvent</a>
+<a name="ln208">//---------------------------------------------------------</a>
+<a name="ln209"> </a>
+<a name="ln210">void ExampleView::dragEnterEvent(QDragEnterEvent* event)</a>
+<a name="ln211">      {</a>
+<a name="ln212">      const QMimeData* d = event-&gt;mimeData();</a>
+<a name="ln213">      if (d-&gt;hasFormat(mimeSymbolFormat)) {</a>
+<a name="ln214">            event-&gt;acceptProposedAction();</a>
+<a name="ln215"> </a>
+<a name="ln216">            QByteArray a = d-&gt;data(mimeSymbolFormat);</a>
+<a name="ln217"> </a>
+<a name="ln218">// qDebug(&quot;ExampleView::dragEnterEvent Symbol: &lt;%s&gt;&quot;, a.data());</a>
+<a name="ln219"> </a>
+<a name="ln220">            XmlReader e(a);</a>
+<a name="ln221">            QPointF dragOffset;</a>
+<a name="ln222">            Fraction duration;  // dummy</a>
+<a name="ln223">            ElementType type = Element::readType(e, &amp;dragOffset, &amp;duration);</a>
+<a name="ln224"> </a>
+<a name="ln225">            dragElement = Element::create(type, _score);</a>
+<a name="ln226">            if (dragElement) {</a>
+<a name="ln227">                  dragElement-&gt;setParent(0);</a>
+<a name="ln228">                  dragElement-&gt;read(e);</a>
+<a name="ln229">                  dragElement-&gt;layout();</a>
+<a name="ln230">                  }</a>
+<a name="ln231">            return;</a>
+<a name="ln232">            }</a>
+<a name="ln233">      }</a>
+<a name="ln234"> </a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236">//   dragLeaveEvent</a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238"> </a>
+<a name="ln239">void ExampleView::dragLeaveEvent(QDragLeaveEvent*)</a>
+<a name="ln240">      {</a>
+<a name="ln241">      if (dragElement) {</a>
+<a name="ln242">            delete dragElement;</a>
+<a name="ln243">            dragElement = 0;</a>
+<a name="ln244">            }</a>
+<a name="ln245">      setDropTarget(0);</a>
+<a name="ln246">      }</a>
+<a name="ln247"> </a>
+<a name="ln248">//---------------------------------------------------------</a>
+<a name="ln249">//   moveElement</a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251"> </a>
+<a name="ln252">static void moveElement(void* data, Element* e)</a>
+<a name="ln253">      {</a>
+<a name="ln254">      QPointF* pos = (QPointF*)data;</a>
+<a name="ln255">      e-&gt;score()-&gt;addRefresh(e-&gt;canvasBoundingRect());</a>
+<a name="ln256">      e-&gt;setPos(*pos);</a>
+<a name="ln257">      e-&gt;score()-&gt;addRefresh(e-&gt;canvasBoundingRect());</a>
+<a name="ln258">      }</a>
+<a name="ln259"> </a>
+<a name="ln260">//---------------------------------------------------------</a>
+<a name="ln261">//   dragMoveEvent</a>
+<a name="ln262">//---------------------------------------------------------</a>
+<a name="ln263"> </a>
+<a name="ln264">void ExampleView::dragMoveEvent(QDragMoveEvent* event)</a>
+<a name="ln265">      {</a>
+<a name="ln266">      event-&gt;acceptProposedAction();</a>
+<a name="ln267"> </a>
+<a name="ln268">      if (!dragElement || dragElement-&gt;type() != ElementType::ICON)</a>
+<a name="ln269">            return;</a>
+<a name="ln270"> </a>
+<a name="ln271">      QPointF pos(imatrix.map(QPointF(event-&gt;pos())));</a>
+<a name="ln272">      QList&lt;Element*&gt; el = elementsAt(pos);</a>
+<a name="ln273">      bool found = false;</a>
+<a name="ln274">      foreach(const Element* e, el) {</a>
+<a name="ln275">            if (e-&gt;type() == ElementType::NOTE) {</a>
+<a name="ln276">                  setDropTarget(const_cast&lt;Element*&gt;(e));</a>
+<a name="ln277">                  found = true;</a>
+<a name="ln278">                  break;</a>
+<a name="ln279">                  }</a>
+<a name="ln280">            }</a>
+<a name="ln281">      if (!found)</a>
+<a name="ln282">            setDropTarget(0);</a>
+<a name="ln283">      dragElement-&gt;scanElements(&amp;pos, moveElement, false);</a>
+<a name="ln284">      _score-&gt;update();</a>
+<a name="ln285">      return;</a>
+<a name="ln286">      }</a>
+<a name="ln287"> </a>
+<a name="ln288">//---------------------------------------------------------</a>
+<a name="ln289">//   setDropTarget</a>
+<a name="ln290">//---------------------------------------------------------</a>
+<a name="ln291"> </a>
+<a name="ln292">void ExampleView::setDropTarget(const Element* el)</a>
+<a name="ln293">      {</a>
+<a name="ln294">      if (dropTarget != el) {</a>
+<a name="ln295">            if (dropTarget) {</a>
+<a name="ln296">                  dropTarget-&gt;setDropTarget(false);</a>
+<a name="ln297">                  dropTarget = 0;</a>
+<a name="ln298">                  }</a>
+<a name="ln299">            dropTarget = el;</a>
+<a name="ln300">            if (dropTarget) {</a>
+<a name="ln301">                  dropTarget-&gt;setDropTarget(true);</a>
+<a name="ln302">                  }</a>
+<a name="ln303">            }</a>
+<a name="ln304">      if (!dropAnchor.isNull()) {</a>
+<a name="ln305">            QRectF r;</a>
+<a name="ln306">            r.setTopLeft(dropAnchor.p1());</a>
+<a name="ln307">            r.setBottomRight(dropAnchor.p2());</a>
+<a name="ln308">            dropAnchor = QLineF();</a>
+<a name="ln309">            }</a>
+<a name="ln310">      if (dropRectangle.isValid()) {</a>
+<a name="ln311">            dropRectangle = QRectF();</a>
+<a name="ln312">            }</a>
+<a name="ln313">      update();</a>
+<a name="ln314">      }</a>
+<a name="ln315"> </a>
+<a name="ln316">//---------------------------------------------------------</a>
+<a name="ln317">//   dropEvent</a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319"> </a>
+<a name="ln320">void ExampleView::dropEvent(QDropEvent* event)</a>
+<a name="ln321">      {</a>
+<a name="ln322">      QPointF pos(imatrix.map(QPointF(event-&gt;pos())));</a>
+<a name="ln323"> </a>
+<a name="ln324">      if (!dragElement)</a>
+<a name="ln325">           return;</a>
+<a name="ln326">      if (dragElement-&gt;type() != ElementType::ICON) {</a>
+<a name="ln327">            delete dragElement;</a>
+<a name="ln328">            dragElement = 0;</a>
+<a name="ln329">            return;</a>
+<a name="ln330">            }</a>
+<a name="ln331">      foreach (Element* e, elementsAt(pos)) {</a>
+<a name="ln332">            if (e-&gt;type() == ElementType::NOTE) {</a>
+<a name="ln333">                  Icon* icon = static_cast&lt;Icon*&gt;(dragElement);</a>
+<a name="ln334">                  Chord* chord = static_cast&lt;Note*&gt;(e)-&gt;chord();</a>
+<a name="ln335">                  emit beamPropertyDropped(chord, icon);</a>
+<a name="ln336">                  switch (icon-&gt;iconType()) {</a>
+<a name="ln337">                        case IconType::SBEAM:</a>
+<a name="ln338">                              chord-&gt;setBeamMode(Beam::Mode::BEGIN);</a>
+<a name="ln339">                              break;</a>
+<a name="ln340">                        case IconType::MBEAM:</a>
+<a name="ln341">                              chord-&gt;setBeamMode(Beam::Mode::AUTO);</a>
+<a name="ln342">                              break;</a>
+<a name="ln343">                        case IconType::BEAM32:</a>
+<a name="ln344">                              chord-&gt;setBeamMode(Beam::Mode::BEGIN32);</a>
+<a name="ln345">                              break;</a>
+<a name="ln346">                        case IconType::BEAM64:</a>
+<a name="ln347">                              chord-&gt;setBeamMode(Beam::Mode::BEGIN64);</a>
+<a name="ln348">                              break;</a>
+<a name="ln349">                        default:</a>
+<a name="ln350">                              break;</a>
+<a name="ln351">                        }</a>
+<a name="ln352">                  score()-&gt;doLayout();</a>
+<a name="ln353">                  break;</a>
+<a name="ln354">                  }</a>
+<a name="ln355">            }</a>
+<a name="ln356">      event-&gt;acceptProposedAction();</a>
+<a name="ln357">      delete dragElement;</a>
+<a name="ln358">      dragElement = 0;</a>
+<a name="ln359">      setDropTarget(0);</a>
+<a name="ln360">      }</a>
+<a name="ln361"> </a>
+<a name="ln362">//---------------------------------------------------------</a>
+<a name="ln363">//   mousePressEvent</a>
+<a name="ln364">//---------------------------------------------------------</a>
+<a name="ln365"> </a>
+<a name="ln366">void ExampleView::mousePressEvent(QMouseEvent* event)</a>
+<a name="ln367">      {</a>
+<a name="ln368">      startMove  = imatrix.map(QPointF(event-&gt;pos()));</a>
+<a name="ln369">      QPointF pos(imatrix.map(QPointF(event-&gt;pos())));</a>
+<a name="ln370"> </a>
+<a name="ln371">      foreach (Element* e, elementsAt(pos)) {</a>
+<a name="ln372">            if (e-&gt;type() == ElementType::NOTE) {</a>
+<a name="ln373">                  emit noteClicked(static_cast&lt;Note*&gt;(e));</a>
+<a name="ln374">                  break;</a>
+<a name="ln375">                  }</a>
+<a name="ln376">            }</a>
+<a name="ln377">      }</a>
+<a name="ln378"> </a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380">//   sizeHint</a>
+<a name="ln381">//---------------------------------------------------------</a>
+<a name="ln382"> </a>
+<a name="ln383">QSize ExampleView::sizeHint() const</a>
+<a name="ln384">      {</a>
+<a name="ln385">      qreal mag = 0.9 * guiScaling * (DPI_DISPLAY / DPI);</a>
+<a name="ln386">      qreal _spatium = SPATIUM20 * mag;</a>
+<a name="ln387">      // staff is 4sp tall with 3sp margin above; this leaves 3sp margin below</a>
+<a name="ln388">      qreal height = 10.0 * _spatium;</a>
+<a name="ln389">      if (score() &amp;&amp; score()-&gt;pages().size() &gt; 0)</a>
+<a name="ln390">            height = score()-&gt;pages()[0]-&gt;tbbox().height() * mag + (6 * _spatium);</a>
+<a name="ln391">      return QSize(1000 * mag, height);</a>
+<a name="ln392">      }</a>
+<a name="ln393"> </a>
+<a name="ln394">//---------------------------------------------------------</a>
+<a name="ln395">//   dragExampleView</a>
+<a name="ln396">//     constrained scrolling ensuring that this ExampleView won't be moved past the borders of its QFrame</a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398"> </a>
+<a name="ln399">void ExampleView::dragExampleView(QMouseEvent* ev)</a>
+<a name="ln400">      {</a>
+<a name="ln401">      QPoint d = ev-&gt;pos() - _matrix.map(startMove).toPoint();</a>
+<a name="ln402">      int dx   = d.x();</a>
+<a name="ln403">      if (dx == 0)</a>
+<a name="ln404">            return;</a>
+<a name="ln405"> </a>
+<a name="ln406">      constraintCanvas(&amp;dx);</a>
+<a name="ln407"> </a>
+<a name="ln408">      // Perform the actual scrolling</a>
+<a name="ln409">      _matrix.setMatrix(_matrix.m11(), _matrix.m12(), _matrix.m13(), _matrix.m21(),</a>
+<a name="ln410">         _matrix.m22(), _matrix.m23(), _matrix.dx()+dx, _matrix.dy(), _matrix.m33());</a>
+<a name="ln411">      imatrix = _matrix.inverted();</a>
+<a name="ln412">      scroll(dx, 0);</a>
+<a name="ln413">      }</a>
+<a name="ln414"> </a>
+<a name="ln415">void DragTransitionExampleView::onTransition(QEvent* e)</a>
+<a name="ln416">      {</a>
+<a name="ln417">      QStateMachine::WrappedEvent* we = static_cast&lt;QStateMachine::WrappedEvent*&gt;(e);</a>
+<a name="ln418">      QMouseEvent* me = static_cast&lt;QMouseEvent*&gt;(we-&gt;event());</a>
+<a name="ln419">      canvas-&gt;dragExampleView(me);</a>
+<a name="ln420">      }</a>
+<a name="ln421"> </a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423">//   wheelEvent</a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425"> </a>
+<a name="ln426">void ExampleView::wheelEvent(QWheelEvent* event)</a>
+<a name="ln427">       {</a>
+<a name="ln428">      QPoint pixelsScrolled = event-&gt;pixelDelta();</a>
+<a name="ln429">      QPoint stepsScrolled = event-&gt;angleDelta();</a>
+<a name="ln430">      int dx = 0, dy = 0;</a>
+<a name="ln431">      if (!pixelsScrolled.isNull()) {</a>
+<a name="ln432">            dx = pixelsScrolled.x();</a>
+<a name="ln433">            dy = pixelsScrolled.y();</a>
+<a name="ln434">            }</a>
+<a name="ln435">      else if (!stepsScrolled.isNull()) {</a>
+<a name="ln436">            dx = static_cast&lt;qreal&gt;(stepsScrolled.x()) * qMax(2, width() / 10) / 120;</a>
+<a name="ln437">            dy = static_cast&lt;qreal&gt;(stepsScrolled.y()) * qMax(2, height() / 10) / 120;</a>
+<a name="ln438">            }</a>
+<a name="ln439"> </a>
+<a name="ln440">      if (dx == 0) {</a>
+<a name="ln441">            if (dy == 0)</a>
+<a name="ln442">                  return;</a>
+<a name="ln443">            else</a>
+<a name="ln444">                  dx = dy;</a>
+<a name="ln445">            }</a>
+<a name="ln446"> </a>
+<a name="ln447">      constraintCanvas(&amp;dx);</a>
+<a name="ln448"> </a>
+<a name="ln449">      _matrix.setMatrix(_matrix.m11(), _matrix.m12(), _matrix.m13(), _matrix.m21(),</a>
+<a name="ln450">         _matrix.m22(), _matrix.m23(), _matrix.dx()+dx, _matrix.dy(), _matrix.m33());</a>
+<a name="ln451">      imatrix = _matrix.inverted();</a>
+<a name="ln452">      scroll(dx, 0);</a>
+<a name="ln453">      }</a>
+<a name="ln454"> </a>
+<a name="ln455">//-----------------------------------------------------------------------------</a>
+<a name="ln456">//   constraintCanvas</a>
+<a name="ln457">//-----------------------------------------------------------------------------</a>
+<a name="ln458"> </a>
+<a name="ln459">void ExampleView::constraintCanvas (int* dxx)</a>
+<a name="ln460">      {</a>
+<a name="ln461">      int dx = *dxx;</a>
+<a name="ln462"> </a>
+<a name="ln463">      Q_ASSERT(_score-&gt;pages().front()-&gt;system(0)); // should exist if doLayout ran</a>
+<a name="ln464"> </a>
+<a name="ln465">      // form rectangle bounding the system with a spatium margin and translate relative to view space</a>
+<a name="ln466">      qreal xstart = _score-&gt;pages().front()-&gt;system(0)-&gt;bbox().left() - SPATIUM20;</a>
+<a name="ln467">      qreal xend = _score-&gt;pages().front()-&gt;system(0)-&gt;bbox().right() + 2.0 * SPATIUM20;</a>
+<a name="ln468">      QRectF systemScaledViewRect(xstart * _matrix.m11(), 0, xend * _matrix.m11(), 0);</a>
+<a name="ln469">      systemScaledViewRect.translate(_matrix.dx(), 0);</a>
+<a name="ln470"> </a>
+<a name="ln471">      qreal frameWidth = static_cast&lt;QFrame*&gt;(this)-&gt;frameRect().width();</a>
+<a name="ln472"> </a>
+<a name="ln473">      // constrain the dx of scrolling so that this ExampleView won't be moved past the borders of its QFrame</a>
+<a name="ln474">      if (dx &gt; 0) {</a>
+<a name="ln475">            // when moving right, ensure the left edge of systemScaledViewRect won't be right of frame's left edge</a>
+<a name="ln476">            if (systemScaledViewRect.left() + dx &gt; 0)</a>
+<a name="ln477">                  dx = -systemScaledViewRect.left();</a>
+<a name="ln478">            }</a>
+<a name="ln479">      else {</a>
+<a name="ln480">            // never move left if entire system already fits entirely within the frame</a>
+<a name="ln481">            if (systemScaledViewRect.width() &lt; frameWidth)</a>
+<a name="ln482">                  dx = 0;</a>
+<a name="ln483">            // when moving left, ensure the right edge of systemScaledViewRect won't be left of frame's right edge</a>
+<a name="ln484">            else if (systemScaledViewRect.right() + dx &lt; frameWidth)</a>
+<a name="ln485">                        dx = frameWidth - systemScaledViewRect.right();</a>
+<a name="ln486">            }</a>
+<a name="ln487"> </a>
+<a name="ln488">      *dxx = dx;</a>
+<a name="ln489">      }</a>
+<a name="ln490">}</a>
+<a name="ln491"> </a>
+
+</code></pre>
+<div class="balloon" rel="41"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the '_fgPixmap' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+<div class="balloon" rel="42"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

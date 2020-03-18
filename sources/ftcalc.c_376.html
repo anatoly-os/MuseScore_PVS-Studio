@@ -1,0 +1,1049 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ftcalc.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ftcalc.c                                                               */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Arithmetic computations (body).                                      */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18">  /*************************************************************************/</a>
+<a name="ln19">  /*                                                                       */</a>
+<a name="ln20">  /* Support for 1-complement arithmetic has been totally dropped in this  */</a>
+<a name="ln21">  /* release.  You can still write your own code if you need it.           */</a>
+<a name="ln22">  /*                                                                       */</a>
+<a name="ln23">  /*************************************************************************/</a>
+<a name="ln24"> </a>
+<a name="ln25">  /*************************************************************************/</a>
+<a name="ln26">  /*                                                                       */</a>
+<a name="ln27">  /* Implementing basic computation routines.                              */</a>
+<a name="ln28">  /*                                                                       */</a>
+<a name="ln29">  /* FT_MulDiv(), FT_MulFix(), FT_DivFix(), FT_RoundFix(), FT_CeilFix(),   */</a>
+<a name="ln30">  /* and FT_FloorFix() are declared in freetype.h.                         */</a>
+<a name="ln31">  /*                                                                       */</a>
+<a name="ln32">  /*************************************************************************/</a>
+<a name="ln33"> </a>
+<a name="ln34"> </a>
+<a name="ln35">#include &lt;ft2build.h&gt;</a>
+<a name="ln36">#include FT_GLYPH_H</a>
+<a name="ln37">#include FT_TRIGONOMETRY_H</a>
+<a name="ln38">#include FT_INTERNAL_CALC_H</a>
+<a name="ln39">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln40">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln41"> </a>
+<a name="ln42"> </a>
+<a name="ln43">#ifdef FT_MULFIX_ASSEMBLER</a>
+<a name="ln44">#undef FT_MulFix</a>
+<a name="ln45">#endif</a>
+<a name="ln46"> </a>
+<a name="ln47">/* we need to emulate a 64-bit data type if a real one isn't available */</a>
+<a name="ln48"> </a>
+<a name="ln49">#ifndef FT_LONG64</a>
+<a name="ln50"> </a>
+<a name="ln51">  typedef struct  FT_Int64_</a>
+<a name="ln52">  {</a>
+<a name="ln53">    FT_UInt32  lo;</a>
+<a name="ln54">    FT_UInt32  hi;</a>
+<a name="ln55"> </a>
+<a name="ln56">  } FT_Int64;</a>
+<a name="ln57"> </a>
+<a name="ln58">#endif /* !FT_LONG64 */</a>
+<a name="ln59"> </a>
+<a name="ln60"> </a>
+<a name="ln61">  /*************************************************************************/</a>
+<a name="ln62">  /*                                                                       */</a>
+<a name="ln63">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln64">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln65">  /* messages during execution.                                            */</a>
+<a name="ln66">  /*                                                                       */</a>
+<a name="ln67">#undef  FT_COMPONENT</a>
+<a name="ln68">#define FT_COMPONENT  trace_calc</a>
+<a name="ln69"> </a>
+<a name="ln70"> </a>
+<a name="ln71">  /* transfer sign leaving a positive number */</a>
+<a name="ln72">#define FT_MOVE_SIGN( x, s ) \</a>
+<a name="ln73">  FT_BEGIN_STMNT             \</a>
+<a name="ln74">    if ( x &lt; 0 )             \</a>
+<a name="ln75">    {                        \</a>
+<a name="ln76">      x = -x;                \</a>
+<a name="ln77">      s = -s;                \</a>
+<a name="ln78">    }                        \</a>
+<a name="ln79">  FT_END_STMNT</a>
+<a name="ln80"> </a>
+<a name="ln81">  /* The following three functions are available regardless of whether */</a>
+<a name="ln82">  /* FT_LONG64 is defined.                                             */</a>
+<a name="ln83"> </a>
+<a name="ln84">  /* documentation is in freetype.h */</a>
+<a name="ln85"> </a>
+<a name="ln86">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln87">  FT_RoundFix( FT_Fixed  a )</a>
+<a name="ln88">  {</a>
+<a name="ln89">    return ( a + 0x8000L - ( a &lt; 0 ) ) &amp; ~0xFFFFL;</a>
+<a name="ln90">  }</a>
+<a name="ln91"> </a>
+<a name="ln92"> </a>
+<a name="ln93">  /* documentation is in freetype.h */</a>
+<a name="ln94"> </a>
+<a name="ln95">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln96">  FT_CeilFix( FT_Fixed  a )</a>
+<a name="ln97">  {</a>
+<a name="ln98">    return ( a + 0xFFFFL ) &amp; ~0xFFFFL;</a>
+<a name="ln99">  }</a>
+<a name="ln100"> </a>
+<a name="ln101"> </a>
+<a name="ln102">  /* documentation is in freetype.h */</a>
+<a name="ln103"> </a>
+<a name="ln104">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln105">  FT_FloorFix( FT_Fixed  a )</a>
+<a name="ln106">  {</a>
+<a name="ln107">    return a &amp; ~0xFFFFL;</a>
+<a name="ln108">  }</a>
+<a name="ln109"> </a>
+<a name="ln110">#ifndef FT_MSB</a>
+<a name="ln111"> </a>
+<a name="ln112">  FT_BASE_DEF ( FT_Int )</a>
+<a name="ln113">  FT_MSB( FT_UInt32 z )</a>
+<a name="ln114">  {</a>
+<a name="ln115">    FT_Int  shift = 0;</a>
+<a name="ln116"> </a>
+<a name="ln117"> </a>
+<a name="ln118">    /* determine msb bit index in `shift' */</a>
+<a name="ln119">    if ( z &amp; 0xFFFF0000UL )</a>
+<a name="ln120">    {</a>
+<a name="ln121">      z     &gt;&gt;= 16;</a>
+<a name="ln122">      shift  += 16;</a>
+<a name="ln123">    }</a>
+<a name="ln124">    if ( z &amp; 0x0000FF00UL )</a>
+<a name="ln125">    {</a>
+<a name="ln126">      z     &gt;&gt;= 8;</a>
+<a name="ln127">      shift  += 8;</a>
+<a name="ln128">    }</a>
+<a name="ln129">    if ( z &amp; 0x000000F0UL )</a>
+<a name="ln130">    {</a>
+<a name="ln131">      z     &gt;&gt;= 4;</a>
+<a name="ln132">      shift  += 4;</a>
+<a name="ln133">    }</a>
+<a name="ln134">    if ( z &amp; 0x0000000CUL )</a>
+<a name="ln135">    {</a>
+<a name="ln136">      z     &gt;&gt;= 2;</a>
+<a name="ln137">      shift  += 2;</a>
+<a name="ln138">    }</a>
+<a name="ln139">    if ( z &amp; 0x00000002UL )</a>
+<a name="ln140">    {</a>
+<a name="ln141">   /* z     &gt;&gt;= 1; */</a>
+<a name="ln142">      shift  += 1;</a>
+<a name="ln143">    }</a>
+<a name="ln144"> </a>
+<a name="ln145">    return shift;</a>
+<a name="ln146">  }</a>
+<a name="ln147"> </a>
+<a name="ln148">#endif /* !FT_MSB */</a>
+<a name="ln149"> </a>
+<a name="ln150"> </a>
+<a name="ln151">  /* documentation is in ftcalc.h */</a>
+<a name="ln152"> </a>
+<a name="ln153">  FT_BASE_DEF( FT_Fixed )</a>
+<a name="ln154">  FT_Hypot( FT_Fixed  x,</a>
+<a name="ln155">            FT_Fixed  y )</a>
+<a name="ln156">  {</a>
+<a name="ln157">    FT_Vector  v;</a>
+<a name="ln158"> </a>
+<a name="ln159"> </a>
+<a name="ln160">    v.x = x;</a>
+<a name="ln161">    v.y = y;</a>
+<a name="ln162"> </a>
+<a name="ln163">    return FT_Vector_Length( &amp;v );</a>
+<a name="ln164">  }</a>
+<a name="ln165"> </a>
+<a name="ln166"> </a>
+<a name="ln167">#ifdef FT_LONG64</a>
+<a name="ln168"> </a>
+<a name="ln169"> </a>
+<a name="ln170">  /* documentation is in freetype.h */</a>
+<a name="ln171"> </a>
+<a name="ln172">  FT_EXPORT_DEF( FT_Long )</a>
+<a name="ln173">  FT_MulDiv( FT_Long  a_,</a>
+<a name="ln174">             FT_Long  b_,</a>
+<a name="ln175">             FT_Long  c_ )</a>
+<a name="ln176">  {</a>
+<a name="ln177">    FT_Int     s = 1;</a>
+<a name="ln178">    FT_UInt64  a, b, c, d;</a>
+<a name="ln179">    FT_Long    d_;</a>
+<a name="ln180"> </a>
+<a name="ln181"> </a>
+<a name="ln182">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln183">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln184">    FT_MOVE_SIGN( c_, s );</a>
+<a name="ln185"> </a>
+<a name="ln186">    a = (FT_UInt64)a_;</a>
+<a name="ln187">    b = (FT_UInt64)b_;</a>
+<a name="ln188">    c = (FT_UInt64)c_;</a>
+<a name="ln189"> </a>
+<a name="ln190">    d = c &gt; 0 ? ( a * b + ( c &gt;&gt; 1 ) ) / c</a>
+<a name="ln191">              : 0x7FFFFFFFUL;</a>
+<a name="ln192"> </a>
+<a name="ln193">    d_ = (FT_Long)d;</a>
+<a name="ln194"> </a>
+<a name="ln195">    return s &lt; 0 ? -d_ : d_;</a>
+<a name="ln196">  }</a>
+<a name="ln197"> </a>
+<a name="ln198"> </a>
+<a name="ln199">  /* documentation is in ftcalc.h */</a>
+<a name="ln200"> </a>
+<a name="ln201">  FT_BASE_DEF( FT_Long )</a>
+<a name="ln202">  FT_MulDiv_No_Round( FT_Long  a_,</a>
+<a name="ln203">                      FT_Long  b_,</a>
+<a name="ln204">                      FT_Long  c_ )</a>
+<a name="ln205">  {</a>
+<a name="ln206">    FT_Int     s = 1;</a>
+<a name="ln207">    FT_UInt64  a, b, c, d;</a>
+<a name="ln208">    FT_Long    d_;</a>
+<a name="ln209"> </a>
+<a name="ln210"> </a>
+<a name="ln211">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln212">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln213">    FT_MOVE_SIGN( c_, s );</a>
+<a name="ln214"> </a>
+<a name="ln215">    a = (FT_UInt64)a_;</a>
+<a name="ln216">    b = (FT_UInt64)b_;</a>
+<a name="ln217">    c = (FT_UInt64)c_;</a>
+<a name="ln218"> </a>
+<a name="ln219">    d = c &gt; 0 ? a * b / c</a>
+<a name="ln220">              : 0x7FFFFFFFUL;</a>
+<a name="ln221"> </a>
+<a name="ln222">    d_ = (FT_Long)d;</a>
+<a name="ln223"> </a>
+<a name="ln224">    return s &lt; 0 ? -d_ : d_;</a>
+<a name="ln225">  }</a>
+<a name="ln226"> </a>
+<a name="ln227"> </a>
+<a name="ln228">  /* documentation is in freetype.h */</a>
+<a name="ln229"> </a>
+<a name="ln230">  FT_EXPORT_DEF( FT_Long )</a>
+<a name="ln231">  FT_MulFix( FT_Long  a_,</a>
+<a name="ln232">             FT_Long  b_ )</a>
+<a name="ln233">  {</a>
+<a name="ln234">#ifdef FT_MULFIX_ASSEMBLER</a>
+<a name="ln235"> </a>
+<a name="ln236">    return FT_MULFIX_ASSEMBLER( a_, b_ );</a>
+<a name="ln237"> </a>
+<a name="ln238">#else</a>
+<a name="ln239"> </a>
+<a name="ln240">    FT_Int64  ab = (FT_Int64)a_ * (FT_Int64)b_;</a>
+<a name="ln241"> </a>
+<a name="ln242">    /* this requires arithmetic right shift of signed numbers */</a>
+<a name="ln243">    return (FT_Long)( ( ab + 0x8000L - ( ab &lt; 0 ) ) &gt;&gt; 16 );</a>
+<a name="ln244"> </a>
+<a name="ln245">#endif /* FT_MULFIX_ASSEMBLER */</a>
+<a name="ln246">  }</a>
+<a name="ln247"> </a>
+<a name="ln248"> </a>
+<a name="ln249">  /* documentation is in freetype.h */</a>
+<a name="ln250"> </a>
+<a name="ln251">  FT_EXPORT_DEF( FT_Long )</a>
+<a name="ln252">  FT_DivFix( FT_Long  a_,</a>
+<a name="ln253">             FT_Long  b_ )</a>
+<a name="ln254">  {</a>
+<a name="ln255">    FT_Int     s = 1;</a>
+<a name="ln256">    FT_UInt64  a, b, q;</a>
+<a name="ln257">    FT_Long    q_;</a>
+<a name="ln258"> </a>
+<a name="ln259"> </a>
+<a name="ln260">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln261">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln262"> </a>
+<a name="ln263">    a = (FT_UInt64)a_;</a>
+<a name="ln264">    b = (FT_UInt64)b_;</a>
+<a name="ln265"> </a>
+<a name="ln266">    q = b &gt; 0 ? ( ( a &lt;&lt; 16 ) + ( b &gt;&gt; 1 ) ) / b</a>
+<a name="ln267">              : 0x7FFFFFFFUL;</a>
+<a name="ln268"> </a>
+<a name="ln269">    q_ = (FT_Long)q;</a>
+<a name="ln270"> </a>
+<a name="ln271">    return s &lt; 0 ? -q_ : q_;</a>
+<a name="ln272">  }</a>
+<a name="ln273"> </a>
+<a name="ln274"> </a>
+<a name="ln275">#else /* !FT_LONG64 */</a>
+<a name="ln276"> </a>
+<a name="ln277"> </a>
+<a name="ln278">  static void</a>
+<a name="ln279">  ft_multo64( FT_UInt32  x,</a>
+<a name="ln280">              FT_UInt32  y,</a>
+<a name="ln281">              FT_Int64  *z )</a>
+<a name="ln282">  {</a>
+<a name="ln283">    FT_UInt32  lo1, hi1, lo2, hi2, lo, hi, i1, i2;</a>
+<a name="ln284"> </a>
+<a name="ln285"> </a>
+<a name="ln286">    lo1 = x &amp; 0x0000FFFFU;  hi1 = x &gt;&gt; 16;</a>
+<a name="ln287">    lo2 = y &amp; 0x0000FFFFU;  hi2 = y &gt;&gt; 16;</a>
+<a name="ln288"> </a>
+<a name="ln289">    lo = lo1 * lo2;</a>
+<a name="ln290">    i1 = lo1 * hi2;</a>
+<a name="ln291">    i2 = lo2 * hi1;</a>
+<a name="ln292">    hi = hi1 * hi2;</a>
+<a name="ln293"> </a>
+<a name="ln294">    /* Check carry overflow of i1 + i2 */</a>
+<a name="ln295">    i1 += i2;</a>
+<a name="ln296">    hi += (FT_UInt32)( i1 &lt; i2 ) &lt;&lt; 16;</a>
+<a name="ln297"> </a>
+<a name="ln298">    hi += i1 &gt;&gt; 16;</a>
+<a name="ln299">    i1  = i1 &lt;&lt; 16;</a>
+<a name="ln300"> </a>
+<a name="ln301">    /* Check carry overflow of i1 + lo */</a>
+<a name="ln302">    lo += i1;</a>
+<a name="ln303">    hi += ( lo &lt; i1 );</a>
+<a name="ln304"> </a>
+<a name="ln305">    z-&gt;lo = lo;</a>
+<a name="ln306">    z-&gt;hi = hi;</a>
+<a name="ln307">  }</a>
+<a name="ln308"> </a>
+<a name="ln309"> </a>
+<a name="ln310">  static FT_UInt32</a>
+<a name="ln311">  ft_div64by32( FT_UInt32  hi,</a>
+<a name="ln312">                FT_UInt32  lo,</a>
+<a name="ln313">                FT_UInt32  y )</a>
+<a name="ln314">  {</a>
+<a name="ln315">    FT_UInt32  r, q;</a>
+<a name="ln316">    FT_Int     i;</a>
+<a name="ln317"> </a>
+<a name="ln318"> </a>
+<a name="ln319">    if ( hi &gt;= y )</a>
+<a name="ln320">      return (FT_UInt32)0x7FFFFFFFL;</a>
+<a name="ln321"> </a>
+<a name="ln322">    /* We shift as many bits as we can into the high register, perform     */</a>
+<a name="ln323">    /* 32-bit division with modulo there, then work through the remaining  */</a>
+<a name="ln324">    /* bits with long division. This optimization is especially noticeable */</a>
+<a name="ln325">    /* for smaller dividends that barely use the high register.            */</a>
+<a name="ln326"> </a>
+<a name="ln327">    i = 31 - FT_MSB( hi );</a>
+<a name="ln328">    r = ( hi &lt;&lt; i ) | ( lo &gt;&gt; ( 32 - i ) ); lo &lt;&lt;= i; /* left 64-bit shift */</a>
+<a name="ln329">    q = r / y;</a>
+<a name="ln330">    r -= q * y;   /* remainder */</a>
+<a name="ln331"> </a>
+<a name="ln332">    i = 32 - i;   /* bits remaining in low register */</a>
+<a name="ln333">    do</a>
+<a name="ln334">    {</a>
+<a name="ln335">      q &lt;&lt;= 1;</a>
+<a name="ln336">      r   = ( r &lt;&lt; 1 ) | ( lo &gt;&gt; 31 ); lo &lt;&lt;= 1;</a>
+<a name="ln337"> </a>
+<a name="ln338">      if ( r &gt;= y )</a>
+<a name="ln339">      {</a>
+<a name="ln340">        r -= y;</a>
+<a name="ln341">        q |= 1;</a>
+<a name="ln342">      }</a>
+<a name="ln343">    } while ( --i );</a>
+<a name="ln344"> </a>
+<a name="ln345">    return q;</a>
+<a name="ln346">  }</a>
+<a name="ln347"> </a>
+<a name="ln348"> </a>
+<a name="ln349">  static void</a>
+<a name="ln350">  FT_Add64( FT_Int64*  x,</a>
+<a name="ln351">            FT_Int64*  y,</a>
+<a name="ln352">            FT_Int64  *z )</a>
+<a name="ln353">  {</a>
+<a name="ln354">    FT_UInt32  lo, hi;</a>
+<a name="ln355"> </a>
+<a name="ln356"> </a>
+<a name="ln357">    lo = x-&gt;lo + y-&gt;lo;</a>
+<a name="ln358">    hi = x-&gt;hi + y-&gt;hi + ( lo &lt; x-&gt;lo );</a>
+<a name="ln359"> </a>
+<a name="ln360">    z-&gt;lo = lo;</a>
+<a name="ln361">    z-&gt;hi = hi;</a>
+<a name="ln362">  }</a>
+<a name="ln363"> </a>
+<a name="ln364"> </a>
+<a name="ln365">  /*  The FT_MulDiv function has been optimized thanks to ideas from     */</a>
+<a name="ln366">  /*  Graham Asher and Alexei Podtelezhnikov.  The trick is to optimize  */</a>
+<a name="ln367">  /*  a rather common case when everything fits within 32-bits.          */</a>
+<a name="ln368">  /*                                                                     */</a>
+<a name="ln369">  /*  We compute 'a*b+c/2', then divide it by 'c' (all positive values). */</a>
+<a name="ln370">  /*                                                                     */</a>
+<a name="ln371">  /*  The product of two positive numbers never exceeds the square of    */</a>
+<a name="ln372">  /*  its mean values.  Therefore, we always avoid the overflow by       */</a>
+<a name="ln373">  /*  imposing                                                           */</a>
+<a name="ln374">  /*                                                                     */</a>
+<a name="ln375">  /*    (a + b) / 2 &lt;= sqrt(X - c/2)    ,                                */</a>
+<a name="ln376">  /*                                                                     */</a>
+<a name="ln377">  /*  where X = 2^32 - 1, the maximum unsigned 32-bit value, and using   */</a>
+<a name="ln378">  /*  unsigned arithmetic.  Now we replace `sqrt' with a linear function */</a>
+<a name="ln379">  /*  that is smaller or equal for all values of c in the interval       */</a>
+<a name="ln380">  /*  [0;X/2]; it should be equal to sqrt(X) and sqrt(3X/4) at the       */</a>
+<a name="ln381">  /*  endpoints.  Substituting the linear solution and explicit numbers  */</a>
+<a name="ln382">  /*  we get                                                             */</a>
+<a name="ln383">  /*                                                                     */</a>
+<a name="ln384">  /*    a + b &lt;= 131071.99 - c / 122291.84    .                          */</a>
+<a name="ln385">  /*                                                                     */</a>
+<a name="ln386">  /*  In practice, we should use a faster and even stronger inequality   */</a>
+<a name="ln387">  /*                                                                     */</a>
+<a name="ln388">  /*    a + b &lt;= 131071 - (c &gt;&gt; 16)                                      */</a>
+<a name="ln389">  /*                                                                     */</a>
+<a name="ln390">  /*  or, alternatively,                                                 */</a>
+<a name="ln391">  /*                                                                     */</a>
+<a name="ln392">  /*    a + b &lt;= 129894 - (c &gt;&gt; 17)    .                                 */</a>
+<a name="ln393">  /*                                                                     */</a>
+<a name="ln394">  /*  FT_MulFix, on the other hand, is optimized for a small value of    */</a>
+<a name="ln395">  /*  the first argument, when the second argument can be much larger.   */</a>
+<a name="ln396">  /*  This can be achieved by scaling the second argument and the limit  */</a>
+<a name="ln397">  /*  in the above inequalities.  For example,                           */</a>
+<a name="ln398">  /*                                                                     */</a>
+<a name="ln399">  /*    a + (b &gt;&gt; 8) &lt;= (131071 &gt;&gt; 4)                                    */</a>
+<a name="ln400">  /*                                                                     */</a>
+<a name="ln401">  /*  covers the practical range of use. The actual test below is a bit  */</a>
+<a name="ln402">  /*  tighter to avoid the border case overflows.                        */</a>
+<a name="ln403">  /*                                                                     */</a>
+<a name="ln404">  /*  In the case of FT_DivFix, the exact overflow check                 */</a>
+<a name="ln405">  /*                                                                     */</a>
+<a name="ln406">  /*    a &lt;&lt; 16 &lt;= X - c/2                                               */</a>
+<a name="ln407">  /*                                                                     */</a>
+<a name="ln408">  /*  is scaled down by 2^16 and we use                                  */</a>
+<a name="ln409">  /*                                                                     */</a>
+<a name="ln410">  /*    a &lt;= 65535 - (c &gt;&gt; 17)    .                                      */</a>
+<a name="ln411"> </a>
+<a name="ln412">  /* documentation is in freetype.h */</a>
+<a name="ln413"> </a>
+<a name="ln414">  FT_EXPORT_DEF( FT_Long )</a>
+<a name="ln415">  FT_MulDiv( FT_Long  a_,</a>
+<a name="ln416">             FT_Long  b_,</a>
+<a name="ln417">             FT_Long  c_ )</a>
+<a name="ln418">  {</a>
+<a name="ln419">    FT_Int     s = 1;</a>
+<a name="ln420">    FT_UInt32  a, b, c;</a>
+<a name="ln421"> </a>
+<a name="ln422"> </a>
+<a name="ln423">    /* XXX: this function does not allow 64-bit arguments */</a>
+<a name="ln424"> </a>
+<a name="ln425">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln426">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln427">    FT_MOVE_SIGN( c_, s );</a>
+<a name="ln428"> </a>
+<a name="ln429">    a = (FT_UInt32)a_;</a>
+<a name="ln430">    b = (FT_UInt32)b_;</a>
+<a name="ln431">    c = (FT_UInt32)c_;</a>
+<a name="ln432"> </a>
+<a name="ln433">    if ( c == 0 )</a>
+<a name="ln434">      a = 0x7FFFFFFFUL;</a>
+<a name="ln435"> </a>
+<a name="ln436">    else if ( a + b &lt;= 129894UL - ( c &gt;&gt; 17 ) )</a>
+<a name="ln437">      a = ( a * b + ( c &gt;&gt; 1 ) ) / c;</a>
+<a name="ln438"> </a>
+<a name="ln439">    else</a>
+<a name="ln440">    {</a>
+<a name="ln441">      FT_Int64  temp, temp2;</a>
+<a name="ln442"> </a>
+<a name="ln443"> </a>
+<a name="ln444">      ft_multo64( a, b, &amp;temp );</a>
+<a name="ln445"> </a>
+<a name="ln446">      temp2.hi = 0;</a>
+<a name="ln447">      temp2.lo = c &gt;&gt; 1;</a>
+<a name="ln448"> </a>
+<a name="ln449">      FT_Add64( &amp;temp, &amp;temp2, &amp;temp );</a>
+<a name="ln450"> </a>
+<a name="ln451">      /* last attempt to ditch long division */</a>
+<a name="ln452">      a = temp.hi == 0 ? temp.lo / c</a>
+<a name="ln453">                       : ft_div64by32( temp.hi, temp.lo, c );</a>
+<a name="ln454">    }</a>
+<a name="ln455"> </a>
+<a name="ln456">    a_ = (FT_Long)a;</a>
+<a name="ln457"> </a>
+<a name="ln458">    return s &lt; 0 ? -a_ : a_;</a>
+<a name="ln459">  }</a>
+<a name="ln460"> </a>
+<a name="ln461"> </a>
+<a name="ln462">  FT_BASE_DEF( FT_Long )</a>
+<a name="ln463">  FT_MulDiv_No_Round( FT_Long  a_,</a>
+<a name="ln464">                      FT_Long  b_,</a>
+<a name="ln465">                      FT_Long  c_ )</a>
+<a name="ln466">  {</a>
+<a name="ln467">    FT_Int     s = 1;</a>
+<a name="ln468">    FT_UInt32  a, b, c;</a>
+<a name="ln469"> </a>
+<a name="ln470"> </a>
+<a name="ln471">    /* XXX: this function does not allow 64-bit arguments */</a>
+<a name="ln472"> </a>
+<a name="ln473">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln474">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln475">    FT_MOVE_SIGN( c_, s );</a>
+<a name="ln476"> </a>
+<a name="ln477">    a = (FT_UInt32)a_;</a>
+<a name="ln478">    b = (FT_UInt32)b_;</a>
+<a name="ln479">    c = (FT_UInt32)c_;</a>
+<a name="ln480"> </a>
+<a name="ln481">    if ( c == 0 )</a>
+<a name="ln482">      a = 0x7FFFFFFFUL;</a>
+<a name="ln483"> </a>
+<a name="ln484">    else if ( a + b &lt;= 131071UL )</a>
+<a name="ln485">      a = a * b / c;</a>
+<a name="ln486"> </a>
+<a name="ln487">    else</a>
+<a name="ln488">    {</a>
+<a name="ln489">      FT_Int64  temp;</a>
+<a name="ln490"> </a>
+<a name="ln491"> </a>
+<a name="ln492">      ft_multo64( a, b, &amp;temp );</a>
+<a name="ln493"> </a>
+<a name="ln494">      /* last attempt to ditch long division */</a>
+<a name="ln495">      a = temp.hi == 0 ? temp.lo / c</a>
+<a name="ln496">                       : ft_div64by32( temp.hi, temp.lo, c );</a>
+<a name="ln497">    }</a>
+<a name="ln498"> </a>
+<a name="ln499">    a_ = (FT_Long)a;</a>
+<a name="ln500"> </a>
+<a name="ln501">    return s &lt; 0 ? -a_ : a_;</a>
+<a name="ln502">  }</a>
+<a name="ln503"> </a>
+<a name="ln504"> </a>
+<a name="ln505">  /* documentation is in freetype.h */</a>
+<a name="ln506"> </a>
+<a name="ln507">  FT_EXPORT_DEF( FT_Long )</a>
+<a name="ln508">  FT_MulFix( FT_Long  a_,</a>
+<a name="ln509">             FT_Long  b_ )</a>
+<a name="ln510">  {</a>
+<a name="ln511">#ifdef FT_MULFIX_ASSEMBLER</a>
+<a name="ln512"> </a>
+<a name="ln513">    return FT_MULFIX_ASSEMBLER( a_, b_ );</a>
+<a name="ln514"> </a>
+<a name="ln515">#elif 0</a>
+<a name="ln516"> </a>
+<a name="ln517">    /*</a>
+<a name="ln518">     *  This code is nonportable.  See comment below.</a>
+<a name="ln519">     *</a>
+<a name="ln520">     *  However, on a platform where right-shift of a signed quantity fills</a>
+<a name="ln521">     *  the leftmost bits by copying the sign bit, it might be faster.</a>
+<a name="ln522">     */</a>
+<a name="ln523"> </a>
+<a name="ln524">    FT_Long    sa, sb;</a>
+<a name="ln525">    FT_UInt32  a, b;</a>
+<a name="ln526"> </a>
+<a name="ln527"> </a>
+<a name="ln528">    /*</a>
+<a name="ln529">     *  This is a clever way of converting a signed number `a' into its</a>
+<a name="ln530">     *  absolute value (stored back into `a') and its sign.  The sign is</a>
+<a name="ln531">     *  stored in `sa'; 0 means `a' was positive or zero, and -1 means `a'</a>
+<a name="ln532">     *  was negative.  (Similarly for `b' and `sb').</a>
+<a name="ln533">     *</a>
+<a name="ln534">     *  Unfortunately, it doesn't work (at least not portably).</a>
+<a name="ln535">     *</a>
+<a name="ln536">     *  It makes the assumption that right-shift on a negative signed value</a>
+<a name="ln537">     *  fills the leftmost bits by copying the sign bit.  This is wrong.</a>
+<a name="ln538">     *  According to K&amp;R 2nd ed, section `A7.8 Shift Operators' on page 206,</a>
+<a name="ln539">     *  the result of right-shift of a negative signed value is</a>
+<a name="ln540">     *  implementation-defined.  At least one implementation fills the</a>
+<a name="ln541">     *  leftmost bits with 0s (i.e., it is exactly the same as an unsigned</a>
+<a name="ln542">     *  right shift).  This means that when `a' is negative, `sa' ends up</a>
+<a name="ln543">     *  with the value 1 rather than -1.  After that, everything else goes</a>
+<a name="ln544">     *  wrong.</a>
+<a name="ln545">     */</a>
+<a name="ln546">    sa = ( a_ &gt;&gt; ( sizeof ( a_ ) * 8 - 1 ) );</a>
+<a name="ln547">    a  = ( a_ ^ sa ) - sa;</a>
+<a name="ln548">    sb = ( b_ &gt;&gt; ( sizeof ( b_ ) * 8 - 1 ) );</a>
+<a name="ln549">    b  = ( b_ ^ sb ) - sb;</a>
+<a name="ln550"> </a>
+<a name="ln551">    a = (FT_UInt32)a_;</a>
+<a name="ln552">    b = (FT_UInt32)b_;</a>
+<a name="ln553"> </a>
+<a name="ln554">    if ( a + ( b &gt;&gt; 8 ) &lt;= 8190UL )</a>
+<a name="ln555">      a = ( a * b + 0x8000U ) &gt;&gt; 16;</a>
+<a name="ln556">    else</a>
+<a name="ln557">    {</a>
+<a name="ln558">      FT_UInt32  al = a &amp; 0xFFFFUL;</a>
+<a name="ln559"> </a>
+<a name="ln560"> </a>
+<a name="ln561">      a = ( a &gt;&gt; 16 ) * b + al * ( b &gt;&gt; 16 ) +</a>
+<a name="ln562">          ( ( al * ( b &amp; 0xFFFFUL ) + 0x8000UL ) &gt;&gt; 16 );</a>
+<a name="ln563">    }</a>
+<a name="ln564"> </a>
+<a name="ln565">    sa ^= sb;</a>
+<a name="ln566">    a   = ( a ^ sa ) - sa;</a>
+<a name="ln567"> </a>
+<a name="ln568">    return (FT_Long)a;</a>
+<a name="ln569"> </a>
+<a name="ln570">#else /* 0 */</a>
+<a name="ln571"> </a>
+<a name="ln572">    FT_Int     s = 1;</a>
+<a name="ln573">    FT_UInt32  a, b;</a>
+<a name="ln574"> </a>
+<a name="ln575"> </a>
+<a name="ln576">    /* XXX: this function does not allow 64-bit arguments */</a>
+<a name="ln577"> </a>
+<a name="ln578">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln579">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln580"> </a>
+<a name="ln581">    a = (FT_UInt32)a_;</a>
+<a name="ln582">    b = (FT_UInt32)b_;</a>
+<a name="ln583"> </a>
+<a name="ln584">    if ( a + ( b &gt;&gt; 8 ) &lt;= 8190UL )</a>
+<a name="ln585">      a = ( a * b + 0x8000UL ) &gt;&gt; 16;</a>
+<a name="ln586">    else</a>
+<a name="ln587">    {</a>
+<a name="ln588">      FT_UInt32  al = a &amp; 0xFFFFUL;</a>
+<a name="ln589"> </a>
+<a name="ln590"> </a>
+<a name="ln591">      a = ( a &gt;&gt; 16 ) * b + al * ( b &gt;&gt; 16 ) +</a>
+<a name="ln592">          ( ( al * ( b &amp; 0xFFFFUL ) + 0x8000UL ) &gt;&gt; 16 );</a>
+<a name="ln593">    }</a>
+<a name="ln594"> </a>
+<a name="ln595">    a_ = (FT_Long)a;</a>
+<a name="ln596"> </a>
+<a name="ln597">    return s &lt; 0 ? -a_ : a_;</a>
+<a name="ln598"> </a>
+<a name="ln599">#endif /* 0 */</a>
+<a name="ln600"> </a>
+<a name="ln601">  }</a>
+<a name="ln602"> </a>
+<a name="ln603"> </a>
+<a name="ln604">  /* documentation is in freetype.h */</a>
+<a name="ln605"> </a>
+<a name="ln606">  FT_EXPORT_DEF( FT_Long )</a>
+<a name="ln607">  FT_DivFix( FT_Long  a_,</a>
+<a name="ln608">             FT_Long  b_ )</a>
+<a name="ln609">  {</a>
+<a name="ln610">    FT_Int     s = 1;</a>
+<a name="ln611">    FT_UInt32  a, b, q;</a>
+<a name="ln612">    FT_Long    q_;</a>
+<a name="ln613"> </a>
+<a name="ln614"> </a>
+<a name="ln615">    /* XXX: this function does not allow 64-bit arguments */</a>
+<a name="ln616"> </a>
+<a name="ln617">    FT_MOVE_SIGN( a_, s );</a>
+<a name="ln618">    FT_MOVE_SIGN( b_, s );</a>
+<a name="ln619"> </a>
+<a name="ln620">    a = (FT_UInt32)a_;</a>
+<a name="ln621">    b = (FT_UInt32)b_;</a>
+<a name="ln622"> </a>
+<a name="ln623">    if ( b == 0 )</a>
+<a name="ln624">    {</a>
+<a name="ln625">      /* check for division by 0 */</a>
+<a name="ln626">      q = 0x7FFFFFFFUL;</a>
+<a name="ln627">    }</a>
+<a name="ln628">    else if ( a &lt;= 65535UL - ( b &gt;&gt; 17 ) )</a>
+<a name="ln629">    {</a>
+<a name="ln630">      /* compute result directly */</a>
+<a name="ln631">      q = ( ( a &lt;&lt; 16 ) + ( b &gt;&gt; 1 ) ) / b;</a>
+<a name="ln632">    }</a>
+<a name="ln633">    else</a>
+<a name="ln634">    {</a>
+<a name="ln635">      /* we need more bits; we have to do it by hand */</a>
+<a name="ln636">      FT_Int64  temp, temp2;</a>
+<a name="ln637"> </a>
+<a name="ln638"> </a>
+<a name="ln639">      temp.hi  = a &gt;&gt; 16;</a>
+<a name="ln640">      temp.lo  = a &lt;&lt; 16;</a>
+<a name="ln641">      temp2.hi = 0;</a>
+<a name="ln642">      temp2.lo = b &gt;&gt; 1;</a>
+<a name="ln643"> </a>
+<a name="ln644">      FT_Add64( &amp;temp, &amp;temp2, &amp;temp );</a>
+<a name="ln645">      q = ft_div64by32( temp.hi, temp.lo, b );</a>
+<a name="ln646">    }</a>
+<a name="ln647"> </a>
+<a name="ln648">    q_ = (FT_Long)q;</a>
+<a name="ln649"> </a>
+<a name="ln650">    return s &lt; 0 ? -q_ : q_;</a>
+<a name="ln651">  }</a>
+<a name="ln652"> </a>
+<a name="ln653"> </a>
+<a name="ln654">#endif /* !FT_LONG64 */</a>
+<a name="ln655"> </a>
+<a name="ln656"> </a>
+<a name="ln657">  /* documentation is in ftglyph.h */</a>
+<a name="ln658"> </a>
+<a name="ln659">  FT_EXPORT_DEF( void )</a>
+<a name="ln660">  FT_Matrix_Multiply( const FT_Matrix*  a,</a>
+<a name="ln661">                      FT_Matrix        *b )</a>
+<a name="ln662">  {</a>
+<a name="ln663">    FT_Fixed  xx, xy, yx, yy;</a>
+<a name="ln664"> </a>
+<a name="ln665"> </a>
+<a name="ln666">    if ( !a || !b )</a>
+<a name="ln667">      return;</a>
+<a name="ln668"> </a>
+<a name="ln669">    xx = FT_MulFix( a-&gt;xx, b-&gt;xx ) + FT_MulFix( a-&gt;xy, b-&gt;yx );</a>
+<a name="ln670">    xy = FT_MulFix( a-&gt;xx, b-&gt;xy ) + FT_MulFix( a-&gt;xy, b-&gt;yy );</a>
+<a name="ln671">    yx = FT_MulFix( a-&gt;yx, b-&gt;xx ) + FT_MulFix( a-&gt;yy, b-&gt;yx );</a>
+<a name="ln672">    yy = FT_MulFix( a-&gt;yx, b-&gt;xy ) + FT_MulFix( a-&gt;yy, b-&gt;yy );</a>
+<a name="ln673"> </a>
+<a name="ln674">    b-&gt;xx = xx;  b-&gt;xy = xy;</a>
+<a name="ln675">    b-&gt;yx = yx;  b-&gt;yy = yy;</a>
+<a name="ln676">  }</a>
+<a name="ln677"> </a>
+<a name="ln678"> </a>
+<a name="ln679">  /* documentation is in ftglyph.h */</a>
+<a name="ln680"> </a>
+<a name="ln681">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln682">  FT_Matrix_Invert( FT_Matrix*  matrix )</a>
+<a name="ln683">  {</a>
+<a name="ln684">    FT_Pos  delta, xx, yy;</a>
+<a name="ln685"> </a>
+<a name="ln686"> </a>
+<a name="ln687">    if ( !matrix )</a>
+<a name="ln688">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln689"> </a>
+<a name="ln690">    /* compute discriminant */</a>
+<a name="ln691">    delta = FT_MulFix( matrix-&gt;xx, matrix-&gt;yy ) -</a>
+<a name="ln692">            FT_MulFix( matrix-&gt;xy, matrix-&gt;yx );</a>
+<a name="ln693"> </a>
+<a name="ln694">    if ( !delta )</a>
+<a name="ln695">      return FT_THROW( Invalid_Argument );  /* matrix can't be inverted */</a>
+<a name="ln696"> </a>
+<a name="ln697">    matrix-&gt;xy = - FT_DivFix( matrix-&gt;xy, delta );</a>
+<a name="ln698">    matrix-&gt;yx = - FT_DivFix( matrix-&gt;yx, delta );</a>
+<a name="ln699"> </a>
+<a name="ln700">    xx = matrix-&gt;xx;</a>
+<a name="ln701">    yy = matrix-&gt;yy;</a>
+<a name="ln702"> </a>
+<a name="ln703">    matrix-&gt;xx = FT_DivFix( yy, delta );</a>
+<a name="ln704">    matrix-&gt;yy = FT_DivFix( xx, delta );</a>
+<a name="ln705"> </a>
+<a name="ln706">    return FT_Err_Ok;</a>
+<a name="ln707">  }</a>
+<a name="ln708"> </a>
+<a name="ln709"> </a>
+<a name="ln710">  /* documentation is in ftcalc.h */</a>
+<a name="ln711"> </a>
+<a name="ln712">  FT_BASE_DEF( void )</a>
+<a name="ln713">  FT_Matrix_Multiply_Scaled( const FT_Matrix*  a,</a>
+<a name="ln714">                             FT_Matrix        *b,</a>
+<a name="ln715">                             FT_Long           scaling )</a>
+<a name="ln716">  {</a>
+<a name="ln717">    FT_Fixed  xx, xy, yx, yy;</a>
+<a name="ln718"> </a>
+<a name="ln719">    FT_Long   val = 0x10000L * scaling;</a>
+<a name="ln720"> </a>
+<a name="ln721"> </a>
+<a name="ln722">    if ( !a || !b )</a>
+<a name="ln723">      return;</a>
+<a name="ln724"> </a>
+<a name="ln725">    xx = FT_MulDiv( a-&gt;xx, b-&gt;xx, val ) + FT_MulDiv( a-&gt;xy, b-&gt;yx, val );</a>
+<a name="ln726">    xy = FT_MulDiv( a-&gt;xx, b-&gt;xy, val ) + FT_MulDiv( a-&gt;xy, b-&gt;yy, val );</a>
+<a name="ln727">    yx = FT_MulDiv( a-&gt;yx, b-&gt;xx, val ) + FT_MulDiv( a-&gt;yy, b-&gt;yx, val );</a>
+<a name="ln728">    yy = FT_MulDiv( a-&gt;yx, b-&gt;xy, val ) + FT_MulDiv( a-&gt;yy, b-&gt;yy, val );</a>
+<a name="ln729"> </a>
+<a name="ln730">    b-&gt;xx = xx;  b-&gt;xy = xy;</a>
+<a name="ln731">    b-&gt;yx = yx;  b-&gt;yy = yy;</a>
+<a name="ln732">  }</a>
+<a name="ln733"> </a>
+<a name="ln734"> </a>
+<a name="ln735">  /* documentation is in ftcalc.h */</a>
+<a name="ln736"> </a>
+<a name="ln737">  FT_BASE_DEF( void )</a>
+<a name="ln738">  FT_Vector_Transform_Scaled( FT_Vector*        vector,</a>
+<a name="ln739">                              const FT_Matrix*  matrix,</a>
+<a name="ln740">                              FT_Long           scaling )</a>
+<a name="ln741">  {</a>
+<a name="ln742">    FT_Pos   xz, yz;</a>
+<a name="ln743"> </a>
+<a name="ln744">    FT_Long  val = 0x10000L * scaling;</a>
+<a name="ln745"> </a>
+<a name="ln746"> </a>
+<a name="ln747">    if ( !vector || !matrix )</a>
+<a name="ln748">      return;</a>
+<a name="ln749"> </a>
+<a name="ln750">    xz = FT_MulDiv( vector-&gt;x, matrix-&gt;xx, val ) +</a>
+<a name="ln751">         FT_MulDiv( vector-&gt;y, matrix-&gt;xy, val );</a>
+<a name="ln752"> </a>
+<a name="ln753">    yz = FT_MulDiv( vector-&gt;x, matrix-&gt;yx, val ) +</a>
+<a name="ln754">         FT_MulDiv( vector-&gt;y, matrix-&gt;yy, val );</a>
+<a name="ln755"> </a>
+<a name="ln756">    vector-&gt;x = xz;</a>
+<a name="ln757">    vector-&gt;y = yz;</a>
+<a name="ln758">  }</a>
+<a name="ln759"> </a>
+<a name="ln760"> </a>
+<a name="ln761">  /* documentation is in ftcalc.h */</a>
+<a name="ln762"> </a>
+<a name="ln763">  FT_BASE_DEF( FT_UInt32 )</a>
+<a name="ln764">  FT_Vector_NormLen( FT_Vector*  vector )</a>
+<a name="ln765">  {</a>
+<a name="ln766">    FT_Int32   x_ = vector-&gt;x;</a>
+<a name="ln767">    FT_Int32   y_ = vector-&gt;y;</a>
+<a name="ln768">    FT_Int32   b, z;</a>
+<a name="ln769">    FT_UInt32  x, y, u, v, l;</a>
+<a name="ln770">    FT_Int     sx = 1, sy = 1, shift;</a>
+<a name="ln771"> </a>
+<a name="ln772"> </a>
+<a name="ln773">    FT_MOVE_SIGN( x_, sx );</a>
+<a name="ln774">    FT_MOVE_SIGN( y_, sy );</a>
+<a name="ln775"> </a>
+<a name="ln776">    x = (FT_UInt32)x_;</a>
+<a name="ln777">    y = (FT_UInt32)y_;</a>
+<a name="ln778"> </a>
+<a name="ln779">    /* trivial cases */</a>
+<a name="ln780">    if ( x == 0 )</a>
+<a name="ln781">    {</a>
+<a name="ln782">      if ( y &gt; 0 )</a>
+<a name="ln783">        vector-&gt;y = sy * 0x10000;</a>
+<a name="ln784">      return y;</a>
+<a name="ln785">    }</a>
+<a name="ln786">    else if ( y == 0 )</a>
+<a name="ln787">    {</a>
+<a name="ln788">      if ( x &gt; 0 )</a>
+<a name="ln789">        vector-&gt;x = sx * 0x10000;</a>
+<a name="ln790">      return x;</a>
+<a name="ln791">    }</a>
+<a name="ln792"> </a>
+<a name="ln793">    /* Estimate length and prenormalize by shifting so that */</a>
+<a name="ln794">    /* the new approximate length is between 2/3 and 4/3.   */</a>
+<a name="ln795">    /* The magic constant 0xAAAAAAAAUL (2/3 of 2^32) helps  */</a>
+<a name="ln796">    /* achieve this in 16.16 fixed-point representation.    */</a>
+<a name="ln797">    l = x &gt; y ? x + ( y &gt;&gt; 1 )</a>
+<a name="ln798">              : y + ( x &gt;&gt; 1 );</a>
+<a name="ln799"> </a>
+<a name="ln800">    shift  = 31 - FT_MSB( l );</a>
+<a name="ln801">    shift -= 15 + ( l &gt;= ( 0xAAAAAAAAUL &gt;&gt; shift ) );</a>
+<a name="ln802"> </a>
+<a name="ln803">    if ( shift &gt; 0 )</a>
+<a name="ln804">    {</a>
+<a name="ln805">      x &lt;&lt;= shift;</a>
+<a name="ln806">      y &lt;&lt;= shift;</a>
+<a name="ln807"> </a>
+<a name="ln808">      /* re-estimate length for tiny vectors */</a>
+<a name="ln809">      l = x &gt; y ? x + ( y &gt;&gt; 1 )</a>
+<a name="ln810">                : y + ( x &gt;&gt; 1 );</a>
+<a name="ln811">    }</a>
+<a name="ln812">    else</a>
+<a name="ln813">    {</a>
+<a name="ln814">      x &gt;&gt;= -shift;</a>
+<a name="ln815">      y &gt;&gt;= -shift;</a>
+<a name="ln816">      l &gt;&gt;= -shift;</a>
+<a name="ln817">    }</a>
+<a name="ln818"> </a>
+<a name="ln819">    /* lower linear approximation for reciprocal length minus one */</a>
+<a name="ln820">    b = 0x10000 - (FT_Int32)l;</a>
+<a name="ln821"> </a>
+<a name="ln822">    x_ = (FT_Int32)x;</a>
+<a name="ln823">    y_ = (FT_Int32)y;</a>
+<a name="ln824"> </a>
+<a name="ln825">    /* Newton's iterations */</a>
+<a name="ln826">    do</a>
+<a name="ln827">    {</a>
+<a name="ln828">      u = (FT_UInt32)( x_ + ( x_ * b &gt;&gt; 16 ) );</a>
+<a name="ln829">      v = (FT_UInt32)( y_ + ( y_ * b &gt;&gt; 16 ) );</a>
+<a name="ln830"> </a>
+<a name="ln831">      /* Normalized squared length in the parentheses approaches 2^32. */</a>
+<a name="ln832">      /* On two's complement systems, converting to signed gives the   */</a>
+<a name="ln833">      /* difference with 2^32 even if the expression wraps around.     */</a>
+<a name="ln834">      z = -(FT_Int32)( u * u + v * v ) / 0x200;</a>
+<a name="ln835">      z = z * ( ( 0x10000 + b ) &gt;&gt; 8 ) / 0x10000;</a>
+<a name="ln836"> </a>
+<a name="ln837">      b += z;</a>
+<a name="ln838"> </a>
+<a name="ln839">    } while ( z &gt; 0 );</a>
+<a name="ln840"> </a>
+<a name="ln841">    vector-&gt;x = sx &lt; 0 ? -(FT_Pos)u : (FT_Pos)u;</a>
+<a name="ln842">    vector-&gt;y = sy &lt; 0 ? -(FT_Pos)v : (FT_Pos)v;</a>
+<a name="ln843"> </a>
+<a name="ln844">    /* Conversion to signed helps to recover from likely wrap around */</a>
+<a name="ln845">    /* in calculating the prenormalized length, because it gives the */</a>
+<a name="ln846">    /* correct difference with 2^32 on two's complement systems.     */</a>
+<a name="ln847">    l = (FT_UInt32)( 0x10000 + (FT_Int32)( u * x + v * y ) / 0x10000 );</a>
+<a name="ln848">    if ( shift &gt; 0 )</a>
+<a name="ln849">      l = ( l + ( 1 &lt;&lt; ( shift - 1 ) ) ) &gt;&gt; shift;</a>
+<a name="ln850">    else</a>
+<a name="ln851">      l &lt;&lt;= -shift;</a>
+<a name="ln852"> </a>
+<a name="ln853">    return l;</a>
+<a name="ln854">  }</a>
+<a name="ln855"> </a>
+<a name="ln856"> </a>
+<a name="ln857">#if 0</a>
+<a name="ln858"> </a>
+<a name="ln859">  /* documentation is in ftcalc.h */</a>
+<a name="ln860"> </a>
+<a name="ln861">  FT_BASE_DEF( FT_Int32 )</a>
+<a name="ln862">  FT_SqrtFixed( FT_Int32  x )</a>
+<a name="ln863">  {</a>
+<a name="ln864">    FT_UInt32  root, rem_hi, rem_lo, test_div;</a>
+<a name="ln865">    FT_Int     count;</a>
+<a name="ln866"> </a>
+<a name="ln867"> </a>
+<a name="ln868">    root = 0;</a>
+<a name="ln869"> </a>
+<a name="ln870">    if ( x &gt; 0 )</a>
+<a name="ln871">    {</a>
+<a name="ln872">      rem_hi = 0;</a>
+<a name="ln873">      rem_lo = (FT_UInt32)x;</a>
+<a name="ln874">      count  = 24;</a>
+<a name="ln875">      do</a>
+<a name="ln876">      {</a>
+<a name="ln877">        rem_hi   = ( rem_hi &lt;&lt; 2 ) | ( rem_lo &gt;&gt; 30 );</a>
+<a name="ln878">        rem_lo &lt;&lt;= 2;</a>
+<a name="ln879">        root   &lt;&lt;= 1;</a>
+<a name="ln880">        test_div = ( root &lt;&lt; 1 ) + 1;</a>
+<a name="ln881"> </a>
+<a name="ln882">        if ( rem_hi &gt;= test_div )</a>
+<a name="ln883">        {</a>
+<a name="ln884">          rem_hi -= test_div;</a>
+<a name="ln885">          root   += 1;</a>
+<a name="ln886">        }</a>
+<a name="ln887">      } while ( --count );</a>
+<a name="ln888">    }</a>
+<a name="ln889"> </a>
+<a name="ln890">    return (FT_Int32)root;</a>
+<a name="ln891">  }</a>
+<a name="ln892"> </a>
+<a name="ln893">#endif /* 0 */</a>
+<a name="ln894"> </a>
+<a name="ln895"> </a>
+<a name="ln896">  /* documentation is in ftcalc.h */</a>
+<a name="ln897"> </a>
+<a name="ln898">  FT_BASE_DEF( FT_Int )</a>
+<a name="ln899">  ft_corner_orientation( FT_Pos  in_x,</a>
+<a name="ln900">                         FT_Pos  in_y,</a>
+<a name="ln901">                         FT_Pos  out_x,</a>
+<a name="ln902">                         FT_Pos  out_y )</a>
+<a name="ln903">  {</a>
+<a name="ln904">#ifdef FT_LONG64</a>
+<a name="ln905"> </a>
+<a name="ln906">    FT_Int64  delta = (FT_Int64)in_x * out_y - (FT_Int64)in_y * out_x;</a>
+<a name="ln907"> </a>
+<a name="ln908"> </a>
+<a name="ln909">    return ( delta &gt; 0 ) - ( delta &lt; 0 );</a>
+<a name="ln910"> </a>
+<a name="ln911">#else</a>
+<a name="ln912"> </a>
+<a name="ln913">    FT_Int  result;</a>
+<a name="ln914"> </a>
+<a name="ln915"> </a>
+<a name="ln916">    if ( (FT_ULong)FT_ABS( in_x ) + (FT_ULong)FT_ABS( out_y ) &lt;= 131071UL &amp;&amp;</a>
+<a name="ln917">         (FT_ULong)FT_ABS( in_y ) + (FT_ULong)FT_ABS( out_x ) &lt;= 131071UL )</a>
+<a name="ln918">    {</a>
+<a name="ln919">      FT_Long  z1 = in_x * out_y;</a>
+<a name="ln920">      FT_Long  z2 = in_y * out_x;</a>
+<a name="ln921"> </a>
+<a name="ln922"> </a>
+<a name="ln923">      if ( z1 &gt; z2 )</a>
+<a name="ln924">        result = +1;</a>
+<a name="ln925">      else if ( z1 &lt; z2 )</a>
+<a name="ln926">        result = -1;</a>
+<a name="ln927">      else</a>
+<a name="ln928">        result = 0;</a>
+<a name="ln929">    }</a>
+<a name="ln930">    else /* products might overflow 32 bits */</a>
+<a name="ln931">    {</a>
+<a name="ln932">      FT_Int64  z1, z2;</a>
+<a name="ln933"> </a>
+<a name="ln934"> </a>
+<a name="ln935">      /* XXX: this function does not allow 64-bit arguments */</a>
+<a name="ln936">      ft_multo64( (FT_UInt32)in_x, (FT_UInt32)out_y, &amp;z1 );</a>
+<a name="ln937">      ft_multo64( (FT_UInt32)in_y, (FT_UInt32)out_x, &amp;z2 );</a>
+<a name="ln938"> </a>
+<a name="ln939">      if ( z1.hi &gt; z2.hi )</a>
+<a name="ln940">        result = +1;</a>
+<a name="ln941">      else if ( z1.hi &lt; z2.hi )</a>
+<a name="ln942">        result = -1;</a>
+<a name="ln943">      else if ( z1.lo &gt; z2.lo )</a>
+<a name="ln944">        result = +1;</a>
+<a name="ln945">      else if ( z1.lo &lt; z2.lo )</a>
+<a name="ln946">        result = -1;</a>
+<a name="ln947">      else</a>
+<a name="ln948">        result = 0;</a>
+<a name="ln949">    }</a>
+<a name="ln950"> </a>
+<a name="ln951">    /* XXX: only the sign of return value, +1/0/-1 must be used */</a>
+<a name="ln952">    return result;</a>
+<a name="ln953"> </a>
+<a name="ln954">#endif</a>
+<a name="ln955">  }</a>
+<a name="ln956"> </a>
+<a name="ln957"> </a>
+<a name="ln958">  /* documentation is in ftcalc.h */</a>
+<a name="ln959"> </a>
+<a name="ln960">  FT_BASE_DEF( FT_Int )</a>
+<a name="ln961">  ft_corner_is_flat( FT_Pos  in_x,</a>
+<a name="ln962">                     FT_Pos  in_y,</a>
+<a name="ln963">                     FT_Pos  out_x,</a>
+<a name="ln964">                     FT_Pos  out_y )</a>
+<a name="ln965">  {</a>
+<a name="ln966">    FT_Pos  ax = in_x + out_x;</a>
+<a name="ln967">    FT_Pos  ay = in_y + out_y;</a>
+<a name="ln968"> </a>
+<a name="ln969">    FT_Pos  d_in, d_out, d_hypot;</a>
+<a name="ln970"> </a>
+<a name="ln971"> </a>
+<a name="ln972">    /* The idea of this function is to compare the length of the */</a>
+<a name="ln973">    /* hypotenuse with the `in' and `out' length.  The `corner'  */</a>
+<a name="ln974">    /* represented by `in' and `out' is flat if the hypotenuse's */</a>
+<a name="ln975">    /* length isn't too large.                                   */</a>
+<a name="ln976">    /*                                                           */</a>
+<a name="ln977">    /* This approach has the advantage that the angle between    */</a>
+<a name="ln978">    /* `in' and `out' is not checked.  In case one of the two    */</a>
+<a name="ln979">    /* vectors is `dominant', this is, much larger than the      */</a>
+<a name="ln980">    /* other vector, we thus always have a flat corner.          */</a>
+<a name="ln981">    /*                                                           */</a>
+<a name="ln982">    /*                hypotenuse                                 */</a>
+<a name="ln983">    /*       x---------------------------x                       */</a>
+<a name="ln984">    /*        \                      /                           */</a>
+<a name="ln985">    /*         \                /                                */</a>
+<a name="ln986">    /*      in  \          /  out                                */</a>
+<a name="ln987">    /*           \    /                                          */</a>
+<a name="ln988">    /*            o                                              */</a>
+<a name="ln989">    /*              Point                                        */</a>
+<a name="ln990"> </a>
+<a name="ln991">    d_in    = FT_HYPOT(  in_x,  in_y );</a>
+<a name="ln992">    d_out   = FT_HYPOT( out_x, out_y );</a>
+<a name="ln993">    d_hypot = FT_HYPOT(    ax,    ay );</a>
+<a name="ln994"> </a>
+<a name="ln995">    /* now do a simple length comparison: */</a>
+<a name="ln996">    /*                                    */</a>
+<a name="ln997">    /*   d_in + d_out &lt; 17/16 d_hypot     */</a>
+<a name="ln998"> </a>
+<a name="ln999">    return ( d_in + d_out - d_hypot ) &lt; ( d_hypot &gt;&gt; 4 );</a>
+<a name="ln1000">  }</a>
+<a name="ln1001"> </a>
+<a name="ln1002"> </a>
+<a name="ln1003">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="788"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'x > 0' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

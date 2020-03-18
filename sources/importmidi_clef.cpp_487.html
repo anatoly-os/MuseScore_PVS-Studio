@@ -1,0 +1,534 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>importmidi_clef.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;importmidi_clef.h&quot;</a>
+<a name="ln14">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln15">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln18">#include &quot;libmscore/clef.h&quot;</a>
+<a name="ln19">#include &quot;libmscore/chordrest.h&quot;</a>
+<a name="ln20">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln21">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln22">#include &quot;libmscore/slur.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/element.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/sig.h&quot;</a>
+<a name="ln25">#include &quot;importmidi_tie.h&quot;</a>
+<a name="ln26">#include &quot;importmidi_meter.h&quot;</a>
+<a name="ln27">#include &quot;importmidi_fraction.h&quot;</a>
+<a name="ln28">#include &quot;importmidi_operations.h&quot;</a>
+<a name="ln29">#include &quot;mscore/preferences.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/instrtemplate.h&quot;</a>
+<a name="ln31"> </a>
+<a name="ln32">#include &lt;set&gt;</a>
+<a name="ln33"> </a>
+<a name="ln34"> </a>
+<a name="ln35">namespace Ms {</a>
+<a name="ln36"> </a>
+<a name="ln37">namespace MidiClef {</a>
+<a name="ln38"> </a>
+<a name="ln39"> </a>
+<a name="ln40">class AveragePitch</a>
+<a name="ln41">      {</a>
+<a name="ln42">   public:</a>
+<a name="ln43">      AveragePitch() : sumPitch_(0), count_(0) {}</a>
+<a name="ln44">      AveragePitch(int sumPitch, int count) : sumPitch_(sumPitch), count_(count) {}</a>
+<a name="ln45"> </a>
+<a name="ln46">      int pitch() const { return qRound(sumPitch_ * 1.0 / count_); }</a>
+<a name="ln47">      void addPitch(int pitch)</a>
+<a name="ln48">            {</a>
+<a name="ln49">            sumPitch_ += pitch;</a>
+<a name="ln50">            ++count_;</a>
+<a name="ln51">            }</a>
+<a name="ln52">      AveragePitch&amp; operator+=(const AveragePitch &amp;other)</a>
+<a name="ln53">            {</a>
+<a name="ln54">            sumPitch_ += other.sumPitch_;</a>
+<a name="ln55">            count_ += other.count_;</a>
+<a name="ln56">            return *this;</a>
+<a name="ln57">            }</a>
+<a name="ln58">   private:</a>
+<a name="ln59">      int sumPitch_;</a>
+<a name="ln60">      int count_;</a>
+<a name="ln61">      };</a>
+<a name="ln62"> </a>
+<a name="ln63">class MinMaxPitch</a>
+<a name="ln64">      {</a>
+<a name="ln65">   public:</a>
+<a name="ln66">      MinMaxPitch() : minPitch_(std::numeric_limits&lt;int&gt;::max()), maxPitch_(-1) {}</a>
+<a name="ln67">      MinMaxPitch(int minPitch, int maxPitch) : minPitch_(minPitch), maxPitch_(maxPitch) {}</a>
+<a name="ln68"> </a>
+<a name="ln69">      int minPitch() const { return minPitch_; }</a>
+<a name="ln70">      int maxPitch() const { return maxPitch_; }</a>
+<a name="ln71">      int empty() const { return minPitch_ == std::numeric_limits&lt;int&gt;::max() || maxPitch_ == -1; }</a>
+<a name="ln72">      void addPitch(int pitch)</a>
+<a name="ln73">            {</a>
+<a name="ln74">            if (pitch &lt; minPitch_)</a>
+<a name="ln75">                  minPitch_ = pitch;</a>
+<a name="ln76">            if (pitch &gt; maxPitch_)</a>
+<a name="ln77">                  maxPitch_ = pitch;</a>
+<a name="ln78">            }</a>
+<a name="ln79">   private:</a>
+<a name="ln80">      int minPitch_;</a>
+<a name="ln81">      int maxPitch_;</a>
+<a name="ln82">      };</a>
+<a name="ln83"> </a>
+<a name="ln84"> </a>
+<a name="ln85">int clefMidPitch()</a>
+<a name="ln86">      {</a>
+<a name="ln87">      static const int midPitch = 60;</a>
+<a name="ln88">      return midPitch;</a>
+<a name="ln89">      }</a>
+<a name="ln90"> </a>
+<a name="ln91">ClefType clefTypeFromAveragePitch(int averagePitch)</a>
+<a name="ln92">      {</a>
+<a name="ln93">      return averagePitch &lt; clefMidPitch() ? ClefType::F : ClefType::G;</a>
+<a name="ln94">      }</a>
+<a name="ln95"> </a>
+<a name="ln96">//---------------------------------------------------------</a>
+<a name="ln97">//   createClef</a>
+<a name="ln98">//---------------------------------------------------------</a>
+<a name="ln99"> </a>
+<a name="ln100">void createClef(ClefType clefType, Staff* staff, int tick, bool isSmall = false)</a>
+<a name="ln101">      {</a>
+<a name="ln102">      if (tick == 0) {</a>
+<a name="ln103">            staff-&gt;setDefaultClefType(ClefTypeList(clefType, clefType));</a>
+<a name="ln104">            }</a>
+<a name="ln105">      else {</a>
+<a name="ln106">            Clef* clef = new Clef(staff-&gt;score());</a>
+<a name="ln107">            clef-&gt;setClefType(clefType);</a>
+<a name="ln108">            const int track = staff-&gt;idx() * VOICES;</a>
+<a name="ln109">            clef-&gt;setTrack(track);</a>
+<a name="ln110">            clef-&gt;setGenerated(false);</a>
+<a name="ln111">            clef-&gt;setMag(staff-&gt;mag(Fraction::fromTicks(tick)));</a>
+<a name="ln112">            clef-&gt;setSmall(isSmall);</a>
+<a name="ln113">            Measure* m = staff-&gt;score()-&gt;tick2measure(Fraction::fromTicks(tick));</a>
+<a name="ln114">            Segment* seg = m-&gt;getSegment(SegmentType::Clef, Fraction::fromTicks(tick));</a>
+<a name="ln115">            seg-&gt;add(clef);</a>
+<a name="ln116">            }</a>
+<a name="ln117">      }</a>
+<a name="ln118"> </a>
+<a name="ln119">AveragePitch findAverageSegPitch(const Segment *seg, int strack)</a>
+<a name="ln120">      {</a>
+<a name="ln121">      AveragePitch averagePitch;</a>
+<a name="ln122">      for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln123">            ChordRest *cr = static_cast&lt;ChordRest *&gt;(seg-&gt;element(strack + voice));</a>
+<a name="ln124">            if (cr &amp;&amp; cr-&gt;isChord()) {</a>
+<a name="ln125">                  Chord *chord = toChord(cr);</a>
+<a name="ln126">                  const auto &amp;notes = chord-&gt;notes();</a>
+<a name="ln127">                  for (const Note *note: notes)</a>
+<a name="ln128">                        averagePitch.addPitch(note-&gt;pitch());</a>
+<a name="ln129">                  }</a>
+<a name="ln130">            }</a>
+<a name="ln131">      return averagePitch;</a>
+<a name="ln132">      }</a>
+<a name="ln133"> </a>
+<a name="ln134">MinMaxPitch findMinMaxSegPitch(const Segment *seg, int strack)</a>
+<a name="ln135">      {</a>
+<a name="ln136">      MinMaxPitch minMaxPitch;</a>
+<a name="ln137">      for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln138">            ChordRest *cr = static_cast&lt;ChordRest *&gt;(seg-&gt;element(strack + voice));</a>
+<a name="ln139">            if (cr &amp;&amp; cr-&gt;isChord()) {</a>
+<a name="ln140">                  Chord *chord = toChord (cr);</a>
+<a name="ln141">                  const auto &amp;notes = chord-&gt;notes();</a>
+<a name="ln142">                  for (const Note *note: notes)</a>
+<a name="ln143">                        minMaxPitch.addPitch(note-&gt;pitch());</a>
+<a name="ln144">                  }</a>
+<a name="ln145">            }</a>
+<a name="ln146">      return minMaxPitch;</a>
+<a name="ln147">      }</a>
+<a name="ln148"> </a>
+<a name="ln149"> </a>
+<a name="ln150">#ifdef QT_DEBUG</a>
+<a name="ln151"> </a>
+<a name="ln152">bool doesClefBreakTie(const Staff *staff)</a>
+<a name="ln153">      {</a>
+<a name="ln154">      const int strack = staff-&gt;idx() * VOICES;</a>
+<a name="ln155"> </a>
+<a name="ln156">      for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln157">            bool currentTie = false;</a>
+<a name="ln158">            for (Segment *seg = staff-&gt;score()-&gt;firstSegment(SegmentType::All); seg; seg = seg-&gt;next1()) {</a>
+<a name="ln159">                  if (seg-&gt;segmentType() == SegmentType::ChordRest) {</a>
+<a name="ln160">                        if (MidiTie::isTiedBack(seg, strack, voice))</a>
+<a name="ln161">                              currentTie = false;</a>
+<a name="ln162">                        if (MidiTie::isTiedFor(seg, strack, voice))</a>
+<a name="ln163">                              currentTie = true;</a>
+<a name="ln164">                        }</a>
+<a name="ln165">                  else if (seg-&gt;segmentType() == SegmentType::Clef &amp;&amp; seg-&gt;element(strack)) {</a>
+<a name="ln166">                        if (currentTie) {</a>
+<a name="ln167">                              qDebug() &lt;&lt; &quot;Clef breaks tie; measure number (from 1):&quot;</a>
+<a name="ln168">                                       &lt;&lt; seg-&gt;measure()-&gt;no() + 1</a>
+<a name="ln169">                                       &lt;&lt; &quot;, staff index (from 0):&quot; &lt;&lt; staff-&gt;idx();</a>
+<a name="ln170">                              return true;</a>
+<a name="ln171">                              }</a>
+<a name="ln172">                        }</a>
+<a name="ln173">                  }</a>
+<a name="ln174">            }</a>
+<a name="ln175">      return false;</a>
+<a name="ln176">      }</a>
+<a name="ln177"> </a>
+<a name="ln178">#endif</a>
+<a name="ln179"> </a>
+<a name="ln180"> </a>
+<a name="ln181">// clef index: 0 - treble, 1 - bass</a>
+<a name="ln182"> </a>
+<a name="ln183">int findPitchPenaltyForClef(int pitch, int clefIndex)</a>
+<a name="ln184">      {</a>
+<a name="ln185">      const int farPitchPenalty = 10000;</a>
+<a name="ln186">      const int veryFarPitchPenalty = 20000;</a>
+<a name="ln187">      const int approxPitchPenalty = 1;</a>
+<a name="ln188">      const int dx = 5;</a>
+<a name="ln189"> </a>
+<a name="ln190">      const int midPitch = clefMidPitch();      // all notes equal or upper - better in G clef</a>
+<a name="ln191">      const int highPitch = midPitch + dx;      // almost all notes equal or upper - in G clef</a>
+<a name="ln192">      const int lowPitch = midPitch - dx;       // almost all notes lower - in F clef</a>
+<a name="ln193">      const int highestPitch = highPitch + dx;  // all notes equal or upper - in G clef</a>
+<a name="ln194">      const int lowestPitch = lowPitch - dx;    // all notes lower - in F clef</a>
+<a name="ln195"> </a>
+<a name="ln196">      switch (clefIndex) {</a>
+<a name="ln197">            case 0:</a>
+<a name="ln198">                  if (pitch &lt; lowestPitch)</a>
+<a name="ln199">                        return veryFarPitchPenalty;</a>
+<a name="ln200">                  else if (pitch &lt; lowPitch)</a>
+<a name="ln201">                        return farPitchPenalty;</a>
+<a name="ln202">                  else if (pitch &lt; midPitch)</a>
+<a name="ln203">                        return approxPitchPenalty;</a>
+<a name="ln204">                  break;</a>
+<a name="ln205">            case 1:</a>
+<a name="ln206">                  if (pitch &gt;= highestPitch)</a>
+<a name="ln207">                        return veryFarPitchPenalty;</a>
+<a name="ln208">                  else if (pitch &gt;= highPitch)</a>
+<a name="ln209">                        return farPitchPenalty;</a>
+<a name="ln210">                  else if (pitch &gt;= midPitch)</a>
+<a name="ln211">                        return approxPitchPenalty;</a>
+<a name="ln212">                  break;</a>
+<a name="ln213">            default:</a>
+<a name="ln214">                  Q_ASSERT_X(false, &quot;MidiClef::pitchPenalty&quot;, &quot;Unknown clef type&quot;);</a>
+<a name="ln215">                  break;</a>
+<a name="ln216">            }</a>
+<a name="ln217">      return 0;</a>
+<a name="ln218">      }</a>
+<a name="ln219"> </a>
+<a name="ln220">std::pair&lt;ElementType, ReducedFraction&gt;</a>
+<a name="ln221">findChordRest(const Segment *seg, int strack)</a>
+<a name="ln222">      {</a>
+<a name="ln223">      ElementType elType = ElementType::INVALID;</a>
+<a name="ln224">      ReducedFraction newRestLen(0, 1);</a>
+<a name="ln225">      for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln226">            ChordRest *cr = static_cast&lt;ChordRest *&gt;(seg-&gt;element(strack + voice));</a>
+<a name="ln227">            if (!cr)</a>
+<a name="ln228">                  continue;</a>
+<a name="ln229">            if (cr-&gt;isChord()) {</a>
+<a name="ln230">                  elType = ElementType::CHORD;</a>
+<a name="ln231">                  break;</a>
+<a name="ln232">                  }</a>
+<a name="ln233">            else if (cr-&gt;isRest()) {</a>
+<a name="ln234">                  elType = ElementType::REST;</a>
+<a name="ln235">                  newRestLen = qMax(newRestLen, ReducedFraction(cr-&gt;globalTicks()));</a>
+<a name="ln236">                  }</a>
+<a name="ln237">            }</a>
+<a name="ln238">      return {elType, newRestLen};</a>
+<a name="ln239">      }</a>
+<a name="ln240"> </a>
+<a name="ln241">int findClefChangePenalty(</a>
+<a name="ln242">            int pos,</a>
+<a name="ln243">            int clefIndex,</a>
+<a name="ln244">            const std::vector&lt;std::vector&lt;int&gt;&gt; &amp;trebleBassPath,</a>
+<a name="ln245">            const Segment *segment,</a>
+<a name="ln246">            const Staff *staff)</a>
+<a name="ln247">      {</a>
+<a name="ln248">      if (pos == 0)</a>
+<a name="ln249">            return 0;</a>
+<a name="ln250"> </a>
+<a name="ln251">      const int clefChangePenalty = 1000;</a>
+<a name="ln252">      const int prevClefChangePenalty = 10001;</a>
+<a name="ln253">      const int orphanChordPenalty = 2;</a>
+<a name="ln254">      const int notesBetweenClefs = 5;       // should be &gt;= 2</a>
+<a name="ln255"> </a>
+<a name="ln256">      int j = pos;</a>
+<a name="ln257">      ReducedFraction totalRestLen(0, 1);</a>
+<a name="ln258">      int penalty = 0;</a>
+<a name="ln259">      const int strack = staff-&gt;idx() * VOICES;</a>
+<a name="ln260">      const auto barFraction = ReducedFraction(</a>
+<a name="ln261">                        staff-&gt;score()-&gt;sigmap()-&gt;timesig(segment-&gt;tick()).timesig());</a>
+<a name="ln262">      const ReducedFraction beatLen = Meter::beatLength(barFraction);</a>
+<a name="ln263"> </a>
+<a name="ln264">                  // find backward penalty</a>
+<a name="ln265">      for (const Segment *segPrev = segment-&gt;prev1(SegmentType::ChordRest); ;</a>
+<a name="ln266">                    segPrev = segPrev-&gt;prev1(SegmentType::ChordRest)) {</a>
+<a name="ln267">            if (!segPrev) {</a>
+<a name="ln268">                  penalty += clefChangePenalty;</a>
+<a name="ln269">                  break;</a>
+<a name="ln270">                  }</a>
+<a name="ln271">            const auto el = findChordRest(segPrev, strack);</a>
+<a name="ln272">            if (el.first == ElementType::CHORD) {</a>
+<a name="ln273">                  --j;</a>
+<a name="ln274">                  if (j == pos - notesBetweenClefs)</a>
+<a name="ln275">                        break;</a>
+<a name="ln276">                  if (j == 0 || trebleBassPath[clefIndex][j] != clefIndex) {</a>
+<a name="ln277">                        if (j == pos - 1)</a>
+<a name="ln278">                              penalty += prevClefChangePenalty;</a>
+<a name="ln279">                        else</a>
+<a name="ln280">                              penalty += clefChangePenalty;</a>
+<a name="ln281">                        break;</a>
+<a name="ln282">                        }</a>
+<a name="ln283">                  totalRestLen = {0, 1};</a>
+<a name="ln284">                  }</a>
+<a name="ln285">            else if (el.first == ElementType::REST) {</a>
+<a name="ln286">                  totalRestLen += el.second;</a>
+<a name="ln287">                  if (totalRestLen &gt;= beatLen) {</a>
+<a name="ln288">                        if (j != pos)</a>
+<a name="ln289">                              penalty += orphanChordPenalty;</a>
+<a name="ln290">                        break;</a>
+<a name="ln291">                        }</a>
+<a name="ln292">                  }</a>
+<a name="ln293">            }</a>
+<a name="ln294">                  // find forward penalty</a>
+<a name="ln295">      int chordCounter = 0;</a>
+<a name="ln296">      for (const Segment *seg = segment; ; seg = seg-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln297">            if (!seg) {</a>
+<a name="ln298">                  penalty += clefChangePenalty;</a>
+<a name="ln299">                  break;</a>
+<a name="ln300">                  }</a>
+<a name="ln301">            const auto el = findChordRest(seg, strack);</a>
+<a name="ln302">            if (el.first == ElementType::CHORD) {</a>
+<a name="ln303">                  ++chordCounter;</a>
+<a name="ln304">                  if (chordCounter == notesBetweenClefs)</a>
+<a name="ln305">                        break;</a>
+<a name="ln306">                  totalRestLen = {0, 1};</a>
+<a name="ln307">                  }</a>
+<a name="ln308">            else if (el.first == ElementType::REST) {</a>
+<a name="ln309">                  totalRestLen += el.second;</a>
+<a name="ln310">                  if (totalRestLen &gt;= beatLen) {</a>
+<a name="ln311">                        penalty += orphanChordPenalty;</a>
+<a name="ln312">                        break;</a>
+<a name="ln313">                        }</a>
+<a name="ln314">                  }</a>
+<a name="ln315">            }</a>
+<a name="ln316"> </a>
+<a name="ln317">      return penalty;</a>
+<a name="ln318">      }</a>
+<a name="ln319"> </a>
+<a name="ln320">ClefType clefFromIndex(int index)</a>
+<a name="ln321">      {</a>
+<a name="ln322">      return (index == 0) ? ClefType::G : ClefType::F;</a>
+<a name="ln323">      }</a>
+<a name="ln324"> </a>
+<a name="ln325">void makeDynamicProgrammingStep(std::vector&lt;std::vector&lt;int&gt;&gt; &amp;penalties,</a>
+<a name="ln326">                                std::vector&lt;std::vector&lt;int&gt;&gt; &amp;optimalPaths,</a>
+<a name="ln327">                                int pos,</a>
+<a name="ln328">                                MidiTie::TieStateMachine::State tieState,</a>
+<a name="ln329">                                const MinMaxPitch &amp;minMaxPitch,</a>
+<a name="ln330">                                const Segment *seg,</a>
+<a name="ln331">                                const Staff *staff)</a>
+<a name="ln332">      {</a>
+<a name="ln333">      for (int clefIndex = 0; clefIndex != 2; ++clefIndex)</a>
+<a name="ln334">            optimalPaths[clefIndex].resize(pos + 1);</a>
+<a name="ln335"> </a>
+<a name="ln336">      for (int curClef = 0; curClef != 2; ++curClef) {</a>
+<a name="ln337">            const int significantPitch = (curClef == 0)</a>
+<a name="ln338">                                       ? minMaxPitch.minPitch() : minMaxPitch.maxPitch();</a>
+<a name="ln339">            const int pitchPenalty = findPitchPenaltyForClef(significantPitch, curClef);</a>
+<a name="ln340">            int minPenalty = std::numeric_limits&lt;int&gt;::max();</a>
+<a name="ln341">            int minIndex = 0;</a>
+<a name="ln342">            for (int prevClef = 0; prevClef != 2; ++prevClef) {</a>
+<a name="ln343">                  int penalty = pitchPenalty;</a>
+<a name="ln344">                  if (prevClef != curClef) {</a>
+<a name="ln345">                        if (tieState == MidiTie::TieStateMachine::State::TIED_BACK</a>
+<a name="ln346">                                    || tieState == MidiTie::TieStateMachine::State::TIED_BOTH) {</a>
+<a name="ln347">                              continue;   // there is a tie breakage that is incorrect</a>
+<a name="ln348">                              }</a>
+<a name="ln349">                        penalty += findClefChangePenalty(pos, prevClef, optimalPaths, seg, staff);</a>
+<a name="ln350">                        }</a>
+<a name="ln351">                  penalty += (pos &gt; 0) ? penalties[prevClef][(pos + 1) % 2] : 0;</a>
+<a name="ln352">                  if ((prevClef != curClef &amp;&amp; penalty &lt; minPenalty)</a>
+<a name="ln353">                              || (prevClef == curClef &amp;&amp; penalty &lt;= minPenalty)) {</a>
+<a name="ln354">                        minPenalty = penalty;</a>
+<a name="ln355">                        minIndex = prevClef;</a>
+<a name="ln356">                        }</a>
+<a name="ln357">                  }</a>
+<a name="ln358"> </a>
+<a name="ln359">            penalties[curClef][pos % 2] = minPenalty;</a>
+<a name="ln360">            if (pos &gt; 0)</a>
+<a name="ln361">                  optimalPaths[curClef][pos] = minIndex;</a>
+<a name="ln362">            }</a>
+<a name="ln363">      }</a>
+<a name="ln364"> </a>
+<a name="ln365">// clefs should be created from the beginning to the end of the score</a>
+<a name="ln366">// (otherwise clefs that are equal the default staff clef at the beginning</a>
+<a name="ln367">//  will be ignored),</a>
+<a name="ln368">// results of dynamic programming are collected from the end to the beginning</a>
+<a name="ln369">// so we need to store temporary results</a>
+<a name="ln370"> </a>
+<a name="ln371">bool createClefs(</a>
+<a name="ln372">            Staff *staff,</a>
+<a name="ln373">            const std::vector&lt;std::vector&lt;int&gt;&gt; &amp;optimalPaths,</a>
+<a name="ln374">            int lastClef,</a>
+<a name="ln375">            const std::vector&lt;Segment *&gt; &amp;segments)</a>
+<a name="ln376">      {</a>
+<a name="ln377">      std::vector&lt;std::pair&lt;ClefType, int&gt;&gt; clefsAndTicks;</a>
+<a name="ln378"> </a>
+<a name="ln379">      int currentClef = lastClef;</a>
+<a name="ln380">      for (size_t i = optimalPaths[0].size() - 1; i; --i) {</a>
+<a name="ln381">            const int prevClef = optimalPaths[currentClef][i];</a>
+<a name="ln382">            if (prevClef != currentClef) {</a>
+<a name="ln383">                  clefsAndTicks.push_back({clefFromIndex(currentClef), segments[i]-&gt;tick().ticks()});</a>
+<a name="ln384">                  currentClef = prevClef;</a>
+<a name="ln385">                  }</a>
+<a name="ln386">            }</a>
+<a name="ln387">      if (clefsAndTicks.empty())</a>
+<a name="ln388">            return false;</a>
+<a name="ln389"> </a>
+<a name="ln390">      createClef(clefFromIndex(currentClef), staff, 0);     // main staff clef</a>
+<a name="ln391">      for (size_t i = clefsAndTicks.size(); i; --i)         // clef changes</a>
+<a name="ln392">            createClef(clefsAndTicks[i - 1].first, staff, clefsAndTicks[i - 1].second, true);</a>
+<a name="ln393"> </a>
+<a name="ln394">      return true;</a>
+<a name="ln395">      }</a>
+<a name="ln396"> </a>
+<a name="ln397">void createMainClefFromAveragePitch(Staff *staff, int strack)</a>
+<a name="ln398">      {</a>
+<a name="ln399">      AveragePitch allAveragePitch;</a>
+<a name="ln400">      for (Segment *seg = staff-&gt;score()-&gt;firstSegment(SegmentType::ChordRest); seg;</a>
+<a name="ln401">                    seg = seg-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln402">            allAveragePitch += findAverageSegPitch(seg, strack);</a>
+<a name="ln403">            }</a>
+<a name="ln404">      ClefType mainClef = clefTypeFromAveragePitch(allAveragePitch.pitch());</a>
+<a name="ln405">      createClef(mainClef, staff, 0);</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">bool hasGFclefs(const InstrumentTemplate *templ)</a>
+<a name="ln409">      {</a>
+<a name="ln410">      if (!templ)</a>
+<a name="ln411">            return false;</a>
+<a name="ln412">      const int staveCount = templ-&gt;nstaves();</a>
+<a name="ln413">      bool hasG = false;</a>
+<a name="ln414">      bool hasF = false;</a>
+<a name="ln415">      for (int i = 0; i != staveCount; ++i) {</a>
+<a name="ln416">            switch (templ-&gt;clefTypes[i]._concertClef) {</a>
+<a name="ln417">                  case ClefType::G:</a>
+<a name="ln418">                        hasG = true;</a>
+<a name="ln419">                        break;</a>
+<a name="ln420">                  case ClefType::F:</a>
+<a name="ln421">                        hasF = true;</a>
+<a name="ln422">                        break;</a>
+<a name="ln423">                  default:</a>
+<a name="ln424">                        break;</a>
+<a name="ln425">                  }</a>
+<a name="ln426">            }</a>
+<a name="ln427">      return hasG &amp;&amp; hasF;</a>
+<a name="ln428">      }</a>
+<a name="ln429"> </a>
+<a name="ln430">void createClefs(Staff *staff, int indexOfOperation, bool isDrumTrack)</a>
+<a name="ln431">      {</a>
+<a name="ln432">      const auto &amp;opers = midiImportOperations.data()-&gt;trackOpers;</a>
+<a name="ln433">      const auto &amp;trackInstrList = opers.msInstrList.value(indexOfOperation);</a>
+<a name="ln434">      const int msInstrIndex = opers.msInstrIndex.value(indexOfOperation);</a>
+<a name="ln435">      const bool hasInstrument = !trackInstrList.empty() &amp;&amp; trackInstrList[msInstrIndex];</a>
+<a name="ln436"> </a>
+<a name="ln437">      if (isDrumTrack &amp;&amp; !hasInstrument) {</a>
+<a name="ln438">            createClef(ClefType::PERC, staff, 0);</a>
+<a name="ln439">            return;</a>
+<a name="ln440">            }</a>
+<a name="ln441"> </a>
+<a name="ln442">      const int strack = staff-&gt;idx() * VOICES;</a>
+<a name="ln443">      bool mainClefWasSet = false;</a>
+<a name="ln444">      const bool canChangeClef = !hasInstrument || hasGFclefs(trackInstrList[msInstrIndex]);</a>
+<a name="ln445"> </a>
+<a name="ln446">      if (opers.changeClef.value(indexOfOperation) &amp;&amp; canChangeClef) {</a>
+<a name="ln447">            MidiTie::TieStateMachine tieTracker;</a>
+<a name="ln448"> </a>
+<a name="ln449">                        // find optimal clef changes via dynamic programming</a>
+<a name="ln450">            std::vector&lt;std::vector&lt;int&gt;&gt; penalties(2);         // 0 - treble, 1 - bass</a>
+<a name="ln451">                        // remember only 2 last positions to save memory</a>
+<a name="ln452">            for (size_t i = 0; i != penalties.size(); ++i)</a>
+<a name="ln453">                  penalties[i].resize(2);                       // 2 = current + prev</a>
+<a name="ln454">            std::vector&lt;std::vector&lt;int&gt;&gt; optimalPaths(2);      // first col is unused</a>
+<a name="ln455">            std::vector&lt;Segment *&gt; segments;</a>
+<a name="ln456"> </a>
+<a name="ln457">            int pos = 0;</a>
+<a name="ln458">            for (Segment *seg = staff-&gt;score()-&gt;firstSegment(SegmentType::ChordRest); seg;</a>
+<a name="ln459">                          seg = seg-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln460"> </a>
+<a name="ln461">                  const auto minMaxPitch = findMinMaxSegPitch(seg, strack);</a>
+<a name="ln462">                  if (minMaxPitch.empty())                      // no chords</a>
+<a name="ln463">                        continue;</a>
+<a name="ln464">                  tieTracker.addSeg(seg, strack);</a>
+<a name="ln465">                  segments.push_back(seg);</a>
+<a name="ln466"> </a>
+<a name="ln467">                  makeDynamicProgrammingStep(penalties, optimalPaths, pos,</a>
+<a name="ln468">                                             tieTracker.state(), minMaxPitch, seg, staff);</a>
+<a name="ln469">                  ++pos;</a>
+<a name="ln470">                  }</a>
+<a name="ln471"> </a>
+<a name="ln472">            if (!optimalPaths[0].empty()) {</a>
+<a name="ln473">                  const int lastClef = (penalties[1][(pos - 1) % 2] &lt; penalties[0][(pos - 1) % 2])</a>
+<a name="ln474">                                     ? 1 : 0;</a>
+<a name="ln475">                              // get the optimal clef changes found via dynamic programming</a>
+<a name="ln476">                  if (createClefs(staff, optimalPaths, lastClef, segments))</a>
+<a name="ln477">                        mainClefWasSet = true;</a>
+<a name="ln478">                  }</a>
+<a name="ln479">            }</a>
+<a name="ln480">      if (!mainClefWasSet &amp;&amp; canChangeClef)</a>
+<a name="ln481">            createMainClefFromAveragePitch(staff, strack);</a>
+<a name="ln482"> </a>
+<a name="ln483">      Q_ASSERT_X(!doesClefBreakTie(staff), &quot;MidiClef::createClefs&quot;, &quot;Clef breaks the tie&quot;);</a>
+<a name="ln484">      }</a>
+<a name="ln485"> </a>
+<a name="ln486">} // namespace MidiClef</a>
+<a name="ln487">} // namespace Ms</a>
+<a name="ln488"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,643 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ftcbasic.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ftcbasic.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    The FreeType basic cache interface (body).                           */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2003-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln21">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln22">#include FT_CACHE_H</a>
+<a name="ln23">#include &quot;ftcglyph.h&quot;</a>
+<a name="ln24">#include &quot;ftcimage.h&quot;</a>
+<a name="ln25">#include &quot;ftcsbits.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;ftccback.h&quot;</a>
+<a name="ln28">#include &quot;ftcerror.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">#define FT_COMPONENT  trace_cache</a>
+<a name="ln31"> </a>
+<a name="ln32"> </a>
+<a name="ln33">  /*</a>
+<a name="ln34">   *  Basic Families</a>
+<a name="ln35">   *</a>
+<a name="ln36">   */</a>
+<a name="ln37">  typedef struct  FTC_BasicAttrRec_</a>
+<a name="ln38">  {</a>
+<a name="ln39">    FTC_ScalerRec  scaler;</a>
+<a name="ln40">    FT_UInt        load_flags;</a>
+<a name="ln41"> </a>
+<a name="ln42">  } FTC_BasicAttrRec, *FTC_BasicAttrs;</a>
+<a name="ln43"> </a>
+<a name="ln44">#define FTC_BASIC_ATTR_COMPARE( a, b )                                 \</a>
+<a name="ln45">          FT_BOOL( FTC_SCALER_COMPARE( &amp;(a)-&gt;scaler, &amp;(b)-&gt;scaler ) &amp;&amp; \</a>
+<a name="ln46">                   (a)-&gt;load_flags == (b)-&gt;load_flags               )</a>
+<a name="ln47"> </a>
+<a name="ln48">#define FTC_BASIC_ATTR_HASH( a )                                     \</a>
+<a name="ln49">          ( FTC_SCALER_HASH( &amp;(a)-&gt;scaler ) + 31 * (a)-&gt;load_flags )</a>
+<a name="ln50"> </a>
+<a name="ln51"> </a>
+<a name="ln52">  typedef struct  FTC_BasicQueryRec_</a>
+<a name="ln53">  {</a>
+<a name="ln54">    FTC_GQueryRec     gquery;</a>
+<a name="ln55">    FTC_BasicAttrRec  attrs;</a>
+<a name="ln56"> </a>
+<a name="ln57">  } FTC_BasicQueryRec, *FTC_BasicQuery;</a>
+<a name="ln58"> </a>
+<a name="ln59"> </a>
+<a name="ln60">  typedef struct  FTC_BasicFamilyRec_</a>
+<a name="ln61">  {</a>
+<a name="ln62">    FTC_FamilyRec     family;</a>
+<a name="ln63">    FTC_BasicAttrRec  attrs;</a>
+<a name="ln64"> </a>
+<a name="ln65">  } FTC_BasicFamilyRec, *FTC_BasicFamily;</a>
+<a name="ln66"> </a>
+<a name="ln67"> </a>
+<a name="ln68">  FT_CALLBACK_DEF( FT_Bool )</a>
+<a name="ln69">  ftc_basic_family_compare( FTC_MruNode  ftcfamily,</a>
+<a name="ln70">                            FT_Pointer   ftcquery )</a>
+<a name="ln71">  {</a>
+<a name="ln72">    FTC_BasicFamily  family = (FTC_BasicFamily)ftcfamily;</a>
+<a name="ln73">    FTC_BasicQuery   query  = (FTC_BasicQuery)ftcquery;</a>
+<a name="ln74"> </a>
+<a name="ln75"> </a>
+<a name="ln76">    return FTC_BASIC_ATTR_COMPARE( &amp;family-&gt;attrs, &amp;query-&gt;attrs );</a>
+<a name="ln77">  }</a>
+<a name="ln78"> </a>
+<a name="ln79"> </a>
+<a name="ln80">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln81">  ftc_basic_family_init( FTC_MruNode  ftcfamily,</a>
+<a name="ln82">                         FT_Pointer   ftcquery,</a>
+<a name="ln83">                         FT_Pointer   ftccache )</a>
+<a name="ln84">  {</a>
+<a name="ln85">    FTC_BasicFamily  family = (FTC_BasicFamily)ftcfamily;</a>
+<a name="ln86">    FTC_BasicQuery   query  = (FTC_BasicQuery)ftcquery;</a>
+<a name="ln87">    FTC_Cache        cache  = (FTC_Cache)ftccache;</a>
+<a name="ln88"> </a>
+<a name="ln89"> </a>
+<a name="ln90">    FTC_Family_Init( FTC_FAMILY( family ), cache );</a>
+<a name="ln91">    family-&gt;attrs = query-&gt;attrs;</a>
+<a name="ln92">    return 0;</a>
+<a name="ln93">  }</a>
+<a name="ln94"> </a>
+<a name="ln95"> </a>
+<a name="ln96">  FT_CALLBACK_DEF( FT_UInt )</a>
+<a name="ln97">  ftc_basic_family_get_count( FTC_Family   ftcfamily,</a>
+<a name="ln98">                              FTC_Manager  manager )</a>
+<a name="ln99">  {</a>
+<a name="ln100">    FTC_BasicFamily  family = (FTC_BasicFamily)ftcfamily;</a>
+<a name="ln101">    FT_Error         error;</a>
+<a name="ln102">    FT_Face          face;</a>
+<a name="ln103">    FT_UInt          result = 0;</a>
+<a name="ln104"> </a>
+<a name="ln105"> </a>
+<a name="ln106">    error = FTC_Manager_LookupFace( manager, family-&gt;attrs.scaler.face_id,</a>
+<a name="ln107">                                    &amp;face );</a>
+<a name="ln108"> </a>
+<a name="ln109">    if ( error || !face )</a>
+<a name="ln110">      return result;</a>
+<a name="ln111"> </a>
+<a name="ln112">    if ( (FT_ULong)face-&gt;num_glyphs &gt; FT_UINT_MAX || 0 &gt; face-&gt;num_glyphs )</a>
+<a name="ln113">      FT_TRACE1(( &quot;ftc_basic_family_get_count:&quot;</a>
+<a name="ln114">                  &quot; too large number of glyphs in this face, truncated\n&quot;,</a>
+<a name="ln115">                  face-&gt;num_glyphs ));</a>
+<a name="ln116"> </a>
+<a name="ln117">    if ( !error )</a>
+<a name="ln118">      result = (FT_UInt)face-&gt;num_glyphs;</a>
+<a name="ln119"> </a>
+<a name="ln120">    return result;</a>
+<a name="ln121">  }</a>
+<a name="ln122"> </a>
+<a name="ln123"> </a>
+<a name="ln124">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln125">  ftc_basic_family_load_bitmap( FTC_Family   ftcfamily,</a>
+<a name="ln126">                                FT_UInt      gindex,</a>
+<a name="ln127">                                FTC_Manager  manager,</a>
+<a name="ln128">                                FT_Face     *aface )</a>
+<a name="ln129">  {</a>
+<a name="ln130">    FTC_BasicFamily  family = (FTC_BasicFamily)ftcfamily;</a>
+<a name="ln131">    FT_Error         error;</a>
+<a name="ln132">    FT_Size          size;</a>
+<a name="ln133"> </a>
+<a name="ln134"> </a>
+<a name="ln135">    error = FTC_Manager_LookupSize( manager, &amp;family-&gt;attrs.scaler, &amp;size );</a>
+<a name="ln136">    if ( !error )</a>
+<a name="ln137">    {</a>
+<a name="ln138">      FT_Face  face = size-&gt;face;</a>
+<a name="ln139"> </a>
+<a name="ln140"> </a>
+<a name="ln141">      error = FT_Load_Glyph(</a>
+<a name="ln142">                face,</a>
+<a name="ln143">                gindex,</a>
+<a name="ln144">                (FT_Int)family-&gt;attrs.load_flags | FT_LOAD_RENDER );</a>
+<a name="ln145">      if ( !error )</a>
+<a name="ln146">        *aface = face;</a>
+<a name="ln147">    }</a>
+<a name="ln148"> </a>
+<a name="ln149">    return error;</a>
+<a name="ln150">  }</a>
+<a name="ln151"> </a>
+<a name="ln152"> </a>
+<a name="ln153">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln154">  ftc_basic_family_load_glyph( FTC_Family  ftcfamily,</a>
+<a name="ln155">                               FT_UInt     gindex,</a>
+<a name="ln156">                               FTC_Cache   cache,</a>
+<a name="ln157">                               FT_Glyph   *aglyph )</a>
+<a name="ln158">  {</a>
+<a name="ln159">    FTC_BasicFamily  family = (FTC_BasicFamily)ftcfamily;</a>
+<a name="ln160">    FT_Error         error;</a>
+<a name="ln161">    FTC_Scaler       scaler = &amp;family-&gt;attrs.scaler;</a>
+<a name="ln162">    FT_Face          face;</a>
+<a name="ln163">    FT_Size          size;</a>
+<a name="ln164"> </a>
+<a name="ln165"> </a>
+<a name="ln166">    /* we will now load the glyph image */</a>
+<a name="ln167">    error = FTC_Manager_LookupSize( cache-&gt;manager,</a>
+<a name="ln168">                                    scaler,</a>
+<a name="ln169">                                    &amp;size );</a>
+<a name="ln170">    if ( !error )</a>
+<a name="ln171">    {</a>
+<a name="ln172">      face = size-&gt;face;</a>
+<a name="ln173"> </a>
+<a name="ln174">      error = FT_Load_Glyph( face,</a>
+<a name="ln175">                             gindex,</a>
+<a name="ln176">                             (FT_Int)family-&gt;attrs.load_flags );</a>
+<a name="ln177">      if ( !error )</a>
+<a name="ln178">      {</a>
+<a name="ln179">        if ( face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_BITMAP  ||</a>
+<a name="ln180">             face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_OUTLINE )</a>
+<a name="ln181">        {</a>
+<a name="ln182">          /* ok, copy it */</a>
+<a name="ln183">          FT_Glyph  glyph;</a>
+<a name="ln184"> </a>
+<a name="ln185"> </a>
+<a name="ln186">          error = FT_Get_Glyph( face-&gt;glyph, &amp;glyph );</a>
+<a name="ln187">          if ( !error )</a>
+<a name="ln188">          {</a>
+<a name="ln189">            *aglyph = glyph;</a>
+<a name="ln190">            goto Exit;</a>
+<a name="ln191">          }</a>
+<a name="ln192">        }</a>
+<a name="ln193">        else</a>
+<a name="ln194">          error = FT_THROW( Invalid_Argument );</a>
+<a name="ln195">      }</a>
+<a name="ln196">    }</a>
+<a name="ln197"> </a>
+<a name="ln198">  Exit:</a>
+<a name="ln199">    return error;</a>
+<a name="ln200">  }</a>
+<a name="ln201"> </a>
+<a name="ln202"> </a>
+<a name="ln203">  FT_CALLBACK_DEF( FT_Bool )</a>
+<a name="ln204">  ftc_basic_gnode_compare_faceid( FTC_Node    ftcgnode,</a>
+<a name="ln205">                                  FT_Pointer  ftcface_id,</a>
+<a name="ln206">                                  FTC_Cache   cache,</a>
+<a name="ln207">                                  FT_Bool*    list_changed )</a>
+<a name="ln208">  {</a>
+<a name="ln209">    FTC_GNode        gnode   = (FTC_GNode)ftcgnode;</a>
+<a name="ln210">    FTC_FaceID       face_id = (FTC_FaceID)ftcface_id;</a>
+<a name="ln211">    FTC_BasicFamily  family  = (FTC_BasicFamily)gnode-&gt;family;</a>
+<a name="ln212">    FT_Bool          result;</a>
+<a name="ln213"> </a>
+<a name="ln214"> </a>
+<a name="ln215">    if ( list_changed )</a>
+<a name="ln216">      *list_changed = FALSE;</a>
+<a name="ln217">    result = FT_BOOL( family-&gt;attrs.scaler.face_id == face_id );</a>
+<a name="ln218">    if ( result )</a>
+<a name="ln219">    {</a>
+<a name="ln220">      /* we must call this function to avoid this node from appearing</a>
+<a name="ln221">       * in later lookups with the same face_id!</a>
+<a name="ln222">       */</a>
+<a name="ln223">      FTC_GNode_UnselectFamily( gnode, cache );</a>
+<a name="ln224">    }</a>
+<a name="ln225">    return result;</a>
+<a name="ln226">  }</a>
+<a name="ln227"> </a>
+<a name="ln228"> </a>
+<a name="ln229"> /*</a>
+<a name="ln230">  *</a>
+<a name="ln231">  * basic image cache</a>
+<a name="ln232">  *</a>
+<a name="ln233">  */</a>
+<a name="ln234"> </a>
+<a name="ln235">  static</a>
+<a name="ln236">  const FTC_IFamilyClassRec  ftc_basic_image_family_class =</a>
+<a name="ln237">  {</a>
+<a name="ln238">    {</a>
+<a name="ln239">      sizeof ( FTC_BasicFamilyRec ),</a>
+<a name="ln240">      ftc_basic_family_compare,</a>
+<a name="ln241">      ftc_basic_family_init,</a>
+<a name="ln242">      0,                        /* FTC_MruNode_ResetFunc */</a>
+<a name="ln243">      0                         /* FTC_MruNode_DoneFunc  */</a>
+<a name="ln244">    },</a>
+<a name="ln245">    ftc_basic_family_load_glyph</a>
+<a name="ln246">  };</a>
+<a name="ln247"> </a>
+<a name="ln248"> </a>
+<a name="ln249">  static</a>
+<a name="ln250">  const FTC_GCacheClassRec  ftc_basic_image_cache_class =</a>
+<a name="ln251">  {</a>
+<a name="ln252">    {</a>
+<a name="ln253">      ftc_inode_new,</a>
+<a name="ln254">      ftc_inode_weight,</a>
+<a name="ln255">      ftc_gnode_compare,</a>
+<a name="ln256">      ftc_basic_gnode_compare_faceid,</a>
+<a name="ln257">      ftc_inode_free,</a>
+<a name="ln258"> </a>
+<a name="ln259">      sizeof ( FTC_GCacheRec ),</a>
+<a name="ln260">      ftc_gcache_init,</a>
+<a name="ln261">      ftc_gcache_done</a>
+<a name="ln262">    },</a>
+<a name="ln263">    (FTC_MruListClass)&amp;ftc_basic_image_family_class</a>
+<a name="ln264">  };</a>
+<a name="ln265"> </a>
+<a name="ln266"> </a>
+<a name="ln267">  /* documentation is in ftcache.h */</a>
+<a name="ln268"> </a>
+<a name="ln269">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln270">  FTC_ImageCache_New( FTC_Manager      manager,</a>
+<a name="ln271">                      FTC_ImageCache  *acache )</a>
+<a name="ln272">  {</a>
+<a name="ln273">    return FTC_GCache_New( manager, &amp;ftc_basic_image_cache_class,</a>
+<a name="ln274">                           (FTC_GCache*)acache );</a>
+<a name="ln275">  }</a>
+<a name="ln276"> </a>
+<a name="ln277"> </a>
+<a name="ln278">  /* documentation is in ftcache.h */</a>
+<a name="ln279"> </a>
+<a name="ln280">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln281">  FTC_ImageCache_Lookup( FTC_ImageCache  cache,</a>
+<a name="ln282">                         FTC_ImageType   type,</a>
+<a name="ln283">                         FT_UInt         gindex,</a>
+<a name="ln284">                         FT_Glyph       *aglyph,</a>
+<a name="ln285">                         FTC_Node       *anode )</a>
+<a name="ln286">  {</a>
+<a name="ln287">    FTC_BasicQueryRec  query;</a>
+<a name="ln288">    FTC_Node           node = 0; /* make compiler happy */</a>
+<a name="ln289">    FT_Error           error;</a>
+<a name="ln290">    FT_Offset          hash;</a>
+<a name="ln291"> </a>
+<a name="ln292"> </a>
+<a name="ln293">    /* some argument checks are delayed to `FTC_Cache_Lookup' */</a>
+<a name="ln294">    if ( !aglyph )</a>
+<a name="ln295">    {</a>
+<a name="ln296">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln297">      goto Exit;</a>
+<a name="ln298">    }</a>
+<a name="ln299"> </a>
+<a name="ln300">    *aglyph = NULL;</a>
+<a name="ln301">    if ( anode )</a>
+<a name="ln302">      *anode  = NULL;</a>
+<a name="ln303"> </a>
+<a name="ln304">    if ( (FT_ULong)( type-&gt;flags - FT_INT_MIN ) &gt; FT_UINT_MAX )</a>
+<a name="ln305">      FT_TRACE1(( &quot;FTC_ImageCache_Lookup:&quot;</a>
+<a name="ln306">                  &quot; higher bits in load_flags 0x%x are dropped\n&quot;,</a>
+<a name="ln307">                  (FT_ULong)type-&gt;flags &amp; ~((FT_ULong)FT_UINT_MAX) ));</a>
+<a name="ln308"> </a>
+<a name="ln309">    query.attrs.scaler.face_id = type-&gt;face_id;</a>
+<a name="ln310">    query.attrs.scaler.width   = type-&gt;width;</a>
+<a name="ln311">    query.attrs.scaler.height  = type-&gt;height;</a>
+<a name="ln312">    query.attrs.load_flags     = (FT_UInt)type-&gt;flags;</a>
+<a name="ln313"> </a>
+<a name="ln314">    query.attrs.scaler.pixel = 1;</a>
+<a name="ln315">    query.attrs.scaler.x_res = 0;  /* make compilers happy */</a>
+<a name="ln316">    query.attrs.scaler.y_res = 0;</a>
+<a name="ln317"> </a>
+<a name="ln318">    hash = FTC_BASIC_ATTR_HASH( &amp;query.attrs ) + gindex;</a>
+<a name="ln319"> </a>
+<a name="ln320">#if 1  /* inlining is about 50% faster! */</a>
+<a name="ln321">    FTC_GCACHE_LOOKUP_CMP( cache,</a>
+<a name="ln322">                           ftc_basic_family_compare,</a>
+<a name="ln323">                           FTC_GNode_Compare,</a>
+<a name="ln324">                           hash, gindex,</a>
+<a name="ln325">                           &amp;query,</a>
+<a name="ln326">                           node,</a>
+<a name="ln327">                           error );</a>
+<a name="ln328">#else</a>
+<a name="ln329">    error = FTC_GCache_Lookup( FTC_GCACHE( cache ),</a>
+<a name="ln330">                               hash, gindex,</a>
+<a name="ln331">                               FTC_GQUERY( &amp;query ),</a>
+<a name="ln332">                               &amp;node );</a>
+<a name="ln333">#endif</a>
+<a name="ln334">    if ( !error )</a>
+<a name="ln335">    {</a>
+<a name="ln336">      *aglyph = FTC_INODE( node )-&gt;glyph;</a>
+<a name="ln337"> </a>
+<a name="ln338">      if ( anode )</a>
+<a name="ln339">      {</a>
+<a name="ln340">        *anode = node;</a>
+<a name="ln341">        node-&gt;ref_count++;</a>
+<a name="ln342">      }</a>
+<a name="ln343">    }</a>
+<a name="ln344"> </a>
+<a name="ln345">  Exit:</a>
+<a name="ln346">    return error;</a>
+<a name="ln347">  }</a>
+<a name="ln348"> </a>
+<a name="ln349"> </a>
+<a name="ln350">  /* documentation is in ftcache.h */</a>
+<a name="ln351"> </a>
+<a name="ln352">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln353">  FTC_ImageCache_LookupScaler( FTC_ImageCache  cache,</a>
+<a name="ln354">                               FTC_Scaler      scaler,</a>
+<a name="ln355">                               FT_ULong        load_flags,</a>
+<a name="ln356">                               FT_UInt         gindex,</a>
+<a name="ln357">                               FT_Glyph       *aglyph,</a>
+<a name="ln358">                               FTC_Node       *anode )</a>
+<a name="ln359">  {</a>
+<a name="ln360">    FTC_BasicQueryRec  query;</a>
+<a name="ln361">    FTC_Node           node = 0; /* make compiler happy */</a>
+<a name="ln362">    FT_Error           error;</a>
+<a name="ln363">    FT_Offset          hash;</a>
+<a name="ln364"> </a>
+<a name="ln365"> </a>
+<a name="ln366">    /* some argument checks are delayed to `FTC_Cache_Lookup' */</a>
+<a name="ln367">    if ( !aglyph || !scaler )</a>
+<a name="ln368">    {</a>
+<a name="ln369">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln370">      goto Exit;</a>
+<a name="ln371">    }</a>
+<a name="ln372"> </a>
+<a name="ln373">    *aglyph = NULL;</a>
+<a name="ln374">    if ( anode )</a>
+<a name="ln375">      *anode  = NULL;</a>
+<a name="ln376"> </a>
+<a name="ln377">    /* `FT_Load_Glyph' and `FT_Load_Char' take FT_UInt flags */</a>
+<a name="ln378">    if ( load_flags &gt; FT_UINT_MAX )</a>
+<a name="ln379">      FT_TRACE1(( &quot;FTC_ImageCache_LookupScaler:&quot;</a>
+<a name="ln380">                  &quot; higher bits in load_flags 0x%x are dropped\n&quot;,</a>
+<a name="ln381">                  load_flags &amp; ~((FT_ULong)FT_UINT_MAX) ));</a>
+<a name="ln382"> </a>
+<a name="ln383">    query.attrs.scaler     = scaler[0];</a>
+<a name="ln384">    query.attrs.load_flags = (FT_UInt)load_flags;</a>
+<a name="ln385"> </a>
+<a name="ln386">    hash = FTC_BASIC_ATTR_HASH( &amp;query.attrs ) + gindex;</a>
+<a name="ln387"> </a>
+<a name="ln388">    FTC_GCACHE_LOOKUP_CMP( cache,</a>
+<a name="ln389">                           ftc_basic_family_compare,</a>
+<a name="ln390">                           FTC_GNode_Compare,</a>
+<a name="ln391">                           hash, gindex,</a>
+<a name="ln392">                           &amp;query,</a>
+<a name="ln393">                           node,</a>
+<a name="ln394">                           error );</a>
+<a name="ln395">    if ( !error )</a>
+<a name="ln396">    {</a>
+<a name="ln397">      *aglyph = FTC_INODE( node )-&gt;glyph;</a>
+<a name="ln398"> </a>
+<a name="ln399">      if ( anode )</a>
+<a name="ln400">      {</a>
+<a name="ln401">        *anode = node;</a>
+<a name="ln402">        node-&gt;ref_count++;</a>
+<a name="ln403">      }</a>
+<a name="ln404">    }</a>
+<a name="ln405"> </a>
+<a name="ln406">  Exit:</a>
+<a name="ln407">    return error;</a>
+<a name="ln408">  }</a>
+<a name="ln409"> </a>
+<a name="ln410"> </a>
+<a name="ln411">  /*</a>
+<a name="ln412">   *</a>
+<a name="ln413">   * basic small bitmap cache</a>
+<a name="ln414">   *</a>
+<a name="ln415">   */</a>
+<a name="ln416"> </a>
+<a name="ln417">  static</a>
+<a name="ln418">  const FTC_SFamilyClassRec  ftc_basic_sbit_family_class =</a>
+<a name="ln419">  {</a>
+<a name="ln420">    {</a>
+<a name="ln421">      sizeof ( FTC_BasicFamilyRec ),</a>
+<a name="ln422">      ftc_basic_family_compare,</a>
+<a name="ln423">      ftc_basic_family_init,</a>
+<a name="ln424">      0,                            /* FTC_MruNode_ResetFunc */</a>
+<a name="ln425">      0                             /* FTC_MruNode_DoneFunc  */</a>
+<a name="ln426">    },</a>
+<a name="ln427">    ftc_basic_family_get_count,</a>
+<a name="ln428">    ftc_basic_family_load_bitmap</a>
+<a name="ln429">  };</a>
+<a name="ln430"> </a>
+<a name="ln431"> </a>
+<a name="ln432">  static</a>
+<a name="ln433">  const FTC_GCacheClassRec  ftc_basic_sbit_cache_class =</a>
+<a name="ln434">  {</a>
+<a name="ln435">    {</a>
+<a name="ln436">      ftc_snode_new,</a>
+<a name="ln437">      ftc_snode_weight,</a>
+<a name="ln438">      ftc_snode_compare,</a>
+<a name="ln439">      ftc_basic_gnode_compare_faceid,</a>
+<a name="ln440">      ftc_snode_free,</a>
+<a name="ln441"> </a>
+<a name="ln442">      sizeof ( FTC_GCacheRec ),</a>
+<a name="ln443">      ftc_gcache_init,</a>
+<a name="ln444">      ftc_gcache_done</a>
+<a name="ln445">    },</a>
+<a name="ln446">    (FTC_MruListClass)&amp;ftc_basic_sbit_family_class</a>
+<a name="ln447">  };</a>
+<a name="ln448"> </a>
+<a name="ln449"> </a>
+<a name="ln450">  /* documentation is in ftcache.h */</a>
+<a name="ln451"> </a>
+<a name="ln452">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln453">  FTC_SBitCache_New( FTC_Manager     manager,</a>
+<a name="ln454">                     FTC_SBitCache  *acache )</a>
+<a name="ln455">  {</a>
+<a name="ln456">    return FTC_GCache_New( manager, &amp;ftc_basic_sbit_cache_class,</a>
+<a name="ln457">                           (FTC_GCache*)acache );</a>
+<a name="ln458">  }</a>
+<a name="ln459"> </a>
+<a name="ln460"> </a>
+<a name="ln461">  /* documentation is in ftcache.h */</a>
+<a name="ln462"> </a>
+<a name="ln463">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln464">  FTC_SBitCache_Lookup( FTC_SBitCache  cache,</a>
+<a name="ln465">                        FTC_ImageType  type,</a>
+<a name="ln466">                        FT_UInt        gindex,</a>
+<a name="ln467">                        FTC_SBit      *ansbit,</a>
+<a name="ln468">                        FTC_Node      *anode )</a>
+<a name="ln469">  {</a>
+<a name="ln470">    FT_Error           error;</a>
+<a name="ln471">    FTC_BasicQueryRec  query;</a>
+<a name="ln472">    FTC_Node           node = 0; /* make compiler happy */</a>
+<a name="ln473">    FT_Offset          hash;</a>
+<a name="ln474"> </a>
+<a name="ln475"> </a>
+<a name="ln476">    if ( anode )</a>
+<a name="ln477">      *anode = NULL;</a>
+<a name="ln478"> </a>
+<a name="ln479">    /* other argument checks delayed to `FTC_Cache_Lookup' */</a>
+<a name="ln480">    if ( !ansbit )</a>
+<a name="ln481">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln482"> </a>
+<a name="ln483">    *ansbit = NULL;</a>
+<a name="ln484"> </a>
+<a name="ln485">    if ( (FT_ULong)( type-&gt;flags - FT_INT_MIN ) &gt; FT_UINT_MAX )</a>
+<a name="ln486">      FT_TRACE1(( &quot;FTC_ImageCache_Lookup:&quot;</a>
+<a name="ln487">                  &quot; higher bits in load_flags 0x%x are dropped\n&quot;,</a>
+<a name="ln488">                  (FT_ULong)type-&gt;flags &amp; ~((FT_ULong)FT_UINT_MAX) ));</a>
+<a name="ln489"> </a>
+<a name="ln490">    query.attrs.scaler.face_id = type-&gt;face_id;</a>
+<a name="ln491">    query.attrs.scaler.width   = type-&gt;width;</a>
+<a name="ln492">    query.attrs.scaler.height  = type-&gt;height;</a>
+<a name="ln493">    query.attrs.load_flags     = (FT_UInt)type-&gt;flags;</a>
+<a name="ln494"> </a>
+<a name="ln495">    query.attrs.scaler.pixel = 1;</a>
+<a name="ln496">    query.attrs.scaler.x_res = 0;  /* make compilers happy */</a>
+<a name="ln497">    query.attrs.scaler.y_res = 0;</a>
+<a name="ln498"> </a>
+<a name="ln499">    /* beware, the hash must be the same for all glyph ranges! */</a>
+<a name="ln500">    hash = FTC_BASIC_ATTR_HASH( &amp;query.attrs ) +</a>
+<a name="ln501">           gindex / FTC_SBIT_ITEMS_PER_NODE;</a>
+<a name="ln502"> </a>
+<a name="ln503">#if 1  /* inlining is about 50% faster! */</a>
+<a name="ln504">    FTC_GCACHE_LOOKUP_CMP( cache,</a>
+<a name="ln505">                           ftc_basic_family_compare,</a>
+<a name="ln506">                           FTC_SNode_Compare,</a>
+<a name="ln507">                           hash, gindex,</a>
+<a name="ln508">                           &amp;query,</a>
+<a name="ln509">                           node,</a>
+<a name="ln510">                           error );</a>
+<a name="ln511">#else</a>
+<a name="ln512">    error = FTC_GCache_Lookup( FTC_GCACHE( cache ),</a>
+<a name="ln513">                               hash,</a>
+<a name="ln514">                               gindex,</a>
+<a name="ln515">                               FTC_GQUERY( &amp;query ),</a>
+<a name="ln516">                               &amp;node );</a>
+<a name="ln517">#endif</a>
+<a name="ln518">    if ( error )</a>
+<a name="ln519">      goto Exit;</a>
+<a name="ln520"> </a>
+<a name="ln521">    *ansbit = FTC_SNODE( node )-&gt;sbits +</a>
+<a name="ln522">              ( gindex - FTC_GNODE( node )-&gt;gindex );</a>
+<a name="ln523"> </a>
+<a name="ln524">    if ( anode )</a>
+<a name="ln525">    {</a>
+<a name="ln526">      *anode = node;</a>
+<a name="ln527">      node-&gt;ref_count++;</a>
+<a name="ln528">    }</a>
+<a name="ln529"> </a>
+<a name="ln530">  Exit:</a>
+<a name="ln531">    return error;</a>
+<a name="ln532">  }</a>
+<a name="ln533"> </a>
+<a name="ln534"> </a>
+<a name="ln535">  /* documentation is in ftcache.h */</a>
+<a name="ln536"> </a>
+<a name="ln537">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln538">  FTC_SBitCache_LookupScaler( FTC_SBitCache  cache,</a>
+<a name="ln539">                              FTC_Scaler     scaler,</a>
+<a name="ln540">                              FT_ULong       load_flags,</a>
+<a name="ln541">                              FT_UInt        gindex,</a>
+<a name="ln542">                              FTC_SBit      *ansbit,</a>
+<a name="ln543">                              FTC_Node      *anode )</a>
+<a name="ln544">  {</a>
+<a name="ln545">    FT_Error           error;</a>
+<a name="ln546">    FTC_BasicQueryRec  query;</a>
+<a name="ln547">    FTC_Node           node = 0; /* make compiler happy */</a>
+<a name="ln548">    FT_Offset          hash;</a>
+<a name="ln549"> </a>
+<a name="ln550"> </a>
+<a name="ln551">    if ( anode )</a>
+<a name="ln552">        *anode = NULL;</a>
+<a name="ln553"> </a>
+<a name="ln554">    /* other argument checks delayed to `FTC_Cache_Lookup' */</a>
+<a name="ln555">    if ( !ansbit || !scaler )</a>
+<a name="ln556">        return FT_THROW( Invalid_Argument );</a>
+<a name="ln557"> </a>
+<a name="ln558">    *ansbit = NULL;</a>
+<a name="ln559"> </a>
+<a name="ln560">    /* `FT_Load_Glyph' and `FT_Load_Char' take FT_UInt flags */</a>
+<a name="ln561">    if ( load_flags &gt; FT_UINT_MAX )</a>
+<a name="ln562">      FT_TRACE1(( &quot;FTC_ImageCache_LookupScaler:&quot;</a>
+<a name="ln563">                  &quot; higher bits in load_flags 0x%x are dropped\n&quot;,</a>
+<a name="ln564">                  load_flags &amp; ~((FT_ULong)FT_UINT_MAX) ));</a>
+<a name="ln565"> </a>
+<a name="ln566">    query.attrs.scaler     = scaler[0];</a>
+<a name="ln567">    query.attrs.load_flags = (FT_UInt)load_flags;</a>
+<a name="ln568"> </a>
+<a name="ln569">    /* beware, the hash must be the same for all glyph ranges! */</a>
+<a name="ln570">    hash = FTC_BASIC_ATTR_HASH( &amp;query.attrs ) +</a>
+<a name="ln571">             gindex / FTC_SBIT_ITEMS_PER_NODE;</a>
+<a name="ln572"> </a>
+<a name="ln573">    FTC_GCACHE_LOOKUP_CMP( cache,</a>
+<a name="ln574">                           ftc_basic_family_compare,</a>
+<a name="ln575">                           FTC_SNode_Compare,</a>
+<a name="ln576">                           hash, gindex,</a>
+<a name="ln577">                           &amp;query,</a>
+<a name="ln578">                           node,</a>
+<a name="ln579">                           error );</a>
+<a name="ln580">    if ( error )</a>
+<a name="ln581">      goto Exit;</a>
+<a name="ln582"> </a>
+<a name="ln583">    *ansbit = FTC_SNODE( node )-&gt;sbits +</a>
+<a name="ln584">              ( gindex - FTC_GNODE( node )-&gt;gindex );</a>
+<a name="ln585"> </a>
+<a name="ln586">    if ( anode )</a>
+<a name="ln587">    {</a>
+<a name="ln588">      *anode = node;</a>
+<a name="ln589">      node-&gt;ref_count++;</a>
+<a name="ln590">    }</a>
+<a name="ln591"> </a>
+<a name="ln592">  Exit:</a>
+<a name="ln593">    return error;</a>
+<a name="ln594">  }</a>
+<a name="ln595"> </a>
+<a name="ln596"> </a>
+<a name="ln597">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="117"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!error' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

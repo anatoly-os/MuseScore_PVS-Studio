@@ -1,0 +1,339 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pm.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MusE Score</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2007 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#if defined(Q_OS_WIN)</a>
+<a name="ln21">  #include &lt;windows.h&gt;</a>
+<a name="ln22">  #include &lt;mmsystem.h&gt;</a>
+<a name="ln23">#endif</a>
+<a name="ln24"> </a>
+<a name="ln25">#if defined(Q_OS_MAC) || defined(Q_OS_WIN)</a>
+<a name="ln26">  #include &quot;portmidi/porttime/porttime.h&quot;</a>
+<a name="ln27">#else</a>
+<a name="ln28">  #include &lt;porttime.h&gt;</a>
+<a name="ln29">#endif</a>
+<a name="ln30"> </a>
+<a name="ln31">#include &quot;preferences.h&quot;</a>
+<a name="ln32">#include &quot;pm.h&quot;</a>
+<a name="ln33">#include &quot;musescore.h&quot;</a>
+<a name="ln34">#include &quot;seq.h&quot;</a>
+<a name="ln35"> </a>
+<a name="ln36">namespace Ms {</a>
+<a name="ln37"> </a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39">//   PortMidiDriver</a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41"> </a>
+<a name="ln42">PortMidiDriver::PortMidiDriver(Seq* s)</a>
+<a name="ln43">  : MidiDriver(s)</a>
+<a name="ln44">      {</a>
+<a name="ln45">      inputId = -1;</a>
+<a name="ln46">      outputId = -1;</a>
+<a name="ln47">      timer = 0;</a>
+<a name="ln48">      inputStream = 0;</a>
+<a name="ln49">      outputStream = 0;</a>
+<a name="ln50">      }</a>
+<a name="ln51"> </a>
+<a name="ln52">PortMidiDriver::~PortMidiDriver()</a>
+<a name="ln53">      {</a>
+<a name="ln54">      if (inputStream) {</a>
+<a name="ln55">            Pt_Stop();</a>
+<a name="ln56">            Pm_Close(inputStream);</a>
+<a name="ln57">            }</a>
+<a name="ln58">      }</a>
+<a name="ln59"> </a>
+<a name="ln60">//---------------------------------------------------------</a>
+<a name="ln61">//   init</a>
+<a name="ln62">//    return false on error</a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64"> </a>
+<a name="ln65">bool PortMidiDriver::init()</a>
+<a name="ln66">      {</a>
+<a name="ln67">      inputId = getDeviceIn(preferences.getString(PREF_IO_PORTMIDI_INPUTDEVICE));</a>
+<a name="ln68">      if (inputId == -1)</a>
+<a name="ln69">            inputId  = Pm_GetDefaultInputDeviceID();</a>
+<a name="ln70"> </a>
+<a name="ln71">      if (inputId == pmNoDevice)</a>
+<a name="ln72">            return false;</a>
+<a name="ln73"> </a>
+<a name="ln74">      outputId = getDeviceOut(preferences.getString(PREF_IO_PORTMIDI_OUTPUTDEVICE)); // Note: allow init even if outputId == pmNoDevice, since input is more important than output.</a>
+<a name="ln75"> </a>
+<a name="ln76">      static const int DRIVER_INFO = 0;</a>
+<a name="ln77">      static const int TIME_INFO = 0;</a>
+<a name="ln78"> </a>
+<a name="ln79">      Pt_Start(20, 0, 0);      // timer started, 20 millisecond accuracy</a>
+<a name="ln80"> </a>
+<a name="ln81">      PmError error = Pm_OpenInput(&amp;inputStream,</a>
+<a name="ln82">         inputId,</a>
+<a name="ln83">         (void*)DRIVER_INFO,</a>
+<a name="ln84">         preferences.getInt(PREF_IO_PORTMIDI_INPUTBUFFERCOUNT),</a>
+<a name="ln85">         ((PmTimeProcPtr) Pt_Time),</a>
+<a name="ln86">         (void*)TIME_INFO);</a>
+<a name="ln87">      if (error != pmNoError) {</a>
+<a name="ln88">            const char* p = Pm_GetErrorText(error);</a>
+<a name="ln89">            qDebug(&quot;PortMidi: open input (id=%d) failed: %s&quot;, int(inputId), p);</a>
+<a name="ln90">            Pt_Stop();</a>
+<a name="ln91">            return false;</a>
+<a name="ln92">            }</a>
+<a name="ln93"> </a>
+<a name="ln94">      Pm_SetFilter(inputStream, PM_FILT_ACTIVE | PM_FILT_CLOCK | PM_FILT_SYSEX);</a>
+<a name="ln95"> </a>
+<a name="ln96">      PmEvent buffer[1];</a>
+<a name="ln97">      while (Pm_Poll(inputStream))</a>
+<a name="ln98">            Pm_Read(inputStream, buffer, 1);</a>
+<a name="ln99"> </a>
+<a name="ln100">      if (outputId != pmNoDevice) {</a>
+<a name="ln101">            error = Pm_OpenOutput(&amp;outputStream,</a>
+<a name="ln102">               outputId,</a>
+<a name="ln103">               (void*)DRIVER_INFO,</a>
+<a name="ln104">               preferences.getInt(PREF_IO_PORTMIDI_OUTPUTBUFFERCOUNT),</a>
+<a name="ln105">               ((PmTimeProcPtr) Pt_Time),</a>
+<a name="ln106">               (void*)TIME_INFO,</a>
+<a name="ln107">               preferences.getInt(PREF_IO_PORTMIDI_OUTPUTLATENCYMILLISECONDS));</a>
+<a name="ln108">            if (error != pmNoError) {</a>
+<a name="ln109">                  const char* p = Pm_GetErrorText(error);</a>
+<a name="ln110">                  qDebug(&quot;PortMidi: open output (id=%d) failed: %s&quot;, int(outputId), p);</a>
+<a name="ln111">                  Pt_Stop();</a>
+<a name="ln112">                  return false;</a>
+<a name="ln113">                  }</a>
+<a name="ln114">            }</a>
+<a name="ln115"> </a>
+<a name="ln116">      timer = new QTimer();</a>
+<a name="ln117">      timer-&gt;setInterval(20);       // 20 msec</a>
+<a name="ln118">      timer-&gt;start();</a>
+<a name="ln119">      timer-&gt;connect(timer, SIGNAL(timeout()), seq, SLOT(midiInputReady()));</a>
+<a name="ln120">      return true;</a>
+<a name="ln121">      }</a>
+<a name="ln122"> </a>
+<a name="ln123">//---------------------------------------------------------</a>
+<a name="ln124">//   registerOutPort</a>
+<a name="ln125">//---------------------------------------------------------</a>
+<a name="ln126"> </a>
+<a name="ln127">Port PortMidiDriver::registerOutPort(const QString&amp;)</a>
+<a name="ln128">      {</a>
+<a name="ln129">      return Port();</a>
+<a name="ln130">      }</a>
+<a name="ln131"> </a>
+<a name="ln132">//---------------------------------------------------------</a>
+<a name="ln133">//   registerInPort</a>
+<a name="ln134">//---------------------------------------------------------</a>
+<a name="ln135"> </a>
+<a name="ln136">Port PortMidiDriver::registerInPort(const QString&amp;)</a>
+<a name="ln137">      {</a>
+<a name="ln138">      return Port();</a>
+<a name="ln139">      }</a>
+<a name="ln140"> </a>
+<a name="ln141">//---------------------------------------------------------</a>
+<a name="ln142">//   getInputPollFd</a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144"> </a>
+<a name="ln145">void PortMidiDriver::getInputPollFd(struct pollfd**, int* n)</a>
+<a name="ln146">      {</a>
+<a name="ln147">      *n = 0;</a>
+<a name="ln148">      }</a>
+<a name="ln149"> </a>
+<a name="ln150">//---------------------------------------------------------</a>
+<a name="ln151">//   getOutputPollFd</a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153"> </a>
+<a name="ln154">void PortMidiDriver::getOutputPollFd(struct pollfd**, int* n)</a>
+<a name="ln155">      {</a>
+<a name="ln156">      *n = 0;</a>
+<a name="ln157">      }</a>
+<a name="ln158"> </a>
+<a name="ln159">//---------------------------------------------------------</a>
+<a name="ln160">//   read</a>
+<a name="ln161">//---------------------------------------------------------</a>
+<a name="ln162"> </a>
+<a name="ln163">void PortMidiDriver::read()</a>
+<a name="ln164">      {</a>
+<a name="ln165">      if (!inputStream)</a>
+<a name="ln166">            return;</a>
+<a name="ln167">      PmEvent buffer[1];</a>
+<a name="ln168">      while (Pm_Poll(inputStream)) {</a>
+<a name="ln169">            int n = Pm_Read(inputStream, buffer, 1);</a>
+<a name="ln170">            if (n &gt; 0) {</a>
+<a name="ln171">                  int status  = Pm_MessageStatus(buffer[0].message);</a>
+<a name="ln172">                  int type    = status &amp; 0xF0;</a>
+<a name="ln173">                  int channel = status &amp; 0x0F;</a>
+<a name="ln174">                  if (type == ME_NOTEON) {</a>
+<a name="ln175">                        int pitch = Pm_MessageData1(buffer[0].message);</a>
+<a name="ln176">                        int velo = Pm_MessageData2(buffer[0].message);</a>
+<a name="ln177">                        mscore-&gt;midiNoteReceived(channel, pitch, velo);</a>
+<a name="ln178">                        }</a>
+<a name="ln179">                  else if (type == ME_NOTEOFF) {</a>
+<a name="ln180">                        int pitch = Pm_MessageData1(buffer[0].message);</a>
+<a name="ln181">                        (void)Pm_MessageData2(buffer[0].message); // read but ignore</a>
+<a name="ln182">                        mscore-&gt;midiNoteReceived(channel, pitch, 0);</a>
+<a name="ln183">                        }</a>
+<a name="ln184">                  else if (type == ME_CONTROLLER) {</a>
+<a name="ln185">                        int param = Pm_MessageData1(buffer[0].message);</a>
+<a name="ln186">                        int value = Pm_MessageData2(buffer[0].message);</a>
+<a name="ln187">                        mscore-&gt;midiCtrlReceived(param, value);</a>
+<a name="ln188">                        }</a>
+<a name="ln189">                  }</a>
+<a name="ln190">            }</a>
+<a name="ln191">      }</a>
+<a name="ln192"> </a>
+<a name="ln193">//---------------------------------------------------------</a>
+<a name="ln194">//   write</a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196"> </a>
+<a name="ln197">void PortMidiDriver::write(const Event&amp;)</a>
+<a name="ln198">      {</a>
+<a name="ln199">      }</a>
+<a name="ln200"> </a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202">//   deviceInList</a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204"> </a>
+<a name="ln205">QStringList PortMidiDriver::deviceInList() const</a>
+<a name="ln206">      {</a>
+<a name="ln207">      QStringList il;</a>
+<a name="ln208">      int interf = Pm_CountDevices();</a>
+<a name="ln209">      for (PmDeviceID id = 0; id &lt; interf; id++) {</a>
+<a name="ln210">            const PmDeviceInfo* info = Pm_GetDeviceInfo((PmDeviceID)id);</a>
+<a name="ln211">            if(info-&gt;input)</a>
+<a name="ln212">                il.append(QString(info-&gt;interf) + &quot;,&quot; + QString(info-&gt;name));</a>
+<a name="ln213">            }</a>
+<a name="ln214">      return il;</a>
+<a name="ln215">      }</a>
+<a name="ln216"> </a>
+<a name="ln217">//---------------------------------------------------------</a>
+<a name="ln218">//   deviceOutList</a>
+<a name="ln219">//---------------------------------------------------------</a>
+<a name="ln220"> </a>
+<a name="ln221">QStringList PortMidiDriver::deviceOutList() const</a>
+<a name="ln222">      {</a>
+<a name="ln223">      QStringList ol;</a>
+<a name="ln224">      int interf = Pm_CountDevices();</a>
+<a name="ln225">      for (PmDeviceID id = 0; id &lt; interf; id++) {</a>
+<a name="ln226">            const PmDeviceInfo* info = Pm_GetDeviceInfo((PmDeviceID)id);</a>
+<a name="ln227">            if(info-&gt;output)</a>
+<a name="ln228">                ol.append(QString(info-&gt;interf) + &quot;,&quot; + QString(info-&gt;name));</a>
+<a name="ln229">            }</a>
+<a name="ln230">      return ol;</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   getDeviceIn</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">int PortMidiDriver::getDeviceIn(const QString&amp; interfaceAndName)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      int interf = Pm_CountDevices();</a>
+<a name="ln240">      for (int id = 0; id &lt; interf; id++) {</a>
+<a name="ln241">            const PmDeviceInfo* info = Pm_GetDeviceInfo((PmDeviceID)id);</a>
+<a name="ln242">            if (info-&gt;input) {</a>
+<a name="ln243">                  if (QString(info-&gt;interf) + &quot;,&quot; + QString(info-&gt;name) == interfaceAndName)</a>
+<a name="ln244">                        return id;</a>
+<a name="ln245">                  }</a>
+<a name="ln246">            }</a>
+<a name="ln247">      return -1;</a>
+<a name="ln248">      }</a>
+<a name="ln249"> </a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251">//   getDeviceOut</a>
+<a name="ln252">//---------------------------------------------------------</a>
+<a name="ln253"> </a>
+<a name="ln254">int PortMidiDriver::getDeviceOut(const QString&amp; interfaceAndName)</a>
+<a name="ln255">      {</a>
+<a name="ln256">      int interf = Pm_CountDevices();</a>
+<a name="ln257">      for (int id = 0; id &lt; interf; id++) {</a>
+<a name="ln258">            const PmDeviceInfo* info = Pm_GetDeviceInfo((PmDeviceID)id);</a>
+<a name="ln259">            if (info-&gt;output) {</a>
+<a name="ln260">                  if (QString(info-&gt;interf) + &quot;,&quot; + QString(info-&gt;name) == interfaceAndName)</a>
+<a name="ln261">                        return id;</a>
+<a name="ln262">                  }</a>
+<a name="ln263">            }</a>
+<a name="ln264">      return -1;</a>
+<a name="ln265">      }</a>
+<a name="ln266"> </a>
+<a name="ln267">//---------------------------------------------------------</a>
+<a name="ln268">//   isSameCoreMidiIacBus</a>
+<a name="ln269">//    determines if both the input and output devices are the same shared CoreMIDI &quot;IAC&quot; bus</a>
+<a name="ln270">//---------------------------------------------------------</a>
+<a name="ln271"> </a>
+<a name="ln272">bool PortMidiDriver::isSameCoreMidiIacBus(const QString&amp; inInterfaceAndName, const QString&amp; outInterfaceAndName)</a>
+<a name="ln273">      {</a>
+<a name="ln274">      int interf = Pm_CountDevices();</a>
+<a name="ln275">      const PmDeviceInfo* inInfo = 0;</a>
+<a name="ln276">      const PmDeviceInfo* outInfo = 0;</a>
+<a name="ln277">      for (PmDeviceID id = 0; id &lt; interf; id++) {</a>
+<a name="ln278">            const PmDeviceInfo* info = Pm_GetDeviceInfo((PmDeviceID)id);</a>
+<a name="ln279">            if (info-&gt;input &amp;&amp; inInterfaceAndName.contains(info-&gt;name))</a>
+<a name="ln280">                  inInfo = info;</a>
+<a name="ln281">            if (info-&gt;output &amp;&amp; outInterfaceAndName.contains(info-&gt;name))</a>
+<a name="ln282">                  outInfo = info;</a>
+<a name="ln283">            }</a>
+<a name="ln284"> </a>
+<a name="ln285">      if (inInfo &amp;&amp; outInfo &amp;&amp;</a>
+<a name="ln286">          QString(inInfo-&gt;interf) == &quot;CoreMIDI&quot; &amp;&amp; QString(outInfo-&gt;interf) == &quot;CoreMIDI&quot; &amp;&amp;</a>
+<a name="ln287">          inInterfaceAndName.contains(&quot;IAC&quot;) &amp;&amp; outInterfaceAndName == inInterfaceAndName)</a>
+<a name="ln288">            return true;</a>
+<a name="ln289">      else</a>
+<a name="ln290">            return false;</a>
+<a name="ln291">      }</a>
+<a name="ln292">}</a>
+<a name="ln293"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

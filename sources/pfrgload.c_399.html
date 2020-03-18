@@ -1,0 +1,894 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pfrgload.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  pfrgload.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    FreeType PFR glyph loader (body).                                    */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2002-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &quot;pfrgload.h&quot;</a>
+<a name="ln20">#include &quot;pfrsbit.h&quot;</a>
+<a name="ln21">#include &quot;pfrload.h&quot;            /* for macro definitions */</a>
+<a name="ln22">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;pfrerror.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">#undef  FT_COMPONENT</a>
+<a name="ln27">#define FT_COMPONENT  trace_pfr</a>
+<a name="ln28"> </a>
+<a name="ln29"> </a>
+<a name="ln30">  /*************************************************************************/</a>
+<a name="ln31">  /*************************************************************************/</a>
+<a name="ln32">  /*****                                                               *****/</a>
+<a name="ln33">  /*****                      PFR GLYPH BUILDER                        *****/</a>
+<a name="ln34">  /*****                                                               *****/</a>
+<a name="ln35">  /*************************************************************************/</a>
+<a name="ln36">  /*************************************************************************/</a>
+<a name="ln37"> </a>
+<a name="ln38"> </a>
+<a name="ln39">  FT_LOCAL_DEF( void )</a>
+<a name="ln40">  pfr_glyph_init( PFR_Glyph       glyph,</a>
+<a name="ln41">                  FT_GlyphLoader  loader )</a>
+<a name="ln42">  {</a>
+<a name="ln43">    FT_ZERO( glyph );</a>
+<a name="ln44"> </a>
+<a name="ln45">    glyph-&gt;loader     = loader;</a>
+<a name="ln46">    glyph-&gt;path_begun = 0;</a>
+<a name="ln47"> </a>
+<a name="ln48">    FT_GlyphLoader_Rewind( loader );</a>
+<a name="ln49">  }</a>
+<a name="ln50"> </a>
+<a name="ln51"> </a>
+<a name="ln52">  FT_LOCAL_DEF( void )</a>
+<a name="ln53">  pfr_glyph_done( PFR_Glyph  glyph )</a>
+<a name="ln54">  {</a>
+<a name="ln55">    FT_Memory  memory = glyph-&gt;loader-&gt;memory;</a>
+<a name="ln56"> </a>
+<a name="ln57"> </a>
+<a name="ln58">    FT_FREE( glyph-&gt;x_control );</a>
+<a name="ln59">    glyph-&gt;y_control = NULL;</a>
+<a name="ln60"> </a>
+<a name="ln61">    glyph-&gt;max_xy_control = 0;</a>
+<a name="ln62">#if 0</a>
+<a name="ln63">    glyph-&gt;num_x_control  = 0;</a>
+<a name="ln64">    glyph-&gt;num_y_control  = 0;</a>
+<a name="ln65">#endif</a>
+<a name="ln66"> </a>
+<a name="ln67">    FT_FREE( glyph-&gt;subs );</a>
+<a name="ln68"> </a>
+<a name="ln69">    glyph-&gt;max_subs = 0;</a>
+<a name="ln70">    glyph-&gt;num_subs = 0;</a>
+<a name="ln71"> </a>
+<a name="ln72">    glyph-&gt;loader     = NULL;</a>
+<a name="ln73">    glyph-&gt;path_begun = 0;</a>
+<a name="ln74">  }</a>
+<a name="ln75"> </a>
+<a name="ln76"> </a>
+<a name="ln77">  /* close current contour, if any */</a>
+<a name="ln78">  static void</a>
+<a name="ln79">  pfr_glyph_close_contour( PFR_Glyph  glyph )</a>
+<a name="ln80">  {</a>
+<a name="ln81">    FT_GlyphLoader  loader  = glyph-&gt;loader;</a>
+<a name="ln82">    FT_Outline*     outline = &amp;loader-&gt;current.outline;</a>
+<a name="ln83">    FT_Int          last, first;</a>
+<a name="ln84"> </a>
+<a name="ln85"> </a>
+<a name="ln86">    if ( !glyph-&gt;path_begun )</a>
+<a name="ln87">      return;</a>
+<a name="ln88"> </a>
+<a name="ln89">    /* compute first and last point indices in current glyph outline */</a>
+<a name="ln90">    last  = outline-&gt;n_points - 1;</a>
+<a name="ln91">    first = 0;</a>
+<a name="ln92">    if ( outline-&gt;n_contours &gt; 0 )</a>
+<a name="ln93">      first = outline-&gt;contours[outline-&gt;n_contours - 1];</a>
+<a name="ln94"> </a>
+<a name="ln95">    /* if the last point falls on the same location than the first one */</a>
+<a name="ln96">    /* we need to delete it                                            */</a>
+<a name="ln97">    if ( last &gt; first )</a>
+<a name="ln98">    {</a>
+<a name="ln99">      FT_Vector*  p1 = outline-&gt;points + first;</a>
+<a name="ln100">      FT_Vector*  p2 = outline-&gt;points + last;</a>
+<a name="ln101"> </a>
+<a name="ln102"> </a>
+<a name="ln103">      if ( p1-&gt;x == p2-&gt;x &amp;&amp; p1-&gt;y == p2-&gt;y )</a>
+<a name="ln104">      {</a>
+<a name="ln105">        outline-&gt;n_points--;</a>
+<a name="ln106">        last--;</a>
+<a name="ln107">      }</a>
+<a name="ln108">    }</a>
+<a name="ln109"> </a>
+<a name="ln110">    /* don't add empty contours */</a>
+<a name="ln111">    if ( last &gt;= first )</a>
+<a name="ln112">      outline-&gt;contours[outline-&gt;n_contours++] = (short)last;</a>
+<a name="ln113"> </a>
+<a name="ln114">    glyph-&gt;path_begun = 0;</a>
+<a name="ln115">  }</a>
+<a name="ln116"> </a>
+<a name="ln117"> </a>
+<a name="ln118">  /* reset glyph to start the loading of a new glyph */</a>
+<a name="ln119">  static void</a>
+<a name="ln120">  pfr_glyph_start( PFR_Glyph  glyph )</a>
+<a name="ln121">  {</a>
+<a name="ln122">    glyph-&gt;path_begun = 0;</a>
+<a name="ln123">  }</a>
+<a name="ln124"> </a>
+<a name="ln125"> </a>
+<a name="ln126">  static FT_Error</a>
+<a name="ln127">  pfr_glyph_line_to( PFR_Glyph   glyph,</a>
+<a name="ln128">                     FT_Vector*  to )</a>
+<a name="ln129">  {</a>
+<a name="ln130">    FT_GlyphLoader  loader  = glyph-&gt;loader;</a>
+<a name="ln131">    FT_Outline*     outline = &amp;loader-&gt;current.outline;</a>
+<a name="ln132">    FT_Error        error;</a>
+<a name="ln133"> </a>
+<a name="ln134"> </a>
+<a name="ln135">    /* check that we have begun a new path */</a>
+<a name="ln136">    if ( !glyph-&gt;path_begun )</a>
+<a name="ln137">    {</a>
+<a name="ln138">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln139">      FT_ERROR(( &quot;pfr_glyph_line_to: invalid glyph data\n&quot; ));</a>
+<a name="ln140">      goto Exit;</a>
+<a name="ln141">    }</a>
+<a name="ln142"> </a>
+<a name="ln143">    error = FT_GLYPHLOADER_CHECK_POINTS( loader, 1, 0 );</a>
+<a name="ln144">    if ( !error )</a>
+<a name="ln145">    {</a>
+<a name="ln146">      FT_Int  n = outline-&gt;n_points;</a>
+<a name="ln147"> </a>
+<a name="ln148"> </a>
+<a name="ln149">      outline-&gt;points[n] = *to;</a>
+<a name="ln150">      outline-&gt;tags  [n] = FT_CURVE_TAG_ON;</a>
+<a name="ln151"> </a>
+<a name="ln152">      outline-&gt;n_points++;</a>
+<a name="ln153">    }</a>
+<a name="ln154"> </a>
+<a name="ln155">  Exit:</a>
+<a name="ln156">    return error;</a>
+<a name="ln157">  }</a>
+<a name="ln158"> </a>
+<a name="ln159"> </a>
+<a name="ln160">  static FT_Error</a>
+<a name="ln161">  pfr_glyph_curve_to( PFR_Glyph   glyph,</a>
+<a name="ln162">                      FT_Vector*  control1,</a>
+<a name="ln163">                      FT_Vector*  control2,</a>
+<a name="ln164">                      FT_Vector*  to )</a>
+<a name="ln165">  {</a>
+<a name="ln166">    FT_GlyphLoader  loader  = glyph-&gt;loader;</a>
+<a name="ln167">    FT_Outline*     outline = &amp;loader-&gt;current.outline;</a>
+<a name="ln168">    FT_Error        error;</a>
+<a name="ln169"> </a>
+<a name="ln170"> </a>
+<a name="ln171">    /* check that we have begun a new path */</a>
+<a name="ln172">    if ( !glyph-&gt;path_begun )</a>
+<a name="ln173">    {</a>
+<a name="ln174">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln175">      FT_ERROR(( &quot;pfr_glyph_line_to: invalid glyph data\n&quot; ));</a>
+<a name="ln176">      goto Exit;</a>
+<a name="ln177">    }</a>
+<a name="ln178"> </a>
+<a name="ln179">    error = FT_GLYPHLOADER_CHECK_POINTS( loader, 3, 0 );</a>
+<a name="ln180">    if ( !error )</a>
+<a name="ln181">    {</a>
+<a name="ln182">      FT_Vector*  vec = outline-&gt;points         + outline-&gt;n_points;</a>
+<a name="ln183">      FT_Byte*    tag = (FT_Byte*)outline-&gt;tags + outline-&gt;n_points;</a>
+<a name="ln184"> </a>
+<a name="ln185"> </a>
+<a name="ln186">      vec[0] = *control1;</a>
+<a name="ln187">      vec[1] = *control2;</a>
+<a name="ln188">      vec[2] = *to;</a>
+<a name="ln189">      tag[0] = FT_CURVE_TAG_CUBIC;</a>
+<a name="ln190">      tag[1] = FT_CURVE_TAG_CUBIC;</a>
+<a name="ln191">      tag[2] = FT_CURVE_TAG_ON;</a>
+<a name="ln192"> </a>
+<a name="ln193">      outline-&gt;n_points = (FT_Short)( outline-&gt;n_points + 3 );</a>
+<a name="ln194">    }</a>
+<a name="ln195"> </a>
+<a name="ln196">  Exit:</a>
+<a name="ln197">    return error;</a>
+<a name="ln198">  }</a>
+<a name="ln199"> </a>
+<a name="ln200"> </a>
+<a name="ln201">  static FT_Error</a>
+<a name="ln202">  pfr_glyph_move_to( PFR_Glyph   glyph,</a>
+<a name="ln203">                     FT_Vector*  to )</a>
+<a name="ln204">  {</a>
+<a name="ln205">    FT_GlyphLoader  loader  = glyph-&gt;loader;</a>
+<a name="ln206">    FT_Error        error;</a>
+<a name="ln207"> </a>
+<a name="ln208"> </a>
+<a name="ln209">    /* close current contour if any */</a>
+<a name="ln210">    pfr_glyph_close_contour( glyph );</a>
+<a name="ln211"> </a>
+<a name="ln212">    /* indicate that a new contour has started */</a>
+<a name="ln213">    glyph-&gt;path_begun = 1;</a>
+<a name="ln214"> </a>
+<a name="ln215">    /* check that there is space for a new contour and a new point */</a>
+<a name="ln216">    error = FT_GLYPHLOADER_CHECK_POINTS( loader, 1, 1 );</a>
+<a name="ln217">    if ( !error )</a>
+<a name="ln218">      /* add new start point */</a>
+<a name="ln219">      error = pfr_glyph_line_to( glyph, to );</a>
+<a name="ln220"> </a>
+<a name="ln221">    return error;</a>
+<a name="ln222">  }</a>
+<a name="ln223"> </a>
+<a name="ln224"> </a>
+<a name="ln225">  static void</a>
+<a name="ln226">  pfr_glyph_end( PFR_Glyph  glyph )</a>
+<a name="ln227">  {</a>
+<a name="ln228">    /* close current contour if any */</a>
+<a name="ln229">    pfr_glyph_close_contour( glyph );</a>
+<a name="ln230"> </a>
+<a name="ln231">    /* merge the current glyph into the stack */</a>
+<a name="ln232">    FT_GlyphLoader_Add( glyph-&gt;loader );</a>
+<a name="ln233">  }</a>
+<a name="ln234"> </a>
+<a name="ln235"> </a>
+<a name="ln236">  /*************************************************************************/</a>
+<a name="ln237">  /*************************************************************************/</a>
+<a name="ln238">  /*****                                                               *****/</a>
+<a name="ln239">  /*****                      PFR GLYPH LOADER                         *****/</a>
+<a name="ln240">  /*****                                                               *****/</a>
+<a name="ln241">  /*************************************************************************/</a>
+<a name="ln242">  /*************************************************************************/</a>
+<a name="ln243"> </a>
+<a name="ln244"> </a>
+<a name="ln245">  /* load a simple glyph */</a>
+<a name="ln246">  static FT_Error</a>
+<a name="ln247">  pfr_glyph_load_simple( PFR_Glyph  glyph,</a>
+<a name="ln248">                         FT_Byte*   p,</a>
+<a name="ln249">                         FT_Byte*   limit )</a>
+<a name="ln250">  {</a>
+<a name="ln251">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln252">    FT_Memory  memory = glyph-&gt;loader-&gt;memory;</a>
+<a name="ln253">    FT_UInt    flags, x_count, y_count, i, count, mask;</a>
+<a name="ln254">    FT_Int     x;</a>
+<a name="ln255"> </a>
+<a name="ln256"> </a>
+<a name="ln257">    PFR_CHECK( 1 );</a>
+<a name="ln258">    flags = PFR_NEXT_BYTE( p );</a>
+<a name="ln259"> </a>
+<a name="ln260">    /* test for composite glyphs */</a>
+<a name="ln261">    if ( flags &amp; PFR_GLYPH_IS_COMPOUND )</a>
+<a name="ln262">      goto Failure;</a>
+<a name="ln263"> </a>
+<a name="ln264">    x_count = 0;</a>
+<a name="ln265">    y_count = 0;</a>
+<a name="ln266"> </a>
+<a name="ln267">    if ( flags &amp; PFR_GLYPH_1BYTE_XYCOUNT )</a>
+<a name="ln268">    {</a>
+<a name="ln269">      PFR_CHECK( 1 );</a>
+<a name="ln270">      count   = PFR_NEXT_BYTE( p );</a>
+<a name="ln271">      x_count = count &amp; 15;</a>
+<a name="ln272">      y_count = count &gt;&gt; 4;</a>
+<a name="ln273">    }</a>
+<a name="ln274">    else</a>
+<a name="ln275">    {</a>
+<a name="ln276">      if ( flags &amp; PFR_GLYPH_XCOUNT )</a>
+<a name="ln277">      {</a>
+<a name="ln278">        PFR_CHECK( 1 );</a>
+<a name="ln279">        x_count = PFR_NEXT_BYTE( p );</a>
+<a name="ln280">      }</a>
+<a name="ln281"> </a>
+<a name="ln282">      if ( flags &amp; PFR_GLYPH_YCOUNT )</a>
+<a name="ln283">      {</a>
+<a name="ln284">        PFR_CHECK( 1 );</a>
+<a name="ln285">        y_count = PFR_NEXT_BYTE( p );</a>
+<a name="ln286">      }</a>
+<a name="ln287">    }</a>
+<a name="ln288"> </a>
+<a name="ln289">    count = x_count + y_count;</a>
+<a name="ln290"> </a>
+<a name="ln291">    /* re-allocate array when necessary */</a>
+<a name="ln292">    if ( count &gt; glyph-&gt;max_xy_control )</a>
+<a name="ln293">    {</a>
+<a name="ln294">      FT_UInt  new_max = FT_PAD_CEIL( count, 8 );</a>
+<a name="ln295"> </a>
+<a name="ln296"> </a>
+<a name="ln297">      if ( FT_RENEW_ARRAY( glyph-&gt;x_control,</a>
+<a name="ln298">                           glyph-&gt;max_xy_control,</a>
+<a name="ln299">                           new_max ) )</a>
+<a name="ln300">        goto Exit;</a>
+<a name="ln301"> </a>
+<a name="ln302">      glyph-&gt;max_xy_control = new_max;</a>
+<a name="ln303">    }</a>
+<a name="ln304"> </a>
+<a name="ln305">    glyph-&gt;y_control = glyph-&gt;x_control + x_count;</a>
+<a name="ln306"> </a>
+<a name="ln307">    mask  = 0;</a>
+<a name="ln308">    x     = 0;</a>
+<a name="ln309"> </a>
+<a name="ln310">    for ( i = 0; i &lt; count; i++ )</a>
+<a name="ln311">    {</a>
+<a name="ln312">      if ( ( i &amp; 7 ) == 0 )</a>
+<a name="ln313">      {</a>
+<a name="ln314">        PFR_CHECK( 1 );</a>
+<a name="ln315">        mask = PFR_NEXT_BYTE( p );</a>
+<a name="ln316">      }</a>
+<a name="ln317"> </a>
+<a name="ln318">      if ( mask &amp; 1 )</a>
+<a name="ln319">      {</a>
+<a name="ln320">        PFR_CHECK( 2 );</a>
+<a name="ln321">        x = PFR_NEXT_SHORT( p );</a>
+<a name="ln322">      }</a>
+<a name="ln323">      else</a>
+<a name="ln324">      {</a>
+<a name="ln325">        PFR_CHECK( 1 );</a>
+<a name="ln326">        x += PFR_NEXT_BYTE( p );</a>
+<a name="ln327">      }</a>
+<a name="ln328"> </a>
+<a name="ln329">      glyph-&gt;x_control[i] = x;</a>
+<a name="ln330"> </a>
+<a name="ln331">      mask &gt;&gt;= 1;</a>
+<a name="ln332">    }</a>
+<a name="ln333"> </a>
+<a name="ln334">    /* XXX: for now we ignore the secondary stroke and edge definitions */</a>
+<a name="ln335">    /*      since we don't want to support native PFR hinting           */</a>
+<a name="ln336">    /*                                                                  */</a>
+<a name="ln337">    if ( flags &amp; PFR_GLYPH_EXTRA_ITEMS )</a>
+<a name="ln338">    {</a>
+<a name="ln339">      error = pfr_extra_items_skip( &amp;p, limit );</a>
+<a name="ln340">      if ( error )</a>
+<a name="ln341">        goto Exit;</a>
+<a name="ln342">    }</a>
+<a name="ln343"> </a>
+<a name="ln344">    pfr_glyph_start( glyph );</a>
+<a name="ln345"> </a>
+<a name="ln346">    /* now load a simple glyph */</a>
+<a name="ln347">    {</a>
+<a name="ln348">      FT_Vector   pos[4];</a>
+<a name="ln349">      FT_Vector*  cur;</a>
+<a name="ln350"> </a>
+<a name="ln351"> </a>
+<a name="ln352">      pos[0].x = pos[0].y = 0;</a>
+<a name="ln353">      pos[3]   = pos[0];</a>
+<a name="ln354"> </a>
+<a name="ln355">      for (;;)</a>
+<a name="ln356">      {</a>
+<a name="ln357">        FT_UInt  format, format_low, args_format = 0, args_count, n;</a>
+<a name="ln358"> </a>
+<a name="ln359"> </a>
+<a name="ln360">        /***************************************************************/</a>
+<a name="ln361">        /*  read instruction                                           */</a>
+<a name="ln362">        /*                                                             */</a>
+<a name="ln363">        PFR_CHECK( 1 );</a>
+<a name="ln364">        format     = PFR_NEXT_BYTE( p );</a>
+<a name="ln365">        format_low = format &amp; 15;</a>
+<a name="ln366"> </a>
+<a name="ln367">        switch ( format &gt;&gt; 4 )</a>
+<a name="ln368">        {</a>
+<a name="ln369">        case 0:                             /* end glyph */</a>
+<a name="ln370">          FT_TRACE6(( &quot;- end glyph&quot; ));</a>
+<a name="ln371">          args_count = 0;</a>
+<a name="ln372">          break;</a>
+<a name="ln373"> </a>
+<a name="ln374">        case 1:                             /* general line operation */</a>
+<a name="ln375">          FT_TRACE6(( &quot;- general line&quot; ));</a>
+<a name="ln376">          goto Line1;</a>
+<a name="ln377"> </a>
+<a name="ln378">        case 4:                             /* move to inside contour  */</a>
+<a name="ln379">          FT_TRACE6(( &quot;- move to inside&quot; ));</a>
+<a name="ln380">          goto Line1;</a>
+<a name="ln381"> </a>
+<a name="ln382">        case 5:                             /* move to outside contour */</a>
+<a name="ln383">          FT_TRACE6(( &quot;- move to outside&quot; ));</a>
+<a name="ln384">        Line1:</a>
+<a name="ln385">          args_format = format_low;</a>
+<a name="ln386">          args_count  = 1;</a>
+<a name="ln387">          break;</a>
+<a name="ln388"> </a>
+<a name="ln389">        case 2:                             /* horizontal line to */</a>
+<a name="ln390">          FT_TRACE6(( &quot;- horizontal line to cx.%d&quot;, format_low ));</a>
+<a name="ln391">          if ( format_low &gt;= x_count )</a>
+<a name="ln392">            goto Failure;</a>
+<a name="ln393">          pos[0].x   = glyph-&gt;x_control[format_low];</a>
+<a name="ln394">          pos[0].y   = pos[3].y;</a>
+<a name="ln395">          pos[3]     = pos[0];</a>
+<a name="ln396">          args_count = 0;</a>
+<a name="ln397">          break;</a>
+<a name="ln398"> </a>
+<a name="ln399">        case 3:                             /* vertical line to */</a>
+<a name="ln400">          FT_TRACE6(( &quot;- vertical line to cy.%d&quot;, format_low ));</a>
+<a name="ln401">          if ( format_low &gt;= y_count )</a>
+<a name="ln402">            goto Failure;</a>
+<a name="ln403">          pos[0].x   = pos[3].x;</a>
+<a name="ln404">          pos[0].y   = glyph-&gt;y_control[format_low];</a>
+<a name="ln405">          pos[3]     = pos[0];</a>
+<a name="ln406">          args_count = 0;</a>
+<a name="ln407">          break;</a>
+<a name="ln408"> </a>
+<a name="ln409">        case 6:                             /* horizontal to vertical curve */</a>
+<a name="ln410">          FT_TRACE6(( &quot;- hv curve &quot; ));</a>
+<a name="ln411">          args_format = 0xB8E;</a>
+<a name="ln412">          args_count  = 3;</a>
+<a name="ln413">          break;</a>
+<a name="ln414"> </a>
+<a name="ln415">        case 7:                             /* vertical to horizontal curve */</a>
+<a name="ln416">          FT_TRACE6(( &quot;- vh curve&quot; ));</a>
+<a name="ln417">          args_format = 0xE2B;</a>
+<a name="ln418">          args_count  = 3;</a>
+<a name="ln419">          break;</a>
+<a name="ln420"> </a>
+<a name="ln421">        default:                            /* general curve to */</a>
+<a name="ln422">          FT_TRACE6(( &quot;- general curve&quot; ));</a>
+<a name="ln423">          args_count  = 4;</a>
+<a name="ln424">          args_format = format_low;</a>
+<a name="ln425">        }</a>
+<a name="ln426"> </a>
+<a name="ln427">        /***********************************************************/</a>
+<a name="ln428">        /*  now read arguments                                     */</a>
+<a name="ln429">        /*                                                         */</a>
+<a name="ln430">        cur = pos;</a>
+<a name="ln431">        for ( n = 0; n &lt; args_count; n++ )</a>
+<a name="ln432">        {</a>
+<a name="ln433">          FT_UInt  idx;</a>
+<a name="ln434">          FT_Int   delta;</a>
+<a name="ln435"> </a>
+<a name="ln436"> </a>
+<a name="ln437">          /* read the X argument */</a>
+<a name="ln438">          switch ( args_format &amp; 3 )</a>
+<a name="ln439">          {</a>
+<a name="ln440">          case 0:                           /* 8-bit index */</a>
+<a name="ln441">            PFR_CHECK( 1 );</a>
+<a name="ln442">            idx  = PFR_NEXT_BYTE( p );</a>
+<a name="ln443">            if ( idx &gt;= x_count )</a>
+<a name="ln444">              goto Failure;</a>
+<a name="ln445">            cur-&gt;x = glyph-&gt;x_control[idx];</a>
+<a name="ln446">            FT_TRACE7(( &quot; cx#%d&quot;, idx ));</a>
+<a name="ln447">            break;</a>
+<a name="ln448"> </a>
+<a name="ln449">          case 1:                           /* 16-bit value */</a>
+<a name="ln450">            PFR_CHECK( 2 );</a>
+<a name="ln451">            cur-&gt;x = PFR_NEXT_SHORT( p );</a>
+<a name="ln452">            FT_TRACE7(( &quot; x.%d&quot;, cur-&gt;x ));</a>
+<a name="ln453">            break;</a>
+<a name="ln454"> </a>
+<a name="ln455">          case 2:                           /* 8-bit delta */</a>
+<a name="ln456">            PFR_CHECK( 1 );</a>
+<a name="ln457">            delta  = PFR_NEXT_INT8( p );</a>
+<a name="ln458">            cur-&gt;x = pos[3].x + delta;</a>
+<a name="ln459">            FT_TRACE7(( &quot; dx.%d&quot;, delta ));</a>
+<a name="ln460">            break;</a>
+<a name="ln461"> </a>
+<a name="ln462">          default:</a>
+<a name="ln463">            FT_TRACE7(( &quot; |&quot; ));</a>
+<a name="ln464">            cur-&gt;x = pos[3].x;</a>
+<a name="ln465">          }</a>
+<a name="ln466"> </a>
+<a name="ln467">          /* read the Y argument */</a>
+<a name="ln468">          switch ( ( args_format &gt;&gt; 2 ) &amp; 3 )</a>
+<a name="ln469">          {</a>
+<a name="ln470">          case 0:                           /* 8-bit index */</a>
+<a name="ln471">            PFR_CHECK( 1 );</a>
+<a name="ln472">            idx  = PFR_NEXT_BYTE( p );</a>
+<a name="ln473">            if ( idx &gt;= y_count )</a>
+<a name="ln474">              goto Failure;</a>
+<a name="ln475">            cur-&gt;y = glyph-&gt;y_control[idx];</a>
+<a name="ln476">            FT_TRACE7(( &quot; cy#%d&quot;, idx ));</a>
+<a name="ln477">            break;</a>
+<a name="ln478"> </a>
+<a name="ln479">          case 1:                           /* 16-bit absolute value */</a>
+<a name="ln480">            PFR_CHECK( 2 );</a>
+<a name="ln481">            cur-&gt;y = PFR_NEXT_SHORT( p );</a>
+<a name="ln482">            FT_TRACE7(( &quot; y.%d&quot;, cur-&gt;y ));</a>
+<a name="ln483">            break;</a>
+<a name="ln484"> </a>
+<a name="ln485">          case 2:                           /* 8-bit delta */</a>
+<a name="ln486">            PFR_CHECK( 1 );</a>
+<a name="ln487">            delta  = PFR_NEXT_INT8( p );</a>
+<a name="ln488">            cur-&gt;y = pos[3].y + delta;</a>
+<a name="ln489">            FT_TRACE7(( &quot; dy.%d&quot;, delta ));</a>
+<a name="ln490">            break;</a>
+<a name="ln491"> </a>
+<a name="ln492">          default:</a>
+<a name="ln493">            FT_TRACE7(( &quot; -&quot; ));</a>
+<a name="ln494">            cur-&gt;y = pos[3].y;</a>
+<a name="ln495">          }</a>
+<a name="ln496"> </a>
+<a name="ln497">          /* read the additional format flag for the general curve */</a>
+<a name="ln498">          if ( n == 0 &amp;&amp; args_count == 4 )</a>
+<a name="ln499">          {</a>
+<a name="ln500">            PFR_CHECK( 1 );</a>
+<a name="ln501">            args_format = PFR_NEXT_BYTE( p );</a>
+<a name="ln502">            args_count--;</a>
+<a name="ln503">          }</a>
+<a name="ln504">          else</a>
+<a name="ln505">            args_format &gt;&gt;= 4;</a>
+<a name="ln506"> </a>
+<a name="ln507">          /* save the previous point */</a>
+<a name="ln508">          pos[3] = cur[0];</a>
+<a name="ln509">          cur++;</a>
+<a name="ln510">        }</a>
+<a name="ln511"> </a>
+<a name="ln512">        FT_TRACE7(( &quot;\n&quot; ));</a>
+<a name="ln513"> </a>
+<a name="ln514">        /***********************************************************/</a>
+<a name="ln515">        /*  finally, execute instruction                           */</a>
+<a name="ln516">        /*                                                         */</a>
+<a name="ln517">        switch ( format &gt;&gt; 4 )</a>
+<a name="ln518">        {</a>
+<a name="ln519">        case 0:                             /* end glyph =&gt; EXIT */</a>
+<a name="ln520">          pfr_glyph_end( glyph );</a>
+<a name="ln521">          goto Exit;</a>
+<a name="ln522"> </a>
+<a name="ln523">        case 1:                             /* line operations */</a>
+<a name="ln524">        case 2:</a>
+<a name="ln525">        case 3:</a>
+<a name="ln526">          error = pfr_glyph_line_to( glyph, pos );</a>
+<a name="ln527">          goto Test_Error;</a>
+<a name="ln528"> </a>
+<a name="ln529">        case 4:                             /* move to inside contour  */</a>
+<a name="ln530">        case 5:                             /* move to outside contour */</a>
+<a name="ln531">          error = pfr_glyph_move_to( glyph, pos );</a>
+<a name="ln532">          goto Test_Error;</a>
+<a name="ln533"> </a>
+<a name="ln534">        default:                            /* curve operations */</a>
+<a name="ln535">          error = pfr_glyph_curve_to( glyph, pos, pos + 1, pos + 2 );</a>
+<a name="ln536"> </a>
+<a name="ln537">        Test_Error:  /* test error condition */</a>
+<a name="ln538">          if ( error )</a>
+<a name="ln539">            goto Exit;</a>
+<a name="ln540">        }</a>
+<a name="ln541">      } /* for (;;) */</a>
+<a name="ln542">    }</a>
+<a name="ln543"> </a>
+<a name="ln544">  Exit:</a>
+<a name="ln545">    return error;</a>
+<a name="ln546"> </a>
+<a name="ln547">  Failure:</a>
+<a name="ln548">  Too_Short:</a>
+<a name="ln549">    error = FT_THROW( Invalid_Table );</a>
+<a name="ln550">    FT_ERROR(( &quot;pfr_glyph_load_simple: invalid glyph data\n&quot; ));</a>
+<a name="ln551">    goto Exit;</a>
+<a name="ln552">  }</a>
+<a name="ln553"> </a>
+<a name="ln554"> </a>
+<a name="ln555">  /* load a composite/compound glyph */</a>
+<a name="ln556">  static FT_Error</a>
+<a name="ln557">  pfr_glyph_load_compound( PFR_Glyph  glyph,</a>
+<a name="ln558">                           FT_Byte*   p,</a>
+<a name="ln559">                           FT_Byte*   limit )</a>
+<a name="ln560">  {</a>
+<a name="ln561">    FT_Error        error  = FT_Err_Ok;</a>
+<a name="ln562">    FT_GlyphLoader  loader = glyph-&gt;loader;</a>
+<a name="ln563">    FT_Memory       memory = loader-&gt;memory;</a>
+<a name="ln564">    PFR_SubGlyph    subglyph;</a>
+<a name="ln565">    FT_UInt         flags, i, count, org_count;</a>
+<a name="ln566">    FT_Int          x_pos, y_pos;</a>
+<a name="ln567"> </a>
+<a name="ln568"> </a>
+<a name="ln569">    PFR_CHECK( 1 );</a>
+<a name="ln570">    flags = PFR_NEXT_BYTE( p );</a>
+<a name="ln571"> </a>
+<a name="ln572">    /* test for composite glyphs */</a>
+<a name="ln573">    if ( !( flags &amp; PFR_GLYPH_IS_COMPOUND ) )</a>
+<a name="ln574">      goto Failure;</a>
+<a name="ln575"> </a>
+<a name="ln576">    count = flags &amp; 0x3F;</a>
+<a name="ln577"> </a>
+<a name="ln578">    /* ignore extra items when present */</a>
+<a name="ln579">    /*                                 */</a>
+<a name="ln580">    if ( flags &amp; PFR_GLYPH_EXTRA_ITEMS )</a>
+<a name="ln581">    {</a>
+<a name="ln582">      error = pfr_extra_items_skip( &amp;p, limit );</a>
+<a name="ln583">      if (error) goto Exit;</a>
+<a name="ln584">    }</a>
+<a name="ln585"> </a>
+<a name="ln586">    /* we can't rely on the FT_GlyphLoader to load sub-glyphs, because   */</a>
+<a name="ln587">    /* the PFR format is dumb, using direct file offsets to point to the */</a>
+<a name="ln588">    /* sub-glyphs (instead of glyph indices).  Sigh.                     */</a>
+<a name="ln589">    /*                                                                   */</a>
+<a name="ln590">    /* For now, we load the list of sub-glyphs into a different array    */</a>
+<a name="ln591">    /* but this will prevent us from using the auto-hinter at its best   */</a>
+<a name="ln592">    /* quality.                                                          */</a>
+<a name="ln593">    /*                                                                   */</a>
+<a name="ln594">    org_count = glyph-&gt;num_subs;</a>
+<a name="ln595"> </a>
+<a name="ln596">    if ( org_count + count &gt; glyph-&gt;max_subs )</a>
+<a name="ln597">    {</a>
+<a name="ln598">      FT_UInt  new_max = ( org_count + count + 3 ) &amp; (FT_UInt)-4;</a>
+<a name="ln599"> </a>
+<a name="ln600"> </a>
+<a name="ln601">      /* we arbitrarily limit the number of subglyphs */</a>
+<a name="ln602">      /* to avoid endless recursion                   */</a>
+<a name="ln603">      if ( new_max &gt; 64 )</a>
+<a name="ln604">      {</a>
+<a name="ln605">        error = FT_THROW( Invalid_Table );</a>
+<a name="ln606">        FT_ERROR(( &quot;pfr_glyph_load_compound:&quot;</a>
+<a name="ln607">                   &quot; too many compound glyphs components\n&quot; ));</a>
+<a name="ln608">        goto Exit;</a>
+<a name="ln609">      }</a>
+<a name="ln610"> </a>
+<a name="ln611">      if ( FT_RENEW_ARRAY( glyph-&gt;subs, glyph-&gt;max_subs, new_max ) )</a>
+<a name="ln612">        goto Exit;</a>
+<a name="ln613"> </a>
+<a name="ln614">      glyph-&gt;max_subs = new_max;</a>
+<a name="ln615">    }</a>
+<a name="ln616"> </a>
+<a name="ln617">    subglyph = glyph-&gt;subs + org_count;</a>
+<a name="ln618"> </a>
+<a name="ln619">    for ( i = 0; i &lt; count; i++, subglyph++ )</a>
+<a name="ln620">    {</a>
+<a name="ln621">      FT_UInt  format;</a>
+<a name="ln622"> </a>
+<a name="ln623"> </a>
+<a name="ln624">      x_pos = 0;</a>
+<a name="ln625">      y_pos = 0;</a>
+<a name="ln626"> </a>
+<a name="ln627">      PFR_CHECK( 1 );</a>
+<a name="ln628">      format = PFR_NEXT_BYTE( p );</a>
+<a name="ln629"> </a>
+<a name="ln630">      /* read scale when available */</a>
+<a name="ln631">      subglyph-&gt;x_scale = 0x10000L;</a>
+<a name="ln632">      if ( format &amp; PFR_SUBGLYPH_XSCALE )</a>
+<a name="ln633">      {</a>
+<a name="ln634">        PFR_CHECK( 2 );</a>
+<a name="ln635">        subglyph-&gt;x_scale = PFR_NEXT_SHORT( p ) * 16;</a>
+<a name="ln636">      }</a>
+<a name="ln637"> </a>
+<a name="ln638">      subglyph-&gt;y_scale = 0x10000L;</a>
+<a name="ln639">      if ( format &amp; PFR_SUBGLYPH_YSCALE )</a>
+<a name="ln640">      {</a>
+<a name="ln641">        PFR_CHECK( 2 );</a>
+<a name="ln642">        subglyph-&gt;y_scale = PFR_NEXT_SHORT( p ) * 16;</a>
+<a name="ln643">      }</a>
+<a name="ln644"> </a>
+<a name="ln645">      /* read offset */</a>
+<a name="ln646">      switch ( format &amp; 3 )</a>
+<a name="ln647">      {</a>
+<a name="ln648">      case 1:</a>
+<a name="ln649">        PFR_CHECK( 2 );</a>
+<a name="ln650">        x_pos = PFR_NEXT_SHORT( p );</a>
+<a name="ln651">        break;</a>
+<a name="ln652"> </a>
+<a name="ln653">      case 2:</a>
+<a name="ln654">        PFR_CHECK( 1 );</a>
+<a name="ln655">        x_pos += PFR_NEXT_INT8( p );</a>
+<a name="ln656">        break;</a>
+<a name="ln657"> </a>
+<a name="ln658">      default:</a>
+<a name="ln659">        ;</a>
+<a name="ln660">      }</a>
+<a name="ln661"> </a>
+<a name="ln662">      switch ( ( format &gt;&gt; 2 ) &amp; 3 )</a>
+<a name="ln663">      {</a>
+<a name="ln664">      case 1:</a>
+<a name="ln665">        PFR_CHECK( 2 );</a>
+<a name="ln666">        y_pos = PFR_NEXT_SHORT( p );</a>
+<a name="ln667">        break;</a>
+<a name="ln668"> </a>
+<a name="ln669">      case 2:</a>
+<a name="ln670">        PFR_CHECK( 1 );</a>
+<a name="ln671">        y_pos += PFR_NEXT_INT8( p );</a>
+<a name="ln672">        break;</a>
+<a name="ln673"> </a>
+<a name="ln674">      default:</a>
+<a name="ln675">        ;</a>
+<a name="ln676">      }</a>
+<a name="ln677"> </a>
+<a name="ln678">      subglyph-&gt;x_delta = x_pos;</a>
+<a name="ln679">      subglyph-&gt;y_delta = y_pos;</a>
+<a name="ln680"> </a>
+<a name="ln681">      /* read glyph position and size now */</a>
+<a name="ln682">      if ( format &amp; PFR_SUBGLYPH_2BYTE_SIZE )</a>
+<a name="ln683">      {</a>
+<a name="ln684">        PFR_CHECK( 2 );</a>
+<a name="ln685">        subglyph-&gt;gps_size = PFR_NEXT_USHORT( p );</a>
+<a name="ln686">      }</a>
+<a name="ln687">      else</a>
+<a name="ln688">      {</a>
+<a name="ln689">        PFR_CHECK( 1 );</a>
+<a name="ln690">        subglyph-&gt;gps_size = PFR_NEXT_BYTE( p );</a>
+<a name="ln691">      }</a>
+<a name="ln692"> </a>
+<a name="ln693">      if ( format &amp; PFR_SUBGLYPH_3BYTE_OFFSET )</a>
+<a name="ln694">      {</a>
+<a name="ln695">        PFR_CHECK( 3 );</a>
+<a name="ln696">        subglyph-&gt;gps_offset = PFR_NEXT_ULONG( p );</a>
+<a name="ln697">      }</a>
+<a name="ln698">      else</a>
+<a name="ln699">      {</a>
+<a name="ln700">        PFR_CHECK( 2 );</a>
+<a name="ln701">        subglyph-&gt;gps_offset = PFR_NEXT_USHORT( p );</a>
+<a name="ln702">      }</a>
+<a name="ln703"> </a>
+<a name="ln704">      glyph-&gt;num_subs++;</a>
+<a name="ln705">    }</a>
+<a name="ln706"> </a>
+<a name="ln707">  Exit:</a>
+<a name="ln708">    return error;</a>
+<a name="ln709"> </a>
+<a name="ln710">  Failure:</a>
+<a name="ln711">  Too_Short:</a>
+<a name="ln712">    error = FT_THROW( Invalid_Table );</a>
+<a name="ln713">    FT_ERROR(( &quot;pfr_glyph_load_compound: invalid glyph data\n&quot; ));</a>
+<a name="ln714">    goto Exit;</a>
+<a name="ln715">  }</a>
+<a name="ln716"> </a>
+<a name="ln717"> </a>
+<a name="ln718">  static FT_Error</a>
+<a name="ln719">  pfr_glyph_load_rec( PFR_Glyph  glyph,</a>
+<a name="ln720">                      FT_Stream  stream,</a>
+<a name="ln721">                      FT_ULong   gps_offset,</a>
+<a name="ln722">                      FT_ULong   offset,</a>
+<a name="ln723">                      FT_ULong   size )</a>
+<a name="ln724">  {</a>
+<a name="ln725">    FT_Error  error;</a>
+<a name="ln726">    FT_Byte*  p;</a>
+<a name="ln727">    FT_Byte*  limit;</a>
+<a name="ln728"> </a>
+<a name="ln729"> </a>
+<a name="ln730">    if ( FT_STREAM_SEEK( gps_offset + offset ) ||</a>
+<a name="ln731">         FT_FRAME_ENTER( size )                )</a>
+<a name="ln732">      goto Exit;</a>
+<a name="ln733"> </a>
+<a name="ln734">    p     = (FT_Byte*)stream-&gt;cursor;</a>
+<a name="ln735">    limit = p + size;</a>
+<a name="ln736"> </a>
+<a name="ln737">    if ( size &gt; 0 &amp;&amp; *p &amp; PFR_GLYPH_IS_COMPOUND )</a>
+<a name="ln738">    {</a>
+<a name="ln739">      FT_UInt         n, old_count, count;</a>
+<a name="ln740">      FT_GlyphLoader  loader = glyph-&gt;loader;</a>
+<a name="ln741">      FT_Outline*     base   = &amp;loader-&gt;base.outline;</a>
+<a name="ln742"> </a>
+<a name="ln743"> </a>
+<a name="ln744">      old_count = glyph-&gt;num_subs;</a>
+<a name="ln745"> </a>
+<a name="ln746">      /* this is a compound glyph - load it */</a>
+<a name="ln747">      error = pfr_glyph_load_compound( glyph, p, limit );</a>
+<a name="ln748"> </a>
+<a name="ln749">      FT_FRAME_EXIT();</a>
+<a name="ln750"> </a>
+<a name="ln751">      if ( error )</a>
+<a name="ln752">        goto Exit;</a>
+<a name="ln753"> </a>
+<a name="ln754">      count = glyph-&gt;num_subs - old_count;</a>
+<a name="ln755"> </a>
+<a name="ln756">      FT_TRACE4(( &quot;compound glyph with %d elements (offset %lu):\n&quot;,</a>
+<a name="ln757">                  count, offset ));</a>
+<a name="ln758"> </a>
+<a name="ln759">      /* now, load each individual glyph */</a>
+<a name="ln760">      for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln761">      {</a>
+<a name="ln762">        FT_Int        i, old_points, num_points;</a>
+<a name="ln763">        PFR_SubGlyph  subglyph;</a>
+<a name="ln764"> </a>
+<a name="ln765"> </a>
+<a name="ln766">        FT_TRACE4(( &quot;  subglyph %d:\n&quot;, n ));</a>
+<a name="ln767"> </a>
+<a name="ln768">        subglyph   = glyph-&gt;subs + old_count + n;</a>
+<a name="ln769">        old_points = base-&gt;n_points;</a>
+<a name="ln770"> </a>
+<a name="ln771">        error = pfr_glyph_load_rec( glyph, stream, gps_offset,</a>
+<a name="ln772">                                    subglyph-&gt;gps_offset,</a>
+<a name="ln773">                                    subglyph-&gt;gps_size );</a>
+<a name="ln774">        if ( error )</a>
+<a name="ln775">          break;</a>
+<a name="ln776"> </a>
+<a name="ln777">        /* note that `glyph-&gt;subs' might have been re-allocated */</a>
+<a name="ln778">        subglyph   = glyph-&gt;subs + old_count + n;</a>
+<a name="ln779">        num_points = base-&gt;n_points - old_points;</a>
+<a name="ln780"> </a>
+<a name="ln781">        /* translate and eventually scale the new glyph points */</a>
+<a name="ln782">        if ( subglyph-&gt;x_scale != 0x10000L || subglyph-&gt;y_scale != 0x10000L )</a>
+<a name="ln783">        {</a>
+<a name="ln784">          FT_Vector*  vec = base-&gt;points + old_points;</a>
+<a name="ln785"> </a>
+<a name="ln786"> </a>
+<a name="ln787">          for ( i = 0; i &lt; num_points; i++, vec++ )</a>
+<a name="ln788">          {</a>
+<a name="ln789">            vec-&gt;x = FT_MulFix( vec-&gt;x, subglyph-&gt;x_scale ) +</a>
+<a name="ln790">                       subglyph-&gt;x_delta;</a>
+<a name="ln791">            vec-&gt;y = FT_MulFix( vec-&gt;y, subglyph-&gt;y_scale ) +</a>
+<a name="ln792">                       subglyph-&gt;y_delta;</a>
+<a name="ln793">          }</a>
+<a name="ln794">        }</a>
+<a name="ln795">        else</a>
+<a name="ln796">        {</a>
+<a name="ln797">          FT_Vector*  vec = loader-&gt;base.outline.points + old_points;</a>
+<a name="ln798"> </a>
+<a name="ln799"> </a>
+<a name="ln800">          for ( i = 0; i &lt; num_points; i++, vec++ )</a>
+<a name="ln801">          {</a>
+<a name="ln802">            vec-&gt;x += subglyph-&gt;x_delta;</a>
+<a name="ln803">            vec-&gt;y += subglyph-&gt;y_delta;</a>
+<a name="ln804">          }</a>
+<a name="ln805">        }</a>
+<a name="ln806"> </a>
+<a name="ln807">        /* proceed to next sub-glyph */</a>
+<a name="ln808">      }</a>
+<a name="ln809"> </a>
+<a name="ln810">      FT_TRACE4(( &quot;end compound glyph with %d elements\n&quot;, count ));</a>
+<a name="ln811">    }</a>
+<a name="ln812">    else</a>
+<a name="ln813">    {</a>
+<a name="ln814">      FT_TRACE4(( &quot;simple glyph (offset %lu)\n&quot;, offset ));</a>
+<a name="ln815"> </a>
+<a name="ln816">      /* load a simple glyph */</a>
+<a name="ln817">      error = pfr_glyph_load_simple( glyph, p, limit );</a>
+<a name="ln818"> </a>
+<a name="ln819">      FT_FRAME_EXIT();</a>
+<a name="ln820">    }</a>
+<a name="ln821"> </a>
+<a name="ln822">  Exit:</a>
+<a name="ln823">    return error;</a>
+<a name="ln824">  }</a>
+<a name="ln825"> </a>
+<a name="ln826"> </a>
+<a name="ln827">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln828">  pfr_glyph_load( PFR_Glyph  glyph,</a>
+<a name="ln829">                  FT_Stream  stream,</a>
+<a name="ln830">                  FT_ULong   gps_offset,</a>
+<a name="ln831">                  FT_ULong   offset,</a>
+<a name="ln832">                  FT_ULong   size )</a>
+<a name="ln833">  {</a>
+<a name="ln834">    /* initialize glyph loader */</a>
+<a name="ln835">    FT_GlyphLoader_Rewind( glyph-&gt;loader );</a>
+<a name="ln836"> </a>
+<a name="ln837">    glyph-&gt;num_subs = 0;</a>
+<a name="ln838"> </a>
+<a name="ln839">    /* load the glyph, recursively when needed */</a>
+<a name="ln840">    return pfr_glyph_load_rec( glyph, stream, gps_offset, offset, size );</a>
+<a name="ln841">  }</a>
+<a name="ln842"> </a>
+<a name="ln843"> </a>
+<a name="ln844">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="375"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 375, 379</p></div>
+<div class="balloon" rel="787"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v654/" target="_blank">V654</a> The condition 'i < num_points' of loop is always false.</p></div>
+<div class="balloon" rel="787"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v621/" target="_blank">V621</a> Consider inspecting the 'for' operator. It's possible that the loop will be executed incorrectly or won't be executed at all.</p></div>
+<div class="balloon" rel="800"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v654/" target="_blank">V654</a> The condition 'i < num_points' of loop is always false.</p></div>
+<div class="balloon" rel="800"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v621/" target="_blank">V621</a> Consider inspecting the 'for' operator. It's possible that the loop will be executed incorrectly or won't be executed at all.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

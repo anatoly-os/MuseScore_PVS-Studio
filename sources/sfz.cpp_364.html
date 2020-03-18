@@ -1,0 +1,832 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>sfz.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  Zerberos</a>
+<a name="ln3">//  Zample player</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &lt;stdio.h&gt;</a>
+<a name="ln14">#include &lt;math.h&gt;</a>
+<a name="ln15">#include &lt;QFile&gt;</a>
+<a name="ln16">#include &lt;QFileInfo&gt;</a>
+<a name="ln17">#include &lt;QStringList&gt;</a>
+<a name="ln18">#include &lt;sndfile.h&gt;</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">#include &quot;instrument.h&quot;</a>
+<a name="ln23">#include &quot;zone.h&quot;</a>
+<a name="ln24">#include &quot;sample.h&quot;</a>
+<a name="ln25">#include &quot;zerberus.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">//---------------------------------------------------------</a>
+<a name="ln28">//   SfzControl</a>
+<a name="ln29">//---------------------------------------------------------</a>
+<a name="ln30"> </a>
+<a name="ln31">struct SfzControl {</a>
+<a name="ln32">      QString defaultPath;</a>
+<a name="ln33">      int octave_offset;</a>
+<a name="ln34">      int note_offset;</a>
+<a name="ln35">      int set_cc[128];</a>
+<a name="ln36">      std::map&lt;QString, QString&gt; defines;</a>
+<a name="ln37">      void init();</a>
+<a name="ln38">      };</a>
+<a name="ln39"> </a>
+<a name="ln40">void SfzControl::init()</a>
+<a name="ln41">      {</a>
+<a name="ln42">      defaultPath.clear();</a>
+<a name="ln43">      octave_offset = 0;</a>
+<a name="ln44">      note_offset = 0;</a>
+<a name="ln45">      }</a>
+<a name="ln46"> </a>
+<a name="ln47">//---------------------------------------------------------</a>
+<a name="ln48">//   SfzRegion</a>
+<a name="ln49">//---------------------------------------------------------</a>
+<a name="ln50"> </a>
+<a name="ln51">struct SfzRegion {</a>
+<a name="ln52">      QString path;</a>
+<a name="ln53">      double amp_veltrack;</a>
+<a name="ln54">      // amp envelope all in seconds</a>
+<a name="ln55">      // but the level ones</a>
+<a name="ln56">      // they are in percent</a>
+<a name="ln57">      double ampeg_delay;</a>
+<a name="ln58">      double ampeg_start; // level</a>
+<a name="ln59">      double ampeg_attack;</a>
+<a name="ln60">      double ampeg_hold;</a>
+<a name="ln61">      double ampeg_decay;</a>
+<a name="ln62">      double ampeg_sustain; // level</a>
+<a name="ln63">      double ampeg_release;</a>
+<a name="ln64">      double rt_decay;</a>
+<a name="ln65">      double ampeg_vel2delay;</a>
+<a name="ln66">      double ampeg_vel2attack;</a>
+<a name="ln67">      double ampeg_vel2hold;</a>
+<a name="ln68">      double ampeg_vel2decay;</a>
+<a name="ln69">      double ampeg_vel2sustain;</a>
+<a name="ln70">      double ampeg_vel2release;</a>
+<a name="ln71">      QString sample;</a>
+<a name="ln72">      int lochan, hichan;</a>
+<a name="ln73">      int lokey, hikey, lovel, hivel, pitch_keycenter;</a>
+<a name="ln74">      double hirand, lorand;</a>
+<a name="ln75">      int on_locc[128];</a>
+<a name="ln76">      int on_hicc[128];</a>
+<a name="ln77">      int locc[128];</a>
+<a name="ln78">      int hicc[128];</a>
+<a name="ln79">      bool use_cc;</a>
+<a name="ln80">      int off_by;</a>
+<a name="ln81">      int group;</a>
+<a name="ln82">      int seq_length, seq_position;</a>
+<a name="ln83">      double volume;</a>
+<a name="ln84">      int octave_offset, note_offset;</a>
+<a name="ln85">      int tune, transpose;</a>
+<a name="ln86">      double pitch_keytrack;</a>
+<a name="ln87">      long long loopStart, loopEnd; // [0, 4Gb) or [0, 4294967295]</a>
+<a name="ln88">      Trigger trigger;</a>
+<a name="ln89">      LoopMode loop_mode;</a>
+<a name="ln90">      OffMode off_mode;</a>
+<a name="ln91">      std::map&lt;int, double&gt; gain_oncc;</a>
+<a name="ln92">      float delay; //seconds</a>
+<a name="ln93">      int pan;    // [-100, 100]</a>
+<a name="ln94">      long long offset; // [0, 4Gb) or [0, 4294967295]</a>
+<a name="ln95">      float group_volume; // [-144 to 6] (dB)</a>
+<a name="ln96">      float global_volume; // [-144 to 6] (dB)</a>
+<a name="ln97"> </a>
+<a name="ln98">      //filters</a>
+<a name="ln99">      bool isCutoffDefined;</a>
+<a name="ln100">      float cutoff; //[0, sampleRate / 2] Hz</a>
+<a name="ln101">      int fil_keytrack; //[0, 1200] cents</a>
+<a name="ln102">      int fil_keycenter; //[0, 127]</a>
+<a name="ln103">      int fil_veltrack; //[-9600, 9600] cents</a>
+<a name="ln104">      FilterType fil_type;</a>
+<a name="ln105"> </a>
+<a name="ln106">      void init(const QString&amp;);</a>
+<a name="ln107">      bool isEmpty() const { return sample.isEmpty(); }</a>
+<a name="ln108">      int readKey(const QString&amp;, SfzControl c) const;</a>
+<a name="ln109">      void readOp(const QString&amp; token, const QString&amp; data, SfzControl&amp; c);</a>
+<a name="ln110">      void setZone(Zone*) const;</a>
+<a name="ln111">      };</a>
+<a name="ln112"> </a>
+<a name="ln113">//---------------------------------------------------------</a>
+<a name="ln114">//   init</a>
+<a name="ln115">//---------------------------------------------------------</a>
+<a name="ln116"> </a>
+<a name="ln117">void SfzRegion::init(const QString&amp; _path)</a>
+<a name="ln118">      {</a>
+<a name="ln119">      path            = _path;</a>
+<a name="ln120">      lochan          = 1;</a>
+<a name="ln121">      hichan          = 16;</a>
+<a name="ln122">      amp_veltrack    = 100;</a>
+<a name="ln123">      ampeg_delay     = 0.0;</a>
+<a name="ln124">      ampeg_start     = 0.0; //percent</a>
+<a name="ln125">      ampeg_attack    = 0.001;</a>
+<a name="ln126">      ampeg_hold      = 0.0;</a>
+<a name="ln127">      ampeg_decay     = 0.0;</a>
+<a name="ln128">      ampeg_sustain   = 100.0; // percent</a>
+<a name="ln129">      ampeg_release   = 0.200;  // in sec</a>
+<a name="ln130">      ampeg_vel2delay    = 0.0;</a>
+<a name="ln131">      ampeg_vel2attack   = 0.0;</a>
+<a name="ln132">      ampeg_vel2hold     = 0.0;</a>
+<a name="ln133">      ampeg_vel2decay    = 0.0;</a>
+<a name="ln134">      ampeg_vel2sustain  = 0.0;</a>
+<a name="ln135">      ampeg_vel2release  = 0.0;</a>
+<a name="ln136">      rt_decay        = 0.0;  // dB /sec</a>
+<a name="ln137">      lokey           = 0;</a>
+<a name="ln138">      hikey           = 127;</a>
+<a name="ln139">      lovel           = 0;</a>
+<a name="ln140">      hivel           = 127;</a>
+<a name="ln141">      pitch_keycenter = 60;</a>
+<a name="ln142">      sample          = &quot;&quot;;</a>
+<a name="ln143">      lorand          = 0.0;</a>
+<a name="ln144">      hirand          = 1.0;</a>
+<a name="ln145">      group           = 0;</a>
+<a name="ln146">      off_by          = 0;</a>
+<a name="ln147">      volume          = 1.0;</a>
+<a name="ln148">      seq_length      = 1;</a>
+<a name="ln149">      seq_position    = 1;</a>
+<a name="ln150">      trigger         = Trigger::ATTACK;</a>
+<a name="ln151">      loop_mode       = LoopMode::CONTINUOUS;</a>
+<a name="ln152">      tune            = 0;</a>
+<a name="ln153">      transpose       = 0;</a>
+<a name="ln154">      pitch_keytrack  = 100.0;</a>
+<a name="ln155">      loopStart       = -1;</a>
+<a name="ln156">      loopEnd         = -1;</a>
+<a name="ln157">      for (int i = 0; i &lt; 128; ++i) {</a>
+<a name="ln158">            on_locc[i] = -1;</a>
+<a name="ln159">            on_hicc[i] = -1;</a>
+<a name="ln160">            locc[i]    = 0;</a>
+<a name="ln161">            hicc[i]    = 127;</a>
+<a name="ln162">            }</a>
+<a name="ln163">      use_cc         = false;</a>
+<a name="ln164">      off_mode = OffMode::FAST;</a>
+<a name="ln165">      gain_oncc.clear();</a>
+<a name="ln166">      delay = 0.0f;</a>
+<a name="ln167">      pan = 0;</a>
+<a name="ln168">      offset = 0;</a>
+<a name="ln169">      group_volume = 0.0f;</a>
+<a name="ln170">      global_volume = 0.0f;</a>
+<a name="ln171"> </a>
+<a name="ln172">      isCutoffDefined = false;</a>
+<a name="ln173">      cutoff = 0;</a>
+<a name="ln174">      fil_keytrack = 0;</a>
+<a name="ln175">      fil_keycenter = 60;</a>
+<a name="ln176">      fil_veltrack = 0;</a>
+<a name="ln177">      fil_type = FilterType::lpf_2p;</a>
+<a name="ln178">      }</a>
+<a name="ln179"> </a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181">//   setZone</a>
+<a name="ln182">//    set Zone from sfzRegion</a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184"> </a>
+<a name="ln185">void SfzRegion::setZone(Zone* z) const</a>
+<a name="ln186">      {</a>
+<a name="ln187">      z-&gt;keyLo        = lokey;</a>
+<a name="ln188">      z-&gt;keyHi        = hikey;</a>
+<a name="ln189">      z-&gt;veloLo       = lovel;</a>
+<a name="ln190">      z-&gt;veloHi       = hivel;</a>
+<a name="ln191">      z-&gt;keyBase      = pitch_keycenter;</a>
+<a name="ln192">      z-&gt;offset       = offset;</a>
+<a name="ln193">      z-&gt;volume       = pow(10.0, volume / 20.0);</a>
+<a name="ln194">      z-&gt;ampVeltrack  = amp_veltrack;</a>
+<a name="ln195">      z-&gt;ampegAttack  = ampeg_attack * 1000;</a>
+<a name="ln196">      z-&gt;ampegDelay   = ampeg_delay * 1000;</a>
+<a name="ln197">      z-&gt;ampegStart   = ampeg_start / 100.0;</a>
+<a name="ln198">      z-&gt;ampegHold    = ampeg_hold * 1000;</a>
+<a name="ln199">      z-&gt;ampegDecay   = ampeg_decay * 1000;</a>
+<a name="ln200">      z-&gt;ampegSustain = ampeg_sustain / 100.0;</a>
+<a name="ln201">      z-&gt;ampegRelease = ampeg_release * 1000;</a>
+<a name="ln202">      // all vel2* but vel2sustain are time values in seconds</a>
+<a name="ln203">      z-&gt;ampegVel2Delay    = ampeg_vel2delay * 1000;</a>
+<a name="ln204">      z-&gt;ampegVel2Attack   = ampeg_vel2attack * 1000;</a>
+<a name="ln205">      z-&gt;ampegVel2Hold     = ampeg_vel2hold * 1000;</a>
+<a name="ln206">      z-&gt;ampegVel2Decay    = ampeg_vel2decay * 1000;</a>
+<a name="ln207">      z-&gt;ampegVel2Sustain  = ampeg_vel2sustain / 100; // level in percent</a>
+<a name="ln208">      z-&gt;ampegVel2Release  = ampeg_vel2release * 1000;</a>
+<a name="ln209">      z-&gt;seqPos       = seq_position - 1;</a>
+<a name="ln210">      z-&gt;seqLen       = seq_length - 1;</a>
+<a name="ln211">      z-&gt;seq          = 0;</a>
+<a name="ln212">      z-&gt;trigger      = trigger;</a>
+<a name="ln213">      z-&gt;loopMode     = loop_mode;</a>
+<a name="ln214">      z-&gt;tune         = tune + transpose * 100;</a>
+<a name="ln215">      z-&gt;pitchKeytrack = pitch_keytrack / (double) 100.0;</a>
+<a name="ln216">      z-&gt;rtDecay      = rt_decay;</a>
+<a name="ln217">      for (int i = 0; i &lt; 128; ++i) {</a>
+<a name="ln218">            z-&gt;onLocc[i] = on_locc[i];</a>
+<a name="ln219">            z-&gt;onHicc[i] = on_hicc[i];</a>
+<a name="ln220">            z-&gt;locc[i]   = locc[i];</a>
+<a name="ln221">            z-&gt;hicc[i]   = hicc[i];</a>
+<a name="ln222">            }</a>
+<a name="ln223">      z-&gt;useCC        = use_cc;</a>
+<a name="ln224">      z-&gt;offMode      = off_mode;</a>
+<a name="ln225">      z-&gt;offBy        = off_by;</a>
+<a name="ln226">      z-&gt;loRand       = lorand;</a>
+<a name="ln227">      z-&gt;hiRand       = hirand;</a>
+<a name="ln228">      z-&gt;group        = group;</a>
+<a name="ln229">      z-&gt;loopEnd      = loopEnd;</a>
+<a name="ln230">      z-&gt;loopStart    = loopStart;</a>
+<a name="ln231">      z-&gt;gainOnCC     = gain_oncc;</a>
+<a name="ln232">      z-&gt;delay        = delay * 1000; //convert seconds from sfz to ms for computations</a>
+<a name="ln233">      z-&gt;pan          = pan;</a>
+<a name="ln234">      z-&gt;group_volume = pow(10.0, group_volume / 20.0); //dB -&gt; volume multiplier</a>
+<a name="ln235">      z-&gt;global_volume = pow(10.0, global_volume / 20.0); //dB -&gt; volume multiplier</a>
+<a name="ln236"> </a>
+<a name="ln237">      z-&gt;isCutoffDefined = isCutoffDefined;</a>
+<a name="ln238">      z-&gt;cutoff = cutoff;</a>
+<a name="ln239">      z-&gt;fil_keycenter = fil_keycenter;</a>
+<a name="ln240">      z-&gt;fil_keytrack = fil_keytrack;</a>
+<a name="ln241">      z-&gt;fil_veltrack = fil_veltrack;</a>
+<a name="ln242">      z-&gt;fil_type = fil_type;</a>
+<a name="ln243">      }</a>
+<a name="ln244"> </a>
+<a name="ln245">//---------------------------------------------------------</a>
+<a name="ln246">//   readKey</a>
+<a name="ln247">//---------------------------------------------------------</a>
+<a name="ln248"> </a>
+<a name="ln249">int SfzRegion::readKey(const QString&amp; s, SfzControl c) const</a>
+<a name="ln250">      {</a>
+<a name="ln251">      bool ok;</a>
+<a name="ln252">      int i = s.toInt(&amp;ok);</a>
+<a name="ln253">      if (ok) {</a>
+<a name="ln254">            i += c.octave_offset * 12;</a>
+<a name="ln255">            i += c.note_offset;</a>
+<a name="ln256">            return i;</a>
+<a name="ln257">            }</a>
+<a name="ln258">       switch (s[0].toLower().toLatin1()) {</a>
+<a name="ln259">            case 'c': i = 0; break;</a>
+<a name="ln260">            case 'd': i = 2; break;</a>
+<a name="ln261">            case 'e': i = 4; break;</a>
+<a name="ln262">            case 'f': i = 5; break;</a>
+<a name="ln263">            case 'g': i = 7; break;</a>
+<a name="ln264">            case 'a': i = 9; break;</a>
+<a name="ln265">            case 'b': i = 11; break;</a>
+<a name="ln266">            default:</a>
+<a name="ln267">                  qDebug(&quot;SfzRegion: Not a note: %s&quot;, qPrintable(s));</a>
+<a name="ln268">                  return 0;</a>
+<a name="ln269">            }</a>
+<a name="ln270">      int idx = 1;</a>
+<a name="ln271">      if (s[idx].toLatin1() == '#') {</a>
+<a name="ln272">            i++;</a>
+<a name="ln273">            ++idx;</a>
+<a name="ln274">            }</a>
+<a name="ln275">      else if (s[idx].toLower().toLatin1() == 'b') {</a>
+<a name="ln276">            i--;</a>
+<a name="ln277">            ++idx;</a>
+<a name="ln278">            }</a>
+<a name="ln279">      int octave = s.mid(idx).toInt(&amp;ok);</a>
+<a name="ln280">      if (!ok) {</a>
+<a name="ln281">            qDebug(&quot;SfzRegion: Not a note: %s&quot;, qPrintable(s));</a>
+<a name="ln282">            return 0;</a>
+<a name="ln283">            }</a>
+<a name="ln284">      i += (octave + 1) * 12;</a>
+<a name="ln285">      i += c.octave_offset * 12;</a>
+<a name="ln286">      i += c.note_offset;</a>
+<a name="ln287">      return i;</a>
+<a name="ln288">      }</a>
+<a name="ln289"> </a>
+<a name="ln290">//---------------------------------------------------------</a>
+<a name="ln291">//   addRegion</a>
+<a name="ln292">//---------------------------------------------------------</a>
+<a name="ln293"> </a>
+<a name="ln294">void ZInstrument::addRegion(SfzRegion&amp; r)</a>
+<a name="ln295">      {</a>
+<a name="ln296">      for (int i = 0; i &lt; 128; ++i) {</a>
+<a name="ln297">            if (r.on_locc[i] != -1 || r.on_hicc[i] != -1) {</a>
+<a name="ln298">                  r.trigger = Trigger::CC;</a>
+<a name="ln299">                  break;</a>
+<a name="ln300">                  }</a>
+<a name="ln301">            }</a>
+<a name="ln302">      Zone* z = new Zone;</a>
+<a name="ln303">      z-&gt;sample = readSample(r.sample, 0);</a>
+<a name="ln304">      if (z-&gt;sample) {</a>
+<a name="ln305">            //qDebug(&quot;Sample Loop - start %ll, end %ll, mode %d&quot;, z-&gt;sample-&gt;loopStart(), z-&gt;sample-&gt;loopEnd(), z-&gt;sample-&gt;loopMode());</a>
+<a name="ln306">            // if there is no opcode defining loop ranges, use sample definitions as fallback (according to spec)</a>
+<a name="ln307">            if (r.loopStart == -1)</a>
+<a name="ln308">                  r.loopStart = z-&gt;sample-&gt;loopStart();</a>
+<a name="ln309">            if (r.loopEnd == -1)</a>
+<a name="ln310">                  r.loopEnd = z-&gt;sample-&gt;loopEnd();</a>
+<a name="ln311">            }</a>
+<a name="ln312">      r.setZone(z);</a>
+<a name="ln313">      if (z-&gt;sample)</a>
+<a name="ln314">            addZone(z);</a>
+<a name="ln315">      }</a>
+<a name="ln316">//---------------------------------------------------------</a>
+<a name="ln317">//   readLongLong</a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319"> </a>
+<a name="ln320">static void readLongLong(const QString&amp; data, long long&amp; val)</a>
+<a name="ln321">      {</a>
+<a name="ln322">      bool ok;</a>
+<a name="ln323">      long long d = data.toLongLong(&amp;ok);</a>
+<a name="ln324">      if (ok)</a>
+<a name="ln325">            val = d;</a>
+<a name="ln326">      }</a>
+<a name="ln327"> </a>
+<a name="ln328">//---------------------------------------------------------</a>
+<a name="ln329">//   readFloat</a>
+<a name="ln330">//---------------------------------------------------------</a>
+<a name="ln331"> </a>
+<a name="ln332">static void readFloat(const QString&amp; data, float&amp; val)</a>
+<a name="ln333">      {</a>
+<a name="ln334">      bool ok;</a>
+<a name="ln335">      float d = data.toFloat(&amp;ok);</a>
+<a name="ln336">      if (ok)</a>
+<a name="ln337">            val = d;</a>
+<a name="ln338">      }</a>
+<a name="ln339"> </a>
+<a name="ln340">//---------------------------------------------------------</a>
+<a name="ln341">//   readDouble</a>
+<a name="ln342">//---------------------------------------------------------</a>
+<a name="ln343"> </a>
+<a name="ln344">static void readDouble(const QString&amp; data, double* val)</a>
+<a name="ln345">      {</a>
+<a name="ln346">      bool ok;</a>
+<a name="ln347">      double d = data.toDouble(&amp;ok);</a>
+<a name="ln348">      if (ok)</a>
+<a name="ln349">            *val = d;</a>
+<a name="ln350">      }</a>
+<a name="ln351"> </a>
+<a name="ln352">static void readFilterType(const QString&amp; data, FilterType&amp; filType)</a>
+<a name="ln353">      {</a>
+<a name="ln354">      if (data == &quot;lpf_1p&quot;)</a>
+<a name="ln355">            filType = FilterType::lpf_1p;</a>
+<a name="ln356">      else if (data == &quot;lpf_2p&quot;)</a>
+<a name="ln357">            filType = FilterType::lpf_2p;</a>
+<a name="ln358">      else if (data == &quot;hpf_1p&quot;)</a>
+<a name="ln359">            filType = FilterType::hpf_1p;</a>
+<a name="ln360">      else if (data == &quot;hpf_2p&quot;)</a>
+<a name="ln361">            filType = FilterType::hpf_2p;</a>
+<a name="ln362">      else if (data == &quot;bpf_2p&quot;)</a>
+<a name="ln363">            filType = FilterType::bpf_2p;</a>
+<a name="ln364">      else if (data == &quot;brf_2p&quot;)</a>
+<a name="ln365">            filType = FilterType::brf_2p;</a>
+<a name="ln366">      else</a>
+<a name="ln367">            qDebug(&quot;SfzRegion: not supported fil_type value: %s&quot;, qPrintable(data));</a>
+<a name="ln368">      }</a>
+<a name="ln369"> </a>
+<a name="ln370">//---------------------------------------------------------</a>
+<a name="ln371">//   readOp</a>
+<a name="ln372">//---------------------------------------------------------</a>
+<a name="ln373"> </a>
+<a name="ln374">void SfzRegion::readOp(const QString&amp; b, const QString&amp; data, SfzControl &amp;c)</a>
+<a name="ln375">      {</a>
+<a name="ln376">      QString opcode           = QString(b);</a>
+<a name="ln377">      QString opcode_data_full = QString(data);</a>
+<a name="ln378"> </a>
+<a name="ln379">      for(auto define : c.defines) {</a>
+<a name="ln380">            opcode.replace(define.first, define.second);</a>
+<a name="ln381">            opcode_data_full.replace(define.first, define.second);</a>
+<a name="ln382">            }</a>
+<a name="ln383"> </a>
+<a name="ln384">      QStringList splitData = opcode_data_full.split(&quot; &quot;); // no spaces in opcode values except for sample definition</a>
+<a name="ln385">      QString opcode_data = splitData[0];</a>
+<a name="ln386"> </a>
+<a name="ln387">      int i = opcode_data.toInt();</a>
+<a name="ln388"> </a>
+<a name="ln389">      if (opcode == &quot;amp_veltrack&quot;)</a>
+<a name="ln390">            readDouble(opcode_data, &amp;amp_veltrack);</a>
+<a name="ln391">      else if (opcode == &quot;ampeg_delay&quot;)</a>
+<a name="ln392">            readDouble(opcode_data, &amp;ampeg_delay);</a>
+<a name="ln393">      else if (opcode == &quot;ampeg_start&quot;)</a>
+<a name="ln394">            readDouble(opcode_data, &amp;ampeg_start);</a>
+<a name="ln395">      else if (opcode == &quot;ampeg_attack&quot;)</a>
+<a name="ln396">            readDouble(opcode_data, &amp;ampeg_attack);</a>
+<a name="ln397">      else if (opcode == &quot;ampeg_hold&quot;)</a>
+<a name="ln398">            readDouble(opcode_data, &amp;ampeg_hold);</a>
+<a name="ln399">      else if (opcode == &quot;ampeg_decay&quot;)</a>
+<a name="ln400">            readDouble(opcode_data, &amp;ampeg_decay);</a>
+<a name="ln401">      else if (opcode == &quot;ampeg_sustain&quot;)</a>
+<a name="ln402">            readDouble(opcode_data, &amp;ampeg_sustain);</a>
+<a name="ln403">      else if (opcode == &quot;ampeg_release&quot;)</a>
+<a name="ln404">            readDouble(opcode_data, &amp;ampeg_release);</a>
+<a name="ln405">      else if (opcode == &quot;ampeg_vel2delay&quot;)</a>
+<a name="ln406">            readDouble(opcode_data, &amp;ampeg_vel2delay);</a>
+<a name="ln407">      else if (opcode == &quot;ampeg_vel2attack&quot;)</a>
+<a name="ln408">            readDouble(opcode_data, &amp;ampeg_vel2attack);</a>
+<a name="ln409">      else if (opcode == &quot;ampeg_vel2hold&quot;)</a>
+<a name="ln410">            readDouble(opcode_data, &amp;ampeg_vel2hold);</a>
+<a name="ln411">      else if (opcode == &quot;ampeg_vel2decay&quot;)</a>
+<a name="ln412">            readDouble(opcode_data, &amp;ampeg_vel2decay);</a>
+<a name="ln413">      else if (opcode == &quot;ampeg_vel2sustain&quot;)</a>
+<a name="ln414">            readDouble(opcode_data, &amp;ampeg_vel2sustain);</a>
+<a name="ln415">      else if (opcode == &quot;ampeg_vel2release&quot;)</a>
+<a name="ln416">            readDouble(opcode_data, &amp;ampeg_vel2release);</a>
+<a name="ln417">      else if (opcode == &quot;sample&quot;) {</a>
+<a name="ln418">            sample = path + &quot;/&quot; + c.defaultPath + &quot;/&quot; + opcode_data_full; // spaces are allowed</a>
+<a name="ln419">            sample.replace(&quot;\\&quot;, &quot;/&quot;);</a>
+<a name="ln420">            sample = sample.trimmed();</a>
+<a name="ln421">            }</a>
+<a name="ln422">      else if (opcode == &quot;default_path&quot;) {</a>
+<a name="ln423">            c.defaultPath = opcode_data_full;</a>
+<a name="ln424">            }</a>
+<a name="ln425">      else if (opcode == &quot;key&quot;) {</a>
+<a name="ln426">            lokey = readKey(opcode_data, c);</a>
+<a name="ln427">            hikey = lokey;</a>
+<a name="ln428">            pitch_keycenter = lokey;</a>
+<a name="ln429">            }</a>
+<a name="ln430">      else if (opcode == &quot;pitch_keytrack&quot;)</a>
+<a name="ln431">            readDouble(opcode_data, &amp;pitch_keytrack);</a>
+<a name="ln432">      else if (opcode == &quot;trigger&quot;) {</a>
+<a name="ln433">            if (opcode_data == &quot;attack&quot;)</a>
+<a name="ln434">                  trigger = Trigger::ATTACK;</a>
+<a name="ln435">            else if (opcode_data == &quot;release&quot;)</a>
+<a name="ln436">                  trigger = Trigger::RELEASE;</a>
+<a name="ln437">            else if (opcode_data == &quot;first&quot;)</a>
+<a name="ln438">                  trigger = Trigger::FIRST;</a>
+<a name="ln439">            else if (opcode_data == &quot;legato&quot;)</a>
+<a name="ln440">                  trigger = Trigger::LEGATO;</a>
+<a name="ln441">            else</a>
+<a name="ln442">                  qDebug(&quot;SfzRegion: bad trigger value: %s&quot;, qPrintable(opcode_data));</a>
+<a name="ln443">            }</a>
+<a name="ln444">      else if (opcode == &quot;loop_mode&quot;) {</a>
+<a name="ln445">            if (opcode_data == &quot;no_loop&quot;)</a>
+<a name="ln446">                  loop_mode = LoopMode::NO_LOOP;</a>
+<a name="ln447">            else if (opcode_data == &quot;one_shot&quot;)</a>
+<a name="ln448">                  loop_mode = LoopMode::ONE_SHOT;</a>
+<a name="ln449">            else if (opcode_data == &quot;loop_continuous&quot;)</a>
+<a name="ln450">                  loop_mode = LoopMode::CONTINUOUS;</a>
+<a name="ln451">            else if (opcode_data == &quot;loop_sustain&quot;)</a>
+<a name="ln452">                  loop_mode = LoopMode::SUSTAIN;</a>
+<a name="ln453">            //if (loop_mode != LoopMode::ONE_SHOT)</a>
+<a name="ln454">            //      qDebug(&quot;SfzRegion: loop_mode &lt;%s&gt;&quot;, qPrintable(opcode_data));</a>
+<a name="ln455">            }</a>
+<a name="ln456">      else if(opcode == &quot;loop_start&quot;)</a>
+<a name="ln457">            readLongLong(opcode_data, loopStart);</a>
+<a name="ln458">      else if(opcode == &quot;loop_end&quot;)</a>
+<a name="ln459">            readLongLong(opcode_data, loopEnd);</a>
+<a name="ln460">      else if (opcode.startsWith(&quot;on_locc&quot;)) {</a>
+<a name="ln461">            int idx = b.mid(7).toInt();</a>
+<a name="ln462">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128)</a>
+<a name="ln463">                  on_locc[idx] = i;</a>
+<a name="ln464">            }</a>
+<a name="ln465">      else if (opcode.startsWith(&quot;on_hicc&quot;)) {</a>
+<a name="ln466">            int idx = b.mid(7).toInt();</a>
+<a name="ln467">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128)</a>
+<a name="ln468">                  on_hicc[idx] = i;</a>
+<a name="ln469">            }</a>
+<a name="ln470">      else if (opcode.startsWith(&quot;locc&quot;)) {</a>
+<a name="ln471">            int idx = b.mid(4).toInt();</a>
+<a name="ln472">            if (!use_cc)</a>
+<a name="ln473">                  use_cc = i != 0;</a>
+<a name="ln474">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128)</a>
+<a name="ln475">                  locc[idx] = i;</a>
+<a name="ln476">            }</a>
+<a name="ln477">      else if (opcode.startsWith(&quot;hicc&quot;)) {</a>
+<a name="ln478">            int idx = b.mid(4).toInt();</a>
+<a name="ln479">            if (!use_cc)</a>
+<a name="ln480">                  use_cc = i != 127;</a>
+<a name="ln481">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128)</a>
+<a name="ln482">                  hicc[idx] = i;</a>
+<a name="ln483">            }</a>
+<a name="ln484">      else if (opcode.startsWith(&quot;set_cc&quot;)) {</a>
+<a name="ln485">            int idx = b.mid(6).toInt();</a>
+<a name="ln486">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128)</a>
+<a name="ln487">                  c.set_cc[idx] = i;</a>
+<a name="ln488">            }</a>
+<a name="ln489">      else if (opcode == &quot;off_mode&quot;) {</a>
+<a name="ln490">            if (opcode_data == &quot;fast&quot;)</a>
+<a name="ln491">                  off_mode = OffMode::FAST;</a>
+<a name="ln492">            else if (opcode_data == &quot;normal&quot;)</a>
+<a name="ln493">                  off_mode = OffMode::NORMAL;</a>
+<a name="ln494">            }</a>
+<a name="ln495">      else if (opcode.startsWith(&quot;gain_cc&quot;)) {</a>
+<a name="ln496">            int idx = b.mid(7).toInt();</a>
+<a name="ln497">            double v;</a>
+<a name="ln498">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128) {</a>
+<a name="ln499">                  readDouble(opcode_data, &amp;v);</a>
+<a name="ln500">                  gain_oncc.insert(std::pair&lt;int, double&gt;(idx, v));</a>
+<a name="ln501">                  }</a>
+<a name="ln502">            }</a>
+<a name="ln503">      else if (opcode.startsWith(&quot;gain_oncc&quot;)) {</a>
+<a name="ln504">            int idx = b.mid(9).toInt();</a>
+<a name="ln505">            double v;</a>
+<a name="ln506">            if (idx &gt;= 0 &amp;&amp; idx &lt; 128) {</a>
+<a name="ln507">                  readDouble(opcode_data, &amp;v);</a>
+<a name="ln508">                  gain_oncc.insert(std::pair&lt;int, double&gt;(idx, v));</a>
+<a name="ln509">                  }</a>
+<a name="ln510">            }</a>
+<a name="ln511">      else if (opcode == &quot;tune&quot;)</a>
+<a name="ln512">            tune = i;</a>
+<a name="ln513">      else if (opcode == &quot;rt_decay&quot;)</a>
+<a name="ln514">            readDouble(opcode_data, &amp;rt_decay);</a>
+<a name="ln515">      else if (opcode == &quot;hirand&quot;)</a>
+<a name="ln516">            readDouble(opcode_data, &amp;hirand);</a>
+<a name="ln517">      else if (opcode == &quot;lorand&quot;)</a>
+<a name="ln518">            readDouble(opcode_data, &amp;lorand);</a>
+<a name="ln519">      else if (opcode == &quot;volume&quot;)</a>
+<a name="ln520">            readDouble(opcode_data, &amp;volume);</a>
+<a name="ln521">      else if (opcode == &quot;pitch_keycenter&quot;)</a>
+<a name="ln522">            pitch_keycenter = readKey(opcode_data ,c);</a>
+<a name="ln523">      else if (opcode == &quot;lokey&quot;)</a>
+<a name="ln524">            lokey = readKey(opcode_data, c);</a>
+<a name="ln525">      else if (opcode == &quot;hikey&quot;)</a>
+<a name="ln526">            hikey = readKey(opcode_data, c);</a>
+<a name="ln527">      else if (opcode == &quot;lovel&quot;)</a>
+<a name="ln528">            lovel = i;</a>
+<a name="ln529">      else if (opcode == &quot;hivel&quot;)</a>
+<a name="ln530">            hivel = i;</a>
+<a name="ln531">      else if (opcode == &quot;off_by&quot;)</a>
+<a name="ln532">            off_by = i;</a>
+<a name="ln533">      else if (opcode == &quot;group&quot;)</a>
+<a name="ln534">            group = i;</a>
+<a name="ln535">      else if (opcode == &quot;lochan&quot;)</a>
+<a name="ln536">            lochan = i;</a>
+<a name="ln537">      else if (opcode == &quot;hichan&quot;)</a>
+<a name="ln538">            hichan = i;</a>
+<a name="ln539">      else if (opcode == &quot;note_offset&quot;)</a>
+<a name="ln540">            c.note_offset = i;</a>
+<a name="ln541">      else if (opcode == &quot;octave_offset&quot;)</a>
+<a name="ln542">            c.octave_offset = i;</a>
+<a name="ln543">      else if (opcode == &quot;seq_length&quot;)</a>
+<a name="ln544">            seq_length = i;</a>
+<a name="ln545">      else if (opcode == &quot;seq_position&quot;)</a>
+<a name="ln546">            seq_position = i;</a>
+<a name="ln547">      else if (opcode == &quot;transpose&quot;)</a>
+<a name="ln548">            transpose = i;</a>
+<a name="ln549">      else if (opcode == &quot;delay&quot;)</a>
+<a name="ln550">            readFloat(opcode_data, delay);</a>
+<a name="ln551">      else if (opcode == &quot;pan&quot;)</a>
+<a name="ln552">            pan = i;</a>
+<a name="ln553">      else if (opcode == &quot;offset&quot;)</a>
+<a name="ln554">            readLongLong(opcode_data, offset);</a>
+<a name="ln555">      else if (opcode == &quot;group_volume&quot;)</a>
+<a name="ln556">            readFloat(opcode_data, group_volume);</a>
+<a name="ln557">      else if (opcode == &quot;global_volume&quot;)</a>
+<a name="ln558">            readFloat(opcode_data, global_volume);</a>
+<a name="ln559">      else if (opcode == &quot;cutoff&quot;) {</a>
+<a name="ln560">            isCutoffDefined = true;</a>
+<a name="ln561">            readFloat(opcode_data, cutoff);</a>
+<a name="ln562">            }</a>
+<a name="ln563">      else if (opcode == &quot;fil_keycenter&quot;)</a>
+<a name="ln564">            fil_keycenter = i;</a>
+<a name="ln565">      else if (opcode == &quot;fil_keytrack&quot;)</a>
+<a name="ln566">            fil_keytrack = i;</a>
+<a name="ln567">      else if (opcode == &quot;fil_veltrack&quot;)</a>
+<a name="ln568">            fil_veltrack = i;</a>
+<a name="ln569">      else if (opcode == &quot;fil_type&quot;)</a>
+<a name="ln570">            readFilterType(opcode_data, fil_type);</a>
+<a name="ln571">      else</a>
+<a name="ln572">            qDebug(&quot;SfzRegion: unknown opcode &lt;%s&gt;&quot;, qPrintable(opcode));</a>
+<a name="ln573">      }</a>
+<a name="ln574"> </a>
+<a name="ln575">QStringList readFile(QString const fn)</a>
+<a name="ln576">      {</a>
+<a name="ln577">            QFile f(fn);</a>
+<a name="ln578">            QStringList list;</a>
+<a name="ln579">            if (!f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln580">                  qDebug(&quot;ZInstrument: cannot load %s&quot;, qPrintable(fn));</a>
+<a name="ln581">                  return list;</a>
+<a name="ln582">                  }</a>
+<a name="ln583">            while (!f.atEnd())</a>
+<a name="ln584">                  list.append(QString(f.readLine().simplified()));</a>
+<a name="ln585">            return list;</a>
+<a name="ln586">      }</a>
+<a name="ln587"> </a>
+<a name="ln588">//---------------------------------------------------------</a>
+<a name="ln589">//   loadSfz</a>
+<a name="ln590">//---------------------------------------------------------</a>
+<a name="ln591"> </a>
+<a name="ln592">bool ZInstrument::loadSfz(const QString&amp; s)</a>
+<a name="ln593">      {</a>
+<a name="ln594">      _program = 0;</a>
+<a name="ln595">      QFileInfo fi(s);</a>
+<a name="ln596">      QString path = fi.absolutePath();</a>
+<a name="ln597"> </a>
+<a name="ln598">      QStringList fileContents = readFile(s);</a>
+<a name="ln599"> </a>
+<a name="ln600">      if (fileContents.empty()) {</a>
+<a name="ln601">            return false;</a>
+<a name="ln602">            }</a>
+<a name="ln603"> </a>
+<a name="ln604">      SfzControl c;</a>
+<a name="ln605">      c.init();</a>
+<a name="ln606">      c.defines.clear();</a>
+<a name="ln607">      for (int i = 0;i &lt; 128; i++)</a>
+<a name="ln608">            c.set_cc[i] = -1;</a>
+<a name="ln609"> </a>
+<a name="ln610">      int idx0 = 0;</a>
+<a name="ln611">      bool inBlockComment = false;</a>
+<a name="ln612">      // preprocessor</a>
+<a name="ln613">      while(idx0 &lt; fileContents.size()) {</a>
+<a name="ln614">            QRegularExpression findWithSpaces(&quot;\&quot;(.+)\&quot;&quot;);</a>
+<a name="ln615">            QRegularExpression comment(&quot;//.*$&quot;);</a>
+<a name="ln616">            QRegularExpression trailingSpacesOrTab(&quot;^[\\s\\t]*&quot;);</a>
+<a name="ln617">            QRegularExpressionMatch foundWithSpaces;</a>
+<a name="ln618">            QString curLine = fileContents[idx0];</a>
+<a name="ln619">            QString curLineCopy = curLine;</a>
+<a name="ln620">            bool nextIsImportant = false;</a>
+<a name="ln621">            int idxBlockComment = 0;</a>
+<a name="ln622">            int from = 0;</a>
+<a name="ln623"> </a>
+<a name="ln624">            for (QChar chr : curLineCopy) {</a>
+<a name="ln625">                  bool terminated = false;</a>
+<a name="ln626"> </a>
+<a name="ln627">                  if (nextIsImportant) {</a>
+<a name="ln628">                        nextIsImportant = false;</a>
+<a name="ln629">                        if (inBlockComment &amp;&amp; chr == '/') { // found block end</a>
+<a name="ln630">                              inBlockComment = false;</a>
+<a name="ln631">                              terminated = true;</a>
+<a name="ln632">                              curLine.remove(from, idxBlockComment - from + 1);</a>
+<a name="ln633">                              idxBlockComment = from - 1;</a>
+<a name="ln634">                              }</a>
+<a name="ln635">                        else if (!inBlockComment &amp;&amp; chr == '*') { // found block start</a>
+<a name="ln636">                              inBlockComment = true;</a>
+<a name="ln637">                              terminated = true;</a>
+<a name="ln638">                              from = idxBlockComment - 1;</a>
+<a name="ln639">                              }</a>
+<a name="ln640">                        }</a>
+<a name="ln641"> </a>
+<a name="ln642">                  if (!terminated &amp;&amp; inBlockComment &amp;&amp; chr == '*')</a>
+<a name="ln643">                        nextIsImportant = true;</a>
+<a name="ln644">                  else if (!terminated &amp;&amp; !inBlockComment &amp;&amp; chr == '/')</a>
+<a name="ln645">                        nextIsImportant = true;</a>
+<a name="ln646"> </a>
+<a name="ln647">                  idxBlockComment++;</a>
+<a name="ln648">                  }</a>
+<a name="ln649"> </a>
+<a name="ln650">            if (inBlockComment)</a>
+<a name="ln651">                  curLine.remove(from, curLine.size() - from);</a>
+<a name="ln652"> </a>
+<a name="ln653">            curLine = curLine.remove(comment);</a>
+<a name="ln654">            curLine.remove(trailingSpacesOrTab);</a>
+<a name="ln655">            fileContents[idx0] = curLine;</a>
+<a name="ln656"> </a>
+<a name="ln657">            if (curLine.startsWith(&quot;#define&quot;)) {</a>
+<a name="ln658">                  QStringList define = curLine.split(&quot; &quot;);</a>
+<a name="ln659">                  foundWithSpaces = findWithSpaces.match(curLine);</a>
+<a name="ln660">                  if (define.size() == 3)</a>
+<a name="ln661">                        c.defines.insert(std::pair&lt;QString, QString&gt;(define[1], define[2]));</a>
+<a name="ln662">                  else if(foundWithSpaces.hasMatch())</a>
+<a name="ln663">                        c.defines.insert(std::pair&lt;QString, QString&gt;(define[1], foundWithSpaces.captured(1)));</a>
+<a name="ln664">                  fileContents.removeAt(idx0);</a>
+<a name="ln665">                  }</a>
+<a name="ln666">            else if (curLine.startsWith(&quot;#include&quot;)) {</a>
+<a name="ln667">                  foundWithSpaces = findWithSpaces.match(curLine);</a>
+<a name="ln668">                  if (foundWithSpaces.hasMatch()) {</a>
+<a name="ln669">                        QString newFilename = foundWithSpaces.captured(1);</a>
+<a name="ln670"> </a>
+<a name="ln671">                        for(auto define : c.defines) {</a>
+<a name="ln672">                              newFilename.replace(define.first, define.second);</a>
+<a name="ln673">                              }</a>
+<a name="ln674"> </a>
+<a name="ln675">                        QStringList newFileContents = readFile(path + &quot;/&quot; + newFilename);</a>
+<a name="ln676">                        if (newFileContents.empty())</a>
+<a name="ln677">                              return false;</a>
+<a name="ln678"> </a>
+<a name="ln679">                        int offset = 1;</a>
+<a name="ln680">                        for (QString newFileLine : newFileContents) {</a>
+<a name="ln681">                              fileContents.insert(idx0+offset, newFileLine);</a>
+<a name="ln682">                              offset++;</a>
+<a name="ln683">                              }</a>
+<a name="ln684"> </a>
+<a name="ln685">                        fileContents.removeAt(idx0);</a>
+<a name="ln686">                        }</a>
+<a name="ln687">                  }</a>
+<a name="ln688">            else if (curLine.isEmpty())</a>
+<a name="ln689">                  fileContents.removeAt(idx0);</a>
+<a name="ln690">            else</a>
+<a name="ln691">                  idx0++;</a>
+<a name="ln692">            }</a>
+<a name="ln693"> </a>
+<a name="ln694">      int total = fileContents.size();</a>
+<a name="ln695">      SfzRegion r;</a>
+<a name="ln696">      SfzRegion g;      // group</a>
+<a name="ln697">      SfzRegion glob;</a>
+<a name="ln698">      r.init(path);</a>
+<a name="ln699">      g.init(path);</a>
+<a name="ln700">      glob.init(path);</a>
+<a name="ln701"> </a>
+<a name="ln702">      bool groupMode = false;</a>
+<a name="ln703">      bool globMode = false;</a>
+<a name="ln704">      zerberus-&gt;setLoadProgress(0);</a>
+<a name="ln705"> </a>
+<a name="ln706">      for (int idx1 = 0; idx1 &lt; fileContents.size(); idx1++) {</a>
+<a name="ln707">            QString curLine = fileContents[idx1];</a>
+<a name="ln708">            zerberus-&gt;setLoadProgress(((qreal) idx1 * 100) /  (qreal) total);</a>
+<a name="ln709"> </a>
+<a name="ln710">            if (zerberus-&gt;loadWasCanceled())</a>
+<a name="ln711">                  return false;</a>
+<a name="ln712">            if (curLine.startsWith(&quot;&lt;global&gt;&quot;)) {</a>
+<a name="ln713">                  if (!globMode &amp;&amp; !groupMode &amp;&amp; !r.isEmpty())</a>
+<a name="ln714">                        addRegion(r);</a>
+<a name="ln715">                  glob.init(path);</a>
+<a name="ln716">                  g.init(path); // global also resets group</a>
+<a name="ln717">                  r.init(path);</a>
+<a name="ln718">                  globMode = true;</a>
+<a name="ln719">                  }</a>
+<a name="ln720">            if (curLine.startsWith(&quot;&lt;group&gt;&quot;)) {</a>
+<a name="ln721">                  if (!groupMode &amp;&amp; !globMode &amp;&amp; !r.isEmpty())</a>
+<a name="ln722">                        addRegion(r);</a>
+<a name="ln723">                  g.init(path);</a>
+<a name="ln724">                  if (globMode) {</a>
+<a name="ln725">                        glob = r;</a>
+<a name="ln726">                        globMode = false;</a>
+<a name="ln727">                        }</a>
+<a name="ln728">                  else {</a>
+<a name="ln729">                        r = glob; // initialize group with global values</a>
+<a name="ln730">                        }</a>
+<a name="ln731">                  groupMode = true;</a>
+<a name="ln732">                  curLine = curLine.mid(7);</a>
+<a name="ln733">                  }</a>
+<a name="ln734">            else if (curLine.startsWith(&quot;&lt;region&gt;&quot;)) {</a>
+<a name="ln735">                  if (groupMode) {</a>
+<a name="ln736">                        g = r;</a>
+<a name="ln737">                        groupMode = false;</a>
+<a name="ln738">                        }</a>
+<a name="ln739">                  else if (globMode) {</a>
+<a name="ln740">                        glob = r;</a>
+<a name="ln741">                        g = glob;</a>
+<a name="ln742">                        globMode = false;</a>
+<a name="ln743">                        }</a>
+<a name="ln744">                  else {</a>
+<a name="ln745">                        if (!r.isEmpty())</a>
+<a name="ln746">                              addRegion(r);</a>
+<a name="ln747">                        r = g;  // initialize next region with group values</a>
+<a name="ln748">                        }</a>
+<a name="ln749">                  curLine = curLine.mid(8);</a>
+<a name="ln750">                  }</a>
+<a name="ln751">            else if (curLine.startsWith(&quot;&lt;control&gt;&quot;))</a>
+<a name="ln752">                  c.init();</a>
+<a name="ln753"> </a>
+<a name="ln754">            QRegularExpression re(&quot;\\s?([\\w\\$]+)=&quot;); // defines often use the $-sign</a>
+<a name="ln755">            QRegularExpressionMatchIterator i = re.globalMatch(curLine);</a>
+<a name="ln756"> </a>
+<a name="ln757">            while (i.hasNext()) {</a>
+<a name="ln758">                  QRegularExpressionMatch match = i.next();</a>
+<a name="ln759">                  int si = match.capturedEnd();</a>
+<a name="ln760">                  int ei;</a>
+<a name="ln761">                  if (i.hasNext()) {</a>
+<a name="ln762">                        QRegularExpressionMatch nextMatch = i.peekNext();</a>
+<a name="ln763">                        ei = nextMatch.capturedStart();</a>
+<a name="ln764">                        }</a>
+<a name="ln765">                  else</a>
+<a name="ln766">                        ei = curLine.size();</a>
+<a name="ln767">                  QString str = curLine.mid(si, ei-si);</a>
+<a name="ln768">                  r.readOp(match.captured(1), str, c);</a>
+<a name="ln769">                  }</a>
+<a name="ln770">            }</a>
+<a name="ln771"> </a>
+<a name="ln772">      for (int i = 0; i &lt; 128; i++)</a>
+<a name="ln773">            _setcc[i] = c.set_cc[i];</a>
+<a name="ln774"> </a>
+<a name="ln775">      zerberus-&gt;setLoadProgress(100);</a>
+<a name="ln776">      if (!groupMode &amp;&amp; !globMode &amp;&amp; !r.isEmpty())</a>
+<a name="ln777">            addRegion(r);</a>
+<a name="ln778">      return true;</a>
+<a name="ln779">      }</a>
+<a name="ln780"> </a>
+
+</code></pre>
+<div class="balloon" rel="267"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="281"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="367"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="442"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="572"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="580"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

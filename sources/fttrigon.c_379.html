@@ -1,0 +1,574 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>fttrigon.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  fttrigon.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    FreeType trigonometric functions (body).                             */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2001-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18">  /*************************************************************************/</a>
+<a name="ln19">  /*                                                                       */</a>
+<a name="ln20">  /* This is a fixed-point CORDIC implementation of trigonometric          */</a>
+<a name="ln21">  /* functions as well as transformations between Cartesian and polar      */</a>
+<a name="ln22">  /* coordinates.  The angles are represented as 16.16 fixed-point values  */</a>
+<a name="ln23">  /* in degrees, i.e., the angular resolution is 2^-16 degrees.  Note that */</a>
+<a name="ln24">  /* only vectors longer than 2^16*180/pi (or at least 22 bits) on a       */</a>
+<a name="ln25">  /* discrete Cartesian grid can have the same or better angular           */</a>
+<a name="ln26">  /* resolution.  Therefore, to maintain this precision, some functions    */</a>
+<a name="ln27">  /* require an interim upscaling of the vectors, whereas others operate   */</a>
+<a name="ln28">  /* with 24-bit long vectors directly.                                    */</a>
+<a name="ln29">  /*                                                                       */</a>
+<a name="ln30">  /*************************************************************************/</a>
+<a name="ln31"> </a>
+<a name="ln32">#include &lt;ft2build.h&gt;</a>
+<a name="ln33">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln34">#include FT_INTERNAL_CALC_H</a>
+<a name="ln35">#include FT_TRIGONOMETRY_H</a>
+<a name="ln36"> </a>
+<a name="ln37"> </a>
+<a name="ln38">  /* the Cordic shrink factor 0.858785336480436 * 2^32 */</a>
+<a name="ln39">#define FT_TRIG_SCALE      0xDBD95B16UL</a>
+<a name="ln40"> </a>
+<a name="ln41">  /* the highest bit in overflow-safe vector components, */</a>
+<a name="ln42">  /* MSB of 0.858785336480436 * sqrt(0.5) * 2^30         */</a>
+<a name="ln43">#define FT_TRIG_SAFE_MSB   29</a>
+<a name="ln44"> </a>
+<a name="ln45">  /* this table was generated for FT_PI = 180L &lt;&lt; 16, i.e. degrees */</a>
+<a name="ln46">#define FT_TRIG_MAX_ITERS  23</a>
+<a name="ln47"> </a>
+<a name="ln48">  static const FT_Angle</a>
+<a name="ln49">  ft_trig_arctan_table[] =</a>
+<a name="ln50">  {</a>
+<a name="ln51">    1740967L, 919879L, 466945L, 234379L, 117304L, 58666L, 29335L,</a>
+<a name="ln52">    14668L, 7334L, 3667L, 1833L, 917L, 458L, 229L, 115L,</a>
+<a name="ln53">    57L, 29L, 14L, 7L, 4L, 2L, 1L</a>
+<a name="ln54">  };</a>
+<a name="ln55"> </a>
+<a name="ln56"> </a>
+<a name="ln57">#ifdef FT_LONG64</a>
+<a name="ln58"> </a>
+<a name="ln59">  /* multiply a given value by the CORDIC shrink factor */</a>
+<a name="ln60">  static FT_Fixed</a>
+<a name="ln61">  ft_trig_downscale( FT_Fixed  val )</a>
+<a name="ln62">  {</a>
+<a name="ln63">    FT_Int  s = 1;</a>
+<a name="ln64"> </a>
+<a name="ln65"> </a>
+<a name="ln66">    if ( val &lt; 0 )</a>
+<a name="ln67">    {</a>
+<a name="ln68">       val = -val;</a>
+<a name="ln69">       s = -1;</a>
+<a name="ln70">    }</a>
+<a name="ln71"> </a>
+<a name="ln72">    /* 0x40000000 comes from regression analysis between true */</a>
+<a name="ln73">    /* and CORDIC hypotenuse, so it minimizes the error       */</a>
+<a name="ln74">    val = (FT_Fixed)( ( (FT_Int64)val * FT_TRIG_SCALE + 0x40000000UL ) &gt;&gt; 32 );</a>
+<a name="ln75"> </a>
+<a name="ln76">    return s &lt; 0 ? -val : val;</a>
+<a name="ln77">  }</a>
+<a name="ln78"> </a>
+<a name="ln79">#else /* !FT_LONG64 */</a>
+<a name="ln80"> </a>
+<a name="ln81">  /* multiply a given value by the CORDIC shrink factor */</a>
+<a name="ln82">  static FT_Fixed</a>
+<a name="ln83">  ft_trig_downscale( FT_Fixed  val )</a>
+<a name="ln84">  {</a>
+<a name="ln85">    FT_Int     s = 1;</a>
+<a name="ln86">    FT_UInt32  lo1, hi1, lo2, hi2, lo, hi, i1, i2;</a>
+<a name="ln87"> </a>
+<a name="ln88"> </a>
+<a name="ln89">    if ( val &lt; 0 )</a>
+<a name="ln90">    {</a>
+<a name="ln91">       val = -val;</a>
+<a name="ln92">       s = -1;</a>
+<a name="ln93">    }</a>
+<a name="ln94"> </a>
+<a name="ln95">    lo1 = (FT_UInt32)val &amp; 0x0000FFFFU;</a>
+<a name="ln96">    hi1 = (FT_UInt32)val &gt;&gt; 16;</a>
+<a name="ln97">    lo2 = FT_TRIG_SCALE &amp; 0x0000FFFFU;</a>
+<a name="ln98">    hi2 = FT_TRIG_SCALE &gt;&gt; 16;</a>
+<a name="ln99"> </a>
+<a name="ln100">    lo = lo1 * lo2;</a>
+<a name="ln101">    i1 = lo1 * hi2;</a>
+<a name="ln102">    i2 = lo2 * hi1;</a>
+<a name="ln103">    hi = hi1 * hi2;</a>
+<a name="ln104"> </a>
+<a name="ln105">    /* Check carry overflow of i1 + i2 */</a>
+<a name="ln106">    i1 += i2;</a>
+<a name="ln107">    hi += (FT_UInt32)( i1 &lt; i2 ) &lt;&lt; 16;</a>
+<a name="ln108"> </a>
+<a name="ln109">    hi += i1 &gt;&gt; 16;</a>
+<a name="ln110">    i1  = i1 &lt;&lt; 16;</a>
+<a name="ln111"> </a>
+<a name="ln112">    /* Check carry overflow of i1 + lo */</a>
+<a name="ln113">    lo += i1;</a>
+<a name="ln114">    hi += ( lo &lt; i1 );</a>
+<a name="ln115"> </a>
+<a name="ln116">    /* 0x40000000 comes from regression analysis between true */</a>
+<a name="ln117">    /* and CORDIC hypotenuse, so it minimizes the error       */</a>
+<a name="ln118"> </a>
+<a name="ln119">    /* Check carry overflow of lo + 0x40000000 */</a>
+<a name="ln120">    lo += 0x40000000UL;</a>
+<a name="ln121">    hi += ( lo &lt; 0x40000000UL );</a>
+<a name="ln122"> </a>
+<a name="ln123">    val = (FT_Fixed)hi;</a>
+<a name="ln124"> </a>
+<a name="ln125">    return s &lt; 0 ? -val : val;</a>
+<a name="ln126">  }</a>
+<a name="ln127"> </a>
+<a name="ln128">#endif /* !FT_LONG64 */</a>
+<a name="ln129"> </a>
+<a name="ln130"> </a>
+<a name="ln131">  /* undefined and never called for zero vector */</a>
+<a name="ln132">  static FT_Int</a>
+<a name="ln133">  ft_trig_prenorm( FT_Vector*  vec )</a>
+<a name="ln134">  {</a>
+<a name="ln135">    FT_Pos  x, y;</a>
+<a name="ln136">    FT_Int  shift;</a>
+<a name="ln137"> </a>
+<a name="ln138"> </a>
+<a name="ln139">    x = vec-&gt;x;</a>
+<a name="ln140">    y = vec-&gt;y;</a>
+<a name="ln141"> </a>
+<a name="ln142">    shift = FT_MSB( (FT_UInt32)( FT_ABS( x ) | FT_ABS( y ) ) );</a>
+<a name="ln143"> </a>
+<a name="ln144">    if ( shift &lt;= FT_TRIG_SAFE_MSB )</a>
+<a name="ln145">    {</a>
+<a name="ln146">      shift  = FT_TRIG_SAFE_MSB - shift;</a>
+<a name="ln147">      vec-&gt;x = (FT_Pos)( (FT_ULong)x &lt;&lt; shift );</a>
+<a name="ln148">      vec-&gt;y = (FT_Pos)( (FT_ULong)y &lt;&lt; shift );</a>
+<a name="ln149">    }</a>
+<a name="ln150">    else</a>
+<a name="ln151">    {</a>
+<a name="ln152">      shift -= FT_TRIG_SAFE_MSB;</a>
+<a name="ln153">      vec-&gt;x = x &gt;&gt; shift;</a>
+<a name="ln154">      vec-&gt;y = y &gt;&gt; shift;</a>
+<a name="ln155">      shift  = -shift;</a>
+<a name="ln156">    }</a>
+<a name="ln157"> </a>
+<a name="ln158">    return shift;</a>
+<a name="ln159">  }</a>
+<a name="ln160"> </a>
+<a name="ln161"> </a>
+<a name="ln162">  static void</a>
+<a name="ln163">  ft_trig_pseudo_rotate( FT_Vector*  vec,</a>
+<a name="ln164">                         FT_Angle    theta )</a>
+<a name="ln165">  {</a>
+<a name="ln166">    FT_Int           i;</a>
+<a name="ln167">    FT_Fixed         x, y, xtemp, b;</a>
+<a name="ln168">    const FT_Angle  *arctanptr;</a>
+<a name="ln169"> </a>
+<a name="ln170"> </a>
+<a name="ln171">    x = vec-&gt;x;</a>
+<a name="ln172">    y = vec-&gt;y;</a>
+<a name="ln173"> </a>
+<a name="ln174">    /* Rotate inside [-PI/4,PI/4] sector */</a>
+<a name="ln175">    while ( theta &lt; -FT_ANGLE_PI4 )</a>
+<a name="ln176">    {</a>
+<a name="ln177">      xtemp  =  y;</a>
+<a name="ln178">      y      = -x;</a>
+<a name="ln179">      x      =  xtemp;</a>
+<a name="ln180">      theta +=  FT_ANGLE_PI2;</a>
+<a name="ln181">    }</a>
+<a name="ln182"> </a>
+<a name="ln183">    while ( theta &gt; FT_ANGLE_PI4 )</a>
+<a name="ln184">    {</a>
+<a name="ln185">      xtemp  = -y;</a>
+<a name="ln186">      y      =  x;</a>
+<a name="ln187">      x      =  xtemp;</a>
+<a name="ln188">      theta -=  FT_ANGLE_PI2;</a>
+<a name="ln189">    }</a>
+<a name="ln190"> </a>
+<a name="ln191">    arctanptr = ft_trig_arctan_table;</a>
+<a name="ln192"> </a>
+<a name="ln193">    /* Pseudorotations, with right shifts */</a>
+<a name="ln194">    for ( i = 1, b = 1; i &lt; FT_TRIG_MAX_ITERS; b &lt;&lt;= 1, i++ )</a>
+<a name="ln195">    {</a>
+<a name="ln196">      if ( theta &lt; 0 )</a>
+<a name="ln197">      {</a>
+<a name="ln198">        xtemp  = x + ( ( y + b ) &gt;&gt; i );</a>
+<a name="ln199">        y      = y - ( ( x + b ) &gt;&gt; i );</a>
+<a name="ln200">        x      = xtemp;</a>
+<a name="ln201">        theta += *arctanptr++;</a>
+<a name="ln202">      }</a>
+<a name="ln203">      else</a>
+<a name="ln204">      {</a>
+<a name="ln205">        xtemp  = x - ( ( y + b ) &gt;&gt; i );</a>
+<a name="ln206">        y      = y + ( ( x + b ) &gt;&gt; i );</a>
+<a name="ln207">        x      = xtemp;</a>
+<a name="ln208">        theta -= *arctanptr++;</a>
+<a name="ln209">      }</a>
+<a name="ln210">    }</a>
+<a name="ln211"> </a>
+<a name="ln212">    vec-&gt;x = x;</a>
+<a name="ln213">    vec-&gt;y = y;</a>
+<a name="ln214">  }</a>
+<a name="ln215"> </a>
+<a name="ln216"> </a>
+<a name="ln217">  static void</a>
+<a name="ln218">  ft_trig_pseudo_polarize( FT_Vector*  vec )</a>
+<a name="ln219">  {</a>
+<a name="ln220">    FT_Angle         theta;</a>
+<a name="ln221">    FT_Int           i;</a>
+<a name="ln222">    FT_Fixed         x, y, xtemp, b;</a>
+<a name="ln223">    const FT_Angle  *arctanptr;</a>
+<a name="ln224"> </a>
+<a name="ln225"> </a>
+<a name="ln226">    x = vec-&gt;x;</a>
+<a name="ln227">    y = vec-&gt;y;</a>
+<a name="ln228"> </a>
+<a name="ln229">    /* Get the vector into [-PI/4,PI/4] sector */</a>
+<a name="ln230">    if ( y &gt; x )</a>
+<a name="ln231">    {</a>
+<a name="ln232">      if ( y &gt; -x )</a>
+<a name="ln233">      {</a>
+<a name="ln234">        theta =  FT_ANGLE_PI2;</a>
+<a name="ln235">        xtemp =  y;</a>
+<a name="ln236">        y     = -x;</a>
+<a name="ln237">        x     =  xtemp;</a>
+<a name="ln238">      }</a>
+<a name="ln239">      else</a>
+<a name="ln240">      {</a>
+<a name="ln241">        theta =  y &gt; 0 ? FT_ANGLE_PI : -FT_ANGLE_PI;</a>
+<a name="ln242">        x     = -x;</a>
+<a name="ln243">        y     = -y;</a>
+<a name="ln244">      }</a>
+<a name="ln245">    }</a>
+<a name="ln246">    else</a>
+<a name="ln247">    {</a>
+<a name="ln248">      if ( y &lt; -x )</a>
+<a name="ln249">      {</a>
+<a name="ln250">        theta = -FT_ANGLE_PI2;</a>
+<a name="ln251">        xtemp = -y;</a>
+<a name="ln252">        y     =  x;</a>
+<a name="ln253">        x     =  xtemp;</a>
+<a name="ln254">      }</a>
+<a name="ln255">      else</a>
+<a name="ln256">      {</a>
+<a name="ln257">        theta = 0;</a>
+<a name="ln258">      }</a>
+<a name="ln259">    }</a>
+<a name="ln260"> </a>
+<a name="ln261">    arctanptr = ft_trig_arctan_table;</a>
+<a name="ln262"> </a>
+<a name="ln263">    /* Pseudorotations, with right shifts */</a>
+<a name="ln264">    for ( i = 1, b = 1; i &lt; FT_TRIG_MAX_ITERS; b &lt;&lt;= 1, i++ )</a>
+<a name="ln265">    {</a>
+<a name="ln266">      if ( y &gt; 0 )</a>
+<a name="ln267">      {</a>
+<a name="ln268">        xtemp  = x + ( ( y + b ) &gt;&gt; i );</a>
+<a name="ln269">        y      = y - ( ( x + b ) &gt;&gt; i );</a>
+<a name="ln270">        x      = xtemp;</a>
+<a name="ln271">        theta += *arctanptr++;</a>
+<a name="ln272">      }</a>
+<a name="ln273">      else</a>
+<a name="ln274">      {</a>
+<a name="ln275">        xtemp  = x - ( ( y + b ) &gt;&gt; i );</a>
+<a name="ln276">        y      = y + ( ( x + b ) &gt;&gt; i );</a>
+<a name="ln277">        x      = xtemp;</a>
+<a name="ln278">        theta -= *arctanptr++;</a>
+<a name="ln279">      }</a>
+<a name="ln280">    }</a>
+<a name="ln281"> </a>
+<a name="ln282">    /* round theta to acknowledge its error that mostly comes */</a>
+<a name="ln283">    /* from accumulated rounding errors in the arctan table   */</a>
+<a name="ln284">    if ( theta &gt;= 0 )</a>
+<a name="ln285">      theta = FT_PAD_ROUND( theta, 16 );</a>
+<a name="ln286">    else</a>
+<a name="ln287">      theta = -FT_PAD_ROUND( -theta, 16 );</a>
+<a name="ln288"> </a>
+<a name="ln289">    vec-&gt;x = x;</a>
+<a name="ln290">    vec-&gt;y = theta;</a>
+<a name="ln291">  }</a>
+<a name="ln292"> </a>
+<a name="ln293"> </a>
+<a name="ln294">  /* documentation is in fttrigon.h */</a>
+<a name="ln295"> </a>
+<a name="ln296">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln297">  FT_Cos( FT_Angle  angle )</a>
+<a name="ln298">  {</a>
+<a name="ln299">    FT_Vector  v;</a>
+<a name="ln300"> </a>
+<a name="ln301"> </a>
+<a name="ln302">    FT_Vector_Unit( &amp;v, angle );</a>
+<a name="ln303"> </a>
+<a name="ln304">    return v.x;</a>
+<a name="ln305">  }</a>
+<a name="ln306"> </a>
+<a name="ln307"> </a>
+<a name="ln308">  /* documentation is in fttrigon.h */</a>
+<a name="ln309"> </a>
+<a name="ln310">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln311">  FT_Sin( FT_Angle  angle )</a>
+<a name="ln312">  {</a>
+<a name="ln313">    FT_Vector  v;</a>
+<a name="ln314"> </a>
+<a name="ln315"> </a>
+<a name="ln316">    FT_Vector_Unit( &amp;v, angle );</a>
+<a name="ln317"> </a>
+<a name="ln318">    return v.y;</a>
+<a name="ln319">  }</a>
+<a name="ln320"> </a>
+<a name="ln321"> </a>
+<a name="ln322">  /* documentation is in fttrigon.h */</a>
+<a name="ln323"> </a>
+<a name="ln324">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln325">  FT_Tan( FT_Angle  angle )</a>
+<a name="ln326">  {</a>
+<a name="ln327">    FT_Vector  v;</a>
+<a name="ln328"> </a>
+<a name="ln329"> </a>
+<a name="ln330">    FT_Vector_Unit( &amp;v, angle );</a>
+<a name="ln331"> </a>
+<a name="ln332">    return FT_DivFix( v.y, v.x );</a>
+<a name="ln333">  }</a>
+<a name="ln334"> </a>
+<a name="ln335"> </a>
+<a name="ln336">  /* documentation is in fttrigon.h */</a>
+<a name="ln337"> </a>
+<a name="ln338">  FT_EXPORT_DEF( FT_Angle )</a>
+<a name="ln339">  FT_Atan2( FT_Fixed  dx,</a>
+<a name="ln340">            FT_Fixed  dy )</a>
+<a name="ln341">  {</a>
+<a name="ln342">    FT_Vector  v;</a>
+<a name="ln343"> </a>
+<a name="ln344"> </a>
+<a name="ln345">    if ( dx == 0 &amp;&amp; dy == 0 )</a>
+<a name="ln346">      return 0;</a>
+<a name="ln347"> </a>
+<a name="ln348">    v.x = dx;</a>
+<a name="ln349">    v.y = dy;</a>
+<a name="ln350">    ft_trig_prenorm( &amp;v );</a>
+<a name="ln351">    ft_trig_pseudo_polarize( &amp;v );</a>
+<a name="ln352"> </a>
+<a name="ln353">    return v.y;</a>
+<a name="ln354">  }</a>
+<a name="ln355"> </a>
+<a name="ln356"> </a>
+<a name="ln357">  /* documentation is in fttrigon.h */</a>
+<a name="ln358"> </a>
+<a name="ln359">  FT_EXPORT_DEF( void )</a>
+<a name="ln360">  FT_Vector_Unit( FT_Vector*  vec,</a>
+<a name="ln361">                  FT_Angle    angle )</a>
+<a name="ln362">  {</a>
+<a name="ln363">    if ( !vec )</a>
+<a name="ln364">      return;</a>
+<a name="ln365"> </a>
+<a name="ln366">    vec-&gt;x = FT_TRIG_SCALE &gt;&gt; 8;</a>
+<a name="ln367">    vec-&gt;y = 0;</a>
+<a name="ln368">    ft_trig_pseudo_rotate( vec, angle );</a>
+<a name="ln369">    vec-&gt;x = ( vec-&gt;x + 0x80L ) &gt;&gt; 8;</a>
+<a name="ln370">    vec-&gt;y = ( vec-&gt;y + 0x80L ) &gt;&gt; 8;</a>
+<a name="ln371">  }</a>
+<a name="ln372"> </a>
+<a name="ln373"> </a>
+<a name="ln374">  /* these macros return 0 for positive numbers,</a>
+<a name="ln375">     and -1 for negative ones */</a>
+<a name="ln376">#define FT_SIGN_LONG( x )   ( (x) &gt;&gt; ( FT_SIZEOF_LONG * 8 - 1 ) )</a>
+<a name="ln377">#define FT_SIGN_INT( x )    ( (x) &gt;&gt; ( FT_SIZEOF_INT * 8 - 1 ) )</a>
+<a name="ln378">#define FT_SIGN_INT32( x )  ( (x) &gt;&gt; 31 )</a>
+<a name="ln379">#define FT_SIGN_INT16( x )  ( (x) &gt;&gt; 15 )</a>
+<a name="ln380"> </a>
+<a name="ln381"> </a>
+<a name="ln382">  /* documentation is in fttrigon.h */</a>
+<a name="ln383"> </a>
+<a name="ln384">  FT_EXPORT_DEF( void )</a>
+<a name="ln385">  FT_Vector_Rotate( FT_Vector*  vec,</a>
+<a name="ln386">                    FT_Angle    angle )</a>
+<a name="ln387">  {</a>
+<a name="ln388">    FT_Int     shift;</a>
+<a name="ln389">    FT_Vector  v;</a>
+<a name="ln390"> </a>
+<a name="ln391"> </a>
+<a name="ln392">    if ( !vec || !angle )</a>
+<a name="ln393">      return;</a>
+<a name="ln394"> </a>
+<a name="ln395">    v = *vec;</a>
+<a name="ln396"> </a>
+<a name="ln397">    if ( v.x == 0 &amp;&amp; v.y == 0 )</a>
+<a name="ln398">      return;</a>
+<a name="ln399"> </a>
+<a name="ln400">    shift = ft_trig_prenorm( &amp;v );</a>
+<a name="ln401">    ft_trig_pseudo_rotate( &amp;v, angle );</a>
+<a name="ln402">    v.x = ft_trig_downscale( v.x );</a>
+<a name="ln403">    v.y = ft_trig_downscale( v.y );</a>
+<a name="ln404"> </a>
+<a name="ln405">    if ( shift &gt; 0 )</a>
+<a name="ln406">    {</a>
+<a name="ln407">      FT_Int32  half = (FT_Int32)1L &lt;&lt; ( shift - 1 );</a>
+<a name="ln408"> </a>
+<a name="ln409"> </a>
+<a name="ln410">      vec-&gt;x = ( v.x + half + FT_SIGN_LONG( v.x ) ) &gt;&gt; shift;</a>
+<a name="ln411">      vec-&gt;y = ( v.y + half + FT_SIGN_LONG( v.y ) ) &gt;&gt; shift;</a>
+<a name="ln412">    }</a>
+<a name="ln413">    else</a>
+<a name="ln414">    {</a>
+<a name="ln415">      shift  = -shift;</a>
+<a name="ln416">      vec-&gt;x = (FT_Pos)( (FT_ULong)v.x &lt;&lt; shift );</a>
+<a name="ln417">      vec-&gt;y = (FT_Pos)( (FT_ULong)v.y &lt;&lt; shift );</a>
+<a name="ln418">    }</a>
+<a name="ln419">  }</a>
+<a name="ln420"> </a>
+<a name="ln421"> </a>
+<a name="ln422">  /* documentation is in fttrigon.h */</a>
+<a name="ln423"> </a>
+<a name="ln424">  FT_EXPORT_DEF( FT_Fixed )</a>
+<a name="ln425">  FT_Vector_Length( FT_Vector*  vec )</a>
+<a name="ln426">  {</a>
+<a name="ln427">    FT_Int     shift;</a>
+<a name="ln428">    FT_Vector  v;</a>
+<a name="ln429"> </a>
+<a name="ln430"> </a>
+<a name="ln431">    if ( !vec )</a>
+<a name="ln432">      return 0;</a>
+<a name="ln433"> </a>
+<a name="ln434">    v = *vec;</a>
+<a name="ln435"> </a>
+<a name="ln436">    /* handle trivial cases */</a>
+<a name="ln437">    if ( v.x == 0 )</a>
+<a name="ln438">    {</a>
+<a name="ln439">      return FT_ABS( v.y );</a>
+<a name="ln440">    }</a>
+<a name="ln441">    else if ( v.y == 0 )</a>
+<a name="ln442">    {</a>
+<a name="ln443">      return FT_ABS( v.x );</a>
+<a name="ln444">    }</a>
+<a name="ln445"> </a>
+<a name="ln446">    /* general case */</a>
+<a name="ln447">    shift = ft_trig_prenorm( &amp;v );</a>
+<a name="ln448">    ft_trig_pseudo_polarize( &amp;v );</a>
+<a name="ln449"> </a>
+<a name="ln450">    v.x = ft_trig_downscale( v.x );</a>
+<a name="ln451"> </a>
+<a name="ln452">    if ( shift &gt; 0 )</a>
+<a name="ln453">      return ( v.x + ( 1L &lt;&lt; ( shift - 1 ) ) ) &gt;&gt; shift;</a>
+<a name="ln454"> </a>
+<a name="ln455">    return (FT_Fixed)( (FT_UInt32)v.x &lt;&lt; -shift );</a>
+<a name="ln456">  }</a>
+<a name="ln457"> </a>
+<a name="ln458"> </a>
+<a name="ln459">  /* documentation is in fttrigon.h */</a>
+<a name="ln460"> </a>
+<a name="ln461">  FT_EXPORT_DEF( void )</a>
+<a name="ln462">  FT_Vector_Polarize( FT_Vector*  vec,</a>
+<a name="ln463">                      FT_Fixed   *length,</a>
+<a name="ln464">                      FT_Angle   *angle )</a>
+<a name="ln465">  {</a>
+<a name="ln466">    FT_Int     shift;</a>
+<a name="ln467">    FT_Vector  v;</a>
+<a name="ln468"> </a>
+<a name="ln469"> </a>
+<a name="ln470">    if ( !vec || !length || !angle )</a>
+<a name="ln471">      return;</a>
+<a name="ln472"> </a>
+<a name="ln473">    v = *vec;</a>
+<a name="ln474"> </a>
+<a name="ln475">    if ( v.x == 0 &amp;&amp; v.y == 0 )</a>
+<a name="ln476">      return;</a>
+<a name="ln477"> </a>
+<a name="ln478">    shift = ft_trig_prenorm( &amp;v );</a>
+<a name="ln479">    ft_trig_pseudo_polarize( &amp;v );</a>
+<a name="ln480"> </a>
+<a name="ln481">    v.x = ft_trig_downscale( v.x );</a>
+<a name="ln482"> </a>
+<a name="ln483">    *length = shift &gt;= 0 ?                      ( v.x &gt;&gt;  shift )</a>
+<a name="ln484">                         : (FT_Fixed)( (FT_UInt32)v.x &lt;&lt; -shift );</a>
+<a name="ln485">    *angle  = v.y;</a>
+<a name="ln486">  }</a>
+<a name="ln487"> </a>
+<a name="ln488"> </a>
+<a name="ln489">  /* documentation is in fttrigon.h */</a>
+<a name="ln490"> </a>
+<a name="ln491">  FT_EXPORT_DEF( void )</a>
+<a name="ln492">  FT_Vector_From_Polar( FT_Vector*  vec,</a>
+<a name="ln493">                        FT_Fixed    length,</a>
+<a name="ln494">                        FT_Angle    angle )</a>
+<a name="ln495">  {</a>
+<a name="ln496">    if ( !vec )</a>
+<a name="ln497">      return;</a>
+<a name="ln498"> </a>
+<a name="ln499">    vec-&gt;x = length;</a>
+<a name="ln500">    vec-&gt;y = 0;</a>
+<a name="ln501"> </a>
+<a name="ln502">    FT_Vector_Rotate( vec, angle );</a>
+<a name="ln503">  }</a>
+<a name="ln504"> </a>
+<a name="ln505"> </a>
+<a name="ln506">  /* documentation is in fttrigon.h */</a>
+<a name="ln507"> </a>
+<a name="ln508">  FT_EXPORT_DEF( FT_Angle )</a>
+<a name="ln509">  FT_Angle_Diff( FT_Angle  angle1,</a>
+<a name="ln510">                 FT_Angle  angle2 )</a>
+<a name="ln511">  {</a>
+<a name="ln512">    FT_Angle  delta = angle2 - angle1;</a>
+<a name="ln513"> </a>
+<a name="ln514"> </a>
+<a name="ln515">    while ( delta &lt;= -FT_ANGLE_PI )</a>
+<a name="ln516">      delta += FT_ANGLE_2PI;</a>
+<a name="ln517"> </a>
+<a name="ln518">    while ( delta &gt; FT_ANGLE_PI )</a>
+<a name="ln519">      delta -= FT_ANGLE_2PI;</a>
+<a name="ln520"> </a>
+<a name="ln521">    return delta;</a>
+<a name="ln522">  }</a>
+<a name="ln523"> </a>
+<a name="ln524"> </a>
+<a name="ln525">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="455"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v629/" target="_blank">V629</a> Consider inspecting the '(FT_UInt32) v.x << - shift' expression. Bit shifting of the 32-bit value with a subsequent expansion to the 64-bit type.</p></div>
+<div class="balloon" rel="455"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the '(FT_UInt32) v.x << - shift' operator to the 'FT_Fixed' type, not the result.</p></div>
+<div class="balloon" rel="484"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v629/" target="_blank">V629</a> Consider inspecting the '(FT_UInt32) v.x << - shift' expression. Bit shifting of the 32-bit value with a subsequent expansion to the 64-bit type.</p></div>
+<div class="balloon" rel="484"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the '(FT_UInt32) v.x << - shift' operator to the 'FT_Fixed' type, not the result.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

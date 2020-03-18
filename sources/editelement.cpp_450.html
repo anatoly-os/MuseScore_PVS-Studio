@@ -1,0 +1,292 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>editelement.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;globals.h&quot;</a>
+<a name="ln14">#include &quot;scoreview.h&quot;</a>
+<a name="ln15">#include &quot;preferences.h&quot;</a>
+<a name="ln16">#include &quot;musescore.h&quot;</a>
+<a name="ln17">#include &quot;textpalette.h&quot;</a>
+<a name="ln18">#include &quot;texttools.h&quot;</a>
+<a name="ln19">#include &quot;inspector/inspector.h&quot;</a>
+<a name="ln20"> </a>
+<a name="ln21">#include &quot;libmscore/barline.h&quot;</a>
+<a name="ln22">#include &quot;libmscore/utils.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/text.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/spanner.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/textframe.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">namespace Ms {</a>
+<a name="ln32"> </a>
+<a name="ln33">//---------------------------------------------------------</a>
+<a name="ln34">//   updateGrips</a>
+<a name="ln35">//    if (curGrip == -1) then initialize to element</a>
+<a name="ln36">//    default grip</a>
+<a name="ln37">//---------------------------------------------------------</a>
+<a name="ln38"> </a>
+<a name="ln39">void ScoreView::updateGrips()</a>
+<a name="ln40">      {</a>
+<a name="ln41">      if (!editData.element)</a>
+<a name="ln42">            return;</a>
+<a name="ln43"> </a>
+<a name="ln44">      double dx = 1.5 / _matrix.m11();</a>
+<a name="ln45">      double dy = 1.5 / _matrix.m22();</a>
+<a name="ln46"> </a>
+<a name="ln47">      for (const QRectF&amp; r : editData.grip)</a>
+<a name="ln48">            score()-&gt;addRefresh(r.adjusted(-dx, -dy, dx, dy));</a>
+<a name="ln49"> </a>
+<a name="ln50">      qreal w   = 8.0 / _matrix.m11();</a>
+<a name="ln51">      qreal h   = 8.0 / _matrix.m22();</a>
+<a name="ln52">      QRectF r(-w*.5, -h*.5, w, h);</a>
+<a name="ln53"> </a>
+<a name="ln54">      editData.grip.resize(editData.grips);</a>
+<a name="ln55"> </a>
+<a name="ln56">      if (editData.grips) {</a>
+<a name="ln57">            for (QRectF&amp; gr : editData.grip)</a>
+<a name="ln58">                  gr = r;</a>
+<a name="ln59">            editData.element-&gt;updateGrips(editData);</a>
+<a name="ln60"> </a>
+<a name="ln61">            // updateGrips returns grips in page coordinates,</a>
+<a name="ln62">            // transform to view coordinates:</a>
+<a name="ln63"> </a>
+<a name="ln64">            Element* page = editData.element;</a>
+<a name="ln65">            while (page-&gt;parent())</a>
+<a name="ln66">                  page = page-&gt;parent();</a>
+<a name="ln67">            QPointF pageOffset(page-&gt;pos());</a>
+<a name="ln68"> </a>
+<a name="ln69">            for (QRectF&amp; grip : editData.grip) {</a>
+<a name="ln70">                  grip.translate(pageOffset);</a>
+<a name="ln71">                  score()-&gt;addRefresh(grip.adjusted(-dx, -dy, dx, dy));</a>
+<a name="ln72">                  }</a>
+<a name="ln73"> </a>
+<a name="ln74">            QPointF anchor = (editData.curGrip != Grip::NO_GRIP) ? editData.element-&gt;gripAnchor(editData.curGrip) : QPointF();</a>
+<a name="ln75">            if (!anchor.isNull())</a>
+<a name="ln76">                  setDropAnchor(QLineF(anchor + pageOffset, editData.grip[int(editData.curGrip)].center()));</a>
+<a name="ln77">            else</a>
+<a name="ln78">                  setDropTarget(0); // this also resets dropAnchor</a>
+<a name="ln79">            }</a>
+<a name="ln80">      score()-&gt;addRefresh(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84">//   startEdit</a>
+<a name="ln85">//---------------------------------------------------------</a>
+<a name="ln86"> </a>
+<a name="ln87">void ScoreView::startEditMode(Element* e)</a>
+<a name="ln88">      {</a>
+<a name="ln89">      if (score()-&gt;selection().elements().size() != 1)</a>
+<a name="ln90">            score()-&gt;select(e);</a>
+<a name="ln91">      if (!e || !e-&gt;isEditable()) {</a>
+<a name="ln92">            qDebug(&quot;The element cannot be edited&quot;);</a>
+<a name="ln93">            return;</a>
+<a name="ln94">            }</a>
+<a name="ln95">      if (textEditMode()) {</a>
+<a name="ln96">            // leave text edit mode before starting editing another element</a>
+<a name="ln97">            changeState(ViewState::NORMAL);</a>
+<a name="ln98">            }</a>
+<a name="ln99">      if (score()-&gt;undoStack()-&gt;active())</a>
+<a name="ln100">            score()-&gt;endCmd();</a>
+<a name="ln101">      editData.element = e;</a>
+<a name="ln102">      changeState(ViewState::EDIT);</a>
+<a name="ln103">      }</a>
+<a name="ln104"> </a>
+<a name="ln105">//---------------------------------------------------------</a>
+<a name="ln106">//   startEdit</a>
+<a name="ln107">//---------------------------------------------------------</a>
+<a name="ln108"> </a>
+<a name="ln109">void ScoreView::startEdit(Element* element, Grip startGrip)</a>
+<a name="ln110">      {</a>
+<a name="ln111">      if (!element || !element-&gt;isEditable()) {</a>
+<a name="ln112">            qDebug(&quot;The element cannot be edited&quot;);</a>
+<a name="ln113">            return;</a>
+<a name="ln114">            }</a>
+<a name="ln115"> </a>
+<a name="ln116">      const bool forceStartEdit = (state == ViewState::EDIT &amp;&amp; element != editData.element);</a>
+<a name="ln117">      editData.element = element;</a>
+<a name="ln118">      if (forceStartEdit) // call startEdit() forcibly to reinitialize edit mode.</a>
+<a name="ln119">            startEdit();</a>
+<a name="ln120">      else if (state != ViewState::DRAG_EDIT)</a>
+<a name="ln121">            changeState(ViewState::EDIT);</a>
+<a name="ln122"> </a>
+<a name="ln123">      if (startGrip != Grip::NO_GRIP)</a>
+<a name="ln124">            editData.curGrip = startGrip;</a>
+<a name="ln125">      }</a>
+<a name="ln126"> </a>
+<a name="ln127">//---------------------------------------------------------</a>
+<a name="ln128">//   startEdit</a>
+<a name="ln129">//    enter state EDIT</a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131"> </a>
+<a name="ln132">void ScoreView::startEdit(bool editMode)</a>
+<a name="ln133">      {</a>
+<a name="ln134">      if (editData.element-&gt;isTBox())</a>
+<a name="ln135">            editData.element = toTBox(editData.element)-&gt;text();</a>
+<a name="ln136"> </a>
+<a name="ln137">      Element* e = editData.element;</a>
+<a name="ln138">      setFocus();</a>
+<a name="ln139">      editData.clearData();</a>
+<a name="ln140">      editData.grips   = e-&gt;gripsCount();</a>
+<a name="ln141">      editData.curGrip = editMode ? e-&gt;initialEditModeGrip() : Grip::NO_GRIP;</a>
+<a name="ln142"> </a>
+<a name="ln143">      editData.element-&gt;startEdit(editData);</a>
+<a name="ln144">      updateGrips();</a>
+<a name="ln145"> </a>
+<a name="ln146">      QGuiApplication::inputMethod()-&gt;reset();</a>
+<a name="ln147">      QGuiApplication::inputMethod()-&gt;update(Qt::ImCursorRectangle);</a>
+<a name="ln148">      setAttribute(Qt::WA_InputMethodEnabled, editData.element-&gt;isTextBase());</a>
+<a name="ln149">      _score-&gt;update();</a>
+<a name="ln150">      setCursor(QCursor(Qt::ArrowCursor));</a>
+<a name="ln151">      }</a>
+<a name="ln152"> </a>
+<a name="ln153">//---------------------------------------------------------</a>
+<a name="ln154">//   endEdit</a>
+<a name="ln155">//---------------------------------------------------------</a>
+<a name="ln156"> </a>
+<a name="ln157">void ScoreView::endEdit()</a>
+<a name="ln158">      {</a>
+<a name="ln159">      setAttribute(Qt::WA_InputMethodEnabled, false);</a>
+<a name="ln160">      setDropTarget(0);</a>
+<a name="ln161">      if (!editData.element)</a>
+<a name="ln162">            return;</a>
+<a name="ln163">      _score-&gt;addRefresh(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln164">      for (int i = 0; i &lt; editData.grips; ++i)</a>
+<a name="ln165">            score()-&gt;addRefresh(editData.grip[i]);</a>
+<a name="ln166">      editData.element-&gt;endEdit(editData);</a>
+<a name="ln167"> </a>
+<a name="ln168">      if (editData.element) {</a>
+<a name="ln169">            _score-&gt;addRefresh(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln170">            ElementType tp = editData.element-&gt;type();</a>
+<a name="ln171">            if (tp == ElementType::LYRICS)</a>
+<a name="ln172">                  lyricsEndEdit();</a>
+<a name="ln173">            else if (tp == ElementType::HARMONY)</a>
+<a name="ln174">                  harmonyEndEdit();</a>
+<a name="ln175">            else if (tp == ElementType::FIGURED_BASS)</a>
+<a name="ln176">                  figuredBassEndEdit();</a>
+<a name="ln177">            }</a>
+<a name="ln178">      editData.clearData();</a>
+<a name="ln179">      mscore-&gt;updateInspector();</a>
+<a name="ln180">      }</a>
+<a name="ln181"> </a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183">//   doDragEdit</a>
+<a name="ln184">//---------------------------------------------------------</a>
+<a name="ln185"> </a>
+<a name="ln186">void ScoreView::doDragEdit(QMouseEvent* ev)</a>
+<a name="ln187">      {</a>
+<a name="ln188">      editData.lastPos   = editData.pos;</a>
+<a name="ln189">      editData.pos       = toLogical(ev-&gt;pos());</a>
+<a name="ln190">      editData.modifiers = qApp-&gt;keyboardModifiers();</a>
+<a name="ln191"> </a>
+<a name="ln192">      if (!editData.element-&gt;isBarLine()) {</a>
+<a name="ln193">            // on other elements, BOTH Ctrl (vert. constrain) and Shift (horiz. constrain) modifiers = NO constrain</a>
+<a name="ln194">            if (qApp-&gt;keyboardModifiers() == Qt::ShiftModifier)</a>
+<a name="ln195">                  editData.pos.setX(editData.lastPos.x());</a>
+<a name="ln196">            if (qApp-&gt;keyboardModifiers() == Qt::ControlModifier)</a>
+<a name="ln197">                  editData.pos.setY(editData.lastPos.y());</a>
+<a name="ln198">            }</a>
+<a name="ln199">      editData.delta = editData.pos - editData.lastPos;</a>
+<a name="ln200">      score()-&gt;addRefresh(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln201"> </a>
+<a name="ln202">      if (editData.element-&gt;isTextBase()) {</a>
+<a name="ln203">            toTextBase(editData.element)-&gt;dragTo(editData);</a>
+<a name="ln204">#if 0</a>
+<a name="ln205">            if (editData.element-&gt;shape().translated(editData.element-&gt;pagePos()).contains(editData.pos)) {</a>
+<a name="ln206">                  qDebug(&quot;in&quot;);</a>
+<a name="ln207">                  toTextBase(editData.element)-&gt;dragTo(editData);</a>
+<a name="ln208">                  }</a>
+<a name="ln209">            else {</a>
+<a name="ln210">                  qDebug(&quot;out&quot;);</a>
+<a name="ln211">                  editData.hRaster = false;</a>
+<a name="ln212">                  editData.vRaster = false;</a>
+<a name="ln213">                  editData.element-&gt;editDrag(editData);</a>
+<a name="ln214">                  updateGrips();</a>
+<a name="ln215">                  }</a>
+<a name="ln216">#endif</a>
+<a name="ln217">            }</a>
+<a name="ln218">      else {</a>
+<a name="ln219">            editData.hRaster = false;</a>
+<a name="ln220">            editData.vRaster = false;</a>
+<a name="ln221">            editData.element-&gt;editDrag(editData);</a>
+<a name="ln222">            }</a>
+<a name="ln223">      QRectF r(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln224">      _score-&gt;addRefresh(r);</a>
+<a name="ln225">      _score-&gt;update();</a>
+<a name="ln226">      updateGrips();</a>
+<a name="ln227">      }</a>
+<a name="ln228"> </a>
+<a name="ln229">//---------------------------------------------------------</a>
+<a name="ln230">//   endDragEdit</a>
+<a name="ln231">//---------------------------------------------------------</a>
+<a name="ln232"> </a>
+<a name="ln233">void ScoreView::endDragEdit()</a>
+<a name="ln234">      {</a>
+<a name="ln235">      _score-&gt;addRefresh(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln236"> </a>
+<a name="ln237">      editData.element-&gt;endEditDrag(editData);</a>
+<a name="ln238">      score()-&gt;endCmd();            // calls update()</a>
+<a name="ln239">      updateGrips();</a>
+<a name="ln240">      _score-&gt;addRefresh(editData.element-&gt;canvasBoundingRect());</a>
+<a name="ln241">      setDropTarget(0);</a>
+<a name="ln242">      _score-&gt;rebuildBspTree();</a>
+<a name="ln243">      }</a>
+<a name="ln244">}</a>
+<a name="ln245"> </a>
+
+</code></pre>
+<div class="balloon" rel="166"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'editData.element' pointer was utilized before it was verified against nullptr. Check lines: 166, 168.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1894 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>cf2hints.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  cf2hints.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Adobe's code for handling CFF hints (body).                          */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2007-2014 Adobe Systems Incorporated.                        */</a>
+<a name="ln8">/*                                                                         */</a>
+<a name="ln9">/*  This software, and all works of authorship, whether in source or       */</a>
+<a name="ln10">/*  object code form as indicated by the copyright notice(s) included      */</a>
+<a name="ln11">/*  herein (collectively, the &quot;Work&quot;) is made available, and may only be   */</a>
+<a name="ln12">/*  used, modified, and distributed under the FreeType Project License,    */</a>
+<a name="ln13">/*  LICENSE.TXT.  Additionally, subject to the terms and conditions of the */</a>
+<a name="ln14">/*  FreeType Project License, each contributor to the Work hereby grants   */</a>
+<a name="ln15">/*  to any individual or legal entity exercising permissions granted by    */</a>
+<a name="ln16">/*  the FreeType Project License and this section (hereafter, &quot;You&quot; or     */</a>
+<a name="ln17">/*  &quot;Your&quot;) a perpetual, worldwide, non-exclusive, no-charge,              */</a>
+<a name="ln18">/*  royalty-free, irrevocable (except as stated in this section) patent    */</a>
+<a name="ln19">/*  license to make, have made, use, offer to sell, sell, import, and      */</a>
+<a name="ln20">/*  otherwise transfer the Work, where such license applies only to those  */</a>
+<a name="ln21">/*  patent claims licensable by such contributor that are necessarily      */</a>
+<a name="ln22">/*  infringed by their contribution(s) alone or by combination of their    */</a>
+<a name="ln23">/*  contribution(s) with the Work to which such contribution(s) was        */</a>
+<a name="ln24">/*  submitted.  If You institute patent litigation against any entity      */</a>
+<a name="ln25">/*  (including a cross-claim or counterclaim in a lawsuit) alleging that   */</a>
+<a name="ln26">/*  the Work or a contribution incorporated within the Work constitutes    */</a>
+<a name="ln27">/*  direct or contributory patent infringement, then any patent licenses   */</a>
+<a name="ln28">/*  granted to You under this License for that Work shall terminate as of  */</a>
+<a name="ln29">/*  the date such litigation is filed.                                     */</a>
+<a name="ln30">/*                                                                         */</a>
+<a name="ln31">/*  By using, modifying, or distributing the Work you indicate that you    */</a>
+<a name="ln32">/*  have read and understood the terms and conditions of the               */</a>
+<a name="ln33">/*  FreeType Project License as well as those provided in this section,    */</a>
+<a name="ln34">/*  and you accept them fully.                                             */</a>
+<a name="ln35">/*                                                                         */</a>
+<a name="ln36">/***************************************************************************/</a>
+<a name="ln37"> </a>
+<a name="ln38"> </a>
+<a name="ln39">#include &quot;cf2ft.h&quot;</a>
+<a name="ln40">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln41"> </a>
+<a name="ln42">#include &quot;cf2glue.h&quot;</a>
+<a name="ln43">#include &quot;cf2font.h&quot;</a>
+<a name="ln44">#include &quot;cf2hints.h&quot;</a>
+<a name="ln45">#include &quot;cf2intrp.h&quot;</a>
+<a name="ln46"> </a>
+<a name="ln47"> </a>
+<a name="ln48">  /*************************************************************************/</a>
+<a name="ln49">  /*                                                                       */</a>
+<a name="ln50">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln51">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln52">  /* messages during execution.                                            */</a>
+<a name="ln53">  /*                                                                       */</a>
+<a name="ln54">#undef  FT_COMPONENT</a>
+<a name="ln55">#define FT_COMPONENT  trace_cf2hints</a>
+<a name="ln56"> </a>
+<a name="ln57"> </a>
+<a name="ln58">  typedef struct  CF2_HintMoveRec_</a>
+<a name="ln59">  {</a>
+<a name="ln60">    size_t     j;          /* index of upper hint map edge   */</a>
+<a name="ln61">    CF2_Fixed  moveUp;     /* adjustment to optimum position */</a>
+<a name="ln62"> </a>
+<a name="ln63">  } CF2_HintMoveRec, *CF2_HintMove;</a>
+<a name="ln64"> </a>
+<a name="ln65"> </a>
+<a name="ln66">  /* Compute angular momentum for winding order detection.  It is called */</a>
+<a name="ln67">  /* for all lines and curves, but not necessarily in element order.     */</a>
+<a name="ln68">  static CF2_Int</a>
+<a name="ln69">  cf2_getWindingMomentum( CF2_Fixed  x1,</a>
+<a name="ln70">                          CF2_Fixed  y1,</a>
+<a name="ln71">                          CF2_Fixed  x2,</a>
+<a name="ln72">                          CF2_Fixed  y2 )</a>
+<a name="ln73">  {</a>
+<a name="ln74">    /* cross product of pt1 position from origin with pt2 position from  */</a>
+<a name="ln75">    /* pt1; we reduce the precision so that the result fits into 32 bits */</a>
+<a name="ln76"> </a>
+<a name="ln77">    return ( x1 &gt;&gt; 16 ) * ( ( y2 - y1 ) &gt;&gt; 16 ) -</a>
+<a name="ln78">           ( y1 &gt;&gt; 16 ) * ( ( x2 - x1 ) &gt;&gt; 16 );</a>
+<a name="ln79">  }</a>
+<a name="ln80"> </a>
+<a name="ln81"> </a>
+<a name="ln82">  /*</a>
+<a name="ln83">   * Construct from a StemHint; this is used as a parameter to</a>
+<a name="ln84">   * `cf2_blues_capture'.</a>
+<a name="ln85">   * `hintOrigin' is the character space displacement of a seac accent.</a>
+<a name="ln86">   * Adjust stem hint for darkening here.</a>
+<a name="ln87">   *</a>
+<a name="ln88">   */</a>
+<a name="ln89">  static void</a>
+<a name="ln90">  cf2_hint_init( CF2_Hint            hint,</a>
+<a name="ln91">                 const CF2_ArrStack  stemHintArray,</a>
+<a name="ln92">                 size_t              indexStemHint,</a>
+<a name="ln93">                 const CF2_Font      font,</a>
+<a name="ln94">                 CF2_Fixed           hintOrigin,</a>
+<a name="ln95">                 CF2_Fixed           scale,</a>
+<a name="ln96">                 FT_Bool             bottom )</a>
+<a name="ln97">  {</a>
+<a name="ln98">    CF2_Fixed               width;</a>
+<a name="ln99">    const CF2_StemHintRec*  stemHint;</a>
+<a name="ln100"> </a>
+<a name="ln101"> </a>
+<a name="ln102">    FT_ZERO( hint );</a>
+<a name="ln103"> </a>
+<a name="ln104">    stemHint = (const CF2_StemHintRec*)cf2_arrstack_getPointer(</a>
+<a name="ln105">                                         stemHintArray,</a>
+<a name="ln106">                                         indexStemHint );</a>
+<a name="ln107"> </a>
+<a name="ln108">    width = stemHint-&gt;max - stemHint-&gt;min;</a>
+<a name="ln109"> </a>
+<a name="ln110">    if ( width == cf2_intToFixed( -21 ) )</a>
+<a name="ln111">    {</a>
+<a name="ln112">      /* ghost bottom */</a>
+<a name="ln113"> </a>
+<a name="ln114">      if ( bottom )</a>
+<a name="ln115">      {</a>
+<a name="ln116">        hint-&gt;csCoord = stemHint-&gt;max;</a>
+<a name="ln117">        hint-&gt;flags   = CF2_GhostBottom;</a>
+<a name="ln118">      }</a>
+<a name="ln119">      else</a>
+<a name="ln120">        hint-&gt;flags = 0;</a>
+<a name="ln121">    }</a>
+<a name="ln122"> </a>
+<a name="ln123">    else if ( width == cf2_intToFixed( -20 ) )</a>
+<a name="ln124">    {</a>
+<a name="ln125">      /* ghost top */</a>
+<a name="ln126"> </a>
+<a name="ln127">      if ( bottom )</a>
+<a name="ln128">        hint-&gt;flags = 0;</a>
+<a name="ln129">      else</a>
+<a name="ln130">      {</a>
+<a name="ln131">        hint-&gt;csCoord = stemHint-&gt;min;</a>
+<a name="ln132">        hint-&gt;flags   = CF2_GhostTop;</a>
+<a name="ln133">      }</a>
+<a name="ln134">    }</a>
+<a name="ln135"> </a>
+<a name="ln136">    else if ( width &lt; 0 )</a>
+<a name="ln137">    {</a>
+<a name="ln138">      /* inverted pair */</a>
+<a name="ln139"> </a>
+<a name="ln140">      /*</a>
+<a name="ln141">       * Hints with negative widths were produced by an early version of a</a>
+<a name="ln142">       * non-Adobe font tool.  The Type 2 spec allows edge (ghost) hints</a>
+<a name="ln143">       * with negative widths, but says</a>
+<a name="ln144">       *</a>
+<a name="ln145">       *   All other negative widths have undefined meaning.</a>
+<a name="ln146">       *</a>
+<a name="ln147">       * CoolType has a silent workaround that negates the hint width; for</a>
+<a name="ln148">       * permissive mode, we do the same here.</a>
+<a name="ln149">       *</a>
+<a name="ln150">       * Note: Such fonts cannot use ghost hints, but should otherwise work.</a>
+<a name="ln151">       * Note: Some poor hints in our faux fonts can produce negative</a>
+<a name="ln152">       *       widths at some blends.  For example, see a light weight of</a>
+<a name="ln153">       *       `u' in ASerifMM.</a>
+<a name="ln154">       *</a>
+<a name="ln155">       */</a>
+<a name="ln156">      if ( bottom )</a>
+<a name="ln157">      {</a>
+<a name="ln158">        hint-&gt;csCoord = stemHint-&gt;max;</a>
+<a name="ln159">        hint-&gt;flags   = CF2_PairBottom;</a>
+<a name="ln160">      }</a>
+<a name="ln161">      else</a>
+<a name="ln162">      {</a>
+<a name="ln163">        hint-&gt;csCoord = stemHint-&gt;min;</a>
+<a name="ln164">        hint-&gt;flags   = CF2_PairTop;</a>
+<a name="ln165">      }</a>
+<a name="ln166">    }</a>
+<a name="ln167"> </a>
+<a name="ln168">    else</a>
+<a name="ln169">    {</a>
+<a name="ln170">      /* normal pair */</a>
+<a name="ln171"> </a>
+<a name="ln172">      if ( bottom )</a>
+<a name="ln173">      {</a>
+<a name="ln174">        hint-&gt;csCoord = stemHint-&gt;min;</a>
+<a name="ln175">        hint-&gt;flags   = CF2_PairBottom;</a>
+<a name="ln176">      }</a>
+<a name="ln177">      else</a>
+<a name="ln178">      {</a>
+<a name="ln179">        hint-&gt;csCoord = stemHint-&gt;max;</a>
+<a name="ln180">        hint-&gt;flags   = CF2_PairTop;</a>
+<a name="ln181">      }</a>
+<a name="ln182">    }</a>
+<a name="ln183"> </a>
+<a name="ln184">    /* Now that ghost hints have been detected, adjust this edge for      */</a>
+<a name="ln185">    /* darkening.  Bottoms are not changed; tops are incremented by twice */</a>
+<a name="ln186">    /* `darkenY'.                                                         */</a>
+<a name="ln187">    if ( cf2_hint_isTop( hint ) )</a>
+<a name="ln188">      hint-&gt;csCoord += 2 * font-&gt;darkenY;</a>
+<a name="ln189"> </a>
+<a name="ln190">    hint-&gt;csCoord += hintOrigin;</a>
+<a name="ln191">    hint-&gt;scale    = scale;</a>
+<a name="ln192">    hint-&gt;index    = indexStemHint;   /* index in original stem hint array */</a>
+<a name="ln193"> </a>
+<a name="ln194">    /* if original stem hint has been used, use the same position */</a>
+<a name="ln195">    if ( hint-&gt;flags != 0 &amp;&amp; stemHint-&gt;used )</a>
+<a name="ln196">    {</a>
+<a name="ln197">      if ( cf2_hint_isTop( hint ) )</a>
+<a name="ln198">        hint-&gt;dsCoord = stemHint-&gt;maxDS;</a>
+<a name="ln199">      else</a>
+<a name="ln200">        hint-&gt;dsCoord = stemHint-&gt;minDS;</a>
+<a name="ln201"> </a>
+<a name="ln202">      cf2_hint_lock( hint );</a>
+<a name="ln203">    }</a>
+<a name="ln204">    else</a>
+<a name="ln205">      hint-&gt;dsCoord = FT_MulFix( hint-&gt;csCoord, scale );</a>
+<a name="ln206">  }</a>
+<a name="ln207"> </a>
+<a name="ln208"> </a>
+<a name="ln209">  /* initialize an invalid hint map element */</a>
+<a name="ln210">  static void</a>
+<a name="ln211">  cf2_hint_initZero( CF2_Hint  hint )</a>
+<a name="ln212">  {</a>
+<a name="ln213">    FT_ZERO( hint );</a>
+<a name="ln214">  }</a>
+<a name="ln215"> </a>
+<a name="ln216"> </a>
+<a name="ln217">  FT_LOCAL_DEF( FT_Bool )</a>
+<a name="ln218">  cf2_hint_isValid( const CF2_Hint  hint )</a>
+<a name="ln219">  {</a>
+<a name="ln220">    return (FT_Bool)( hint-&gt;flags != 0 );</a>
+<a name="ln221">  }</a>
+<a name="ln222"> </a>
+<a name="ln223"> </a>
+<a name="ln224">  static FT_Bool</a>
+<a name="ln225">  cf2_hint_isPair( const CF2_Hint  hint )</a>
+<a name="ln226">  {</a>
+<a name="ln227">    return (FT_Bool)( ( hint-&gt;flags                      &amp;</a>
+<a name="ln228">                        ( CF2_PairBottom | CF2_PairTop ) ) != 0 );</a>
+<a name="ln229">  }</a>
+<a name="ln230"> </a>
+<a name="ln231"> </a>
+<a name="ln232">  static FT_Bool</a>
+<a name="ln233">  cf2_hint_isPairTop( const CF2_Hint  hint )</a>
+<a name="ln234">  {</a>
+<a name="ln235">    return (FT_Bool)( ( hint-&gt;flags &amp; CF2_PairTop ) != 0 );</a>
+<a name="ln236">  }</a>
+<a name="ln237"> </a>
+<a name="ln238"> </a>
+<a name="ln239">  FT_LOCAL_DEF( FT_Bool )</a>
+<a name="ln240">  cf2_hint_isTop( const CF2_Hint  hint )</a>
+<a name="ln241">  {</a>
+<a name="ln242">    return (FT_Bool)( ( hint-&gt;flags                    &amp;</a>
+<a name="ln243">                        ( CF2_PairTop | CF2_GhostTop ) ) != 0 );</a>
+<a name="ln244">  }</a>
+<a name="ln245"> </a>
+<a name="ln246"> </a>
+<a name="ln247">  FT_LOCAL_DEF( FT_Bool )</a>
+<a name="ln248">  cf2_hint_isBottom( const CF2_Hint  hint )</a>
+<a name="ln249">  {</a>
+<a name="ln250">    return (FT_Bool)( ( hint-&gt;flags                          &amp;</a>
+<a name="ln251">                        ( CF2_PairBottom | CF2_GhostBottom ) ) != 0 );</a>
+<a name="ln252">  }</a>
+<a name="ln253"> </a>
+<a name="ln254"> </a>
+<a name="ln255">  static FT_Bool</a>
+<a name="ln256">  cf2_hint_isLocked( const CF2_Hint  hint )</a>
+<a name="ln257">  {</a>
+<a name="ln258">    return (FT_Bool)( ( hint-&gt;flags &amp; CF2_Locked ) != 0 );</a>
+<a name="ln259">  }</a>
+<a name="ln260"> </a>
+<a name="ln261"> </a>
+<a name="ln262">  static FT_Bool</a>
+<a name="ln263">  cf2_hint_isSynthetic( const CF2_Hint  hint )</a>
+<a name="ln264">  {</a>
+<a name="ln265">    return (FT_Bool)( ( hint-&gt;flags &amp; CF2_Synthetic ) != 0 );</a>
+<a name="ln266">  }</a>
+<a name="ln267"> </a>
+<a name="ln268"> </a>
+<a name="ln269">  FT_LOCAL_DEF( void )</a>
+<a name="ln270">  cf2_hint_lock( CF2_Hint  hint )</a>
+<a name="ln271">  {</a>
+<a name="ln272">    hint-&gt;flags |= CF2_Locked;</a>
+<a name="ln273">  }</a>
+<a name="ln274"> </a>
+<a name="ln275"> </a>
+<a name="ln276">  FT_LOCAL_DEF( void )</a>
+<a name="ln277">  cf2_hintmap_init( CF2_HintMap   hintmap,</a>
+<a name="ln278">                    CF2_Font      font,</a>
+<a name="ln279">                    CF2_HintMap   initialMap,</a>
+<a name="ln280">                    CF2_ArrStack  hintMoves,</a>
+<a name="ln281">                    CF2_Fixed     scale )</a>
+<a name="ln282">  {</a>
+<a name="ln283">    FT_ZERO( hintmap );</a>
+<a name="ln284"> </a>
+<a name="ln285">    /* copy parameters from font instance */</a>
+<a name="ln286">    hintmap-&gt;hinted         = font-&gt;hinted;</a>
+<a name="ln287">    hintmap-&gt;scale          = scale;</a>
+<a name="ln288">    hintmap-&gt;font           = font;</a>
+<a name="ln289">    hintmap-&gt;initialHintMap = initialMap;</a>
+<a name="ln290">    /* will clear in `cf2_hintmap_adjustHints' */</a>
+<a name="ln291">    hintmap-&gt;hintMoves      = hintMoves;</a>
+<a name="ln292">  }</a>
+<a name="ln293"> </a>
+<a name="ln294"> </a>
+<a name="ln295">  static FT_Bool</a>
+<a name="ln296">  cf2_hintmap_isValid( const CF2_HintMap  hintmap )</a>
+<a name="ln297">  {</a>
+<a name="ln298">    return hintmap-&gt;isValid;</a>
+<a name="ln299">  }</a>
+<a name="ln300"> </a>
+<a name="ln301"> </a>
+<a name="ln302">  /* transform character space coordinate to device space using hint map */</a>
+<a name="ln303">  static CF2_Fixed</a>
+<a name="ln304">  cf2_hintmap_map( CF2_HintMap  hintmap,</a>
+<a name="ln305">                   CF2_Fixed    csCoord )</a>
+<a name="ln306">  {</a>
+<a name="ln307">    if ( hintmap-&gt;count == 0 || ! hintmap-&gt;hinted )</a>
+<a name="ln308">    {</a>
+<a name="ln309">      /* there are no hints; use uniform scale and zero offset */</a>
+<a name="ln310">      return FT_MulFix( csCoord, hintmap-&gt;scale );</a>
+<a name="ln311">    }</a>
+<a name="ln312">    else</a>
+<a name="ln313">    {</a>
+<a name="ln314">      /* start linear search from last hit */</a>
+<a name="ln315">      CF2_UInt  i = hintmap-&gt;lastIndex;</a>
+<a name="ln316"> </a>
+<a name="ln317">      FT_ASSERT( hintmap-&gt;lastIndex &lt; CF2_MAX_HINT_EDGES );</a>
+<a name="ln318"> </a>
+<a name="ln319">      /* search up */</a>
+<a name="ln320">      while ( i &lt; hintmap-&gt;count - 1                  &amp;&amp;</a>
+<a name="ln321">              csCoord &gt;= hintmap-&gt;edge[i + 1].csCoord )</a>
+<a name="ln322">        i += 1;</a>
+<a name="ln323"> </a>
+<a name="ln324">      /* search down */</a>
+<a name="ln325">      while ( i &gt; 0 &amp;&amp; csCoord &lt; hintmap-&gt;edge[i].csCoord )</a>
+<a name="ln326">        i -= 1;</a>
+<a name="ln327"> </a>
+<a name="ln328">      hintmap-&gt;lastIndex = i;</a>
+<a name="ln329"> </a>
+<a name="ln330">      if ( i == 0 &amp;&amp; csCoord &lt; hintmap-&gt;edge[0].csCoord )</a>
+<a name="ln331">      {</a>
+<a name="ln332">        /* special case for points below first edge: use uniform scale */</a>
+<a name="ln333">        return FT_MulFix( csCoord - hintmap-&gt;edge[0].csCoord,</a>
+<a name="ln334">                          hintmap-&gt;scale ) +</a>
+<a name="ln335">                 hintmap-&gt;edge[0].dsCoord;</a>
+<a name="ln336">      }</a>
+<a name="ln337">      else</a>
+<a name="ln338">      {</a>
+<a name="ln339">        /*</a>
+<a name="ln340">         * Note: entries with duplicate csCoord are allowed.</a>
+<a name="ln341">         * Use edge[i], the highest entry where csCoord &gt;= entry[i].csCoord</a>
+<a name="ln342">         */</a>
+<a name="ln343">        return FT_MulFix( csCoord - hintmap-&gt;edge[i].csCoord,</a>
+<a name="ln344">                          hintmap-&gt;edge[i].scale ) +</a>
+<a name="ln345">                 hintmap-&gt;edge[i].dsCoord;</a>
+<a name="ln346">      }</a>
+<a name="ln347">    }</a>
+<a name="ln348">  }</a>
+<a name="ln349"> </a>
+<a name="ln350"> </a>
+<a name="ln351">  /*</a>
+<a name="ln352">   * This hinting policy moves a hint pair in device space so that one of</a>
+<a name="ln353">   * its two edges is on a device pixel boundary (its fractional part is</a>
+<a name="ln354">   * zero).  `cf2_hintmap_insertHint' guarantees no overlap in CS</a>
+<a name="ln355">   * space.  Ensure here that there is no overlap in DS.</a>
+<a name="ln356">   *</a>
+<a name="ln357">   * In the first pass, edges are adjusted relative to adjacent hints.</a>
+<a name="ln358">   * Those that are below have already been adjusted.  Those that are</a>
+<a name="ln359">   * above have not yet been adjusted.  If a hint above blocks an</a>
+<a name="ln360">   * adjustment to an optimal position, we will try again in a second</a>
+<a name="ln361">   * pass.  The second pass is top-down.</a>
+<a name="ln362">   *</a>
+<a name="ln363">   */</a>
+<a name="ln364"> </a>
+<a name="ln365">  static void</a>
+<a name="ln366">  cf2_hintmap_adjustHints( CF2_HintMap  hintmap )</a>
+<a name="ln367">  {</a>
+<a name="ln368">    size_t  i, j;</a>
+<a name="ln369"> </a>
+<a name="ln370"> </a>
+<a name="ln371">    cf2_arrstack_clear( hintmap-&gt;hintMoves );      /* working storage */</a>
+<a name="ln372"> </a>
+<a name="ln373">    /*</a>
+<a name="ln374">     * First pass is bottom-up (font hint order) without look-ahead.</a>
+<a name="ln375">     * Locked edges are already adjusted.</a>
+<a name="ln376">     * Unlocked edges begin with dsCoord from `initialHintMap'.</a>
+<a name="ln377">     * Save edges that are not optimally adjusted in `hintMoves' array,</a>
+<a name="ln378">     * and process them in second pass.</a>
+<a name="ln379">     */</a>
+<a name="ln380"> </a>
+<a name="ln381">    for ( i = 0; i &lt; hintmap-&gt;count; i++ )</a>
+<a name="ln382">    {</a>
+<a name="ln383">      FT_Bool  isPair = cf2_hint_isPair( &amp;hintmap-&gt;edge[i] );</a>
+<a name="ln384"> </a>
+<a name="ln385"> </a>
+<a name="ln386">      /* index of upper edge (same value for ghost hint) */</a>
+<a name="ln387">      j = isPair ? i + 1 : i;</a>
+<a name="ln388"> </a>
+<a name="ln389">      FT_ASSERT( j &lt; hintmap-&gt;count );</a>
+<a name="ln390">      FT_ASSERT( cf2_hint_isValid( &amp;hintmap-&gt;edge[i] ) );</a>
+<a name="ln391">      FT_ASSERT( cf2_hint_isValid( &amp;hintmap-&gt;edge[j] ) );</a>
+<a name="ln392">      FT_ASSERT( cf2_hint_isLocked( &amp;hintmap-&gt;edge[i] ) ==</a>
+<a name="ln393">                   cf2_hint_isLocked( &amp;hintmap-&gt;edge[j] ) );</a>
+<a name="ln394"> </a>
+<a name="ln395">      if ( !cf2_hint_isLocked( &amp;hintmap-&gt;edge[i] ) )</a>
+<a name="ln396">      {</a>
+<a name="ln397">        /* hint edge is not locked, we can adjust it */</a>
+<a name="ln398">        CF2_Fixed  fracDown = cf2_fixedFraction( hintmap-&gt;edge[i].dsCoord );</a>
+<a name="ln399">        CF2_Fixed  fracUp   = cf2_fixedFraction( hintmap-&gt;edge[j].dsCoord );</a>
+<a name="ln400"> </a>
+<a name="ln401">        /* calculate all four possibilities; moves down are negative */</a>
+<a name="ln402">        CF2_Fixed  downMoveDown = 0 - fracDown;</a>
+<a name="ln403">        CF2_Fixed  upMoveDown   = 0 - fracUp;</a>
+<a name="ln404">        CF2_Fixed  downMoveUp   = fracDown == 0</a>
+<a name="ln405">                                    ? 0</a>
+<a name="ln406">                                    : cf2_intToFixed( 1 ) - fracDown;</a>
+<a name="ln407">        CF2_Fixed  upMoveUp     = fracUp == 0</a>
+<a name="ln408">                                    ? 0</a>
+<a name="ln409">                                    : cf2_intToFixed( 1 ) - fracUp;</a>
+<a name="ln410"> </a>
+<a name="ln411">        /* smallest move up */</a>
+<a name="ln412">        CF2_Fixed  moveUp   = FT_MIN( downMoveUp, upMoveUp );</a>
+<a name="ln413">        /* smallest move down */</a>
+<a name="ln414">        CF2_Fixed  moveDown = FT_MAX( downMoveDown, upMoveDown );</a>
+<a name="ln415"> </a>
+<a name="ln416">        /* final amount to move edge or edge pair */</a>
+<a name="ln417">        CF2_Fixed  move;</a>
+<a name="ln418"> </a>
+<a name="ln419">        CF2_Fixed  downMinCounter = CF2_MIN_COUNTER;</a>
+<a name="ln420">        CF2_Fixed  upMinCounter   = CF2_MIN_COUNTER;</a>
+<a name="ln421">        FT_Bool    saveEdge       = FALSE;</a>
+<a name="ln422"> </a>
+<a name="ln423"> </a>
+<a name="ln424">        /* minimum counter constraint doesn't apply when adjacent edges */</a>
+<a name="ln425">        /* are synthetic                                                */</a>
+<a name="ln426">        /* TODO: doesn't seem a big effect; for now, reduce the code    */</a>
+<a name="ln427">#if 0</a>
+<a name="ln428">        if ( i == 0                                        ||</a>
+<a name="ln429">             cf2_hint_isSynthetic( &amp;hintmap-&gt;edge[i - 1] ) )</a>
+<a name="ln430">          downMinCounter = 0;</a>
+<a name="ln431"> </a>
+<a name="ln432">        if ( j &gt;= hintmap-&gt;count - 1                       ||</a>
+<a name="ln433">             cf2_hint_isSynthetic( &amp;hintmap-&gt;edge[j + 1] ) )</a>
+<a name="ln434">          upMinCounter = 0;</a>
+<a name="ln435">#endif</a>
+<a name="ln436"> </a>
+<a name="ln437">        /* is there room to move up?                                    */</a>
+<a name="ln438">        /* there is if we are at top of array or the next edge is at or */</a>
+<a name="ln439">        /* beyond proposed move up?                                     */</a>
+<a name="ln440">        if ( j &gt;= hintmap-&gt;count - 1                            ||</a>
+<a name="ln441">             hintmap-&gt;edge[j + 1].dsCoord &gt;=</a>
+<a name="ln442">               hintmap-&gt;edge[j].dsCoord + moveUp + upMinCounter )</a>
+<a name="ln443">        {</a>
+<a name="ln444">          /* there is room to move up; is there also room to move down? */</a>
+<a name="ln445">          if ( i == 0                                                 ||</a>
+<a name="ln446">               hintmap-&gt;edge[i - 1].dsCoord &lt;=</a>
+<a name="ln447">                 hintmap-&gt;edge[i].dsCoord + moveDown - downMinCounter )</a>
+<a name="ln448">          {</a>
+<a name="ln449">            /* move smaller absolute amount */</a>
+<a name="ln450">            move = ( -moveDown &lt; moveUp ) ? moveDown : moveUp;  /* optimum */</a>
+<a name="ln451">          }</a>
+<a name="ln452">          else</a>
+<a name="ln453">            move = moveUp;</a>
+<a name="ln454">        }</a>
+<a name="ln455">        else</a>
+<a name="ln456">        {</a>
+<a name="ln457">          /* is there room to move down? */</a>
+<a name="ln458">          if ( i == 0                                                 ||</a>
+<a name="ln459">               hintmap-&gt;edge[i - 1].dsCoord &lt;=</a>
+<a name="ln460">                 hintmap-&gt;edge[i].dsCoord + moveDown - downMinCounter )</a>
+<a name="ln461">          {</a>
+<a name="ln462">            move     = moveDown;</a>
+<a name="ln463">            /* true if non-optimum move */</a>
+<a name="ln464">            saveEdge = (FT_Bool)( moveUp &lt; -moveDown );</a>
+<a name="ln465">          }</a>
+<a name="ln466">          else</a>
+<a name="ln467">          {</a>
+<a name="ln468">            /* no room to move either way without overlapping or reducing */</a>
+<a name="ln469">            /* the counter too much                                       */</a>
+<a name="ln470">            move     = 0;</a>
+<a name="ln471">            saveEdge = TRUE;</a>
+<a name="ln472">          }</a>
+<a name="ln473">        }</a>
+<a name="ln474"> </a>
+<a name="ln475">        /* Identify non-moves and moves down that aren't optimal, and save */</a>
+<a name="ln476">        /* them for second pass.                                           */</a>
+<a name="ln477">        /* Do this only if there is an unlocked edge above (which could    */</a>
+<a name="ln478">        /* possibly move).                                                 */</a>
+<a name="ln479">        if ( saveEdge                                    &amp;&amp;</a>
+<a name="ln480">             j &lt; hintmap-&gt;count - 1                      &amp;&amp;</a>
+<a name="ln481">             !cf2_hint_isLocked( &amp;hintmap-&gt;edge[j + 1] ) )</a>
+<a name="ln482">        {</a>
+<a name="ln483">          CF2_HintMoveRec  savedMove;</a>
+<a name="ln484"> </a>
+<a name="ln485"> </a>
+<a name="ln486">          savedMove.j      = j;</a>
+<a name="ln487">          /* desired adjustment in second pass */</a>
+<a name="ln488">          savedMove.moveUp = moveUp - move;</a>
+<a name="ln489"> </a>
+<a name="ln490">          cf2_arrstack_push( hintmap-&gt;hintMoves, &amp;savedMove );</a>
+<a name="ln491">        }</a>
+<a name="ln492"> </a>
+<a name="ln493">        /* move the edge(s) */</a>
+<a name="ln494">        hintmap-&gt;edge[i].dsCoord += move;</a>
+<a name="ln495">        if ( isPair )</a>
+<a name="ln496">          hintmap-&gt;edge[j].dsCoord += move;</a>
+<a name="ln497">      }</a>
+<a name="ln498"> </a>
+<a name="ln499">      /* assert there are no overlaps in device space */</a>
+<a name="ln500">      FT_ASSERT( i == 0                                                   ||</a>
+<a name="ln501">                 hintmap-&gt;edge[i - 1].dsCoord &lt;= hintmap-&gt;edge[i].dsCoord );</a>
+<a name="ln502">      FT_ASSERT( i &lt; j                                                ||</a>
+<a name="ln503">                 hintmap-&gt;edge[i].dsCoord &lt;= hintmap-&gt;edge[j].dsCoord );</a>
+<a name="ln504"> </a>
+<a name="ln505">      /* adjust the scales, avoiding divide by zero */</a>
+<a name="ln506">      if ( i &gt; 0 )</a>
+<a name="ln507">      {</a>
+<a name="ln508">        if ( hintmap-&gt;edge[i].csCoord != hintmap-&gt;edge[i - 1].csCoord )</a>
+<a name="ln509">          hintmap-&gt;edge[i - 1].scale =</a>
+<a name="ln510">            FT_DivFix(</a>
+<a name="ln511">              hintmap-&gt;edge[i].dsCoord - hintmap-&gt;edge[i - 1].dsCoord,</a>
+<a name="ln512">              hintmap-&gt;edge[i].csCoord - hintmap-&gt;edge[i - 1].csCoord );</a>
+<a name="ln513">      }</a>
+<a name="ln514"> </a>
+<a name="ln515">      if ( isPair )</a>
+<a name="ln516">      {</a>
+<a name="ln517">        if ( hintmap-&gt;edge[j].csCoord != hintmap-&gt;edge[j - 1].csCoord )</a>
+<a name="ln518">          hintmap-&gt;edge[j - 1].scale =</a>
+<a name="ln519">            FT_DivFix(</a>
+<a name="ln520">              hintmap-&gt;edge[j].dsCoord - hintmap-&gt;edge[j - 1].dsCoord,</a>
+<a name="ln521">              hintmap-&gt;edge[j].csCoord - hintmap-&gt;edge[j - 1].csCoord );</a>
+<a name="ln522"> </a>
+<a name="ln523">        i += 1;     /* skip upper edge on next loop */</a>
+<a name="ln524">      }</a>
+<a name="ln525">    }</a>
+<a name="ln526"> </a>
+<a name="ln527">    /* second pass tries to move non-optimal hints up, in case there is */</a>
+<a name="ln528">    /* room now                                                         */</a>
+<a name="ln529">    for ( i = cf2_arrstack_size( hintmap-&gt;hintMoves ); i &gt; 0; i-- )</a>
+<a name="ln530">    {</a>
+<a name="ln531">      CF2_HintMove  hintMove = (CF2_HintMove)</a>
+<a name="ln532">                      cf2_arrstack_getPointer( hintmap-&gt;hintMoves, i - 1 );</a>
+<a name="ln533"> </a>
+<a name="ln534"> </a>
+<a name="ln535">      j = hintMove-&gt;j;</a>
+<a name="ln536"> </a>
+<a name="ln537">      /* this was tested before the push, above */</a>
+<a name="ln538">      FT_ASSERT( j &lt; hintmap-&gt;count - 1 );</a>
+<a name="ln539"> </a>
+<a name="ln540">      /* is there room to move up? */</a>
+<a name="ln541">      if ( hintmap-&gt;edge[j + 1].dsCoord &gt;=</a>
+<a name="ln542">             hintmap-&gt;edge[j].dsCoord + hintMove-&gt;moveUp + CF2_MIN_COUNTER )</a>
+<a name="ln543">      {</a>
+<a name="ln544">        /* there is more room now, move edge up */</a>
+<a name="ln545">        hintmap-&gt;edge[j].dsCoord += hintMove-&gt;moveUp;</a>
+<a name="ln546"> </a>
+<a name="ln547">        if ( cf2_hint_isPair( &amp;hintmap-&gt;edge[j] ) )</a>
+<a name="ln548">        {</a>
+<a name="ln549">          FT_ASSERT( j &gt; 0 );</a>
+<a name="ln550">          hintmap-&gt;edge[j - 1].dsCoord += hintMove-&gt;moveUp;</a>
+<a name="ln551">        }</a>
+<a name="ln552">      }</a>
+<a name="ln553">    }</a>
+<a name="ln554">  }</a>
+<a name="ln555"> </a>
+<a name="ln556"> </a>
+<a name="ln557">  /* insert hint edges into map, sorted by csCoord */</a>
+<a name="ln558">  static void</a>
+<a name="ln559">  cf2_hintmap_insertHint( CF2_HintMap  hintmap,</a>
+<a name="ln560">                          CF2_Hint     bottomHintEdge,</a>
+<a name="ln561">                          CF2_Hint     topHintEdge )</a>
+<a name="ln562">  {</a>
+<a name="ln563">    CF2_UInt  indexInsert;</a>
+<a name="ln564"> </a>
+<a name="ln565">    /* set default values, then check for edge hints */</a>
+<a name="ln566">    FT_Bool   isPair         = TRUE;</a>
+<a name="ln567">    CF2_Hint  firstHintEdge  = bottomHintEdge;</a>
+<a name="ln568">    CF2_Hint  secondHintEdge = topHintEdge;</a>
+<a name="ln569"> </a>
+<a name="ln570"> </a>
+<a name="ln571">    /* one or none of the input params may be invalid when dealing with */</a>
+<a name="ln572">    /* edge hints; at least one edge must be valid                      */</a>
+<a name="ln573">    FT_ASSERT( cf2_hint_isValid( bottomHintEdge ) ||</a>
+<a name="ln574">               cf2_hint_isValid( topHintEdge )    );</a>
+<a name="ln575"> </a>
+<a name="ln576">    /* determine how many and which edges to insert */</a>
+<a name="ln577">    if ( !cf2_hint_isValid( bottomHintEdge ) )</a>
+<a name="ln578">    {</a>
+<a name="ln579">      /* insert only the top edge */</a>
+<a name="ln580">      firstHintEdge = topHintEdge;</a>
+<a name="ln581">      isPair        = FALSE;</a>
+<a name="ln582">    }</a>
+<a name="ln583">    else if ( !cf2_hint_isValid( topHintEdge ) )</a>
+<a name="ln584">    {</a>
+<a name="ln585">      /* insert only the bottom edge */</a>
+<a name="ln586">      isPair = FALSE;</a>
+<a name="ln587">    }</a>
+<a name="ln588"> </a>
+<a name="ln589">    /* paired edges must be in proper order */</a>
+<a name="ln590">    FT_ASSERT( !isPair                                         ||</a>
+<a name="ln591">               topHintEdge-&gt;csCoord &gt;= bottomHintEdge-&gt;csCoord );</a>
+<a name="ln592"> </a>
+<a name="ln593">    /* linear search to find index value of insertion point */</a>
+<a name="ln594">    indexInsert = 0;</a>
+<a name="ln595">    for ( ; indexInsert &lt; hintmap-&gt;count; indexInsert++ )</a>
+<a name="ln596">    {</a>
+<a name="ln597">      if ( hintmap-&gt;edge[indexInsert].csCoord &gt;= firstHintEdge-&gt;csCoord )</a>
+<a name="ln598">        break;</a>
+<a name="ln599">    }</a>
+<a name="ln600"> </a>
+<a name="ln601">    /*</a>
+<a name="ln602">     * Discard any hints that overlap in character space.  Most often, this</a>
+<a name="ln603">     * is while building the initial map, where captured hints from all</a>
+<a name="ln604">     * zones are combined.  Define overlap to include hints that `touch'</a>
+<a name="ln605">     * (overlap zero).  Hiragino Sans/Gothic fonts have numerous hints that</a>
+<a name="ln606">     * touch.  Some fonts have non-ideographic glyphs that overlap our</a>
+<a name="ln607">     * synthetic hints.</a>
+<a name="ln608">     *</a>
+<a name="ln609">     * Overlap also occurs when darkening stem hints that are close.</a>
+<a name="ln610">     *</a>
+<a name="ln611">     */</a>
+<a name="ln612">    if ( indexInsert &lt; hintmap-&gt;count )</a>
+<a name="ln613">    {</a>
+<a name="ln614">      /* we are inserting before an existing edge:    */</a>
+<a name="ln615">      /* verify that an existing edge is not the same */</a>
+<a name="ln616">      if ( hintmap-&gt;edge[indexInsert].csCoord == firstHintEdge-&gt;csCoord )</a>
+<a name="ln617">        return; /* ignore overlapping stem hint */</a>
+<a name="ln618"> </a>
+<a name="ln619">      /* verify that a new pair does not straddle the next edge */</a>
+<a name="ln620">      if ( isPair                                                        &amp;&amp;</a>
+<a name="ln621">           hintmap-&gt;edge[indexInsert].csCoord &lt;= secondHintEdge-&gt;csCoord )</a>
+<a name="ln622">        return; /* ignore overlapping stem hint */</a>
+<a name="ln623"> </a>
+<a name="ln624">      /* verify that we are not inserting between paired edges */</a>
+<a name="ln625">      if ( cf2_hint_isPairTop( &amp;hintmap-&gt;edge[indexInsert] ) )</a>
+<a name="ln626">        return; /* ignore overlapping stem hint */</a>
+<a name="ln627">    }</a>
+<a name="ln628"> </a>
+<a name="ln629">    /* recompute device space locations using initial hint map */</a>
+<a name="ln630">    if ( cf2_hintmap_isValid( hintmap-&gt;initialHintMap ) &amp;&amp;</a>
+<a name="ln631">         !cf2_hint_isLocked( firstHintEdge )            )</a>
+<a name="ln632">    {</a>
+<a name="ln633">      if ( isPair )</a>
+<a name="ln634">      {</a>
+<a name="ln635">        /* Use hint map to position the center of stem, and nominal scale */</a>
+<a name="ln636">        /* to position the two edges.  This preserves the stem width.     */</a>
+<a name="ln637">        CF2_Fixed  midpoint  = cf2_hintmap_map(</a>
+<a name="ln638">                                 hintmap-&gt;initialHintMap,</a>
+<a name="ln639">                                 ( secondHintEdge-&gt;csCoord +</a>
+<a name="ln640">                                   firstHintEdge-&gt;csCoord ) / 2 );</a>
+<a name="ln641">        CF2_Fixed  halfWidth = FT_MulFix(</a>
+<a name="ln642">                                 ( secondHintEdge-&gt;csCoord -</a>
+<a name="ln643">                                   firstHintEdge-&gt;csCoord ) / 2,</a>
+<a name="ln644">                                 hintmap-&gt;scale );</a>
+<a name="ln645"> </a>
+<a name="ln646"> </a>
+<a name="ln647">        firstHintEdge-&gt;dsCoord  = midpoint - halfWidth;</a>
+<a name="ln648">        secondHintEdge-&gt;dsCoord = midpoint + halfWidth;</a>
+<a name="ln649">      }</a>
+<a name="ln650">      else</a>
+<a name="ln651">        firstHintEdge-&gt;dsCoord = cf2_hintmap_map( hintmap-&gt;initialHintMap,</a>
+<a name="ln652">                                                  firstHintEdge-&gt;csCoord );</a>
+<a name="ln653">    }</a>
+<a name="ln654"> </a>
+<a name="ln655">    /*</a>
+<a name="ln656">     * Discard any hints that overlap in device space; this can occur</a>
+<a name="ln657">     * because locked hints have been moved to align with blue zones.</a>
+<a name="ln658">     *</a>
+<a name="ln659">     * TODO: Although we might correct this later during adjustment, we</a>
+<a name="ln660">     * don't currently have a way to delete a conflicting hint once it has</a>
+<a name="ln661">     * been inserted.  See v2.030 MinionPro-Regular, 12 ppem darkened,</a>
+<a name="ln662">     * initial hint map for second path, glyph 945 (the perispomeni (tilde)</a>
+<a name="ln663">     * in U+1F6E, Greek omega with psili and perispomeni).  Darkening is</a>
+<a name="ln664">     * 25.  Pair 667,747 initially conflicts in design space with top edge</a>
+<a name="ln665">     * 660.  This is because 667 maps to 7.87, and the top edge was</a>
+<a name="ln666">     * captured by a zone at 8.0.  The pair is later successfully inserted</a>
+<a name="ln667">     * in a zone without the top edge.  In this zone it is adjusted to 8.0,</a>
+<a name="ln668">     * and no longer conflicts with the top edge in design space.  This</a>
+<a name="ln669">     * means it can be included in yet a later zone which does have the top</a>
+<a name="ln670">     * edge hint.  This produces a small mismatch between the first and</a>
+<a name="ln671">     * last points of this path, even though the hint masks are the same.</a>
+<a name="ln672">     * The density map difference is tiny (1/256).</a>
+<a name="ln673">     *</a>
+<a name="ln674">     */</a>
+<a name="ln675"> </a>
+<a name="ln676">    if ( indexInsert &gt; 0 )</a>
+<a name="ln677">    {</a>
+<a name="ln678">      /* we are inserting after an existing edge */</a>
+<a name="ln679">      if ( firstHintEdge-&gt;dsCoord &lt; hintmap-&gt;edge[indexInsert - 1].dsCoord )</a>
+<a name="ln680">        return;</a>
+<a name="ln681">    }</a>
+<a name="ln682"> </a>
+<a name="ln683">    if ( indexInsert &lt; hintmap-&gt;count )</a>
+<a name="ln684">    {</a>
+<a name="ln685">      /* we are inserting before an existing edge */</a>
+<a name="ln686">      if ( isPair )</a>
+<a name="ln687">      {</a>
+<a name="ln688">        if ( secondHintEdge-&gt;dsCoord &gt; hintmap-&gt;edge[indexInsert].dsCoord )</a>
+<a name="ln689">          return;</a>
+<a name="ln690">      }</a>
+<a name="ln691">      else</a>
+<a name="ln692">      {</a>
+<a name="ln693">        if ( firstHintEdge-&gt;dsCoord &gt; hintmap-&gt;edge[indexInsert].dsCoord )</a>
+<a name="ln694">          return;</a>
+<a name="ln695">      }</a>
+<a name="ln696">    }</a>
+<a name="ln697"> </a>
+<a name="ln698">    /* make room to insert */</a>
+<a name="ln699">    {</a>
+<a name="ln700">      CF2_UInt  iSrc = hintmap-&gt;count - 1;</a>
+<a name="ln701">      CF2_UInt  iDst = isPair ? hintmap-&gt;count + 1 : hintmap-&gt;count;</a>
+<a name="ln702"> </a>
+<a name="ln703">      CF2_UInt  count = hintmap-&gt;count - indexInsert;</a>
+<a name="ln704"> </a>
+<a name="ln705"> </a>
+<a name="ln706">      if ( iDst &gt;= CF2_MAX_HINT_EDGES )</a>
+<a name="ln707">      {</a>
+<a name="ln708">        FT_TRACE4(( &quot;cf2_hintmap_insertHint: too many hintmaps\n&quot; ));</a>
+<a name="ln709">        return;</a>
+<a name="ln710">      }</a>
+<a name="ln711"> </a>
+<a name="ln712">      while ( count-- )</a>
+<a name="ln713">        hintmap-&gt;edge[iDst--] = hintmap-&gt;edge[iSrc--];</a>
+<a name="ln714"> </a>
+<a name="ln715">      /* insert first edge */</a>
+<a name="ln716">      hintmap-&gt;edge[indexInsert] = *firstHintEdge;         /* copy struct */</a>
+<a name="ln717">      hintmap-&gt;count += 1;</a>
+<a name="ln718"> </a>
+<a name="ln719">      if ( isPair )</a>
+<a name="ln720">      {</a>
+<a name="ln721">        /* insert second edge */</a>
+<a name="ln722">        hintmap-&gt;edge[indexInsert + 1] = *secondHintEdge;  /* copy struct */</a>
+<a name="ln723">        hintmap-&gt;count                += 1;</a>
+<a name="ln724">      }</a>
+<a name="ln725">    }</a>
+<a name="ln726"> </a>
+<a name="ln727">    return;</a>
+<a name="ln728">  }</a>
+<a name="ln729"> </a>
+<a name="ln730"> </a>
+<a name="ln731">  /*</a>
+<a name="ln732">   * Build a map from hints and mask.</a>
+<a name="ln733">   *</a>
+<a name="ln734">   * This function may recur one level if `hintmap-&gt;initialHintMap' is not yet</a>
+<a name="ln735">   * valid.</a>
+<a name="ln736">   * If `initialMap' is true, simply build initial map.</a>
+<a name="ln737">   *</a>
+<a name="ln738">   * Synthetic hints are used in two ways.  A hint at zero is inserted, if</a>
+<a name="ln739">   * needed, in the initial hint map, to prevent translations from</a>
+<a name="ln740">   * propagating across the origin.  If synthetic em box hints are enabled</a>
+<a name="ln741">   * for ideographic dictionaries, then they are inserted in all hint</a>
+<a name="ln742">   * maps, including the initial one.</a>
+<a name="ln743">   *</a>
+<a name="ln744">   */</a>
+<a name="ln745">  FT_LOCAL_DEF( void )</a>
+<a name="ln746">  cf2_hintmap_build( CF2_HintMap   hintmap,</a>
+<a name="ln747">                     CF2_ArrStack  hStemHintArray,</a>
+<a name="ln748">                     CF2_ArrStack  vStemHintArray,</a>
+<a name="ln749">                     CF2_HintMask  hintMask,</a>
+<a name="ln750">                     CF2_Fixed     hintOrigin,</a>
+<a name="ln751">                     FT_Bool       initialMap )</a>
+<a name="ln752">  {</a>
+<a name="ln753">    FT_Byte*  maskPtr;</a>
+<a name="ln754"> </a>
+<a name="ln755">    CF2_Font         font = hintmap-&gt;font;</a>
+<a name="ln756">    CF2_HintMaskRec  tempHintMask;</a>
+<a name="ln757"> </a>
+<a name="ln758">    size_t   bitCount, i;</a>
+<a name="ln759">    FT_Byte  maskByte;</a>
+<a name="ln760"> </a>
+<a name="ln761"> </a>
+<a name="ln762">    /* check whether initial map is constructed */</a>
+<a name="ln763">    if ( !initialMap &amp;&amp; !cf2_hintmap_isValid( hintmap-&gt;initialHintMap ) )</a>
+<a name="ln764">    {</a>
+<a name="ln765">      /* make recursive call with initialHintMap and temporary mask; */</a>
+<a name="ln766">      /* temporary mask will get all bits set, below */</a>
+<a name="ln767">      cf2_hintmask_init( &amp;tempHintMask, hintMask-&gt;error );</a>
+<a name="ln768">      cf2_hintmap_build( hintmap-&gt;initialHintMap,</a>
+<a name="ln769">                         hStemHintArray,</a>
+<a name="ln770">                         vStemHintArray,</a>
+<a name="ln771">                         &amp;tempHintMask,</a>
+<a name="ln772">                         hintOrigin,</a>
+<a name="ln773">                         TRUE );</a>
+<a name="ln774">    }</a>
+<a name="ln775"> </a>
+<a name="ln776">    if ( !cf2_hintmask_isValid( hintMask ) )</a>
+<a name="ln777">    {</a>
+<a name="ln778">      /* without a hint mask, assume all hints are active */</a>
+<a name="ln779">      cf2_hintmask_setAll( hintMask,</a>
+<a name="ln780">                           cf2_arrstack_size( hStemHintArray ) +</a>
+<a name="ln781">                             cf2_arrstack_size( vStemHintArray ) );</a>
+<a name="ln782">      if ( !cf2_hintmask_isValid( hintMask ) )</a>
+<a name="ln783">          return;                   /* too many stem hints */</a>
+<a name="ln784">    }</a>
+<a name="ln785"> </a>
+<a name="ln786">    /* begin by clearing the map */</a>
+<a name="ln787">    hintmap-&gt;count     = 0;</a>
+<a name="ln788">    hintmap-&gt;lastIndex = 0;</a>
+<a name="ln789"> </a>
+<a name="ln790">    /* make a copy of the hint mask so we can modify it */</a>
+<a name="ln791">    tempHintMask = *hintMask;</a>
+<a name="ln792">    maskPtr      = cf2_hintmask_getMaskPtr( &amp;tempHintMask );</a>
+<a name="ln793"> </a>
+<a name="ln794">    /* use the hStem hints only, which are first in the mask */</a>
+<a name="ln795">    bitCount = cf2_arrstack_size( hStemHintArray );</a>
+<a name="ln796"> </a>
+<a name="ln797">    /* Defense-in-depth.  Should never return here. */</a>
+<a name="ln798">    if ( bitCount &gt; hintMask-&gt;bitCount )</a>
+<a name="ln799">        return;</a>
+<a name="ln800"> </a>
+<a name="ln801">    /* synthetic embox hints get highest priority */</a>
+<a name="ln802">    if ( font-&gt;blues.doEmBoxHints )</a>
+<a name="ln803">    {</a>
+<a name="ln804">      CF2_HintRec  dummy;</a>
+<a name="ln805"> </a>
+<a name="ln806"> </a>
+<a name="ln807">      cf2_hint_initZero( &amp;dummy );   /* invalid hint map element */</a>
+<a name="ln808"> </a>
+<a name="ln809">      /* ghost bottom */</a>
+<a name="ln810">      cf2_hintmap_insertHint( hintmap,</a>
+<a name="ln811">                              &amp;font-&gt;blues.emBoxBottomEdge,</a>
+<a name="ln812">                              &amp;dummy );</a>
+<a name="ln813">      /* ghost top */</a>
+<a name="ln814">      cf2_hintmap_insertHint( hintmap,</a>
+<a name="ln815">                              &amp;dummy,</a>
+<a name="ln816">                              &amp;font-&gt;blues.emBoxTopEdge );</a>
+<a name="ln817">    }</a>
+<a name="ln818"> </a>
+<a name="ln819">    /* insert hints captured by a blue zone or already locked (higher */</a>
+<a name="ln820">    /* priority)                                                      */</a>
+<a name="ln821">    for ( i = 0, maskByte = 0x80; i &lt; bitCount; i++ )</a>
+<a name="ln822">    {</a>
+<a name="ln823">      if ( maskByte &amp; *maskPtr )</a>
+<a name="ln824">      {</a>
+<a name="ln825">        /* expand StemHint into two `CF2_Hint' elements */</a>
+<a name="ln826">        CF2_HintRec  bottomHintEdge, topHintEdge;</a>
+<a name="ln827"> </a>
+<a name="ln828"> </a>
+<a name="ln829">        cf2_hint_init( &amp;bottomHintEdge,</a>
+<a name="ln830">                       hStemHintArray,</a>
+<a name="ln831">                       i,</a>
+<a name="ln832">                       font,</a>
+<a name="ln833">                       hintOrigin,</a>
+<a name="ln834">                       hintmap-&gt;scale,</a>
+<a name="ln835">                       TRUE /* bottom */ );</a>
+<a name="ln836">        cf2_hint_init( &amp;topHintEdge,</a>
+<a name="ln837">                       hStemHintArray,</a>
+<a name="ln838">                       i,</a>
+<a name="ln839">                       font,</a>
+<a name="ln840">                       hintOrigin,</a>
+<a name="ln841">                       hintmap-&gt;scale,</a>
+<a name="ln842">                       FALSE /* top */ );</a>
+<a name="ln843"> </a>
+<a name="ln844">        if ( cf2_hint_isLocked( &amp;bottomHintEdge ) ||</a>
+<a name="ln845">             cf2_hint_isLocked( &amp;topHintEdge )    ||</a>
+<a name="ln846">             cf2_blues_capture( &amp;font-&gt;blues,</a>
+<a name="ln847">                                &amp;bottomHintEdge,</a>
+<a name="ln848">                                &amp;topHintEdge )   )</a>
+<a name="ln849">        {</a>
+<a name="ln850">          /* insert captured hint into map */</a>
+<a name="ln851">          cf2_hintmap_insertHint( hintmap, &amp;bottomHintEdge, &amp;topHintEdge );</a>
+<a name="ln852"> </a>
+<a name="ln853">          *maskPtr &amp;= ~maskByte;      /* turn off the bit for this hint */</a>
+<a name="ln854">        }</a>
+<a name="ln855">      }</a>
+<a name="ln856"> </a>
+<a name="ln857">      if ( ( i &amp; 7 ) == 7 )</a>
+<a name="ln858">      {</a>
+<a name="ln859">        /* move to next mask byte */</a>
+<a name="ln860">        maskPtr++;</a>
+<a name="ln861">        maskByte = 0x80;</a>
+<a name="ln862">      }</a>
+<a name="ln863">      else</a>
+<a name="ln864">        maskByte &gt;&gt;= 1;</a>
+<a name="ln865">    }</a>
+<a name="ln866"> </a>
+<a name="ln867">    /* initial hint map includes only captured hints plus maybe one at 0 */</a>
+<a name="ln868"> </a>
+<a name="ln869">    /*</a>
+<a name="ln870">     * TODO: There is a problem here because we are trying to build a</a>
+<a name="ln871">     *       single hint map containing all captured hints.  It is</a>
+<a name="ln872">     *       possible for there to be conflicts between captured hints,</a>
+<a name="ln873">     *       either because of darkening or because the hints are in</a>
+<a name="ln874">     *       separate hint zones (we are ignoring hint zones for the</a>
+<a name="ln875">     *       initial map).  An example of the latter is MinionPro-Regular</a>
+<a name="ln876">     *       v2.030 glyph 883 (Greek Capital Alpha with Psili) at 15ppem.</a>
+<a name="ln877">     *       A stem hint for the psili conflicts with the top edge hint</a>
+<a name="ln878">     *       for the base character.  The stem hint gets priority because</a>
+<a name="ln879">     *       of its sort order.  In glyph 884 (Greek Capital Alpha with</a>
+<a name="ln880">     *       Psili and Oxia), the top of the base character gets a stem</a>
+<a name="ln881">     *       hint, and the psili does not.  This creates different initial</a>
+<a name="ln882">     *       maps for the two glyphs resulting in different renderings of</a>
+<a name="ln883">     *       the base character.  Will probably defer this either as not</a>
+<a name="ln884">     *       worth the cost or as a font bug.  I don't think there is any</a>
+<a name="ln885">     *       good reason for an accent to be captured by an alignment</a>
+<a name="ln886">     *       zone.  -darnold 2/12/10</a>
+<a name="ln887">     */</a>
+<a name="ln888"> </a>
+<a name="ln889">    if ( initialMap )</a>
+<a name="ln890">    {</a>
+<a name="ln891">      /* Apply a heuristic that inserts a point for (0,0), unless it's     */</a>
+<a name="ln892">      /* already covered by a mapping.  This locks the baseline for glyphs */</a>
+<a name="ln893">      /* that have no baseline hints.                                      */</a>
+<a name="ln894"> </a>
+<a name="ln895">      if ( hintmap-&gt;count == 0                           ||</a>
+<a name="ln896">           hintmap-&gt;edge[0].csCoord &gt; 0                  ||</a>
+<a name="ln897">           hintmap-&gt;edge[hintmap-&gt;count - 1].csCoord &lt; 0 )</a>
+<a name="ln898">      {</a>
+<a name="ln899">        /* all edges are above 0 or all edges are below 0; */</a>
+<a name="ln900">        /* construct a locked edge hint at 0               */</a>
+<a name="ln901"> </a>
+<a name="ln902">        CF2_HintRec  edge, invalid;</a>
+<a name="ln903"> </a>
+<a name="ln904"> </a>
+<a name="ln905">        cf2_hint_initZero( &amp;edge );</a>
+<a name="ln906"> </a>
+<a name="ln907">        edge.flags = CF2_GhostBottom |</a>
+<a name="ln908">                     CF2_Locked      |</a>
+<a name="ln909">                     CF2_Synthetic;</a>
+<a name="ln910">        edge.scale = hintmap-&gt;scale;</a>
+<a name="ln911"> </a>
+<a name="ln912">        cf2_hint_initZero( &amp;invalid );</a>
+<a name="ln913">        cf2_hintmap_insertHint( hintmap, &amp;edge, &amp;invalid );</a>
+<a name="ln914">      }</a>
+<a name="ln915">    }</a>
+<a name="ln916">    else</a>
+<a name="ln917">    {</a>
+<a name="ln918">      /* insert remaining hints */</a>
+<a name="ln919"> </a>
+<a name="ln920">      maskPtr = cf2_hintmask_getMaskPtr( &amp;tempHintMask );</a>
+<a name="ln921"> </a>
+<a name="ln922">      for ( i = 0, maskByte = 0x80; i &lt; bitCount; i++ )</a>
+<a name="ln923">      {</a>
+<a name="ln924">        if ( maskByte &amp; *maskPtr )</a>
+<a name="ln925">        {</a>
+<a name="ln926">          CF2_HintRec  bottomHintEdge, topHintEdge;</a>
+<a name="ln927"> </a>
+<a name="ln928"> </a>
+<a name="ln929">          cf2_hint_init( &amp;bottomHintEdge,</a>
+<a name="ln930">                         hStemHintArray,</a>
+<a name="ln931">                         i,</a>
+<a name="ln932">                         font,</a>
+<a name="ln933">                         hintOrigin,</a>
+<a name="ln934">                         hintmap-&gt;scale,</a>
+<a name="ln935">                         TRUE /* bottom */ );</a>
+<a name="ln936">          cf2_hint_init( &amp;topHintEdge,</a>
+<a name="ln937">                         hStemHintArray,</a>
+<a name="ln938">                         i,</a>
+<a name="ln939">                         font,</a>
+<a name="ln940">                         hintOrigin,</a>
+<a name="ln941">                         hintmap-&gt;scale,</a>
+<a name="ln942">                         FALSE /* top */ );</a>
+<a name="ln943"> </a>
+<a name="ln944">          cf2_hintmap_insertHint( hintmap, &amp;bottomHintEdge, &amp;topHintEdge );</a>
+<a name="ln945">        }</a>
+<a name="ln946"> </a>
+<a name="ln947">        if ( ( i &amp; 7 ) == 7 )</a>
+<a name="ln948">        {</a>
+<a name="ln949">          /* move to next mask byte */</a>
+<a name="ln950">          maskPtr++;</a>
+<a name="ln951">          maskByte = 0x80;</a>
+<a name="ln952">        }</a>
+<a name="ln953">        else</a>
+<a name="ln954">          maskByte &gt;&gt;= 1;</a>
+<a name="ln955">      }</a>
+<a name="ln956">    }</a>
+<a name="ln957"> </a>
+<a name="ln958">    /*</a>
+<a name="ln959">     * Note: The following line is a convenient place to break when</a>
+<a name="ln960">     *       debugging hinting.  Examine `hintmap-&gt;edge' for the list of</a>
+<a name="ln961">     *       enabled hints, then step over the call to see the effect of</a>
+<a name="ln962">     *       adjustment.  We stop here first on the recursive call that</a>
+<a name="ln963">     *       creates the initial map, and then on each counter group and</a>
+<a name="ln964">     *       hint zone.</a>
+<a name="ln965">     */</a>
+<a name="ln966"> </a>
+<a name="ln967">    /* adjust positions of hint edges that are not locked to blue zones */</a>
+<a name="ln968">    cf2_hintmap_adjustHints( hintmap );</a>
+<a name="ln969"> </a>
+<a name="ln970">    /* save the position of all hints that were used in this hint map; */</a>
+<a name="ln971">    /* if we use them again, we'll locate them in the same position    */</a>
+<a name="ln972">    if ( !initialMap )</a>
+<a name="ln973">    {</a>
+<a name="ln974">      for ( i = 0; i &lt; hintmap-&gt;count; i++ )</a>
+<a name="ln975">      {</a>
+<a name="ln976">        if ( !cf2_hint_isSynthetic( &amp;hintmap-&gt;edge[i] ) )</a>
+<a name="ln977">        {</a>
+<a name="ln978">          /* Note: include both valid and invalid edges            */</a>
+<a name="ln979">          /* Note: top and bottom edges are copied back separately */</a>
+<a name="ln980">          CF2_StemHint  stemhint = (CF2_StemHint)</a>
+<a name="ln981">                          cf2_arrstack_getPointer( hStemHintArray,</a>
+<a name="ln982">                                                   hintmap-&gt;edge[i].index );</a>
+<a name="ln983"> </a>
+<a name="ln984"> </a>
+<a name="ln985">          if ( cf2_hint_isTop( &amp;hintmap-&gt;edge[i] ) )</a>
+<a name="ln986">            stemhint-&gt;maxDS = hintmap-&gt;edge[i].dsCoord;</a>
+<a name="ln987">          else</a>
+<a name="ln988">            stemhint-&gt;minDS = hintmap-&gt;edge[i].dsCoord;</a>
+<a name="ln989"> </a>
+<a name="ln990">          stemhint-&gt;used = TRUE;</a>
+<a name="ln991">        }</a>
+<a name="ln992">      }</a>
+<a name="ln993">    }</a>
+<a name="ln994"> </a>
+<a name="ln995">    /* hint map is ready to use */</a>
+<a name="ln996">    hintmap-&gt;isValid = TRUE;</a>
+<a name="ln997"> </a>
+<a name="ln998">    /* remember this mask has been used */</a>
+<a name="ln999">    cf2_hintmask_setNew( hintMask, FALSE );</a>
+<a name="ln1000">  }</a>
+<a name="ln1001"> </a>
+<a name="ln1002"> </a>
+<a name="ln1003">  FT_LOCAL_DEF( void )</a>
+<a name="ln1004">  cf2_glyphpath_init( CF2_GlyphPath         glyphpath,</a>
+<a name="ln1005">                      CF2_Font              font,</a>
+<a name="ln1006">                      CF2_OutlineCallbacks  callbacks,</a>
+<a name="ln1007">                      CF2_Fixed             scaleY,</a>
+<a name="ln1008">                      /* CF2_Fixed  hShift, */</a>
+<a name="ln1009">                      CF2_ArrStack          hStemHintArray,</a>
+<a name="ln1010">                      CF2_ArrStack          vStemHintArray,</a>
+<a name="ln1011">                      CF2_HintMask          hintMask,</a>
+<a name="ln1012">                      CF2_Fixed             hintOriginY,</a>
+<a name="ln1013">                      const CF2_Blues       blues,</a>
+<a name="ln1014">                      const FT_Vector*      fractionalTranslation )</a>
+<a name="ln1015">  {</a>
+<a name="ln1016">    FT_ZERO( glyphpath );</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    glyphpath-&gt;font      = font;</a>
+<a name="ln1019">    glyphpath-&gt;callbacks = callbacks;</a>
+<a name="ln1020"> </a>
+<a name="ln1021">    cf2_arrstack_init( &amp;glyphpath-&gt;hintMoves,</a>
+<a name="ln1022">                       font-&gt;memory,</a>
+<a name="ln1023">                       &amp;font-&gt;error,</a>
+<a name="ln1024">                       sizeof ( CF2_HintMoveRec ) );</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    cf2_hintmap_init( &amp;glyphpath-&gt;initialHintMap,</a>
+<a name="ln1027">                      font,</a>
+<a name="ln1028">                      &amp;glyphpath-&gt;initialHintMap,</a>
+<a name="ln1029">                      &amp;glyphpath-&gt;hintMoves,</a>
+<a name="ln1030">                      scaleY );</a>
+<a name="ln1031">    cf2_hintmap_init( &amp;glyphpath-&gt;firstHintMap,</a>
+<a name="ln1032">                      font,</a>
+<a name="ln1033">                      &amp;glyphpath-&gt;initialHintMap,</a>
+<a name="ln1034">                      &amp;glyphpath-&gt;hintMoves,</a>
+<a name="ln1035">                      scaleY );</a>
+<a name="ln1036">    cf2_hintmap_init( &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1037">                      font,</a>
+<a name="ln1038">                      &amp;glyphpath-&gt;initialHintMap,</a>
+<a name="ln1039">                      &amp;glyphpath-&gt;hintMoves,</a>
+<a name="ln1040">                      scaleY );</a>
+<a name="ln1041"> </a>
+<a name="ln1042">    glyphpath-&gt;scaleX = font-&gt;innerTransform.a;</a>
+<a name="ln1043">    glyphpath-&gt;scaleC = font-&gt;innerTransform.c;</a>
+<a name="ln1044">    glyphpath-&gt;scaleY = font-&gt;innerTransform.d;</a>
+<a name="ln1045"> </a>
+<a name="ln1046">    glyphpath-&gt;fractionalTranslation = *fractionalTranslation;</a>
+<a name="ln1047"> </a>
+<a name="ln1048">#if 0</a>
+<a name="ln1049">    glyphpath-&gt;hShift = hShift;       /* for fauxing */</a>
+<a name="ln1050">#endif</a>
+<a name="ln1051"> </a>
+<a name="ln1052">    glyphpath-&gt;hStemHintArray = hStemHintArray;</a>
+<a name="ln1053">    glyphpath-&gt;vStemHintArray = vStemHintArray;</a>
+<a name="ln1054">    glyphpath-&gt;hintMask       = hintMask;      /* ptr to current mask */</a>
+<a name="ln1055">    glyphpath-&gt;hintOriginY    = hintOriginY;</a>
+<a name="ln1056">    glyphpath-&gt;blues          = blues;</a>
+<a name="ln1057">    glyphpath-&gt;darken         = font-&gt;darkened; /* TODO: should we make copies? */</a>
+<a name="ln1058">    glyphpath-&gt;xOffset        = font-&gt;darkenX;</a>
+<a name="ln1059">    glyphpath-&gt;yOffset        = font-&gt;darkenY;</a>
+<a name="ln1060">    glyphpath-&gt;miterLimit     = 2 * FT_MAX(</a>
+<a name="ln1061">                                     cf2_fixedAbs( glyphpath-&gt;xOffset ),</a>
+<a name="ln1062">                                     cf2_fixedAbs( glyphpath-&gt;yOffset ) );</a>
+<a name="ln1063"> </a>
+<a name="ln1064">    /* .1 character space unit */</a>
+<a name="ln1065">    glyphpath-&gt;snapThreshold = cf2_floatToFixed( 0.1f );</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    glyphpath-&gt;moveIsPending = TRUE;</a>
+<a name="ln1068">    glyphpath-&gt;pathIsOpen    = FALSE;</a>
+<a name="ln1069">    glyphpath-&gt;pathIsClosing = FALSE;</a>
+<a name="ln1070">    glyphpath-&gt;elemIsQueued  = FALSE;</a>
+<a name="ln1071">  }</a>
+<a name="ln1072"> </a>
+<a name="ln1073"> </a>
+<a name="ln1074">  FT_LOCAL_DEF( void )</a>
+<a name="ln1075">  cf2_glyphpath_finalize( CF2_GlyphPath  glyphpath )</a>
+<a name="ln1076">  {</a>
+<a name="ln1077">    cf2_arrstack_finalize( &amp;glyphpath-&gt;hintMoves );</a>
+<a name="ln1078">  }</a>
+<a name="ln1079"> </a>
+<a name="ln1080"> </a>
+<a name="ln1081">  /*</a>
+<a name="ln1082">   * Hint point in y-direction and apply outerTransform.</a>
+<a name="ln1083">   * Input `current' hint map (which is actually delayed by one element).</a>
+<a name="ln1084">   * Input x,y point in Character Space.</a>
+<a name="ln1085">   * Output x,y point in Device Space, including translation.</a>
+<a name="ln1086">   */</a>
+<a name="ln1087">  static void</a>
+<a name="ln1088">  cf2_glyphpath_hintPoint( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1089">                           CF2_HintMap    hintmap,</a>
+<a name="ln1090">                           FT_Vector*     ppt,</a>
+<a name="ln1091">                           CF2_Fixed      x,</a>
+<a name="ln1092">                           CF2_Fixed      y )</a>
+<a name="ln1093">  {</a>
+<a name="ln1094">    FT_Vector  pt;   /* hinted point in upright DS */</a>
+<a name="ln1095"> </a>
+<a name="ln1096"> </a>
+<a name="ln1097">    pt.x = FT_MulFix( glyphpath-&gt;scaleX, x ) +</a>
+<a name="ln1098">             FT_MulFix( glyphpath-&gt;scaleC, y );</a>
+<a name="ln1099">    pt.y = cf2_hintmap_map( hintmap, y );</a>
+<a name="ln1100"> </a>
+<a name="ln1101">    ppt-&gt;x = FT_MulFix( glyphpath-&gt;font-&gt;outerTransform.a, pt.x )   +</a>
+<a name="ln1102">               FT_MulFix( glyphpath-&gt;font-&gt;outerTransform.c, pt.y ) +</a>
+<a name="ln1103">               glyphpath-&gt;fractionalTranslation.x;</a>
+<a name="ln1104">    ppt-&gt;y = FT_MulFix( glyphpath-&gt;font-&gt;outerTransform.b, pt.x )   +</a>
+<a name="ln1105">               FT_MulFix( glyphpath-&gt;font-&gt;outerTransform.d, pt.y ) +</a>
+<a name="ln1106">               glyphpath-&gt;fractionalTranslation.y;</a>
+<a name="ln1107">  }</a>
+<a name="ln1108"> </a>
+<a name="ln1109"> </a>
+<a name="ln1110">  /*</a>
+<a name="ln1111">   * From two line segments, (u1,u2) and (v1,v2), compute a point of</a>
+<a name="ln1112">   * intersection on the corresponding lines.</a>
+<a name="ln1113">   * Return false if no intersection is found, or if the intersection is</a>
+<a name="ln1114">   * too far away from the ends of the line segments, u2 and v1.</a>
+<a name="ln1115">   *</a>
+<a name="ln1116">   */</a>
+<a name="ln1117">  static FT_Bool</a>
+<a name="ln1118">  cf2_glyphpath_computeIntersection( CF2_GlyphPath     glyphpath,</a>
+<a name="ln1119">                                     const FT_Vector*  u1,</a>
+<a name="ln1120">                                     const FT_Vector*  u2,</a>
+<a name="ln1121">                                     const FT_Vector*  v1,</a>
+<a name="ln1122">                                     const FT_Vector*  v2,</a>
+<a name="ln1123">                                     FT_Vector*        intersection )</a>
+<a name="ln1124">  {</a>
+<a name="ln1125">    /*</a>
+<a name="ln1126">     * Let `u' be a zero-based vector from the first segment, `v' from the</a>
+<a name="ln1127">     * second segment.</a>
+<a name="ln1128">     * Let `w 'be the zero-based vector from `u1' to `v1'.</a>
+<a name="ln1129">     * `perp' is the `perpendicular dot product'; see</a>
+<a name="ln1130">     * http://mathworld.wolfram.com/PerpDotProduct.html.</a>
+<a name="ln1131">     * `s' is the parameter for the parametric line for the first segment</a>
+<a name="ln1132">     * (`u').</a>
+<a name="ln1133">     *</a>
+<a name="ln1134">     * See notation in</a>
+<a name="ln1135">     * http://softsurfer.com/Archive/algorithm_0104/algorithm_0104B.htm.</a>
+<a name="ln1136">     * Calculations are done in 16.16, but must handle the squaring of</a>
+<a name="ln1137">     * line lengths in character space.  We scale all vectors by 1/32 to</a>
+<a name="ln1138">     * avoid overflow.  This allows values up to 4095 to be squared.  The</a>
+<a name="ln1139">     * scale factor cancels in the divide.</a>
+<a name="ln1140">     *</a>
+<a name="ln1141">     * TODO: the scale factor could be computed from UnitsPerEm.</a>
+<a name="ln1142">     *</a>
+<a name="ln1143">     */</a>
+<a name="ln1144"> </a>
+<a name="ln1145">#define cf2_perp( a, b )                                    \</a>
+<a name="ln1146">          ( FT_MulFix( a.x, b.y ) - FT_MulFix( a.y, b.x ) )</a>
+<a name="ln1147"> </a>
+<a name="ln1148">  /* round and divide by 32 */</a>
+<a name="ln1149">#define CF2_CS_SCALE( x )         \</a>
+<a name="ln1150">          ( ( (x) + 0x10 ) &gt;&gt; 5 )</a>
+<a name="ln1151"> </a>
+<a name="ln1152">    FT_Vector  u, v, w;      /* scaled vectors */</a>
+<a name="ln1153">    CF2_Fixed  denominator, s;</a>
+<a name="ln1154"> </a>
+<a name="ln1155"> </a>
+<a name="ln1156">    u.x = CF2_CS_SCALE( u2-&gt;x - u1-&gt;x );</a>
+<a name="ln1157">    u.y = CF2_CS_SCALE( u2-&gt;y - u1-&gt;y );</a>
+<a name="ln1158">    v.x = CF2_CS_SCALE( v2-&gt;x - v1-&gt;x );</a>
+<a name="ln1159">    v.y = CF2_CS_SCALE( v2-&gt;y - v1-&gt;y );</a>
+<a name="ln1160">    w.x = CF2_CS_SCALE( v1-&gt;x - u1-&gt;x );</a>
+<a name="ln1161">    w.y = CF2_CS_SCALE( v1-&gt;y - u1-&gt;y );</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    denominator = cf2_perp( u, v );</a>
+<a name="ln1164"> </a>
+<a name="ln1165">    if ( denominator == 0 )</a>
+<a name="ln1166">      return FALSE;           /* parallel or coincident lines */</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    s = FT_DivFix( cf2_perp( w, v ), denominator );</a>
+<a name="ln1169"> </a>
+<a name="ln1170">    intersection-&gt;x = u1-&gt;x + FT_MulFix( s, u2-&gt;x - u1-&gt;x );</a>
+<a name="ln1171">    intersection-&gt;y = u1-&gt;y + FT_MulFix( s, u2-&gt;y - u1-&gt;y );</a>
+<a name="ln1172"> </a>
+<a name="ln1173">    /*</a>
+<a name="ln1174">     * Special case snapping for horizontal and vertical lines.</a>
+<a name="ln1175">     * This cleans up intersections and reduces problems with winding</a>
+<a name="ln1176">     * order detection.</a>
+<a name="ln1177">     * Sample case is sbc cd KozGoPr6N-Medium.otf 20 16685.</a>
+<a name="ln1178">     * Note: these calculations are in character space.</a>
+<a name="ln1179">     *</a>
+<a name="ln1180">     */</a>
+<a name="ln1181"> </a>
+<a name="ln1182">    if ( u1-&gt;x == u2-&gt;x                                                     &amp;&amp;</a>
+<a name="ln1183">         cf2_fixedAbs( intersection-&gt;x - u1-&gt;x ) &lt; glyphpath-&gt;snapThreshold )</a>
+<a name="ln1184">      intersection-&gt;x = u1-&gt;x;</a>
+<a name="ln1185">    if ( u1-&gt;y == u2-&gt;y                                                     &amp;&amp;</a>
+<a name="ln1186">         cf2_fixedAbs( intersection-&gt;y - u1-&gt;y ) &lt; glyphpath-&gt;snapThreshold )</a>
+<a name="ln1187">      intersection-&gt;y = u1-&gt;y;</a>
+<a name="ln1188"> </a>
+<a name="ln1189">    if ( v1-&gt;x == v2-&gt;x                                                     &amp;&amp;</a>
+<a name="ln1190">         cf2_fixedAbs( intersection-&gt;x - v1-&gt;x ) &lt; glyphpath-&gt;snapThreshold )</a>
+<a name="ln1191">      intersection-&gt;x = v1-&gt;x;</a>
+<a name="ln1192">    if ( v1-&gt;y == v2-&gt;y                                                     &amp;&amp;</a>
+<a name="ln1193">         cf2_fixedAbs( intersection-&gt;y - v1-&gt;y ) &lt; glyphpath-&gt;snapThreshold )</a>
+<a name="ln1194">      intersection-&gt;y = v1-&gt;y;</a>
+<a name="ln1195"> </a>
+<a name="ln1196">    /* limit the intersection distance from midpoint of u2 and v1 */</a>
+<a name="ln1197">    if ( cf2_fixedAbs( intersection-&gt;x - ( u2-&gt;x + v1-&gt;x ) / 2 ) &gt;</a>
+<a name="ln1198">           glyphpath-&gt;miterLimit                                   ||</a>
+<a name="ln1199">         cf2_fixedAbs( intersection-&gt;y - ( u2-&gt;y + v1-&gt;y ) / 2 ) &gt;</a>
+<a name="ln1200">           glyphpath-&gt;miterLimit                                   )</a>
+<a name="ln1201">      return FALSE;</a>
+<a name="ln1202"> </a>
+<a name="ln1203">    return TRUE;</a>
+<a name="ln1204">  }</a>
+<a name="ln1205"> </a>
+<a name="ln1206"> </a>
+<a name="ln1207">  /*</a>
+<a name="ln1208">   * Push the cached element (glyphpath-&gt;prevElem*) to the outline</a>
+<a name="ln1209">   * consumer.  When a darkening offset is used, the end point of the</a>
+<a name="ln1210">   * cached element may be adjusted to an intersection point or we may</a>
+<a name="ln1211">   * synthesize a connecting line to the current element.  If we are</a>
+<a name="ln1212">   * closing a subpath, we may also generate a connecting line to the start</a>
+<a name="ln1213">   * point.</a>
+<a name="ln1214">   *</a>
+<a name="ln1215">   * This is where Character Space (CS) is converted to Device Space (DS)</a>
+<a name="ln1216">   * using a hint map.  This calculation must use a HintMap that was valid</a>
+<a name="ln1217">   * at the time the element was saved.  For the first point in a subpath,</a>
+<a name="ln1218">   * that is a saved HintMap.  For most elements, it just means the caller</a>
+<a name="ln1219">   * has delayed building a HintMap from the current HintMask.</a>
+<a name="ln1220">   *</a>
+<a name="ln1221">   * Transform each point with outerTransform and call the outline</a>
+<a name="ln1222">   * callbacks.  This is a general 3x3 transform:</a>
+<a name="ln1223">   *</a>
+<a name="ln1224">   *   x' = a*x + c*y + tx, y' = b*x + d*y + ty</a>
+<a name="ln1225">   *</a>
+<a name="ln1226">   * but it uses 4 elements from CF2_Font and the translation part</a>
+<a name="ln1227">   * from CF2_GlyphPath.</a>
+<a name="ln1228">   *</a>
+<a name="ln1229">   */</a>
+<a name="ln1230">  static void</a>
+<a name="ln1231">  cf2_glyphpath_pushPrevElem( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1232">                              CF2_HintMap    hintmap,</a>
+<a name="ln1233">                              FT_Vector*     nextP0,</a>
+<a name="ln1234">                              FT_Vector      nextP1,</a>
+<a name="ln1235">                              FT_Bool        close )</a>
+<a name="ln1236">  {</a>
+<a name="ln1237">    CF2_CallbackParamsRec  params;</a>
+<a name="ln1238"> </a>
+<a name="ln1239">    FT_Vector*  prevP0;</a>
+<a name="ln1240">    FT_Vector*  prevP1;</a>
+<a name="ln1241"> </a>
+<a name="ln1242">    FT_Vector  intersection    = { 0, 0 };</a>
+<a name="ln1243">    FT_Bool    useIntersection = FALSE;</a>
+<a name="ln1244"> </a>
+<a name="ln1245"> </a>
+<a name="ln1246">    FT_ASSERT( glyphpath-&gt;prevElemOp == CF2_PathOpLineTo ||</a>
+<a name="ln1247">               glyphpath-&gt;prevElemOp == CF2_PathOpCubeTo );</a>
+<a name="ln1248"> </a>
+<a name="ln1249">    if ( glyphpath-&gt;prevElemOp == CF2_PathOpLineTo )</a>
+<a name="ln1250">    {</a>
+<a name="ln1251">      prevP0 = &amp;glyphpath-&gt;prevElemP0;</a>
+<a name="ln1252">      prevP1 = &amp;glyphpath-&gt;prevElemP1;</a>
+<a name="ln1253">    }</a>
+<a name="ln1254">    else</a>
+<a name="ln1255">    {</a>
+<a name="ln1256">      prevP0 = &amp;glyphpath-&gt;prevElemP2;</a>
+<a name="ln1257">      prevP1 = &amp;glyphpath-&gt;prevElemP3;</a>
+<a name="ln1258">    }</a>
+<a name="ln1259"> </a>
+<a name="ln1260">    /* optimization: if previous and next elements are offset by the same */</a>
+<a name="ln1261">    /* amount, then there will be no gap, and no need to compute an       */</a>
+<a name="ln1262">    /* intersection.                                                      */</a>
+<a name="ln1263">    if ( prevP1-&gt;x != nextP0-&gt;x || prevP1-&gt;y != nextP0-&gt;y )</a>
+<a name="ln1264">    {</a>
+<a name="ln1265">      /* previous element does not join next element:             */</a>
+<a name="ln1266">      /* adjust end point of previous element to the intersection */</a>
+<a name="ln1267">      useIntersection = cf2_glyphpath_computeIntersection( glyphpath,</a>
+<a name="ln1268">                                                           prevP0,</a>
+<a name="ln1269">                                                           prevP1,</a>
+<a name="ln1270">                                                           nextP0,</a>
+<a name="ln1271">                                                           &amp;nextP1,</a>
+<a name="ln1272">                                                           &amp;intersection );</a>
+<a name="ln1273">      if ( useIntersection )</a>
+<a name="ln1274">      {</a>
+<a name="ln1275">        /* modify the last point of the cached element (either line or */</a>
+<a name="ln1276">        /* curve)                                                      */</a>
+<a name="ln1277">        *prevP1 = intersection;</a>
+<a name="ln1278">      }</a>
+<a name="ln1279">    }</a>
+<a name="ln1280"> </a>
+<a name="ln1281">    params.pt0 = glyphpath-&gt;currentDS;</a>
+<a name="ln1282"> </a>
+<a name="ln1283">    switch( glyphpath-&gt;prevElemOp )</a>
+<a name="ln1284">    {</a>
+<a name="ln1285">    case CF2_PathOpLineTo:</a>
+<a name="ln1286">      params.op = CF2_PathOpLineTo;</a>
+<a name="ln1287"> </a>
+<a name="ln1288">      /* note: pt2 and pt3 are unused */</a>
+<a name="ln1289"> </a>
+<a name="ln1290">      if ( close )</a>
+<a name="ln1291">      {</a>
+<a name="ln1292">        /* use first hint map if closing */</a>
+<a name="ln1293">        cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1294">                                 &amp;glyphpath-&gt;firstHintMap,</a>
+<a name="ln1295">                                 &amp;params.pt1,</a>
+<a name="ln1296">                                 glyphpath-&gt;prevElemP1.x,</a>
+<a name="ln1297">                                 glyphpath-&gt;prevElemP1.y );</a>
+<a name="ln1298">      }</a>
+<a name="ln1299">      else</a>
+<a name="ln1300">      {</a>
+<a name="ln1301">        cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1302">                                 hintmap,</a>
+<a name="ln1303">                                 &amp;params.pt1,</a>
+<a name="ln1304">                                 glyphpath-&gt;prevElemP1.x,</a>
+<a name="ln1305">                                 glyphpath-&gt;prevElemP1.y );</a>
+<a name="ln1306">      }</a>
+<a name="ln1307"> </a>
+<a name="ln1308">      /* output only non-zero length lines */</a>
+<a name="ln1309">      if ( params.pt0.x != params.pt1.x || params.pt0.y != params.pt1.y )</a>
+<a name="ln1310">      {</a>
+<a name="ln1311">        glyphpath-&gt;callbacks-&gt;lineTo( glyphpath-&gt;callbacks, &amp;params );</a>
+<a name="ln1312"> </a>
+<a name="ln1313">        glyphpath-&gt;currentDS = params.pt1;</a>
+<a name="ln1314">      }</a>
+<a name="ln1315">      break;</a>
+<a name="ln1316"> </a>
+<a name="ln1317">    case CF2_PathOpCubeTo:</a>
+<a name="ln1318">      params.op = CF2_PathOpCubeTo;</a>
+<a name="ln1319"> </a>
+<a name="ln1320">      /* TODO: should we intersect the interior joins (p1-p2 and p2-p3)? */</a>
+<a name="ln1321">      cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1322">                               hintmap,</a>
+<a name="ln1323">                               &amp;params.pt1,</a>
+<a name="ln1324">                               glyphpath-&gt;prevElemP1.x,</a>
+<a name="ln1325">                               glyphpath-&gt;prevElemP1.y );</a>
+<a name="ln1326">      cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1327">                               hintmap,</a>
+<a name="ln1328">                               &amp;params.pt2,</a>
+<a name="ln1329">                               glyphpath-&gt;prevElemP2.x,</a>
+<a name="ln1330">                               glyphpath-&gt;prevElemP2.y );</a>
+<a name="ln1331">      cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1332">                               hintmap,</a>
+<a name="ln1333">                               &amp;params.pt3,</a>
+<a name="ln1334">                               glyphpath-&gt;prevElemP3.x,</a>
+<a name="ln1335">                               glyphpath-&gt;prevElemP3.y );</a>
+<a name="ln1336"> </a>
+<a name="ln1337">      glyphpath-&gt;callbacks-&gt;cubeTo( glyphpath-&gt;callbacks, &amp;params );</a>
+<a name="ln1338"> </a>
+<a name="ln1339">      glyphpath-&gt;currentDS = params.pt3;</a>
+<a name="ln1340"> </a>
+<a name="ln1341">      break;</a>
+<a name="ln1342">    }</a>
+<a name="ln1343"> </a>
+<a name="ln1344">    if ( !useIntersection || close )</a>
+<a name="ln1345">    {</a>
+<a name="ln1346">      /* insert connecting line between end of previous element and start */</a>
+<a name="ln1347">      /* of current one                                                   */</a>
+<a name="ln1348">      /* note: at the end of a subpath, we might do both, so use `nextP0' */</a>
+<a name="ln1349">      /* before we change it, below                                       */</a>
+<a name="ln1350"> </a>
+<a name="ln1351">      if ( close )</a>
+<a name="ln1352">      {</a>
+<a name="ln1353">        /* if we are closing the subpath, then nextP0 is in the first     */</a>
+<a name="ln1354">        /* hint zone                                                      */</a>
+<a name="ln1355">        cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1356">                                 &amp;glyphpath-&gt;firstHintMap,</a>
+<a name="ln1357">                                 &amp;params.pt1,</a>
+<a name="ln1358">                                 nextP0-&gt;x,</a>
+<a name="ln1359">                                 nextP0-&gt;y );</a>
+<a name="ln1360">      }</a>
+<a name="ln1361">      else</a>
+<a name="ln1362">      {</a>
+<a name="ln1363">        cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1364">                                 hintmap,</a>
+<a name="ln1365">                                 &amp;params.pt1,</a>
+<a name="ln1366">                                 nextP0-&gt;x,</a>
+<a name="ln1367">                                 nextP0-&gt;y );</a>
+<a name="ln1368">      }</a>
+<a name="ln1369"> </a>
+<a name="ln1370">      if ( params.pt1.x != glyphpath-&gt;currentDS.x ||</a>
+<a name="ln1371">           params.pt1.y != glyphpath-&gt;currentDS.y )</a>
+<a name="ln1372">      {</a>
+<a name="ln1373">        /* length is nonzero */</a>
+<a name="ln1374">        params.op  = CF2_PathOpLineTo;</a>
+<a name="ln1375">        params.pt0 = glyphpath-&gt;currentDS;</a>
+<a name="ln1376"> </a>
+<a name="ln1377">        /* note: pt2 and pt3 are unused */</a>
+<a name="ln1378">        glyphpath-&gt;callbacks-&gt;lineTo( glyphpath-&gt;callbacks, &amp;params );</a>
+<a name="ln1379"> </a>
+<a name="ln1380">        glyphpath-&gt;currentDS = params.pt1;</a>
+<a name="ln1381">      }</a>
+<a name="ln1382">    }</a>
+<a name="ln1383"> </a>
+<a name="ln1384">    if ( useIntersection )</a>
+<a name="ln1385">    {</a>
+<a name="ln1386">      /* return intersection point to caller */</a>
+<a name="ln1387">      *nextP0 = intersection;</a>
+<a name="ln1388">    }</a>
+<a name="ln1389">  }</a>
+<a name="ln1390"> </a>
+<a name="ln1391"> </a>
+<a name="ln1392">  /* push a MoveTo element based on current point and offset of current */</a>
+<a name="ln1393">  /* element                                                            */</a>
+<a name="ln1394">  static void</a>
+<a name="ln1395">  cf2_glyphpath_pushMove( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1396">                          FT_Vector      start )</a>
+<a name="ln1397">  {</a>
+<a name="ln1398">    CF2_CallbackParamsRec  params;</a>
+<a name="ln1399"> </a>
+<a name="ln1400"> </a>
+<a name="ln1401">    params.op  = CF2_PathOpMoveTo;</a>
+<a name="ln1402">    params.pt0 = glyphpath-&gt;currentDS;</a>
+<a name="ln1403"> </a>
+<a name="ln1404">    /* Test if move has really happened yet; it would have called */</a>
+<a name="ln1405">    /* `cf2_hintmap_build' to set `isValid'.                   */</a>
+<a name="ln1406">    if ( !cf2_hintmap_isValid( &amp;glyphpath-&gt;hintMap ) )</a>
+<a name="ln1407">    {</a>
+<a name="ln1408">      /* we are here iff first subpath is missing a moveto operator: */</a>
+<a name="ln1409">      /* synthesize first moveTo to finish initialization of hintMap */</a>
+<a name="ln1410">      cf2_glyphpath_moveTo( glyphpath,</a>
+<a name="ln1411">                            glyphpath-&gt;start.x,</a>
+<a name="ln1412">                            glyphpath-&gt;start.y );</a>
+<a name="ln1413">    }</a>
+<a name="ln1414"> </a>
+<a name="ln1415">    cf2_glyphpath_hintPoint( glyphpath,</a>
+<a name="ln1416">                             &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1417">                             &amp;params.pt1,</a>
+<a name="ln1418">                             start.x,</a>
+<a name="ln1419">                             start.y );</a>
+<a name="ln1420"> </a>
+<a name="ln1421">    /* note: pt2 and pt3 are unused */</a>
+<a name="ln1422">    glyphpath-&gt;callbacks-&gt;moveTo( glyphpath-&gt;callbacks, &amp;params );</a>
+<a name="ln1423"> </a>
+<a name="ln1424">    glyphpath-&gt;currentDS    = params.pt1;</a>
+<a name="ln1425">    glyphpath-&gt;offsetStart0 = start;</a>
+<a name="ln1426">  }</a>
+<a name="ln1427"> </a>
+<a name="ln1428"> </a>
+<a name="ln1429">  /*</a>
+<a name="ln1430">   * All coordinates are in character space.</a>
+<a name="ln1431">   * On input, (x1, y1) and (x2, y2) give line segment.</a>
+<a name="ln1432">   * On output, (x, y) give offset vector.</a>
+<a name="ln1433">   * We use a piecewise approximation to trig functions.</a>
+<a name="ln1434">   *</a>
+<a name="ln1435">   * TODO: Offset true perpendicular and proper length</a>
+<a name="ln1436">   *       supply the y-translation for hinting here, too,</a>
+<a name="ln1437">   *       that adds yOffset unconditionally to *y.</a>
+<a name="ln1438">   */</a>
+<a name="ln1439">  static void</a>
+<a name="ln1440">  cf2_glyphpath_computeOffset( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1441">                               CF2_Fixed      x1,</a>
+<a name="ln1442">                               CF2_Fixed      y1,</a>
+<a name="ln1443">                               CF2_Fixed      x2,</a>
+<a name="ln1444">                               CF2_Fixed      y2,</a>
+<a name="ln1445">                               CF2_Fixed*     x,</a>
+<a name="ln1446">                               CF2_Fixed*     y )</a>
+<a name="ln1447">  {</a>
+<a name="ln1448">    CF2_Fixed  dx = x2 - x1;</a>
+<a name="ln1449">    CF2_Fixed  dy = y2 - y1;</a>
+<a name="ln1450"> </a>
+<a name="ln1451"> </a>
+<a name="ln1452">    /* note: negative offsets don't work here; negate deltas to change */</a>
+<a name="ln1453">    /* quadrants, below                                                */</a>
+<a name="ln1454">    if ( glyphpath-&gt;font-&gt;reverseWinding )</a>
+<a name="ln1455">    {</a>
+<a name="ln1456">      dx = -dx;</a>
+<a name="ln1457">      dy = -dy;</a>
+<a name="ln1458">    }</a>
+<a name="ln1459"> </a>
+<a name="ln1460">    *x = *y = 0;</a>
+<a name="ln1461"> </a>
+<a name="ln1462">    if ( !glyphpath-&gt;darken )</a>
+<a name="ln1463">        return;</a>
+<a name="ln1464"> </a>
+<a name="ln1465">    /* add momentum for this path element */</a>
+<a name="ln1466">    glyphpath-&gt;callbacks-&gt;windingMomentum +=</a>
+<a name="ln1467">      cf2_getWindingMomentum( x1, y1, x2, y2 );</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    /* note: allow mixed integer and fixed multiplication here */</a>
+<a name="ln1470">    if ( dx &gt;= 0 )</a>
+<a name="ln1471">    {</a>
+<a name="ln1472">      if ( dy &gt;= 0 )</a>
+<a name="ln1473">      {</a>
+<a name="ln1474">        /* first quadrant, +x +y */</a>
+<a name="ln1475"> </a>
+<a name="ln1476">        if ( dx &gt; 2 * dy )</a>
+<a name="ln1477">        {</a>
+<a name="ln1478">          /* +x */</a>
+<a name="ln1479">          *x = 0;</a>
+<a name="ln1480">          *y = 0;</a>
+<a name="ln1481">        }</a>
+<a name="ln1482">        else if ( dy &gt; 2 * dx )</a>
+<a name="ln1483">        {</a>
+<a name="ln1484">          /* +y */</a>
+<a name="ln1485">          *x = glyphpath-&gt;xOffset;</a>
+<a name="ln1486">          *y = glyphpath-&gt;yOffset;</a>
+<a name="ln1487">        }</a>
+<a name="ln1488">        else</a>
+<a name="ln1489">        {</a>
+<a name="ln1490">          /* +x +y */</a>
+<a name="ln1491">          *x = FT_MulFix( cf2_floatToFixed( 0.7 ),</a>
+<a name="ln1492">                          glyphpath-&gt;xOffset );</a>
+<a name="ln1493">          *y = FT_MulFix( cf2_floatToFixed( 1.0 - 0.7 ),</a>
+<a name="ln1494">                          glyphpath-&gt;yOffset );</a>
+<a name="ln1495">        }</a>
+<a name="ln1496">      }</a>
+<a name="ln1497">      else</a>
+<a name="ln1498">      {</a>
+<a name="ln1499">        /* fourth quadrant, +x -y */</a>
+<a name="ln1500"> </a>
+<a name="ln1501">        if ( dx &gt; -2 * dy )</a>
+<a name="ln1502">        {</a>
+<a name="ln1503">          /* +x */</a>
+<a name="ln1504">          *x = 0;</a>
+<a name="ln1505">          *y = 0;</a>
+<a name="ln1506">        }</a>
+<a name="ln1507">        else if ( -dy &gt; 2 * dx )</a>
+<a name="ln1508">        {</a>
+<a name="ln1509">          /* -y */</a>
+<a name="ln1510">          *x = -glyphpath-&gt;xOffset;</a>
+<a name="ln1511">          *y = glyphpath-&gt;yOffset;</a>
+<a name="ln1512">        }</a>
+<a name="ln1513">        else</a>
+<a name="ln1514">        {</a>
+<a name="ln1515">          /* +x -y */</a>
+<a name="ln1516">          *x = FT_MulFix( cf2_floatToFixed( -0.7 ),</a>
+<a name="ln1517">                          glyphpath-&gt;xOffset );</a>
+<a name="ln1518">          *y = FT_MulFix( cf2_floatToFixed( 1.0 - 0.7 ),</a>
+<a name="ln1519">                          glyphpath-&gt;yOffset );</a>
+<a name="ln1520">        }</a>
+<a name="ln1521">      }</a>
+<a name="ln1522">    }</a>
+<a name="ln1523">    else</a>
+<a name="ln1524">    {</a>
+<a name="ln1525">      if ( dy &gt;= 0 )</a>
+<a name="ln1526">      {</a>
+<a name="ln1527">        /* second quadrant, -x +y */</a>
+<a name="ln1528"> </a>
+<a name="ln1529">        if ( -dx &gt; 2 * dy )</a>
+<a name="ln1530">        {</a>
+<a name="ln1531">          /* -x */</a>
+<a name="ln1532">          *x = 0;</a>
+<a name="ln1533">          *y = 2 * glyphpath-&gt;yOffset;</a>
+<a name="ln1534">        }</a>
+<a name="ln1535">        else if ( dy &gt; -2 * dx )</a>
+<a name="ln1536">        {</a>
+<a name="ln1537">          /* +y */</a>
+<a name="ln1538">          *x = glyphpath-&gt;xOffset;</a>
+<a name="ln1539">          *y = glyphpath-&gt;yOffset;</a>
+<a name="ln1540">        }</a>
+<a name="ln1541">        else</a>
+<a name="ln1542">        {</a>
+<a name="ln1543">          /* -x +y */</a>
+<a name="ln1544">          *x = FT_MulFix( cf2_floatToFixed( 0.7 ),</a>
+<a name="ln1545">                          glyphpath-&gt;xOffset );</a>
+<a name="ln1546">          *y = FT_MulFix( cf2_floatToFixed( 1.0 + 0.7 ),</a>
+<a name="ln1547">                          glyphpath-&gt;yOffset );</a>
+<a name="ln1548">        }</a>
+<a name="ln1549">      }</a>
+<a name="ln1550">      else</a>
+<a name="ln1551">      {</a>
+<a name="ln1552">        /* third quadrant, -x -y */</a>
+<a name="ln1553"> </a>
+<a name="ln1554">        if ( -dx &gt; -2 * dy )</a>
+<a name="ln1555">        {</a>
+<a name="ln1556">          /* -x */</a>
+<a name="ln1557">          *x = 0;</a>
+<a name="ln1558">          *y = 2 * glyphpath-&gt;yOffset;</a>
+<a name="ln1559">        }</a>
+<a name="ln1560">        else if ( -dy &gt; -2 * dx )</a>
+<a name="ln1561">        {</a>
+<a name="ln1562">          /* -y */</a>
+<a name="ln1563">          *x = -glyphpath-&gt;xOffset;</a>
+<a name="ln1564">          *y = glyphpath-&gt;yOffset;</a>
+<a name="ln1565">        }</a>
+<a name="ln1566">        else</a>
+<a name="ln1567">        {</a>
+<a name="ln1568">          /* -x -y */</a>
+<a name="ln1569">          *x = FT_MulFix( cf2_floatToFixed( -0.7 ),</a>
+<a name="ln1570">                          glyphpath-&gt;xOffset );</a>
+<a name="ln1571">          *y = FT_MulFix( cf2_floatToFixed( 1.0 + 0.7 ),</a>
+<a name="ln1572">                          glyphpath-&gt;yOffset );</a>
+<a name="ln1573">        }</a>
+<a name="ln1574">      }</a>
+<a name="ln1575">    }</a>
+<a name="ln1576">  }</a>
+<a name="ln1577"> </a>
+<a name="ln1578"> </a>
+<a name="ln1579">  /*</a>
+<a name="ln1580">   * The functions cf2_glyphpath_{moveTo,lineTo,curveTo,closeOpenPath} are</a>
+<a name="ln1581">   * called by the interpreter with Character Space (CS) coordinates.  Each</a>
+<a name="ln1582">   * path element is placed into a queue of length one to await the</a>
+<a name="ln1583">   * calculation of the following element.  At that time, the darkening</a>
+<a name="ln1584">   * offset of the following element is known and joins can be computed,</a>
+<a name="ln1585">   * including possible modification of this element, before mapping to</a>
+<a name="ln1586">   * Device Space (DS) and passing it on to the outline consumer.</a>
+<a name="ln1587">   *</a>
+<a name="ln1588">   */</a>
+<a name="ln1589">  FT_LOCAL_DEF( void )</a>
+<a name="ln1590">  cf2_glyphpath_moveTo( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1591">                        CF2_Fixed      x,</a>
+<a name="ln1592">                        CF2_Fixed      y )</a>
+<a name="ln1593">  {</a>
+<a name="ln1594">    cf2_glyphpath_closeOpenPath( glyphpath );</a>
+<a name="ln1595"> </a>
+<a name="ln1596">    /* save the parameters of the move for later, when we'll know how to */</a>
+<a name="ln1597">    /* offset it;                                                        */</a>
+<a name="ln1598">    /* also save last move point */</a>
+<a name="ln1599">    glyphpath-&gt;currentCS.x = glyphpath-&gt;start.x = x;</a>
+<a name="ln1600">    glyphpath-&gt;currentCS.y = glyphpath-&gt;start.y = y;</a>
+<a name="ln1601"> </a>
+<a name="ln1602">    glyphpath-&gt;moveIsPending = TRUE;</a>
+<a name="ln1603"> </a>
+<a name="ln1604">    /* ensure we have a valid map with current mask */</a>
+<a name="ln1605">    if ( !cf2_hintmap_isValid( &amp;glyphpath-&gt;hintMap ) ||</a>
+<a name="ln1606">         cf2_hintmask_isNew( glyphpath-&gt;hintMask )   )</a>
+<a name="ln1607">      cf2_hintmap_build( &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1608">                         glyphpath-&gt;hStemHintArray,</a>
+<a name="ln1609">                         glyphpath-&gt;vStemHintArray,</a>
+<a name="ln1610">                         glyphpath-&gt;hintMask,</a>
+<a name="ln1611">                         glyphpath-&gt;hintOriginY,</a>
+<a name="ln1612">                         FALSE );</a>
+<a name="ln1613"> </a>
+<a name="ln1614">    /* save a copy of current HintMap to use when drawing initial point */</a>
+<a name="ln1615">    glyphpath-&gt;firstHintMap = glyphpath-&gt;hintMap;     /* structure copy */</a>
+<a name="ln1616">  }</a>
+<a name="ln1617"> </a>
+<a name="ln1618"> </a>
+<a name="ln1619">  FT_LOCAL_DEF( void )</a>
+<a name="ln1620">  cf2_glyphpath_lineTo( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1621">                        CF2_Fixed      x,</a>
+<a name="ln1622">                        CF2_Fixed      y )</a>
+<a name="ln1623">  {</a>
+<a name="ln1624">    CF2_Fixed  xOffset, yOffset;</a>
+<a name="ln1625">    FT_Vector  P0, P1;</a>
+<a name="ln1626">    FT_Bool    newHintMap;</a>
+<a name="ln1627"> </a>
+<a name="ln1628">    /*</a>
+<a name="ln1629">     * New hints will be applied after cf2_glyphpath_pushPrevElem has run.</a>
+<a name="ln1630">     * In case this is a synthesized closing line, any new hints should be</a>
+<a name="ln1631">     * delayed until this path is closed (`cf2_hintmask_isNew' will be</a>
+<a name="ln1632">     * called again before the next line or curve).</a>
+<a name="ln1633">     */</a>
+<a name="ln1634"> </a>
+<a name="ln1635">    /* true if new hint map not on close */</a>
+<a name="ln1636">    newHintMap = cf2_hintmask_isNew( glyphpath-&gt;hintMask ) &amp;&amp;</a>
+<a name="ln1637">                 !glyphpath-&gt;pathIsClosing;</a>
+<a name="ln1638"> </a>
+<a name="ln1639">    /*</a>
+<a name="ln1640">     * Zero-length lines may occur in the charstring.  Because we cannot</a>
+<a name="ln1641">     * compute darkening offsets or intersections from zero-length lines,</a>
+<a name="ln1642">     * it is best to remove them and avoid artifacts.  However, zero-length</a>
+<a name="ln1643">     * lines in CS at the start of a new hint map can generate non-zero</a>
+<a name="ln1644">     * lines in DS due to hint substitution.  We detect a change in hint</a>
+<a name="ln1645">     * map here and pass those zero-length lines along.</a>
+<a name="ln1646">     */</a>
+<a name="ln1647"> </a>
+<a name="ln1648">    /*</a>
+<a name="ln1649">     * Note: Find explicitly closed paths here with a conditional</a>
+<a name="ln1650">     *       breakpoint using</a>
+<a name="ln1651">     *</a>
+<a name="ln1652">     *         !gp-&gt;pathIsClosing &amp;&amp; gp-&gt;start.x == x &amp;&amp; gp-&gt;start.y == y</a>
+<a name="ln1653">     *</a>
+<a name="ln1654">     */</a>
+<a name="ln1655"> </a>
+<a name="ln1656">    if ( glyphpath-&gt;currentCS.x == x &amp;&amp;</a>
+<a name="ln1657">         glyphpath-&gt;currentCS.y == y &amp;&amp;</a>
+<a name="ln1658">         !newHintMap                 )</a>
+<a name="ln1659">      /*</a>
+<a name="ln1660">       * Ignore zero-length lines in CS where the hint map is the same</a>
+<a name="ln1661">       * because the line in DS will also be zero length.</a>
+<a name="ln1662">       *</a>
+<a name="ln1663">       * Ignore zero-length lines when we synthesize a closing line because</a>
+<a name="ln1664">       * the close will be handled in cf2_glyphPath_pushPrevElem.</a>
+<a name="ln1665">       */</a>
+<a name="ln1666">      return;</a>
+<a name="ln1667"> </a>
+<a name="ln1668">    cf2_glyphpath_computeOffset( glyphpath,</a>
+<a name="ln1669">                                 glyphpath-&gt;currentCS.x,</a>
+<a name="ln1670">                                 glyphpath-&gt;currentCS.y,</a>
+<a name="ln1671">                                 x,</a>
+<a name="ln1672">                                 y,</a>
+<a name="ln1673">                                 &amp;xOffset,</a>
+<a name="ln1674">                                 &amp;yOffset );</a>
+<a name="ln1675"> </a>
+<a name="ln1676">    /* construct offset points */</a>
+<a name="ln1677">    P0.x = glyphpath-&gt;currentCS.x + xOffset;</a>
+<a name="ln1678">    P0.y = glyphpath-&gt;currentCS.y + yOffset;</a>
+<a name="ln1679">    P1.x = x + xOffset;</a>
+<a name="ln1680">    P1.y = y + yOffset;</a>
+<a name="ln1681"> </a>
+<a name="ln1682">    if ( glyphpath-&gt;moveIsPending )</a>
+<a name="ln1683">    {</a>
+<a name="ln1684">      /* emit offset 1st point as MoveTo */</a>
+<a name="ln1685">      cf2_glyphpath_pushMove( glyphpath, P0 );</a>
+<a name="ln1686"> </a>
+<a name="ln1687">      glyphpath-&gt;moveIsPending = FALSE;  /* adjust state machine */</a>
+<a name="ln1688">      glyphpath-&gt;pathIsOpen    = TRUE;</a>
+<a name="ln1689"> </a>
+<a name="ln1690">      glyphpath-&gt;offsetStart1 = P1;              /* record second point */</a>
+<a name="ln1691">    }</a>
+<a name="ln1692"> </a>
+<a name="ln1693">    if ( glyphpath-&gt;elemIsQueued )</a>
+<a name="ln1694">    {</a>
+<a name="ln1695">      FT_ASSERT( cf2_hintmap_isValid( &amp;glyphpath-&gt;hintMap ) ||</a>
+<a name="ln1696">                 glyphpath-&gt;hintMap.count == 0              );</a>
+<a name="ln1697"> </a>
+<a name="ln1698">      cf2_glyphpath_pushPrevElem( glyphpath,</a>
+<a name="ln1699">                                  &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1700">                                  &amp;P0,</a>
+<a name="ln1701">                                  P1,</a>
+<a name="ln1702">                                  FALSE );</a>
+<a name="ln1703">    }</a>
+<a name="ln1704"> </a>
+<a name="ln1705">    /* queue the current element with offset points */</a>
+<a name="ln1706">    glyphpath-&gt;elemIsQueued = TRUE;</a>
+<a name="ln1707">    glyphpath-&gt;prevElemOp   = CF2_PathOpLineTo;</a>
+<a name="ln1708">    glyphpath-&gt;prevElemP0   = P0;</a>
+<a name="ln1709">    glyphpath-&gt;prevElemP1   = P1;</a>
+<a name="ln1710"> </a>
+<a name="ln1711">    /* update current map */</a>
+<a name="ln1712">    if ( newHintMap )</a>
+<a name="ln1713">      cf2_hintmap_build( &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1714">                         glyphpath-&gt;hStemHintArray,</a>
+<a name="ln1715">                         glyphpath-&gt;vStemHintArray,</a>
+<a name="ln1716">                         glyphpath-&gt;hintMask,</a>
+<a name="ln1717">                         glyphpath-&gt;hintOriginY,</a>
+<a name="ln1718">                         FALSE );</a>
+<a name="ln1719"> </a>
+<a name="ln1720">    glyphpath-&gt;currentCS.x = x;     /* pre-offset current point */</a>
+<a name="ln1721">    glyphpath-&gt;currentCS.y = y;</a>
+<a name="ln1722">  }</a>
+<a name="ln1723"> </a>
+<a name="ln1724"> </a>
+<a name="ln1725">  FT_LOCAL_DEF( void )</a>
+<a name="ln1726">  cf2_glyphpath_curveTo( CF2_GlyphPath  glyphpath,</a>
+<a name="ln1727">                         CF2_Fixed      x1,</a>
+<a name="ln1728">                         CF2_Fixed      y1,</a>
+<a name="ln1729">                         CF2_Fixed      x2,</a>
+<a name="ln1730">                         CF2_Fixed      y2,</a>
+<a name="ln1731">                         CF2_Fixed      x3,</a>
+<a name="ln1732">                         CF2_Fixed      y3 )</a>
+<a name="ln1733">  {</a>
+<a name="ln1734">    CF2_Fixed  xOffset1, yOffset1, xOffset3, yOffset3;</a>
+<a name="ln1735">    FT_Vector  P0, P1, P2, P3;</a>
+<a name="ln1736"> </a>
+<a name="ln1737"> </a>
+<a name="ln1738">    /* TODO: ignore zero length portions of curve?? */</a>
+<a name="ln1739">    cf2_glyphpath_computeOffset( glyphpath,</a>
+<a name="ln1740">                                 glyphpath-&gt;currentCS.x,</a>
+<a name="ln1741">                                 glyphpath-&gt;currentCS.y,</a>
+<a name="ln1742">                                 x1,</a>
+<a name="ln1743">                                 y1,</a>
+<a name="ln1744">                                 &amp;xOffset1,</a>
+<a name="ln1745">                                 &amp;yOffset1 );</a>
+<a name="ln1746">    cf2_glyphpath_computeOffset( glyphpath,</a>
+<a name="ln1747">                                 x2,</a>
+<a name="ln1748">                                 y2,</a>
+<a name="ln1749">                                 x3,</a>
+<a name="ln1750">                                 y3,</a>
+<a name="ln1751">                                 &amp;xOffset3,</a>
+<a name="ln1752">                                 &amp;yOffset3 );</a>
+<a name="ln1753"> </a>
+<a name="ln1754">    /* add momentum from the middle segment */</a>
+<a name="ln1755">    glyphpath-&gt;callbacks-&gt;windingMomentum +=</a>
+<a name="ln1756">      cf2_getWindingMomentum( x1, y1, x2, y2 );</a>
+<a name="ln1757"> </a>
+<a name="ln1758">    /* construct offset points */</a>
+<a name="ln1759">    P0.x = glyphpath-&gt;currentCS.x + xOffset1;</a>
+<a name="ln1760">    P0.y = glyphpath-&gt;currentCS.y + yOffset1;</a>
+<a name="ln1761">    P1.x = x1 + xOffset1;</a>
+<a name="ln1762">    P1.y = y1 + yOffset1;</a>
+<a name="ln1763">    /* note: preserve angle of final segment by using offset3 at both ends */</a>
+<a name="ln1764">    P2.x = x2 + xOffset3;</a>
+<a name="ln1765">    P2.y = y2 + yOffset3;</a>
+<a name="ln1766">    P3.x = x3 + xOffset3;</a>
+<a name="ln1767">    P3.y = y3 + yOffset3;</a>
+<a name="ln1768"> </a>
+<a name="ln1769">    if ( glyphpath-&gt;moveIsPending )</a>
+<a name="ln1770">    {</a>
+<a name="ln1771">      /* emit offset 1st point as MoveTo */</a>
+<a name="ln1772">      cf2_glyphpath_pushMove( glyphpath, P0 );</a>
+<a name="ln1773"> </a>
+<a name="ln1774">      glyphpath-&gt;moveIsPending = FALSE;</a>
+<a name="ln1775">      glyphpath-&gt;pathIsOpen    = TRUE;</a>
+<a name="ln1776"> </a>
+<a name="ln1777">      glyphpath-&gt;offsetStart1 = P1;              /* record second point */</a>
+<a name="ln1778">    }</a>
+<a name="ln1779"> </a>
+<a name="ln1780">    if ( glyphpath-&gt;elemIsQueued )</a>
+<a name="ln1781">    {</a>
+<a name="ln1782">      FT_ASSERT( cf2_hintmap_isValid( &amp;glyphpath-&gt;hintMap ) ||</a>
+<a name="ln1783">                 glyphpath-&gt;hintMap.count == 0              );</a>
+<a name="ln1784"> </a>
+<a name="ln1785">      cf2_glyphpath_pushPrevElem( glyphpath,</a>
+<a name="ln1786">                                  &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1787">                                  &amp;P0,</a>
+<a name="ln1788">                                  P1,</a>
+<a name="ln1789">                                  FALSE );</a>
+<a name="ln1790">    }</a>
+<a name="ln1791"> </a>
+<a name="ln1792">    /* queue the current element with offset points */</a>
+<a name="ln1793">    glyphpath-&gt;elemIsQueued = TRUE;</a>
+<a name="ln1794">    glyphpath-&gt;prevElemOp   = CF2_PathOpCubeTo;</a>
+<a name="ln1795">    glyphpath-&gt;prevElemP0   = P0;</a>
+<a name="ln1796">    glyphpath-&gt;prevElemP1   = P1;</a>
+<a name="ln1797">    glyphpath-&gt;prevElemP2   = P2;</a>
+<a name="ln1798">    glyphpath-&gt;prevElemP3   = P3;</a>
+<a name="ln1799"> </a>
+<a name="ln1800">    /* update current map */</a>
+<a name="ln1801">    if ( cf2_hintmask_isNew( glyphpath-&gt;hintMask ) )</a>
+<a name="ln1802">      cf2_hintmap_build( &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1803">                         glyphpath-&gt;hStemHintArray,</a>
+<a name="ln1804">                         glyphpath-&gt;vStemHintArray,</a>
+<a name="ln1805">                         glyphpath-&gt;hintMask,</a>
+<a name="ln1806">                         glyphpath-&gt;hintOriginY,</a>
+<a name="ln1807">                         FALSE );</a>
+<a name="ln1808"> </a>
+<a name="ln1809">    glyphpath-&gt;currentCS.x = x3;       /* pre-offset current point */</a>
+<a name="ln1810">    glyphpath-&gt;currentCS.y = y3;</a>
+<a name="ln1811">  }</a>
+<a name="ln1812"> </a>
+<a name="ln1813"> </a>
+<a name="ln1814">  FT_LOCAL_DEF( void )</a>
+<a name="ln1815">  cf2_glyphpath_closeOpenPath( CF2_GlyphPath  glyphpath )</a>
+<a name="ln1816">  {</a>
+<a name="ln1817">    if ( glyphpath-&gt;pathIsOpen )</a>
+<a name="ln1818">    {</a>
+<a name="ln1819">      /*</a>
+<a name="ln1820">       * A closing line in Character Space line is always generated below</a>
+<a name="ln1821">       * with `cf2_glyphPath_lineTo'.  It may be ignored later if it turns</a>
+<a name="ln1822">       * out to be zero length in Device Space.</a>
+<a name="ln1823">       */</a>
+<a name="ln1824">      glyphpath-&gt;pathIsClosing = TRUE;</a>
+<a name="ln1825"> </a>
+<a name="ln1826">      cf2_glyphpath_lineTo( glyphpath,</a>
+<a name="ln1827">                            glyphpath-&gt;start.x,</a>
+<a name="ln1828">                            glyphpath-&gt;start.y );</a>
+<a name="ln1829"> </a>
+<a name="ln1830">      /* empty the final element from the queue and close the path */</a>
+<a name="ln1831">      if ( glyphpath-&gt;elemIsQueued )</a>
+<a name="ln1832">        cf2_glyphpath_pushPrevElem( glyphpath,</a>
+<a name="ln1833">                                    &amp;glyphpath-&gt;hintMap,</a>
+<a name="ln1834">                                    &amp;glyphpath-&gt;offsetStart0,</a>
+<a name="ln1835">                                    glyphpath-&gt;offsetStart1,</a>
+<a name="ln1836">                                    TRUE );</a>
+<a name="ln1837"> </a>
+<a name="ln1838">      /* reset state machine */</a>
+<a name="ln1839">      glyphpath-&gt;moveIsPending = TRUE;</a>
+<a name="ln1840">      glyphpath-&gt;pathIsOpen    = FALSE;</a>
+<a name="ln1841">      glyphpath-&gt;pathIsClosing = FALSE;</a>
+<a name="ln1842">      glyphpath-&gt;elemIsQueued  = FALSE;</a>
+<a name="ln1843">    }</a>
+<a name="ln1844">  }</a>
+<a name="ln1845"> </a>
+<a name="ln1846"> </a>
+<a name="ln1847">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="110"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v673/" target="_blank">V673</a> The '(FT_UInt32)(- 21) << 16' expression evaluates to 281474975334400. 48 bits are required to store the value, but the expression evaluates to the 'unsigned' type which can only hold '32' bits.</p></div>
+<div class="balloon" rel="123"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v673/" target="_blank">V673</a> The '(FT_UInt32)(- 20) << 16' expression evaluates to 281474975399936. 48 bits are required to store the value, but the expression evaluates to the 'unsigned' type which can only hold '32' bits.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

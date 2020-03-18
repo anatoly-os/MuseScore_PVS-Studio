@@ -1,0 +1,1102 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>rest.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;rest.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;xml.h&quot;</a>
+<a name="ln16">#include &quot;style.h&quot;</a>
+<a name="ln17">#include &quot;utils.h&quot;</a>
+<a name="ln18">#include &quot;tuplet.h&quot;</a>
+<a name="ln19">#include &quot;sym.h&quot;</a>
+<a name="ln20">#include &quot;stafftext.h&quot;</a>
+<a name="ln21">#include &quot;articulation.h&quot;</a>
+<a name="ln22">#include &quot;chord.h&quot;</a>
+<a name="ln23">#include &quot;note.h&quot;</a>
+<a name="ln24">#include &quot;measure.h&quot;</a>
+<a name="ln25">#include &quot;undo.h&quot;</a>
+<a name="ln26">#include &quot;staff.h&quot;</a>
+<a name="ln27">#include &quot;harmony.h&quot;</a>
+<a name="ln28">#include &quot;segment.h&quot;</a>
+<a name="ln29">#include &quot;stafftype.h&quot;</a>
+<a name="ln30">#include &quot;icon.h&quot;</a>
+<a name="ln31">#include &quot;image.h&quot;</a>
+<a name="ln32"> </a>
+<a name="ln33">namespace Ms {</a>
+<a name="ln34"> </a>
+<a name="ln35">//---------------------------------------------------------</a>
+<a name="ln36">//    Rest</a>
+<a name="ln37">//--------------------------------------------------------</a>
+<a name="ln38"> </a>
+<a name="ln39">Rest::Rest(Score* s)</a>
+<a name="ln40">  : ChordRest(s)</a>
+<a name="ln41">      {</a>
+<a name="ln42">      _beamMode  = Beam::Mode::NONE;</a>
+<a name="ln43">      _sym       = SymId::restQuarter;</a>
+<a name="ln44">      }</a>
+<a name="ln45"> </a>
+<a name="ln46">Rest::Rest(Score* s, const TDuration&amp; d)</a>
+<a name="ln47">  : ChordRest(s)</a>
+<a name="ln48">      {</a>
+<a name="ln49">      _beamMode  = Beam::Mode::NONE;</a>
+<a name="ln50">      _sym       = SymId::restQuarter;</a>
+<a name="ln51">      setDurationType(d);</a>
+<a name="ln52">      if (d.fraction().isValid())</a>
+<a name="ln53">            setTicks(d.fraction());</a>
+<a name="ln54">      }</a>
+<a name="ln55"> </a>
+<a name="ln56">Rest::Rest(const Rest&amp; r, bool link)</a>
+<a name="ln57">   : ChordRest(r, link)</a>
+<a name="ln58">      {</a>
+<a name="ln59">      if (link) {</a>
+<a name="ln60">            score()-&gt;undo(new Link(this, const_cast&lt;Rest*&gt;(&amp;r)));</a>
+<a name="ln61">            setAutoplace(true);</a>
+<a name="ln62">            }</a>
+<a name="ln63">      _gap     = r._gap;</a>
+<a name="ln64">      _sym     = r._sym;</a>
+<a name="ln65">      dotline  = r.dotline;</a>
+<a name="ln66">      _mmWidth = r._mmWidth;</a>
+<a name="ln67">      for (NoteDot* dot : r._dots)</a>
+<a name="ln68">            add(new NoteDot(*dot));</a>
+<a name="ln69">      }</a>
+<a name="ln70"> </a>
+<a name="ln71">//---------------------------------------------------------</a>
+<a name="ln72">//   Rest::draw</a>
+<a name="ln73">//---------------------------------------------------------</a>
+<a name="ln74"> </a>
+<a name="ln75">void Rest::draw(QPainter* painter) const</a>
+<a name="ln76">      {</a>
+<a name="ln77">      if (</a>
+<a name="ln78">         (staff() &amp;&amp; staff()-&gt;isTabStaff(tick())</a>
+<a name="ln79">         // in tab staff, do not draw rests is rests are off OR if dur. symbols are on</a>
+<a name="ln80">         &amp;&amp; (!staff()-&gt;staffType(tick())-&gt;showRests() || staff()-&gt;staffType(tick())-&gt;genDurations())</a>
+<a name="ln81">         &amp;&amp; (!measure() || !measure()-&gt;isMMRest()))        // show multi measure rest always</a>
+<a name="ln82">         || generated()</a>
+<a name="ln83">            )</a>
+<a name="ln84">            return;</a>
+<a name="ln85">      qreal _spatium = spatium();</a>
+<a name="ln86"> </a>
+<a name="ln87">      painter-&gt;setPen(curColor());</a>
+<a name="ln88"> </a>
+<a name="ln89">      if (measure() &amp;&amp; measure()-&gt;isMMRest()) {</a>
+<a name="ln90">            //only on voice 1</a>
+<a name="ln91">            if (track() % VOICES)</a>
+<a name="ln92">                  return;</a>
+<a name="ln93">            Measure* m = measure();</a>
+<a name="ln94">            int n      = m-&gt;mmRestCount();</a>
+<a name="ln95">            qreal pw   = _spatium * .7;</a>
+<a name="ln96">            QPen pen(painter-&gt;pen());</a>
+<a name="ln97">            pen.setWidthF(pw);</a>
+<a name="ln98">            painter-&gt;setPen(pen);</a>
+<a name="ln99"> </a>
+<a name="ln100">            qreal w  = _mmWidth;</a>
+<a name="ln101">            qreal x2 =  w;</a>
+<a name="ln102">            pw *= .5;</a>
+<a name="ln103">            painter-&gt;drawLine(QLineF(pw, 0.0, _mmWidth - pw, 0.0));</a>
+<a name="ln104"> </a>
+<a name="ln105">            // draw vertical lines:</a>
+<a name="ln106">            pen.setWidthF(_spatium * .2);</a>
+<a name="ln107">            painter-&gt;setPen(pen);</a>
+<a name="ln108">            painter-&gt;drawLine(QLineF(0.0, -_spatium, 0.0, _spatium));</a>
+<a name="ln109">            painter-&gt;drawLine(QLineF(x2,  -_spatium, x2,  _spatium));</a>
+<a name="ln110"> </a>
+<a name="ln111">            std::vector&lt;SymId&gt;&amp;&amp; s = toTimeSigString(QString(&quot;%1&quot;).arg(n));</a>
+<a name="ln112">            qreal y = -_spatium * 1.5 - staff()-&gt;height() *.5;</a>
+<a name="ln113">            qreal x = x2 * .5;</a>
+<a name="ln114">            x      -= symBbox(s).width() * .5;</a>
+<a name="ln115">            drawSymbols(s, painter, QPointF(x, y));</a>
+<a name="ln116">            }</a>
+<a name="ln117">      else</a>
+<a name="ln118">            drawSymbol(_sym, painter);</a>
+<a name="ln119">      }</a>
+<a name="ln120"> </a>
+<a name="ln121">//---------------------------------------------------------</a>
+<a name="ln122">//   setOffset, overridden from Element</a>
+<a name="ln123">//    (- raster vertical position in spatium units) -&gt; no</a>
+<a name="ln124">//    - half rests and whole rests outside the staff are</a>
+<a name="ln125">//      replaced by special symbols with ledger lines</a>
+<a name="ln126">//---------------------------------------------------------</a>
+<a name="ln127"> </a>
+<a name="ln128">void Rest::setOffset(const QPointF&amp; o)</a>
+<a name="ln129">      {</a>
+<a name="ln130">      qreal _spatium = spatium();</a>
+<a name="ln131">      int line = lrint(o.y()/_spatium);</a>
+<a name="ln132"> </a>
+<a name="ln133">      if (_sym == SymId::restWhole &amp;&amp; (line &lt;= -2 || line &gt;= 3))</a>
+<a name="ln134">            _sym = SymId::restWholeLegerLine;</a>
+<a name="ln135">      else if (_sym == SymId::restWholeLegerLine &amp;&amp; (line &gt; -2 &amp;&amp; line &lt; 4))</a>
+<a name="ln136">            _sym = SymId::restWhole;</a>
+<a name="ln137">      else if (_sym == SymId::restHalf &amp;&amp; (line &lt;= -3 || line &gt;= 3))</a>
+<a name="ln138">            _sym = SymId::restHalfLegerLine;</a>
+<a name="ln139">      else if (_sym == SymId::restHalfLegerLine &amp;&amp; (line &gt; -3 &amp;&amp; line &lt; 3))</a>
+<a name="ln140">            _sym = SymId::restHalf;</a>
+<a name="ln141"> </a>
+<a name="ln142">      Element::setOffset(o);</a>
+<a name="ln143">      }</a>
+<a name="ln144"> </a>
+<a name="ln145">//---------------------------------------------------------</a>
+<a name="ln146">//   drag</a>
+<a name="ln147">//---------------------------------------------------------</a>
+<a name="ln148"> </a>
+<a name="ln149">QRectF Rest::drag(EditData&amp; ed)</a>
+<a name="ln150">      {</a>
+<a name="ln151">      // don't allow drag for Measure Rests, because they can't be easily laid out in correct position while dragging</a>
+<a name="ln152">      if (measure() &amp;&amp; durationType().type() == TDuration::DurationType::V_MEASURE)</a>
+<a name="ln153">            return QRectF();</a>
+<a name="ln154"> </a>
+<a name="ln155">      QPointF s(ed.delta);</a>
+<a name="ln156">      QRectF r(abbox());</a>
+<a name="ln157"> </a>
+<a name="ln158">      // Limit horizontal drag range</a>
+<a name="ln159">      static const qreal xDragRange = spatium() * 5;</a>
+<a name="ln160">      if (fabs(s.x()) &gt; xDragRange)</a>
+<a name="ln161">            s.rx() = xDragRange * (s.x() &lt; 0 ? -1.0 : 1.0);</a>
+<a name="ln162">      setOffset(QPointF(s.x(), s.y()));</a>
+<a name="ln163">      layout();</a>
+<a name="ln164">      score()-&gt;rebuildBspTree();</a>
+<a name="ln165">      return abbox() | r;</a>
+<a name="ln166">      }</a>
+<a name="ln167"> </a>
+<a name="ln168">//---------------------------------------------------------</a>
+<a name="ln169">//   acceptDrop</a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171"> </a>
+<a name="ln172">bool Rest::acceptDrop(EditData&amp; data) const</a>
+<a name="ln173">      {</a>
+<a name="ln174">      Element* e = data.dropElement;</a>
+<a name="ln175">      ElementType type = e-&gt;type();</a>
+<a name="ln176">      if (</a>
+<a name="ln177">            (type == ElementType::ICON &amp;&amp; toIcon(e)-&gt;iconType() == IconType::SBEAM)</a>
+<a name="ln178">         || (type == ElementType::ICON &amp;&amp; toIcon(e)-&gt;iconType() == IconType::MBEAM)</a>
+<a name="ln179">         || (type == ElementType::ICON &amp;&amp; toIcon(e)-&gt;iconType() == IconType::NBEAM)</a>
+<a name="ln180">         || (type == ElementType::ICON &amp;&amp; toIcon(e)-&gt;iconType() == IconType::BEAM32)</a>
+<a name="ln181">         || (type == ElementType::ICON &amp;&amp; toIcon(e)-&gt;iconType() == IconType::BEAM64)</a>
+<a name="ln182">         || (type == ElementType::ICON &amp;&amp; toIcon(e)-&gt;iconType() == IconType::AUTOBEAM)</a>
+<a name="ln183">         || (type == ElementType::FERMATA)</a>
+<a name="ln184">         || (type == ElementType::CLEF)</a>
+<a name="ln185">         || (type == ElementType::KEYSIG)</a>
+<a name="ln186">         || (type == ElementType::TIMESIG)</a>
+<a name="ln187">         || (type == ElementType::SYSTEM_TEXT)</a>
+<a name="ln188">         || (type == ElementType::STAFF_TEXT)</a>
+<a name="ln189">         || (type == ElementType::BAR_LINE)</a>
+<a name="ln190">         || (type == ElementType::BREATH)</a>
+<a name="ln191">         || (type == ElementType::CHORD)</a>
+<a name="ln192">         || (type == ElementType::NOTE)</a>
+<a name="ln193">         || (type == ElementType::STAFF_STATE)</a>
+<a name="ln194">         || (type == ElementType::INSTRUMENT_CHANGE)</a>
+<a name="ln195">         || (type == ElementType::DYNAMIC)</a>
+<a name="ln196">         || (type == ElementType::HAIRPIN)</a>
+<a name="ln197">         || (type == ElementType::HARMONY)</a>
+<a name="ln198">         || (type == ElementType::TEMPO_TEXT)</a>
+<a name="ln199">         || (type == ElementType::REHEARSAL_MARK)</a>
+<a name="ln200">         || (type == ElementType::FRET_DIAGRAM)</a>
+<a name="ln201">         || (type == ElementType::TREMOLOBAR)</a>
+<a name="ln202">         || (type == ElementType::IMAGE)</a>
+<a name="ln203">         || (type == ElementType::SYMBOL)</a>
+<a name="ln204">         || (type == ElementType::REPEAT_MEASURE &amp;&amp; durationType().type() == TDuration::DurationType::V_MEASURE)</a>
+<a name="ln205">         ) {</a>
+<a name="ln206">            return true;</a>
+<a name="ln207">            }</a>
+<a name="ln208">      return false;</a>
+<a name="ln209">      }</a>
+<a name="ln210"> </a>
+<a name="ln211">//---------------------------------------------------------</a>
+<a name="ln212">//   drop</a>
+<a name="ln213">//---------------------------------------------------------</a>
+<a name="ln214"> </a>
+<a name="ln215">Element* Rest::drop(EditData&amp; data)</a>
+<a name="ln216">      {</a>
+<a name="ln217">      Element* e = data.dropElement;</a>
+<a name="ln218">      switch (e-&gt;type()) {</a>
+<a name="ln219">            case ElementType::ARTICULATION:</a>
+<a name="ln220">                  {</a>
+<a name="ln221">                  Articulation* a = toArticulation(e);</a>
+<a name="ln222">                  if (!a-&gt;isFermata() || !score()-&gt;addArticulation(this, a)) {</a>
+<a name="ln223">                        delete e;</a>
+<a name="ln224">                        e = 0;</a>
+<a name="ln225">                        }</a>
+<a name="ln226">                  }</a>
+<a name="ln227">                  return e;</a>
+<a name="ln228"> </a>
+<a name="ln229">            case ElementType::CHORD: {</a>
+<a name="ln230">                  Chord* c = toChord(e);</a>
+<a name="ln231">                  Note* n  = c-&gt;upNote();</a>
+<a name="ln232">                  Direction dir = c-&gt;stemDirection();</a>
+<a name="ln233">                  // score()-&gt;select(0, SelectType::SINGLE, 0);</a>
+<a name="ln234">                  NoteVal nval;</a>
+<a name="ln235">                  nval.pitch = n-&gt;pitch();</a>
+<a name="ln236">                  nval.headGroup = n-&gt;headGroup();</a>
+<a name="ln237">                  Fraction d = score()-&gt;inputState().ticks();</a>
+<a name="ln238">                  if (!d.isZero()) {</a>
+<a name="ln239">                        Segment* seg = score()-&gt;setNoteRest(segment(), track(), nval, d, dir);</a>
+<a name="ln240">                        if (seg) {</a>
+<a name="ln241">                              ChordRest* cr = toChordRest(seg-&gt;element(track()));</a>
+<a name="ln242">                              if (cr)</a>
+<a name="ln243">                                    score()-&gt;nextInputPos(cr, true);</a>
+<a name="ln244">                              }</a>
+<a name="ln245">                        }</a>
+<a name="ln246">                  delete e;</a>
+<a name="ln247">                  }</a>
+<a name="ln248">                  break;</a>
+<a name="ln249">            case ElementType::REPEAT_MEASURE:</a>
+<a name="ln250">                  delete e;</a>
+<a name="ln251">                  if (durationType().type() == TDuration::DurationType::V_MEASURE) {</a>
+<a name="ln252">                        measure()-&gt;cmdInsertRepeatMeasure(staffIdx());</a>
+<a name="ln253">                        }</a>
+<a name="ln254">                  break;</a>
+<a name="ln255"> </a>
+<a name="ln256">            case ElementType::SYMBOL:</a>
+<a name="ln257">            case ElementType::IMAGE:</a>
+<a name="ln258">                  e-&gt;setParent(this);</a>
+<a name="ln259">                  score()-&gt;undoAddElement(e);</a>
+<a name="ln260">                  return e;</a>
+<a name="ln261"> </a>
+<a name="ln262">            default:</a>
+<a name="ln263">                  return ChordRest::drop(data);</a>
+<a name="ln264">            }</a>
+<a name="ln265">      return 0;</a>
+<a name="ln266">      }</a>
+<a name="ln267"> </a>
+<a name="ln268">//---------------------------------------------------------</a>
+<a name="ln269">//   getSymbol</a>
+<a name="ln270">//---------------------------------------------------------</a>
+<a name="ln271"> </a>
+<a name="ln272">SymId Rest::getSymbol(TDuration::DurationType type, int line, int lines, int* yoffset)</a>
+<a name="ln273">      {</a>
+<a name="ln274">      *yoffset = 2;</a>
+<a name="ln275">      switch(type) {</a>
+<a name="ln276">            case TDuration::DurationType::V_LONG:</a>
+<a name="ln277">                  return SymId::restLonga;</a>
+<a name="ln278">            case TDuration::DurationType::V_BREVE:</a>
+<a name="ln279">                  return SymId::restDoubleWhole;</a>
+<a name="ln280">            case TDuration::DurationType::V_MEASURE:</a>
+<a name="ln281">                  if (ticks() &gt;= Fraction(2, 1))</a>
+<a name="ln282">                        return SymId::restDoubleWhole;</a>
+<a name="ln283">                  // fall through</a>
+<a name="ln284">            case TDuration::DurationType::V_WHOLE:</a>
+<a name="ln285">                  *yoffset = 1;</a>
+<a name="ln286">                  return (line &lt;= -2 || line &gt;= (lines - 1)) ? SymId::restWholeLegerLine : SymId::restWhole;</a>
+<a name="ln287">            case TDuration::DurationType::V_HALF:</a>
+<a name="ln288">                  return (line &lt;= -3 || line &gt;= (lines - 2)) ? SymId::restHalfLegerLine : SymId::restHalf;</a>
+<a name="ln289">            case TDuration::DurationType::V_QUARTER:</a>
+<a name="ln290">                  return SymId::restQuarter;</a>
+<a name="ln291">            case TDuration::DurationType::V_EIGHTH:</a>
+<a name="ln292">                  return SymId::rest8th;</a>
+<a name="ln293">            case TDuration::DurationType::V_16TH:</a>
+<a name="ln294">                  return SymId::rest16th;</a>
+<a name="ln295">            case TDuration::DurationType::V_32ND:</a>
+<a name="ln296">                  return SymId::rest32nd;</a>
+<a name="ln297">            case TDuration::DurationType::V_64TH:</a>
+<a name="ln298">                  return SymId::rest64th;</a>
+<a name="ln299">            case TDuration::DurationType::V_128TH:</a>
+<a name="ln300">                  return SymId::rest128th;</a>
+<a name="ln301">            case TDuration::DurationType::V_256TH:</a>
+<a name="ln302">                  return SymId::rest256th;</a>
+<a name="ln303">            case TDuration::DurationType::V_512TH:</a>
+<a name="ln304">                  return SymId::rest512th;</a>
+<a name="ln305">            case TDuration::DurationType::V_1024TH:</a>
+<a name="ln306">                  return SymId::rest1024th;</a>
+<a name="ln307">            default:</a>
+<a name="ln308">                  qDebug(&quot;unknown rest type %d&quot;, int(type));</a>
+<a name="ln309">                  return SymId::restQuarter;</a>
+<a name="ln310">            }</a>
+<a name="ln311">      }</a>
+<a name="ln312"> </a>
+<a name="ln313">//---------------------------------------------------------</a>
+<a name="ln314">//   layoutMMRest</a>
+<a name="ln315">//---------------------------------------------------------</a>
+<a name="ln316"> </a>
+<a name="ln317">void Rest::layoutMMRest(qreal val)</a>
+<a name="ln318">      {</a>
+<a name="ln319">//      static const qreal verticalLineWidth = .2;</a>
+<a name="ln320"> </a>
+<a name="ln321">      qreal _spatium = spatium();</a>
+<a name="ln322">      _mmWidth       = val;</a>
+<a name="ln323">//      qreal h        = _spatium * (2 + verticalLineWidth);</a>
+<a name="ln324">//      qreal w        = _mmWidth + _spatium * verticalLineWidth * .5;</a>
+<a name="ln325">//      bbox().setRect(-_spatium * verticalLineWidth * .5, -h * .5, w, h);</a>
+<a name="ln326">      bbox().setRect(0.0, -_spatium, _mmWidth, _spatium * 2);</a>
+<a name="ln327"> </a>
+<a name="ln328">      // text</a>
+<a name="ln329">//      qreal y  = -_spatium * 2.5 - staff()-&gt;height() *.5;</a>
+<a name="ln330">//      addbbox(QRectF(0, y, w, _spatium * 2));         // approximation</a>
+<a name="ln331">      }</a>
+<a name="ln332"> </a>
+<a name="ln333">//---------------------------------------------------------</a>
+<a name="ln334">//   layout</a>
+<a name="ln335">//---------------------------------------------------------</a>
+<a name="ln336"> </a>
+<a name="ln337">void Rest::layout()</a>
+<a name="ln338">      {</a>
+<a name="ln339">      if (_gap)</a>
+<a name="ln340">            return;</a>
+<a name="ln341">      for (Element* e : el())</a>
+<a name="ln342">            e-&gt;layout();</a>
+<a name="ln343">      qreal _spatium = spatium();</a>
+<a name="ln344">      if (measure() &amp;&amp; measure()-&gt;isMMRest()) {</a>
+<a name="ln345">            _mmWidth = score()-&gt;styleP(Sid::minMMRestWidth) * mag();</a>
+<a name="ln346">            // setbbox(QRectF(0.0, -_spatium, _mmWidth, 2.0 * _spatium));</a>
+<a name="ln347">            return;</a>
+<a name="ln348">            }</a>
+<a name="ln349"> </a>
+<a name="ln350">      rxpos() = 0.0;</a>
+<a name="ln351">      if (staff() &amp;&amp; staff()-&gt;isTabStaff(tick())) {</a>
+<a name="ln352">            const StaffType* tab = staff()-&gt;staffType(tick());</a>
+<a name="ln353">            // if rests are shown and note values are shown as duration symbols</a>
+<a name="ln354">            if (tab-&gt;showRests() &amp;&amp; tab-&gt;genDurations()) {</a>
+<a name="ln355">                  TDuration::DurationType type = durationType().type();</a>
+<a name="ln356">                  int                     dots = durationType().dots();</a>
+<a name="ln357">                  // if rest is whole measure, convert into actual type and dot values</a>
+<a name="ln358">                  if (type == TDuration::DurationType::V_MEASURE) {</a>
+<a name="ln359">                        Fraction ticks = measure()-&gt;ticks();</a>
+<a name="ln360">                        TDuration dur  = TDuration(ticks).type();</a>
+<a name="ln361">                        type           = dur.type();</a>
+<a name="ln362">                        dots           = dur.dots();</a>
+<a name="ln363">                        }</a>
+<a name="ln364">                  // symbol needed; if not exist, create, if exists, update duration</a>
+<a name="ln365">                  if (!_tabDur)</a>
+<a name="ln366">                        _tabDur = new TabDurationSymbol(score(), tab, type, dots);</a>
+<a name="ln367">                  else</a>
+<a name="ln368">                        _tabDur-&gt;setDuration(type, dots, tab);</a>
+<a name="ln369">                  _tabDur-&gt;setParent(this);</a>
+<a name="ln370">// needed?        _tabDur-&gt;setTrack(track());</a>
+<a name="ln371">                  _tabDur-&gt;layout();</a>
+<a name="ln372">                  setbbox(_tabDur-&gt;bbox());</a>
+<a name="ln373">                  setPos(0.0, 0.0);             // no rest is drawn: reset any position might be set for it</a>
+<a name="ln374">                  return;</a>
+<a name="ln375">                  }</a>
+<a name="ln376">            // if no rests or no duration symbols, delete any dur. symbol and chain into standard staff mngmt</a>
+<a name="ln377">            // this is to ensure horiz space is reserved for rest, even if they are not displayed</a>
+<a name="ln378">            // Rest::draw() will skip their drawing, if not needed</a>
+<a name="ln379">            if(_tabDur) {</a>
+<a name="ln380">                  delete _tabDur;</a>
+<a name="ln381">                  _tabDur = 0;</a>
+<a name="ln382">                  }</a>
+<a name="ln383">            }</a>
+<a name="ln384"> </a>
+<a name="ln385">      dotline = Rest::getDotline(durationType().type());</a>
+<a name="ln386"> </a>
+<a name="ln387">      qreal yOff       = offset().y();</a>
+<a name="ln388">      const Staff* stf = staff();</a>
+<a name="ln389">      const StaffType*  st = stf-&gt;staffType(tick());</a>
+<a name="ln390">      qreal lineDist = st ? st-&gt;lineDistance().val() : 1.0;</a>
+<a name="ln391">      int userLine   = yOff == 0.0 ? 0 : lrint(yOff / (lineDist * _spatium));</a>
+<a name="ln392">      int lines      = st ? st-&gt;lines() : 5;</a>
+<a name="ln393">      int lineOffset = computeLineOffset(lines);</a>
+<a name="ln394"> </a>
+<a name="ln395">      int yo;</a>
+<a name="ln396">      _sym = getSymbol(durationType().type(), lineOffset / 2 + userLine, lines, &amp;yo);</a>
+<a name="ln397">      rypos() = (qreal(yo) + qreal(lineOffset) * .5) * lineDist * _spatium;</a>
+<a name="ln398">      setbbox(symBbox(_sym));</a>
+<a name="ln399">      layoutDots();</a>
+<a name="ln400">      }</a>
+<a name="ln401"> </a>
+<a name="ln402">//---------------------------------------------------------</a>
+<a name="ln403">//   layout</a>
+<a name="ln404">//---------------------------------------------------------</a>
+<a name="ln405"> </a>
+<a name="ln406">void Rest::layoutDots()</a>
+<a name="ln407">      {</a>
+<a name="ln408">      checkDots();</a>
+<a name="ln409">      qreal x = symWidth(_sym) + score()-&gt;styleP(Sid::dotNoteDistance) * mag();</a>
+<a name="ln410">      qreal dx = score()-&gt;styleP(Sid::dotDotDistance) * mag();</a>
+<a name="ln411">      qreal y = dotline * spatium() * .5;</a>
+<a name="ln412">      for (NoteDot* dot : _dots) {</a>
+<a name="ln413">            dot-&gt;layout();</a>
+<a name="ln414">            dot-&gt;setPos(x, y);</a>
+<a name="ln415">            x += dx;</a>
+<a name="ln416">            }</a>
+<a name="ln417">      }</a>
+<a name="ln418"> </a>
+<a name="ln419">//---------------------------------------------------------</a>
+<a name="ln420">//   checkDots</a>
+<a name="ln421">//---------------------------------------------------------</a>
+<a name="ln422"> </a>
+<a name="ln423">void Rest::checkDots()</a>
+<a name="ln424">      {</a>
+<a name="ln425">      int n = dots() - int(_dots.size());</a>
+<a name="ln426">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln427">            NoteDot* dot = new NoteDot(score());</a>
+<a name="ln428">            dot-&gt;setParent(this);</a>
+<a name="ln429">            dot-&gt;setVisible(visible());</a>
+<a name="ln430">            score()-&gt;undoAddElement(dot);</a>
+<a name="ln431">            }</a>
+<a name="ln432">      if (n &lt; 0) {</a>
+<a name="ln433">            for (int i = 0; i &lt; -n; ++i)</a>
+<a name="ln434">                  score()-&gt;undoRemoveElement(_dots.back());</a>
+<a name="ln435">            }</a>
+<a name="ln436">      }</a>
+<a name="ln437"> </a>
+<a name="ln438">//---------------------------------------------------------</a>
+<a name="ln439">//   dot</a>
+<a name="ln440">//---------------------------------------------------------</a>
+<a name="ln441"> </a>
+<a name="ln442">NoteDot* Rest::dot(int n)</a>
+<a name="ln443">      {</a>
+<a name="ln444">      checkDots();</a>
+<a name="ln445">      return _dots[n];</a>
+<a name="ln446">      }</a>
+<a name="ln447"> </a>
+<a name="ln448"> </a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450">//   getDotline</a>
+<a name="ln451">//---------------------------------------------------------</a>
+<a name="ln452"> </a>
+<a name="ln453">int Rest::getDotline(TDuration::DurationType durationType)</a>
+<a name="ln454">      {</a>
+<a name="ln455">      int dl = -1;</a>
+<a name="ln456">      switch(durationType) {</a>
+<a name="ln457">            case TDuration::DurationType::V_64TH:</a>
+<a name="ln458">            case TDuration::DurationType::V_32ND:</a>
+<a name="ln459">                  dl = -3;</a>
+<a name="ln460">                  break;</a>
+<a name="ln461">            case TDuration::DurationType::V_1024TH:</a>
+<a name="ln462">            case TDuration::DurationType::V_512TH:</a>
+<a name="ln463">            case TDuration::DurationType::V_256TH:</a>
+<a name="ln464">            case TDuration::DurationType::V_128TH:</a>
+<a name="ln465">                  dl = -5;</a>
+<a name="ln466">                  break;</a>
+<a name="ln467">            default:</a>
+<a name="ln468">                  dl = -1;</a>
+<a name="ln469">                  break;</a>
+<a name="ln470">            }</a>
+<a name="ln471">      return dl;</a>
+<a name="ln472">      }</a>
+<a name="ln473"> </a>
+<a name="ln474">//---------------------------------------------------------</a>
+<a name="ln475">//   computeLineOffset</a>
+<a name="ln476">//---------------------------------------------------------</a>
+<a name="ln477"> </a>
+<a name="ln478">int Rest::computeLineOffset(int lines)</a>
+<a name="ln479">      {</a>
+<a name="ln480">      Segment* s = segment();</a>
+<a name="ln481">      bool offsetVoices = s &amp;&amp; measure() &amp;&amp; measure()-&gt;hasVoices(staffIdx());</a>
+<a name="ln482">      if (offsetVoices &amp;&amp; voice() == 0) {</a>
+<a name="ln483">            // do not offset voice 1 rest if there exists a matching invisible rest in voice 2;</a>
+<a name="ln484">            Element* e = s-&gt;element(track() + 1);</a>
+<a name="ln485">            if (e &amp;&amp; e-&gt;isRest() &amp;&amp; !e-&gt;visible() &amp;&amp; !toRest(e)-&gt;isGap()) {</a>
+<a name="ln486">                  Rest* r = toRest(e);</a>
+<a name="ln487">                  if (r-&gt;globalTicks() == globalTicks()) {</a>
+<a name="ln488">                        offsetVoices = false;</a>
+<a name="ln489">                        }</a>
+<a name="ln490">                  }</a>
+<a name="ln491">            else if (measure()-&gt;isOnlyDeletedRests(track() + 1, tick(), tick() + globalTicks()))</a>
+<a name="ln492">                  offsetVoices = false;</a>
+<a name="ln493">            }</a>
+<a name="ln494">#if 0</a>
+<a name="ln495">      if (offsetVoices &amp;&amp; staff()-&gt;mergeMatchingRests()) {</a>
+<a name="ln496">            // automatically merge matching rests in voices 1 &amp; 2 if nothing in any other voice</a>
+<a name="ln497">            // this is not always the right thing to do do, but is useful in choral music</a>
+<a name="ln498">            // and perhaps could be made enabled via a staff property</a>
+<a name="ln499">            // so choral staves can be treated differently than others</a>
+<a name="ln500">            bool matchFound = false;</a>
+<a name="ln501">            bool nothingElse = true;</a>
+<a name="ln502">            int baseTrack = staffIdx() * VOICES;</a>
+<a name="ln503">            for (int v = 0; v &lt; VOICES; ++v) {</a>
+<a name="ln504">                  if (v == voice())</a>
+<a name="ln505">                        continue;</a>
+<a name="ln506">                  Element* e = s-&gt;element(baseTrack + v);</a>
+<a name="ln507">                  if (v &lt;= 1) {</a>
+<a name="ln508">                        // try to find match in other voice (1 or 2)</a>
+<a name="ln509">                        if (e &amp;&amp; e-&gt;type() == ElementType::REST) {</a>
+<a name="ln510">                              Rest* r = toRest(e);</a>
+<a name="ln511">                              if (r-&gt;globalDuration() == globalDuration()) {</a>
+<a name="ln512">                                    matchFound = true;</a>
+<a name="ln513">                                    continue;</a>
+<a name="ln514">                                    }</a>
+<a name="ln515">                              }</a>
+<a name="ln516">                        // no match found; no sense looking for anything else</a>
+<a name="ln517">                        break;</a>
+<a name="ln518">                        }</a>
+<a name="ln519">                  else {</a>
+<a name="ln520">                        // if anything in another voice, do not merge</a>
+<a name="ln521">                        if (e) {</a>
+<a name="ln522">                              nothingElse = false;</a>
+<a name="ln523">                              break;</a>
+<a name="ln524">                              }</a>
+<a name="ln525">                        }</a>
+<a name="ln526">                  }</a>
+<a name="ln527">            if (matchFound &amp;&amp; nothingElse)</a>
+<a name="ln528">                  offsetVoices = false;</a>
+<a name="ln529">            }</a>
+<a name="ln530">#endif</a>
+<a name="ln531"> </a>
+<a name="ln532">      int lineOffset    = 0;</a>
+<a name="ln533">      int assumedCenter = 4;</a>
+<a name="ln534">      int actualCenter  = (lines - 1);</a>
+<a name="ln535">      int centerDiff    = actualCenter - assumedCenter;</a>
+<a name="ln536"> </a>
+<a name="ln537">      if (offsetVoices) {</a>
+<a name="ln538">            // move rests in a multi voice context</a>
+<a name="ln539">            bool up = (voice() == 0) || (voice() == 2);     // TODO: use style values</a>
+<a name="ln540">            switch(durationType().type()) {</a>
+<a name="ln541">                  case TDuration::DurationType::V_LONG:</a>
+<a name="ln542">                        lineOffset = up ? -3 : 5;</a>
+<a name="ln543">                        break;</a>
+<a name="ln544">                  case TDuration::DurationType::V_BREVE:</a>
+<a name="ln545">                        lineOffset = up ? -3 : 5;</a>
+<a name="ln546">                        break;</a>
+<a name="ln547">                  case TDuration::DurationType::V_MEASURE:</a>
+<a name="ln548">                        if (ticks() &gt;= Fraction(2, 1))   // breve symbol</a>
+<a name="ln549">                              lineOffset = up ? -3 : 5;</a>
+<a name="ln550">                        else</a>
+<a name="ln551">                              lineOffset = up ? -4 : 6;     // whole symbol</a>
+<a name="ln552">                        break;</a>
+<a name="ln553">                  case TDuration::DurationType::V_WHOLE:</a>
+<a name="ln554">                        lineOffset = up ? -4 : 6;</a>
+<a name="ln555">                        break;</a>
+<a name="ln556">                  case TDuration::DurationType::V_HALF:</a>
+<a name="ln557">                        lineOffset = up ? -4 : 4;</a>
+<a name="ln558">                        break;</a>
+<a name="ln559">                  case TDuration::DurationType::V_QUARTER:</a>
+<a name="ln560">                        lineOffset = up ? -4 : 4;</a>
+<a name="ln561">                        break;</a>
+<a name="ln562">                  case TDuration::DurationType::V_EIGHTH:</a>
+<a name="ln563">                        lineOffset = up ? -4 : 4;</a>
+<a name="ln564">                        break;</a>
+<a name="ln565">                  case TDuration::DurationType::V_16TH:</a>
+<a name="ln566">                        lineOffset = up ? -6 : 4;</a>
+<a name="ln567">                        break;</a>
+<a name="ln568">                  case TDuration::DurationType::V_32ND:</a>
+<a name="ln569">                        lineOffset = up ? -6 : 6;</a>
+<a name="ln570">                        break;</a>
+<a name="ln571">                  case TDuration::DurationType::V_64TH:</a>
+<a name="ln572">                        lineOffset = up ? -8 : 6;</a>
+<a name="ln573">                        break;</a>
+<a name="ln574">                  case TDuration::DurationType::V_128TH:</a>
+<a name="ln575">                        lineOffset = up ? -8 : 8;</a>
+<a name="ln576">                        break;</a>
+<a name="ln577">                  case TDuration::DurationType::V_1024TH:</a>
+<a name="ln578">                  case TDuration::DurationType::V_512TH:</a>
+<a name="ln579">                  case TDuration::DurationType::V_256TH:</a>
+<a name="ln580">                        lineOffset = up ? -10 : 6;</a>
+<a name="ln581">                        break;</a>
+<a name="ln582">                  default:</a>
+<a name="ln583">                        break;</a>
+<a name="ln584">                  }</a>
+<a name="ln585"> </a>
+<a name="ln586">            // adjust offsets for staves with other than five lines</a>
+<a name="ln587">            if (lines != 5) {</a>
+<a name="ln588">                  lineOffset += centerDiff;</a>
+<a name="ln589">                  if (centerDiff &amp; 1) {</a>
+<a name="ln590">                        // round to line</a>
+<a name="ln591">                        if (lines == 2 &amp;&amp; staff() &amp;&amp; staff()-&gt;lineDistance(tick()) &lt; 2.0)</a>
+<a name="ln592">                              ;                                         // leave alone</a>
+<a name="ln593">                        else if (lines &lt;= 6)</a>
+<a name="ln594">                              lineOffset += lineOffset &gt; 0 ? -1 : 1;    // round inward</a>
+<a name="ln595">                        else</a>
+<a name="ln596">                              lineOffset += lineOffset &gt; 0 ? 1 : -1;    // round outward</a>
+<a name="ln597">                        }</a>
+<a name="ln598">                  }</a>
+<a name="ln599">            }</a>
+<a name="ln600">      else {</a>
+<a name="ln601">            // Gould says to center rests on middle line or space</a>
+<a name="ln602">            // but subjectively, many rests look strange centered on a space</a>
+<a name="ln603">            // so we do it for 2-line staves only</a>
+<a name="ln604">            if (centerDiff &amp; 1 &amp;&amp; lines != 2)</a>
+<a name="ln605">                  centerDiff += 1;  // round down</a>
+<a name="ln606"> </a>
+<a name="ln607">            lineOffset = centerDiff;</a>
+<a name="ln608">            switch(durationType().type()) {</a>
+<a name="ln609">                  case TDuration::DurationType::V_LONG:</a>
+<a name="ln610">                  case TDuration::DurationType::V_BREVE:</a>
+<a name="ln611">                  case TDuration::DurationType::V_MEASURE:</a>
+<a name="ln612">                  case TDuration::DurationType::V_WHOLE:</a>
+<a name="ln613">                        if (lineOffset &amp; 1)</a>
+<a name="ln614">                              lineOffset += 1;  // always round to nearest line</a>
+<a name="ln615">                        else if (lines &lt;= 3)</a>
+<a name="ln616">                              lineOffset += 2;  // special case - move down for 1-line or 3-line staff</a>
+<a name="ln617">                        break;</a>
+<a name="ln618">                  case TDuration::DurationType::V_HALF:</a>
+<a name="ln619">                        if (lineOffset &amp; 1)</a>
+<a name="ln620">                              lineOffset += 1;  // always round to nearest line</a>
+<a name="ln621">                        break;</a>
+<a name="ln622">                  default:</a>
+<a name="ln623">                        break;</a>
+<a name="ln624">                  }</a>
+<a name="ln625">            }</a>
+<a name="ln626">      // DEBUG: subtract this off only to be added back in layout()?</a>
+<a name="ln627">      // that would throw off calculation of when ledger lines are needed</a>
+<a name="ln628">      //if (staff())</a>
+<a name="ln629">      //      lineOffset -= staff()-&gt;staffType()-&gt;stepOffset();</a>
+<a name="ln630">      return lineOffset;</a>
+<a name="ln631">      }</a>
+<a name="ln632"> </a>
+<a name="ln633">//---------------------------------------------------------</a>
+<a name="ln634">//   upPos</a>
+<a name="ln635">//---------------------------------------------------------</a>
+<a name="ln636"> </a>
+<a name="ln637">qreal Rest::upPos() const</a>
+<a name="ln638">      {</a>
+<a name="ln639">      return symBbox(_sym).y();</a>
+<a name="ln640">      }</a>
+<a name="ln641"> </a>
+<a name="ln642">//---------------------------------------------------------</a>
+<a name="ln643">//   downPos</a>
+<a name="ln644">//---------------------------------------------------------</a>
+<a name="ln645"> </a>
+<a name="ln646">qreal Rest::downPos() const</a>
+<a name="ln647">      {</a>
+<a name="ln648">      return symBbox(_sym).y() + symHeight(_sym);</a>
+<a name="ln649">      }</a>
+<a name="ln650"> </a>
+<a name="ln651">//---------------------------------------------------------</a>
+<a name="ln652">//   scanElements</a>
+<a name="ln653">//---------------------------------------------------------</a>
+<a name="ln654"> </a>
+<a name="ln655">void Rest::scanElements(void* data, void (*func)(void*, Element*), bool all)</a>
+<a name="ln656">      {</a>
+<a name="ln657">      ChordRest::scanElements(data, func, all);</a>
+<a name="ln658">      for (Element* e : el())</a>
+<a name="ln659">            e-&gt;scanElements(data, func, all);</a>
+<a name="ln660">      for (NoteDot* dot : _dots)</a>
+<a name="ln661">            dot-&gt;scanElements(data, func, all);</a>
+<a name="ln662">      if (!isGap())</a>
+<a name="ln663">            func(data, this);</a>
+<a name="ln664">      }</a>
+<a name="ln665"> </a>
+<a name="ln666">//---------------------------------------------------------</a>
+<a name="ln667">//   setTrack</a>
+<a name="ln668">//---------------------------------------------------------</a>
+<a name="ln669"> </a>
+<a name="ln670">void Rest::setTrack(int val)</a>
+<a name="ln671">      {</a>
+<a name="ln672">      ChordRest::setTrack(val);</a>
+<a name="ln673">      for (NoteDot* dot : _dots)</a>
+<a name="ln674">            dot-&gt;setTrack(val);</a>
+<a name="ln675">      }</a>
+<a name="ln676"> </a>
+<a name="ln677">//---------------------------------------------------------</a>
+<a name="ln678">//   reset</a>
+<a name="ln679">//---------------------------------------------------------</a>
+<a name="ln680"> </a>
+<a name="ln681">void Rest::reset()</a>
+<a name="ln682">      {</a>
+<a name="ln683">      undoChangeProperty(Pid::BEAM_MODE, int(Beam::Mode::NONE));</a>
+<a name="ln684">      ChordRest::reset();</a>
+<a name="ln685">      }</a>
+<a name="ln686"> </a>
+<a name="ln687">//---------------------------------------------------------</a>
+<a name="ln688">//   mag</a>
+<a name="ln689">//---------------------------------------------------------</a>
+<a name="ln690"> </a>
+<a name="ln691">qreal Rest::mag() const</a>
+<a name="ln692">      {</a>
+<a name="ln693">      qreal m = staff()-&gt;mag(tick());</a>
+<a name="ln694">      if (small())</a>
+<a name="ln695">            m *= score()-&gt;styleD(Sid::smallNoteMag);</a>
+<a name="ln696">      return m;</a>
+<a name="ln697">      }</a>
+<a name="ln698"> </a>
+<a name="ln699">//---------------------------------------------------------</a>
+<a name="ln700">//   upLine</a>
+<a name="ln701">//---------------------------------------------------------</a>
+<a name="ln702"> </a>
+<a name="ln703">int Rest::upLine() const</a>
+<a name="ln704">      {</a>
+<a name="ln705">      qreal _spatium = spatium();</a>
+<a name="ln706">      return lrint((pos().y() + bbox().top() + _spatium) * 2 / _spatium);</a>
+<a name="ln707">      }</a>
+<a name="ln708"> </a>
+<a name="ln709">//---------------------------------------------------------</a>
+<a name="ln710">//   downLine</a>
+<a name="ln711">//---------------------------------------------------------</a>
+<a name="ln712"> </a>
+<a name="ln713">int Rest::downLine() const</a>
+<a name="ln714">      {</a>
+<a name="ln715">      qreal _spatium = spatium();</a>
+<a name="ln716">      return lrint((pos().y() + bbox().top() + _spatium) * 2 / _spatium);</a>
+<a name="ln717">      }</a>
+<a name="ln718"> </a>
+<a name="ln719">//---------------------------------------------------------</a>
+<a name="ln720">//   stemPos</a>
+<a name="ln721">//    point to connect stem</a>
+<a name="ln722">//---------------------------------------------------------</a>
+<a name="ln723"> </a>
+<a name="ln724">QPointF Rest::stemPos() const</a>
+<a name="ln725">      {</a>
+<a name="ln726">      return pagePos();</a>
+<a name="ln727">      }</a>
+<a name="ln728"> </a>
+<a name="ln729">//---------------------------------------------------------</a>
+<a name="ln730">//   stemPosBeam</a>
+<a name="ln731">//    return stem position of note on beam side</a>
+<a name="ln732">//    return canvas coordinates</a>
+<a name="ln733">//---------------------------------------------------------</a>
+<a name="ln734"> </a>
+<a name="ln735">QPointF Rest::stemPosBeam() const</a>
+<a name="ln736">      {</a>
+<a name="ln737">      QPointF p(pagePos());</a>
+<a name="ln738">      if (_up)</a>
+<a name="ln739">            p.ry() += bbox().top() + spatium() * 1.5;</a>
+<a name="ln740">      else</a>
+<a name="ln741">            p.ry() += bbox().bottom() - spatium() * 1.5;</a>
+<a name="ln742">      return p;</a>
+<a name="ln743">      }</a>
+<a name="ln744"> </a>
+<a name="ln745">//---------------------------------------------------------</a>
+<a name="ln746">//   stemPosX</a>
+<a name="ln747">//---------------------------------------------------------</a>
+<a name="ln748"> </a>
+<a name="ln749">qreal Rest::stemPosX() const</a>
+<a name="ln750">      {</a>
+<a name="ln751">      if (_up)</a>
+<a name="ln752">            return bbox().right();</a>
+<a name="ln753">      else</a>
+<a name="ln754">            return bbox().left();</a>
+<a name="ln755">      }</a>
+<a name="ln756"> </a>
+<a name="ln757">//---------------------------------------------------------</a>
+<a name="ln758">//   accent</a>
+<a name="ln759">//---------------------------------------------------------</a>
+<a name="ln760"> </a>
+<a name="ln761">bool Rest::accent()</a>
+<a name="ln762">      {</a>
+<a name="ln763">      return (voice() &gt;= 2 &amp;&amp; small());</a>
+<a name="ln764">      }</a>
+<a name="ln765"> </a>
+<a name="ln766">//---------------------------------------------------------</a>
+<a name="ln767">//   setAccent</a>
+<a name="ln768">//---------------------------------------------------------</a>
+<a name="ln769"> </a>
+<a name="ln770">void Rest::setAccent(bool flag)</a>
+<a name="ln771">      {</a>
+<a name="ln772">      undoChangeProperty(Pid::SMALL, flag);</a>
+<a name="ln773">      if (voice() % 2 == 0) {</a>
+<a name="ln774">            if (flag) {</a>
+<a name="ln775">                  qreal yOffset = -(bbox().bottom());</a>
+<a name="ln776">                  if (durationType() &gt;= TDuration::DurationType::V_HALF)</a>
+<a name="ln777">                        yOffset -= staff()-&gt;spatium(tick()) * 0.5;</a>
+<a name="ln778">                  // undoChangeProperty(Pid::OFFSET, QPointF(0.0, yOffset));</a>
+<a name="ln779">                  rypos() += yOffset;</a>
+<a name="ln780">                  }</a>
+<a name="ln781">            else {</a>
+<a name="ln782">                  // undoChangeProperty(Pid::OFFSET, QPointF());  TODO::check</a>
+<a name="ln783">                  }</a>
+<a name="ln784">            }</a>
+<a name="ln785">      }</a>
+<a name="ln786"> </a>
+<a name="ln787">//---------------------------------------------------------</a>
+<a name="ln788">//   accessibleInfo</a>
+<a name="ln789">//---------------------------------------------------------</a>
+<a name="ln790"> </a>
+<a name="ln791">QString Rest::accessibleInfo() const</a>
+<a name="ln792">      {</a>
+<a name="ln793">      QString voice = QObject::tr(&quot;Voice: %1&quot;).arg(QString::number(track() % VOICES + 1));</a>
+<a name="ln794">      return QObject::tr(&quot;%1; Duration: %2; %3&quot;).arg(Element::accessibleInfo()).arg(durationUserName()).arg(voice);</a>
+<a name="ln795">      }</a>
+<a name="ln796"> </a>
+<a name="ln797">//---------------------------------------------------------</a>
+<a name="ln798">//   accessibleInfo</a>
+<a name="ln799">//---------------------------------------------------------</a>
+<a name="ln800"> </a>
+<a name="ln801">QString Rest::screenReaderInfo() const</a>
+<a name="ln802">      {</a>
+<a name="ln803">      Measure* m = measure();</a>
+<a name="ln804">      bool voices = m ? m-&gt;hasVoices(staffIdx()) : false;</a>
+<a name="ln805">      QString voice = voices ? QObject::tr(&quot;Voice: %1&quot;).arg(QString::number(track() % VOICES + 1)) : &quot;&quot;;</a>
+<a name="ln806">      return QString(&quot;%1 %2 %3&quot;).arg(Element::accessibleInfo()).arg(durationUserName()).arg(voice);</a>
+<a name="ln807">      }</a>
+<a name="ln808"> </a>
+<a name="ln809">//---------------------------------------------------------</a>
+<a name="ln810">//   add</a>
+<a name="ln811">//---------------------------------------------------------</a>
+<a name="ln812"> </a>
+<a name="ln813">void Rest::add(Element* e)</a>
+<a name="ln814">      {</a>
+<a name="ln815">      e-&gt;setParent(this);</a>
+<a name="ln816">      e-&gt;setTrack(track());</a>
+<a name="ln817"> </a>
+<a name="ln818">      switch(e-&gt;type()) {</a>
+<a name="ln819">            case ElementType::NOTEDOT:</a>
+<a name="ln820">                  _dots.push_back(toNoteDot(e));</a>
+<a name="ln821">                  break;</a>
+<a name="ln822">            case ElementType::SYMBOL:</a>
+<a name="ln823">            case ElementType::IMAGE:</a>
+<a name="ln824">                  el().push_back(e);</a>
+<a name="ln825">                  break;</a>
+<a name="ln826">            default:</a>
+<a name="ln827">                  ChordRest::add(e);</a>
+<a name="ln828">                  break;</a>
+<a name="ln829">            }</a>
+<a name="ln830">      }</a>
+<a name="ln831"> </a>
+<a name="ln832">//---------------------------------------------------------</a>
+<a name="ln833">//   remove</a>
+<a name="ln834">//---------------------------------------------------------</a>
+<a name="ln835"> </a>
+<a name="ln836">void Rest::remove(Element* e)</a>
+<a name="ln837">      {</a>
+<a name="ln838">      switch(e-&gt;type()) {</a>
+<a name="ln839">            case ElementType::NOTEDOT:</a>
+<a name="ln840">                  _dots.pop_back();</a>
+<a name="ln841">                  break;</a>
+<a name="ln842">            case ElementType::SYMBOL:</a>
+<a name="ln843">            case ElementType::IMAGE:</a>
+<a name="ln844">                  if (!el().remove(e))</a>
+<a name="ln845">                        qDebug(&quot;Rest::remove(): cannot find %s&quot;, e-&gt;name());</a>
+<a name="ln846">                  break;</a>
+<a name="ln847">            default:</a>
+<a name="ln848">                  ChordRest::remove(e);</a>
+<a name="ln849">                  break;</a>
+<a name="ln850">            }</a>
+<a name="ln851">      }</a>
+<a name="ln852"> </a>
+<a name="ln853">//--------------------------------------------------</a>
+<a name="ln854">//   Rest::write</a>
+<a name="ln855">//---------------------------------------------------------</a>
+<a name="ln856"> </a>
+<a name="ln857">void Rest::write(XmlWriter&amp; xml) const</a>
+<a name="ln858">      {</a>
+<a name="ln859">      if (_gap)</a>
+<a name="ln860">            return;</a>
+<a name="ln861">      writeBeam(xml);</a>
+<a name="ln862">      xml.stag(this);</a>
+<a name="ln863">      ChordRest::writeProperties(xml);</a>
+<a name="ln864">      el().write(xml);</a>
+<a name="ln865">      bool write_dots = false;</a>
+<a name="ln866">      for (NoteDot* dot : _dots)</a>
+<a name="ln867">            if (!dot-&gt;offset().isNull() || !dot-&gt;visible() || dot-&gt;color() != Qt::black || dot-&gt;visible() != visible()) {</a>
+<a name="ln868">                  write_dots = true;</a>
+<a name="ln869">                  break;</a>
+<a name="ln870">                  }</a>
+<a name="ln871">      if (write_dots)</a>
+<a name="ln872">            for (NoteDot* dot: _dots)</a>
+<a name="ln873">                  dot-&gt;write(xml);</a>
+<a name="ln874">      xml.etag();</a>
+<a name="ln875">      }</a>
+<a name="ln876"> </a>
+<a name="ln877">//---------------------------------------------------------</a>
+<a name="ln878">//   Rest::read</a>
+<a name="ln879">//---------------------------------------------------------</a>
+<a name="ln880"> </a>
+<a name="ln881">void Rest::read(XmlReader&amp; e)</a>
+<a name="ln882">      {</a>
+<a name="ln883">      while (e.readNextStartElement()) {</a>
+<a name="ln884">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln885">            if (tag == &quot;Symbol&quot;) {</a>
+<a name="ln886">                  Symbol* s = new Symbol(score());</a>
+<a name="ln887">                  s-&gt;setTrack(track());</a>
+<a name="ln888">                  s-&gt;read(e);</a>
+<a name="ln889">                  add(s);</a>
+<a name="ln890">                  }</a>
+<a name="ln891">            else if (tag == &quot;Image&quot;) {</a>
+<a name="ln892">                  if (MScore::noImages)</a>
+<a name="ln893">                        e.skipCurrentElement();</a>
+<a name="ln894">                  else {</a>
+<a name="ln895">                        Image* image = new Image(score());</a>
+<a name="ln896">                        image-&gt;setTrack(track());</a>
+<a name="ln897">                        image-&gt;read(e);</a>
+<a name="ln898">                        add(image);</a>
+<a name="ln899">                        }</a>
+<a name="ln900">                  }</a>
+<a name="ln901">            else if (tag == &quot;NoteDot&quot;) {</a>
+<a name="ln902">                  NoteDot* dot = new NoteDot(score());</a>
+<a name="ln903">                  dot-&gt;read(e);</a>
+<a name="ln904">                  add(dot);</a>
+<a name="ln905">                  }</a>
+<a name="ln906">            else if (ChordRest::readProperties(e))</a>
+<a name="ln907">                  ;</a>
+<a name="ln908">            else</a>
+<a name="ln909">                  e.unknown();</a>
+<a name="ln910">            }</a>
+<a name="ln911">      }</a>
+<a name="ln912"> </a>
+<a name="ln913">//---------------------------------------------------------</a>
+<a name="ln914">//   localSpatiumChanged</a>
+<a name="ln915">//---------------------------------------------------------</a>
+<a name="ln916"> </a>
+<a name="ln917">void Rest::localSpatiumChanged(qreal oldValue, qreal newValue)</a>
+<a name="ln918">      {</a>
+<a name="ln919">      ChordRest::localSpatiumChanged(oldValue, newValue);</a>
+<a name="ln920">      for (Element* e : _dots)</a>
+<a name="ln921">            e-&gt;localSpatiumChanged(oldValue, newValue);</a>
+<a name="ln922">      for (Element* e : el())</a>
+<a name="ln923">            e-&gt;localSpatiumChanged(oldValue, newValue);</a>
+<a name="ln924">      }</a>
+<a name="ln925"> </a>
+<a name="ln926">//---------------------------------------------------------</a>
+<a name="ln927">//   getProperty</a>
+<a name="ln928">//---------------------------------------------------------</a>
+<a name="ln929"> </a>
+<a name="ln930">QVariant Rest::getProperty(Pid propertyId) const</a>
+<a name="ln931">      {</a>
+<a name="ln932">      switch (propertyId) {</a>
+<a name="ln933">            case Pid::GAP:</a>
+<a name="ln934">                  return _gap;</a>
+<a name="ln935">            default:</a>
+<a name="ln936">                  return ChordRest::getProperty(propertyId);</a>
+<a name="ln937">            }</a>
+<a name="ln938">      }</a>
+<a name="ln939"> </a>
+<a name="ln940">//---------------------------------------------------------</a>
+<a name="ln941">//   propertyDefault</a>
+<a name="ln942">//---------------------------------------------------------</a>
+<a name="ln943"> </a>
+<a name="ln944">QVariant Rest::propertyDefault(Pid propertyId) const</a>
+<a name="ln945">      {</a>
+<a name="ln946">      switch (propertyId) {</a>
+<a name="ln947">            case Pid::GAP:</a>
+<a name="ln948">                  return false;</a>
+<a name="ln949">            default:</a>
+<a name="ln950">                  return ChordRest::propertyDefault(propertyId);</a>
+<a name="ln951">            }</a>
+<a name="ln952">      }</a>
+<a name="ln953"> </a>
+<a name="ln954">//---------------------------------------------------------</a>
+<a name="ln955">//   setProperty</a>
+<a name="ln956">//---------------------------------------------------------</a>
+<a name="ln957"> </a>
+<a name="ln958">bool Rest::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln959">      {</a>
+<a name="ln960">      switch (propertyId) {</a>
+<a name="ln961">            case Pid::GAP:</a>
+<a name="ln962">                  _gap = v.toBool();</a>
+<a name="ln963">                  triggerLayout();</a>
+<a name="ln964">                  break;</a>
+<a name="ln965">            case Pid::VISIBLE:</a>
+<a name="ln966">                  setVisible(v.toBool());</a>
+<a name="ln967">                  triggerLayout();</a>
+<a name="ln968">                  break;</a>
+<a name="ln969">            case Pid::OFFSET:</a>
+<a name="ln970">                  score()-&gt;addRefresh(canvasBoundingRect());</a>
+<a name="ln971">                  setOffset(v.toPointF());</a>
+<a name="ln972">                  layout();</a>
+<a name="ln973">                  score()-&gt;addRefresh(canvasBoundingRect());</a>
+<a name="ln974">                  if (measure() &amp;&amp; durationType().type() == TDuration::DurationType::V_MEASURE)</a>
+<a name="ln975">                         measure()-&gt;triggerLayout();</a>
+<a name="ln976">                  triggerLayout();</a>
+<a name="ln977">                  break;</a>
+<a name="ln978">            default:</a>
+<a name="ln979">                  return ChordRest::setProperty(propertyId, v);</a>
+<a name="ln980">            }</a>
+<a name="ln981">      return true;</a>
+<a name="ln982">      }</a>
+<a name="ln983"> </a>
+<a name="ln984">//---------------------------------------------------------</a>
+<a name="ln985">//   undoChangeDotsVisible</a>
+<a name="ln986">//---------------------------------------------------------</a>
+<a name="ln987"> </a>
+<a name="ln988">void Rest::undoChangeDotsVisible(bool v)</a>
+<a name="ln989">      {</a>
+<a name="ln990">      for (NoteDot* dot : _dots)</a>
+<a name="ln991">            dot-&gt;undoChangeProperty(Pid::VISIBLE, QVariant(v));</a>
+<a name="ln992">      }</a>
+<a name="ln993"> </a>
+<a name="ln994">//---------------------------------------------------------</a>
+<a name="ln995">//   nextElement</a>
+<a name="ln996">//---------------------------------------------------------</a>
+<a name="ln997"> </a>
+<a name="ln998">Element* Rest::nextElement()</a>
+<a name="ln999">      {</a>
+<a name="ln1000">      return ChordRest::nextElement();</a>
+<a name="ln1001">      }</a>
+<a name="ln1002"> </a>
+<a name="ln1003">//---------------------------------------------------------</a>
+<a name="ln1004">//   prevElement</a>
+<a name="ln1005">//---------------------------------------------------------</a>
+<a name="ln1006"> </a>
+<a name="ln1007">Element* Rest::prevElement()</a>
+<a name="ln1008">      {</a>
+<a name="ln1009">      return ChordRest::prevElement();</a>
+<a name="ln1010">      }</a>
+<a name="ln1011"> </a>
+<a name="ln1012">//---------------------------------------------------------</a>
+<a name="ln1013">//   shape</a>
+<a name="ln1014">//---------------------------------------------------------</a>
+<a name="ln1015"> </a>
+<a name="ln1016">Shape Rest::shape() const</a>
+<a name="ln1017">      {</a>
+<a name="ln1018">      Shape shape;</a>
+<a name="ln1019">      if (!_gap) {</a>
+<a name="ln1020">            shape.add(ChordRest::shape());</a>
+<a name="ln1021">            if (measure() &amp;&amp; measure()-&gt;isMMRest()) {</a>
+<a name="ln1022">                  qreal _spatium = spatium();</a>
+<a name="ln1023">                  shape.add(QRectF(0.0, -_spatium, _mmWidth, 2.0 * _spatium));</a>
+<a name="ln1024"> </a>
+<a name="ln1025">                  int n    = measure()-&gt;mmRestCount();</a>
+<a name="ln1026">                  std::vector&lt;SymId&gt;&amp;&amp; s = toTimeSigString(QString(&quot;%1&quot;).arg(n));</a>
+<a name="ln1027">                  qreal x  = _mmWidth * .5;</a>
+<a name="ln1028">                  qreal y  = -_spatium * 1.5 - staff()-&gt;height() *.5;</a>
+<a name="ln1029">                  QRectF r = symBbox(s);</a>
+<a name="ln1030">                  x       -= r.width() * .5;</a>
+<a name="ln1031">                  r.translate(QPointF(x, y));</a>
+<a name="ln1032">                  shape.add(r);</a>
+<a name="ln1033">                  }</a>
+<a name="ln1034">            else</a>
+<a name="ln1035">#ifndef NDEBUG</a>
+<a name="ln1036">                  shape.add(bbox(), name());</a>
+<a name="ln1037">#else</a>
+<a name="ln1038">                  shape.add(bbox());</a>
+<a name="ln1039">#endif</a>
+<a name="ln1040">            for (NoteDot* dot : _dots)</a>
+<a name="ln1041">                  shape.add(symBbox(SymId::augmentationDot).translated(dot-&gt;pos()));</a>
+<a name="ln1042">            }</a>
+<a name="ln1043">      for (Element* e : el()) {</a>
+<a name="ln1044">            if (e-&gt;addToSkyline())</a>
+<a name="ln1045">                  shape.add(e-&gt;shape().translated(e-&gt;pos()));</a>
+<a name="ln1046">            }</a>
+<a name="ln1047">      return shape;</a>
+<a name="ln1048">      }</a>
+<a name="ln1049"> </a>
+<a name="ln1050">}</a>
+
+</code></pre>
+<div class="balloon" rel="557"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 557, 560, 563</p></div>
+<div class="balloon" rel="542"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 542, 545</p></div>
+<div class="balloon" rel="845"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="713"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v524/" target="_blank">V524</a> It is odd that the body of 'downLine' function is fully equivalent to the body of 'upLine' function.</p></div>
+<div class="balloon" rel="39"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _mmWidth.</p></div>
+<div class="balloon" rel="46"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _mmWidth.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,565 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>scorecmp.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2018 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;scorecmp.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;ui_scorecmp_tool.h&quot;</a>
+<a name="ln16">#include &quot;scorediffmodel.h&quot;</a>
+<a name="ln17">#include &quot;scorelistmodel.h&quot;</a>
+<a name="ln18"> </a>
+<a name="ln19">#include &quot;musescore.h&quot;</a>
+<a name="ln20">#include &quot;scoretab.h&quot;</a>
+<a name="ln21">#include &quot;scoreview.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">#include &quot;libmscore/scorediff.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">namespace Ms {</a>
+<a name="ln26"> </a>
+<a name="ln27">//---------------------------------------------------------</a>
+<a name="ln28">//   ScoreComparisonTool</a>
+<a name="ln29">//---------------------------------------------------------</a>
+<a name="ln30"> </a>
+<a name="ln31">ScoreComparisonTool::ScoreComparisonTool(QWidget* parent)</a>
+<a name="ln32">   : QDockWidget(parent), _ui(new Ui::ScoreComparisonTool)</a>
+<a name="ln33">      {</a>
+<a name="ln34">      _ui-&gt;setupUi(this);</a>
+<a name="ln35">      _mode = Mode::INTELLIGENT;</a>
+<a name="ln36">      _ui-&gt;intelligentModeRadioButton-&gt;setChecked(true);</a>
+<a name="ln37">      _ui-&gt;diffWidget-&gt;setCurrentWidget(_ui-&gt;pageIntelligentDiff);</a>
+<a name="ln38">      connect(</a>
+<a name="ln39">         _ui-&gt;score1ComboBox, QOverload&lt;int&gt;::of(&amp;QComboBox::currentIndexChanged),</a>
+<a name="ln40">         this, &amp;ScoreComparisonTool::selectedVersionsChanged);</a>
+<a name="ln41">      connect(</a>
+<a name="ln42">         _ui-&gt;score2ComboBox, QOverload&lt;int&gt;::of(&amp;QComboBox::currentIndexChanged),</a>
+<a name="ln43">         this, &amp;ScoreComparisonTool::selectedVersionsChanged);</a>
+<a name="ln44">      }</a>
+<a name="ln45"> </a>
+<a name="ln46">//---------------------------------------------------------</a>
+<a name="ln47">//   ~ScoreComparisonTool</a>
+<a name="ln48">//---------------------------------------------------------</a>
+<a name="ln49"> </a>
+<a name="ln50">ScoreComparisonTool::~ScoreComparisonTool()</a>
+<a name="ln51">      {</a>
+<a name="ln52">      delete _ui;</a>
+<a name="ln53">      delete _diff;</a>
+<a name="ln54">      }</a>
+<a name="ln55"> </a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57">//   ScoreComparisonTool::changeEvent</a>
+<a name="ln58">//---------------------------------------------------------</a>
+<a name="ln59"> </a>
+<a name="ln60">void ScoreComparisonTool::changeEvent(QEvent* e)</a>
+<a name="ln61">      {</a>
+<a name="ln62">      QDockWidget::changeEvent(e);</a>
+<a name="ln63">      switch(e-&gt;type()) {</a>
+<a name="ln64">            case QEvent::LanguageChange:</a>
+<a name="ln65">                  _ui-&gt;retranslateUi(this);</a>
+<a name="ln66">                  break;</a>
+<a name="ln67">            default:</a>
+<a name="ln68">                  break;</a>
+<a name="ln69">            }</a>
+<a name="ln70">      }</a>
+<a name="ln71"> </a>
+<a name="ln72">//---------------------------------------------------------</a>
+<a name="ln73">//   ScoreComparisonTool::showEvent</a>
+<a name="ln74">//---------------------------------------------------------</a>
+<a name="ln75"> </a>
+<a name="ln76">void ScoreComparisonTool::showEvent(QShowEvent* e)</a>
+<a name="ln77">      {</a>
+<a name="ln78">      QDockWidget::showEvent(e);</a>
+<a name="ln79">      if (e-&gt;spontaneous())</a>
+<a name="ln80">            return;</a>
+<a name="ln81">      e-&gt;accept();</a>
+<a name="ln82"> </a>
+<a name="ln83">      if (!_scoreListModel) {</a>
+<a name="ln84">            ScoreTab* tab = mscore-&gt;getTab1();</a>
+<a name="ln85">            _scoreListModel = new ScoreListModel(&amp;mscore-&gt;scores(), tab, this);</a>
+<a name="ln86">            _ui-&gt;score1ComboBox-&gt;setModel(_scoreListModel);</a>
+<a name="ln87">            _ui-&gt;score2ComboBox-&gt;setModel(_scoreListModel);</a>
+<a name="ln88"> </a>
+<a name="ln89">            MasterScore* s = nullptr;</a>
+<a name="ln90">            if (ScoreView* v = tab-&gt;view())</a>
+<a name="ln91">                  s = v-&gt;score()-&gt;masterScore();</a>
+<a name="ln92">            _scoreVersionsModel1 = new ScoreVersionListModel(s, this);</a>
+<a name="ln93">            _scoreVersionsModel2 = new ScoreVersionListModel(s, this);</a>
+<a name="ln94">            _ui-&gt;version1ComboBox-&gt;setModel(_scoreVersionsModel1);</a>
+<a name="ln95">            _ui-&gt;version2ComboBox-&gt;setModel(_scoreVersionsModel2);</a>
+<a name="ln96">            selectedVersionsChanged();</a>
+<a name="ln97"> </a>
+<a name="ln98">            _ui-&gt;score1ComboBox-&gt;setCurrentIndex(tab-&gt;currentIndex());</a>
+<a name="ln99">            connect(tab-&gt;getTab(), &amp;QTabBar::currentChanged,</a>
+<a name="ln100">               _ui-&gt;score1ComboBox, &amp;QComboBox::setCurrentIndex);</a>
+<a name="ln101"> </a>
+<a name="ln102">            slotWindowSplit(mscore-&gt;splitScreen());</a>
+<a name="ln103">            connect(mscore, &amp;MuseScore::windowSplit,</a>
+<a name="ln104">               this, &amp;ScoreComparisonTool::slotWindowSplit);</a>
+<a name="ln105">            }</a>
+<a name="ln106"> </a>
+<a name="ln107">      updateDiff();</a>
+<a name="ln108">      }</a>
+<a name="ln109"> </a>
+<a name="ln110">//---------------------------------------------------------</a>
+<a name="ln111">//   ScoreComparisonTool::updateDiffView</a>
+<a name="ln112">//---------------------------------------------------------</a>
+<a name="ln113"> </a>
+<a name="ln114">void ScoreComparisonTool::updateDiffView(Mode mode)</a>
+<a name="ln115">      {</a>
+<a name="ln116">      switch(mode) {</a>
+<a name="ln117">            case Mode::RAW:</a>
+<a name="ln118">                  if (!_rawModel &amp;&amp; _diff) {</a>
+<a name="ln119">                        _rawModel = new RawScoreDiffModel(_diff, true, this);</a>
+<a name="ln120">                        connect(this, &amp;ScoreComparisonTool::diffUpdated,</a>
+<a name="ln121">                           _rawModel, &amp;RawScoreDiffModel::update);</a>
+<a name="ln122">                        _ui-&gt;rawDiffView-&gt;setModel(_rawModel);</a>
+<a name="ln123">                        }</a>
+<a name="ln124">                  break;</a>
+<a name="ln125">            case Mode::INTELLIGENT:</a>
+<a name="ln126">                  if (!_intelligentModel &amp;&amp; _diff) {</a>
+<a name="ln127">                        _intelligentModel = new ScoreDiffModel(_diff, this);</a>
+<a name="ln128">                        connect(this, &amp;ScoreComparisonTool::diffAboutToBeUpdated,</a>
+<a name="ln129">                           _intelligentModel, &amp;ScoreDiffModel::diffAboutToBeUpdated);</a>
+<a name="ln130">                        connect(this, &amp;ScoreComparisonTool::diffUpdated,</a>
+<a name="ln131">                           _intelligentModel, &amp;ScoreDiffModel::diffUpdated);</a>
+<a name="ln132">                        _ui-&gt;intelligentDiffView-&gt;setModel(_intelligentModel);</a>
+<a name="ln133">                        }</a>
+<a name="ln134">                  break;</a>
+<a name="ln135">            }</a>
+<a name="ln136">      }</a>
+<a name="ln137"> </a>
+<a name="ln138">//---------------------------------------------------------</a>
+<a name="ln139">//   ScoreComparisonTool::updateDiffTitle</a>
+<a name="ln140">//---------------------------------------------------------</a>
+<a name="ln141"> </a>
+<a name="ln142">void ScoreComparisonTool::updateDiffTitle()</a>
+<a name="ln143">      {</a>
+<a name="ln144">      if (_diff)</a>
+<a name="ln145">            _ui-&gt;diffWidgetBox-&gt;setTitle(</a>
+<a name="ln146">               tr(&quot;Comparison of \&quot;%1\&quot; and \&quot;%2\&quot;&quot;)</a>
+<a name="ln147">                  .arg(_diff-&gt;score1()-&gt;title())</a>
+<a name="ln148">                  .arg(_diff-&gt;score2()-&gt;title())</a>
+<a name="ln149">               );</a>
+<a name="ln150">      else</a>
+<a name="ln151">            _ui-&gt;diffWidgetBox-&gt;setTitle(tr(&quot;Comparison&quot;));</a>
+<a name="ln152">      }</a>
+<a name="ln153"> </a>
+<a name="ln154">//---------------------------------------------------------</a>
+<a name="ln155">//   ScoreComparisonTool::setMode</a>
+<a name="ln156">//---------------------------------------------------------</a>
+<a name="ln157"> </a>
+<a name="ln158">void ScoreComparisonTool::setMode(Mode mode)</a>
+<a name="ln159">      {</a>
+<a name="ln160">      if (_mode == mode)</a>
+<a name="ln161">            return;</a>
+<a name="ln162">      _mode = mode;</a>
+<a name="ln163">      updateDiffView(mode);</a>
+<a name="ln164">      switch(mode) {</a>
+<a name="ln165">            case Mode::RAW:</a>
+<a name="ln166">                  if (!_ui-&gt;rawModeRadioButton-&gt;isChecked())</a>
+<a name="ln167">                        _ui-&gt;rawModeRadioButton-&gt;setChecked(true);</a>
+<a name="ln168">                  _ui-&gt;diffWidget-&gt;setCurrentWidget(_ui-&gt;pageRawDiff);</a>
+<a name="ln169">                  break;</a>
+<a name="ln170">            case Mode::INTELLIGENT:</a>
+<a name="ln171">                  if (!_ui-&gt;intelligentModeRadioButton-&gt;isChecked())</a>
+<a name="ln172">                        _ui-&gt;intelligentModeRadioButton-&gt;setChecked(true);</a>
+<a name="ln173">                  _ui-&gt;diffWidget-&gt;setCurrentWidget(_ui-&gt;pageIntelligentDiff);</a>
+<a name="ln174">                  break;</a>
+<a name="ln175">            }</a>
+<a name="ln176">      }</a>
+<a name="ln177"> </a>
+<a name="ln178">//---------------------------------------------------------</a>
+<a name="ln179">//   ScoreComparisonTool::compare</a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181"> </a>
+<a name="ln182">void ScoreComparisonTool::compare(Score* s1, Score* s2)</a>
+<a name="ln183">      {</a>
+<a name="ln184">      invalidateDiff();</a>
+<a name="ln185">      if (!s1 || !s2)</a>
+<a name="ln186">            return;</a>
+<a name="ln187">      _diff = new ScoreDiff(s1, s2);</a>
+<a name="ln188">      connect(s1, &amp;QObject::destroyed, this, &amp;ScoreComparisonTool::invalidateDiff);</a>
+<a name="ln189">      connect(s2, &amp;QObject::destroyed, this, &amp;ScoreComparisonTool::invalidateDiff);</a>
+<a name="ln190">      updateDiffView(_mode);</a>
+<a name="ln191">      updateDiffTitle();</a>
+<a name="ln192">      mscore-&gt;setCurrentScores(s1, s2);</a>
+<a name="ln193">      }</a>
+<a name="ln194"> </a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196">//   ScoreComparisonTool::invalidateDiff</a>
+<a name="ln197">//---------------------------------------------------------</a>
+<a name="ln198"> </a>
+<a name="ln199">void ScoreComparisonTool::invalidateDiff()</a>
+<a name="ln200">      {</a>
+<a name="ln201">      if (_rawModel) {</a>
+<a name="ln202">            _rawModel-&gt;deleteLater();</a>
+<a name="ln203">            _rawModel = nullptr;</a>
+<a name="ln204">            }</a>
+<a name="ln205">      if (_intelligentModel) {</a>
+<a name="ln206">            _intelligentModel-&gt;deleteLater();</a>
+<a name="ln207">            _intelligentModel = nullptr;</a>
+<a name="ln208">            }</a>
+<a name="ln209"> </a>
+<a name="ln210">      if (_diff) {</a>
+<a name="ln211">            disconnect(_diff-&gt;score1(), 0, this, 0);</a>
+<a name="ln212">            disconnect(_diff-&gt;score2(), 0, this, 0);</a>
+<a name="ln213">            delete _diff;</a>
+<a name="ln214">            _diff = nullptr;</a>
+<a name="ln215">            }</a>
+<a name="ln216"> </a>
+<a name="ln217">      updateDiffTitle();</a>
+<a name="ln218">      }</a>
+<a name="ln219"> </a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221">//   ScoreComparisonTool::updateDiff</a>
+<a name="ln222">//---------------------------------------------------------</a>
+<a name="ln223"> </a>
+<a name="ln224">void ScoreComparisonTool::updateDiff()</a>
+<a name="ln225">      {</a>
+<a name="ln226">      if (isVisible() &amp;&amp; _diff &amp;&amp; !_diff-&gt;updated()) {</a>
+<a name="ln227">            emit diffAboutToBeUpdated();</a>
+<a name="ln228">            _diff-&gt;update();</a>
+<a name="ln229">            emit diffUpdated();</a>
+<a name="ln230">            }</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   ScoreComparisonTool::openScoreVersion</a>
+<a name="ln235">//    Opens the proper score version if it is not opened</a>
+<a name="ln236">//    and returns the score object. Does not switch active</a>
+<a name="ln237">//    tab as the score comparison tool may need some</a>
+<a name="ln238">//    specific tabs configuration.</a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240"> </a>
+<a name="ln241">Score* ScoreComparisonTool::openScoreVersion(const ScoreVersion&amp; ver)</a>
+<a name="ln242">      {</a>
+<a name="ln243">      Score* s = nullptr;</a>
+<a name="ln244">      if (ver.recent) {</a>
+<a name="ln245">            s = ver.score;</a>
+<a name="ln246">            if (!s)</a>
+<a name="ln247">                  s = mscore-&gt;openScore(ver.fileInfo.absoluteFilePath(), /* switchTab */ false);</a>
+<a name="ln248">            }</a>
+<a name="ln249">      else {</a>
+<a name="ln250">            QString baseName;</a>
+<a name="ln251">            if (ver.score)</a>
+<a name="ln252">                  baseName = ver.score-&gt;masterScore()-&gt;fileInfo()-&gt;completeBaseName();</a>
+<a name="ln253">            else</a>
+<a name="ln254">                  baseName = ver.fileInfo.completeBaseName();</a>
+<a name="ln255"> </a>
+<a name="ln256">            QTemporaryFile* tmp = mscore-&gt;getTemporaryScoreFileCopy(</a>
+<a name="ln257">               ver.fileInfo,</a>
+<a name="ln258">               QString(&quot;[%1] %2.XXXXXX&quot;).arg(ver.name).arg(baseName)</a>
+<a name="ln259">               );</a>
+<a name="ln260">            if (tmp) {</a>
+<a name="ln261">                  s = mscore-&gt;openScore(tmp-&gt;fileName(), /* switchTab */ false);</a>
+<a name="ln262">                  if (s)</a>
+<a name="ln263">                        s-&gt;masterScore()-&gt;setReadOnly(true);</a>
+<a name="ln264">                  delete tmp;</a>
+<a name="ln265">                  // let the score know about the temporary file deletion</a>
+<a name="ln266">                  s-&gt;masterScore()-&gt;fileInfo()-&gt;refresh();</a>
+<a name="ln267">                  updateScoreVersions(s);</a>
+<a name="ln268">                  }</a>
+<a name="ln269">            }</a>
+<a name="ln270">      return s;</a>
+<a name="ln271">      }</a>
+<a name="ln272"> </a>
+<a name="ln273">//---------------------------------------------------------</a>
+<a name="ln274">//   ScoreComparisonTool::on_compareButton_clicked</a>
+<a name="ln275">//---------------------------------------------------------</a>
+<a name="ln276"> </a>
+<a name="ln277">void ScoreComparisonTool::on_compareButton_clicked()</a>
+<a name="ln278">      {</a>
+<a name="ln279">      const int idx1 = _ui-&gt;version1ComboBox-&gt;currentIndex();</a>
+<a name="ln280">      const int idx2 = _ui-&gt;version2ComboBox-&gt;currentIndex();</a>
+<a name="ln281">      if (idx1 &lt; 0 || idx2 &lt; 0) // no scores to compare</a>
+<a name="ln282">            return;</a>
+<a name="ln283">      const ScoreVersion&amp; ver1 = _scoreVersionsModel1-&gt;getScoreVersion(idx1);</a>
+<a name="ln284">      const ScoreVersion&amp; ver2 = _scoreVersionsModel2-&gt;getScoreVersion(idx2);</a>
+<a name="ln285">      Score* s1 = openScoreVersion(ver1);</a>
+<a name="ln286">      Score* s2 = openScoreVersion(ver2);</a>
+<a name="ln287">      compare(s1, s2);</a>
+<a name="ln288">      }</a>
+<a name="ln289"> </a>
+<a name="ln290">//---------------------------------------------------------</a>
+<a name="ln291">//   ScoreComparisonTool::selectedVersionsChanged</a>
+<a name="ln292">//    Disables Compare button if there are no versions</a>
+<a name="ln293">//    selected for comparison.</a>
+<a name="ln294">//---------------------------------------------------------</a>
+<a name="ln295"> </a>
+<a name="ln296">void ScoreComparisonTool::selectedVersionsChanged()</a>
+<a name="ln297">      {</a>
+<a name="ln298">      const int idx1 = _ui-&gt;version1ComboBox-&gt;currentIndex();</a>
+<a name="ln299">      const int idx2 = _ui-&gt;version2ComboBox-&gt;currentIndex();</a>
+<a name="ln300">      _ui-&gt;compareButton-&gt;setEnabled(idx1 &gt;= 0 &amp;&amp; idx2 &gt;= 0);</a>
+<a name="ln301">      }</a>
+<a name="ln302"> </a>
+<a name="ln303">//---------------------------------------------------------</a>
+<a name="ln304">//   ScoreComparisonTool::updateScoreVersions</a>
+<a name="ln305">//---------------------------------------------------------</a>
+<a name="ln306"> </a>
+<a name="ln307">void ScoreComparisonTool::updateScoreVersions(const Score* s)</a>
+<a name="ln308">      {</a>
+<a name="ln309">      if (_scoreVersionsModel1 &amp;&amp; _scoreVersionsModel1-&gt;score() == s) {</a>
+<a name="ln310">            _scoreVersionsModel1-&gt;update();</a>
+<a name="ln311">            resetVersion1ComboBox();</a>
+<a name="ln312">            }</a>
+<a name="ln313">      if (_scoreVersionsModel2 &amp;&amp; _scoreVersionsModel2-&gt;score() == s) {</a>
+<a name="ln314">            _scoreVersionsModel2-&gt;update();</a>
+<a name="ln315">            resetVersion2ComboBox();</a>
+<a name="ln316">            }</a>
+<a name="ln317">      }</a>
+<a name="ln318"> </a>
+<a name="ln319">//---------------------------------------------------------</a>
+<a name="ln320">//   ScoreComparisonTool::on_browseFileButton_clicked</a>
+<a name="ln321">//---------------------------------------------------------</a>
+<a name="ln322"> </a>
+<a name="ln323">void ScoreComparisonTool::on_browseFileButton_clicked()</a>
+<a name="ln324">      {</a>
+<a name="ln325">      Score* prevScore = mscore-&gt;currentScore();</a>
+<a name="ln326">      mscore-&gt;loadFiles(/* switchTab */ true, /* singleFile */ true);</a>
+<a name="ln327">      Score* loadedScore = mscore-&gt;currentScore();</a>
+<a name="ln328">      if (loadedScore == prevScore) // we didn't load anything?</a>
+<a name="ln329">            return;</a>
+<a name="ln330">      // ensure that we display this score in split-screen mode</a>
+<a name="ln331">      mscore-&gt;setCurrentScores(loadedScore, loadedScore);</a>
+<a name="ln332">      }</a>
+<a name="ln333"> </a>
+<a name="ln334">//---------------------------------------------------------</a>
+<a name="ln335">//   ScoreComparisonTool::resetVersion1ComboBox</a>
+<a name="ln336">//---------------------------------------------------------</a>
+<a name="ln337"> </a>
+<a name="ln338">void ScoreComparisonTool::resetVersion1ComboBox()</a>
+<a name="ln339">      {</a>
+<a name="ln340">      if (_scoreVersionsModel1) {</a>
+<a name="ln341">            _ui-&gt;version1ComboBox-&gt;setCurrentIndex(</a>
+<a name="ln342">               _scoreVersionsModel1-&gt;getPosition(ScoreVersion::INDEX_CURRENT));</a>
+<a name="ln343">            }</a>
+<a name="ln344">      }</a>
+<a name="ln345"> </a>
+<a name="ln346">//---------------------------------------------------------</a>
+<a name="ln347">//   ScoreComparisonTool::on_score1ComboBox_currentIndexChanged</a>
+<a name="ln348">//---------------------------------------------------------</a>
+<a name="ln349"> </a>
+<a name="ln350">void ScoreComparisonTool::on_score1ComboBox_currentIndexChanged(int idx)</a>
+<a name="ln351">      {</a>
+<a name="ln352">      if (_scoreVersionsModel1) {</a>
+<a name="ln353">            Score* s = _scoreListModel-&gt;getScore(idx);</a>
+<a name="ln354">            _scoreVersionsModel1-&gt;setScore(s ? s-&gt;masterScore() : nullptr);</a>
+<a name="ln355">            resetVersion1ComboBox();</a>
+<a name="ln356">            }</a>
+<a name="ln357">      }</a>
+<a name="ln358"> </a>
+<a name="ln359">//---------------------------------------------------------</a>
+<a name="ln360">//   ScoreComparisonTool::resetVersion2ComboBox</a>
+<a name="ln361">//---------------------------------------------------------</a>
+<a name="ln362"> </a>
+<a name="ln363">void ScoreComparisonTool::resetVersion2ComboBox()</a>
+<a name="ln364">      {</a>
+<a name="ln365">      if (_scoreVersionsModel2) {</a>
+<a name="ln366">            int index = -1;</a>
+<a name="ln367">            if (!mscore-&gt;splitScreen())</a>
+<a name="ln368">                  index = _scoreVersionsModel2-&gt;getPosition(ScoreVersion::INDEX_SESSION_START);</a>
+<a name="ln369">            if (index &lt; 0)</a>
+<a name="ln370">                  index = _scoreVersionsModel2-&gt;getPosition(ScoreVersion::INDEX_CURRENT);</a>
+<a name="ln371">            _ui-&gt;version2ComboBox-&gt;setCurrentIndex(index);</a>
+<a name="ln372">            }</a>
+<a name="ln373">      }</a>
+<a name="ln374"> </a>
+<a name="ln375">//---------------------------------------------------------</a>
+<a name="ln376">//   ScoreComparisonTool::on_score2ComboBox_currentIndexChanged</a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378"> </a>
+<a name="ln379">void ScoreComparisonTool::on_score2ComboBox_currentIndexChanged(int idx)</a>
+<a name="ln380">      {</a>
+<a name="ln381">      if (_scoreVersionsModel2) {</a>
+<a name="ln382">            Score* s = _scoreListModel-&gt;getScore(idx);</a>
+<a name="ln383">            _scoreVersionsModel2-&gt;setScore(s ? s-&gt;masterScore() : nullptr);</a>
+<a name="ln384">            resetVersion2ComboBox();</a>
+<a name="ln385">            }</a>
+<a name="ln386">      }</a>
+<a name="ln387"> </a>
+<a name="ln388">//---------------------------------------------------------</a>
+<a name="ln389">//   ScoreComparisonTool::on_rawModeRadioButton_toggled</a>
+<a name="ln390">//---------------------------------------------------------</a>
+<a name="ln391"> </a>
+<a name="ln392">void ScoreComparisonTool::on_rawModeRadioButton_toggled(bool checked)</a>
+<a name="ln393">      {</a>
+<a name="ln394">      if (checked)</a>
+<a name="ln395">            setMode(Mode::RAW);</a>
+<a name="ln396">      }</a>
+<a name="ln397"> </a>
+<a name="ln398">//---------------------------------------------------------</a>
+<a name="ln399">//   ScoreComparisonTool::on_intelligentModeRadioButton_toggled</a>
+<a name="ln400">//---------------------------------------------------------</a>
+<a name="ln401"> </a>
+<a name="ln402">void ScoreComparisonTool::on_intelligentModeRadioButton_toggled(bool checked)</a>
+<a name="ln403">      {</a>
+<a name="ln404">      if (checked)</a>
+<a name="ln405">            setMode(Mode::INTELLIGENT);</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">//---------------------------------------------------------</a>
+<a name="ln409">//   ScoreComparisonTool::on_intelligentDiffView_activated</a>
+<a name="ln410">//---------------------------------------------------------</a>
+<a name="ln411"> </a>
+<a name="ln412">void ScoreComparisonTool::on_intelligentDiffView_activated(const QModelIndex&amp; index)</a>
+<a name="ln413">      {</a>
+<a name="ln414">      const BaseDiff* diff = _intelligentModel-&gt;diffItem(index);</a>
+<a name="ln415"> </a>
+<a name="ln416">      const ScoreElement* el[2];</a>
+<a name="ln417">      bool select[2] { true, true };</a>
+<a name="ln418">      switch(diff-&gt;itemType()) {</a>
+<a name="ln419">            case ItemType::ELEMENT:</a>
+<a name="ln420">                  {</a>
+<a name="ln421">                  const ElementDiff* elDiff = static_cast&lt;const ElementDiff*&gt;(diff);</a>
+<a name="ln422">                  for (int i = 0; i &lt; 2; ++i) {</a>
+<a name="ln423">                        if (elDiff-&gt;el[i])</a>
+<a name="ln424">                              el[i] = elDiff-&gt;el[i];</a>
+<a name="ln425">                        else {</a>
+<a name="ln426">                              if (elDiff-&gt;ctx[i]-&gt;isElement() || !elDiff-&gt;before[i])</a>
+<a name="ln427">                                    el[i] = elDiff-&gt;ctx[i];</a>
+<a name="ln428">                              else</a>
+<a name="ln429">                                    el[i] = elDiff-&gt;before[i];</a>
+<a name="ln430">                              select[i] = false;</a>
+<a name="ln431">                              }</a>
+<a name="ln432">                        }</a>
+<a name="ln433">                  }</a>
+<a name="ln434">                  break;</a>
+<a name="ln435">            default:</a>
+<a name="ln436">                  std::copy(diff-&gt;ctx, diff-&gt;ctx + 2, el);</a>
+<a name="ln437">                  break;</a>
+<a name="ln438">            }</a>
+<a name="ln439"> </a>
+<a name="ln440">      showElement(el[0], select[0]);</a>
+<a name="ln441">      showElement(el[1], select[1]);</a>
+<a name="ln442">      }</a>
+<a name="ln443"> </a>
+<a name="ln444">//---------------------------------------------------------</a>
+<a name="ln445">//   ScoreComparisonTool::showElement</a>
+<a name="ln446">//---------------------------------------------------------</a>
+<a name="ln447"> </a>
+<a name="ln448">void ScoreComparisonTool::showElement(const ScoreElement* se, bool select)</a>
+<a name="ln449">      {</a>
+<a name="ln450">      if (!se)</a>
+<a name="ln451">            return;</a>
+<a name="ln452"> </a>
+<a name="ln453">      ScoreView* sv1 = mscore-&gt;getTab1()-&gt;view();</a>
+<a name="ln454">      Score* score1 = (sv1 &amp;&amp; sv1-&gt;isVisible()) ? sv1-&gt;score() : nullptr;</a>
+<a name="ln455">      ScoreView* sv2 = mscore-&gt;getTab2() ? mscore-&gt;getTab2()-&gt;view() : nullptr;</a>
+<a name="ln456">      Score* score2 = (sv2 &amp;&amp; sv2-&gt;isVisible()) ? sv2-&gt;score() : nullptr;</a>
+<a name="ln457">      const Element* e = se-&gt;isElement() ? toElement(se) : nullptr;</a>
+<a name="ln458">      Score* score = se-&gt;score();</a>
+<a name="ln459"> </a>
+<a name="ln460">      score-&gt;deselectAll();</a>
+<a name="ln461">      if (select &amp;&amp; e &amp;&amp; (score1 == score || score2 == score)) {</a>
+<a name="ln462">            Element* el = const_cast&lt;Element*&gt;(e);</a>
+<a name="ln463">            if (el-&gt;isChordRest())</a>
+<a name="ln464">                  score-&gt;select(el, SelectType::RANGE);</a>
+<a name="ln465">            else</a>
+<a name="ln466">                  score-&gt;select(el);</a>
+<a name="ln467">            }</a>
+<a name="ln468"> </a>
+<a name="ln469">      if (score1 == score) {</a>
+<a name="ln470">            bool move = sv1-&gt;moveWhenInactive(true);</a>
+<a name="ln471">            if (e) {</a>
+<a name="ln472">                  sv1-&gt;adjustCanvasPosition(e, false);</a>
+<a name="ln473">                  sv1-&gt;update();</a>
+<a name="ln474">                  }</a>
+<a name="ln475">            sv1-&gt;moveWhenInactive(move);</a>
+<a name="ln476">            }</a>
+<a name="ln477">      if (score2 == score) {</a>
+<a name="ln478">            bool move = sv2-&gt;moveWhenInactive(true);</a>
+<a name="ln479">            if (e) {</a>
+<a name="ln480">                  sv2-&gt;adjustCanvasPosition(e, false);</a>
+<a name="ln481">                  sv2-&gt;update();</a>
+<a name="ln482">                  }</a>
+<a name="ln483">            sv2-&gt;moveWhenInactive(move);</a>
+<a name="ln484">            }</a>
+<a name="ln485">      }</a>
+<a name="ln486"> </a>
+<a name="ln487">//---------------------------------------------------------</a>
+<a name="ln488">//   ScoreComparisonTool::slotWindowSplit</a>
+<a name="ln489">//---------------------------------------------------------</a>
+<a name="ln490"> </a>
+<a name="ln491">void ScoreComparisonTool::slotWindowSplit(bool split)</a>
+<a name="ln492">      {</a>
+<a name="ln493">      ScoreTab* tab1 = mscore-&gt;getTab1();</a>
+<a name="ln494"> </a>
+<a name="ln495">      if (ScoreTab* tab2 = mscore-&gt;getTab2()) {</a>
+<a name="ln496">            if (split) {</a>
+<a name="ln497">                  disconnect(tab1-&gt;getTab(), &amp;QTabBar::currentChanged,</a>
+<a name="ln498">                     _ui-&gt;score2ComboBox, &amp;QComboBox::setCurrentIndex);</a>
+<a name="ln499">                  _ui-&gt;score2ComboBox-&gt;setCurrentIndex(tab2-&gt;currentIndex());</a>
+<a name="ln500">                  connect(tab2-&gt;getTab(), &amp;QTabBar::currentChanged,</a>
+<a name="ln501">                     _ui-&gt;score2ComboBox, &amp;QComboBox::setCurrentIndex,</a>
+<a name="ln502">                     Qt::UniqueConnection</a>
+<a name="ln503">                     );</a>
+<a name="ln504">                  }</a>
+<a name="ln505">            else</a>
+<a name="ln506">                  disconnect(tab2-&gt;getTab(), &amp;QTabBar::currentChanged,</a>
+<a name="ln507">                     _ui-&gt;score2ComboBox, &amp;QComboBox::setCurrentIndex);</a>
+<a name="ln508">            }</a>
+<a name="ln509"> </a>
+<a name="ln510">      if (!split) {</a>
+<a name="ln511">            _ui-&gt;score2ComboBox-&gt;setCurrentIndex(tab1-&gt;currentIndex());</a>
+<a name="ln512">            connect(tab1-&gt;getTab(), &amp;QTabBar::currentChanged,</a>
+<a name="ln513">               _ui-&gt;score2ComboBox, &amp;QComboBox::setCurrentIndex,</a>
+<a name="ln514">               Qt::UniqueConnection</a>
+<a name="ln515">               );</a>
+<a name="ln516">            }</a>
+<a name="ln517">      }</a>
+<a name="ln518">}</a>
+
+</code></pre>
+<div class="balloon" rel="266"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1004/" target="_blank">V1004</a> The 's' pointer was used unsafely after it was verified against nullptr. Check lines: 262, 266.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

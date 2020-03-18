@@ -1,0 +1,1459 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>system.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">/**</a>
+<a name="ln14"> \file</a>
+<a name="ln15"> Implementation of classes SysStaff and System.</a>
+<a name="ln16">*/</a>
+<a name="ln17"> </a>
+<a name="ln18">#include &quot;system.h&quot;</a>
+<a name="ln19">#include &quot;measure.h&quot;</a>
+<a name="ln20">#include &quot;segment.h&quot;</a>
+<a name="ln21">#include &quot;score.h&quot;</a>
+<a name="ln22">#include &quot;sig.h&quot;</a>
+<a name="ln23">#include &quot;key.h&quot;</a>
+<a name="ln24">#include &quot;xml.h&quot;</a>
+<a name="ln25">#include &quot;clef.h&quot;</a>
+<a name="ln26">#include &quot;text.h&quot;</a>
+<a name="ln27">#include &quot;navigate.h&quot;</a>
+<a name="ln28">#include &quot;select.h&quot;</a>
+<a name="ln29">#include &quot;staff.h&quot;</a>
+<a name="ln30">#include &quot;part.h&quot;</a>
+<a name="ln31">#include &quot;page.h&quot;</a>
+<a name="ln32">#include &quot;style.h&quot;</a>
+<a name="ln33">#include &quot;bracket.h&quot;</a>
+<a name="ln34">#include &quot;mscore.h&quot;</a>
+<a name="ln35">#include &quot;barline.h&quot;</a>
+<a name="ln36">#include &quot;system.h&quot;</a>
+<a name="ln37">#include &quot;box.h&quot;</a>
+<a name="ln38">#include &quot;chordrest.h&quot;</a>
+<a name="ln39">#include &quot;iname.h&quot;</a>
+<a name="ln40">#include &quot;spanner.h&quot;</a>
+<a name="ln41">#include &quot;sym.h&quot;</a>
+<a name="ln42">#include &quot;spacer.h&quot;</a>
+<a name="ln43">#include &quot;systemdivider.h&quot;</a>
+<a name="ln44">#include &quot;textframe.h&quot;</a>
+<a name="ln45">#include &quot;stafflines.h&quot;</a>
+<a name="ln46">#include &quot;bracketItem.h&quot;</a>
+<a name="ln47"> </a>
+<a name="ln48">namespace Ms {</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   ~SysStaff</a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53"> </a>
+<a name="ln54">SysStaff::~SysStaff()</a>
+<a name="ln55">      {</a>
+<a name="ln56">      qDeleteAll(instrumentNames);</a>
+<a name="ln57">      }</a>
+<a name="ln58"> </a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60">//   System</a>
+<a name="ln61">//---------------------------------------------------------</a>
+<a name="ln62"> </a>
+<a name="ln63">System::System(Score* s)</a>
+<a name="ln64">   : Element(s)</a>
+<a name="ln65">      {</a>
+<a name="ln66">      }</a>
+<a name="ln67"> </a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69">//   ~System</a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71"> </a>
+<a name="ln72">System::~System()</a>
+<a name="ln73">      {</a>
+<a name="ln74">      for (SpannerSegment* ss : spannerSegments()) {</a>
+<a name="ln75">            if (ss-&gt;system() == this)</a>
+<a name="ln76">                  ss-&gt;setParent(nullptr);</a>
+<a name="ln77">            }</a>
+<a name="ln78">      for (MeasureBase* mb : measures()) {</a>
+<a name="ln79">            if (mb-&gt;system() == this)</a>
+<a name="ln80">                  mb-&gt;setSystem(nullptr);</a>
+<a name="ln81">            }</a>
+<a name="ln82">      qDeleteAll(_staves);</a>
+<a name="ln83">      qDeleteAll(_brackets);</a>
+<a name="ln84">      delete _systemDividerLeft;</a>
+<a name="ln85">      delete _systemDividerRight;</a>
+<a name="ln86">      }</a>
+<a name="ln87"> </a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89">///   clear</a>
+<a name="ln90">///   Clear layout of System</a>
+<a name="ln91">//---------------------------------------------------------</a>
+<a name="ln92"> </a>
+<a name="ln93">void System::clear()</a>
+<a name="ln94">      {</a>
+<a name="ln95">      for (MeasureBase* mb : measures()) {</a>
+<a name="ln96">            if (mb-&gt;system() == this)</a>
+<a name="ln97">                  mb-&gt;setSystem(nullptr);</a>
+<a name="ln98">            }</a>
+<a name="ln99">      ml.clear();</a>
+<a name="ln100">      for (SpannerSegment* ss : _spannerSegments) {</a>
+<a name="ln101">            if (ss-&gt;system() == this)</a>
+<a name="ln102">                  ss-&gt;setParent(0);       // assume parent() is System</a>
+<a name="ln103">            }</a>
+<a name="ln104">      _spannerSegments.clear();</a>
+<a name="ln105">      // _systemDividers are reused</a>
+<a name="ln106">      }</a>
+<a name="ln107"> </a>
+<a name="ln108">//---------------------------------------------------------</a>
+<a name="ln109">//   appendMeasure</a>
+<a name="ln110">//---------------------------------------------------------</a>
+<a name="ln111"> </a>
+<a name="ln112">void System::appendMeasure(MeasureBase* mb)</a>
+<a name="ln113">      {</a>
+<a name="ln114">      Q_ASSERT(!mb-&gt;isMeasure() || !(score()-&gt;styleB(Sid::createMultiMeasureRests) &amp;&amp; toMeasure(mb)-&gt;hasMMRest()));</a>
+<a name="ln115">      mb-&gt;setSystem(this);</a>
+<a name="ln116">      ml.push_back(mb);</a>
+<a name="ln117">      }</a>
+<a name="ln118"> </a>
+<a name="ln119">//---------------------------------------------------------</a>
+<a name="ln120">//   removeMeasure</a>
+<a name="ln121">//---------------------------------------------------------</a>
+<a name="ln122"> </a>
+<a name="ln123">void System::removeMeasure(MeasureBase* mb)</a>
+<a name="ln124">      {</a>
+<a name="ln125">      ml.erase(std::remove(ml.begin(), ml.end(), mb), ml.end());</a>
+<a name="ln126">      if (mb-&gt;system() == this)</a>
+<a name="ln127">            mb-&gt;setSystem(nullptr);</a>
+<a name="ln128">      }</a>
+<a name="ln129"> </a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131">//   removeLastMeasure</a>
+<a name="ln132">//---------------------------------------------------------</a>
+<a name="ln133"> </a>
+<a name="ln134">void System::removeLastMeasure()</a>
+<a name="ln135">      {</a>
+<a name="ln136">      if (ml.empty())</a>
+<a name="ln137">            return;</a>
+<a name="ln138">      MeasureBase* mb = ml.back();</a>
+<a name="ln139">      ml.pop_back();</a>
+<a name="ln140">      if (mb-&gt;system() == this)</a>
+<a name="ln141">            mb-&gt;setSystem(nullptr);</a>
+<a name="ln142">      }</a>
+<a name="ln143"> </a>
+<a name="ln144">//---------------------------------------------------------</a>
+<a name="ln145">//   vbox</a>
+<a name="ln146">//    a system can only contain one vertical frame</a>
+<a name="ln147">//---------------------------------------------------------</a>
+<a name="ln148"> </a>
+<a name="ln149">Box* System::vbox() const</a>
+<a name="ln150">      {</a>
+<a name="ln151">      if (!ml.empty()) {</a>
+<a name="ln152">            if (ml[0]-&gt;isVBox() || ml[0]-&gt;isTBox())</a>
+<a name="ln153">                  return toBox(ml[0]);</a>
+<a name="ln154">            }</a>
+<a name="ln155">      return 0;</a>
+<a name="ln156">      }</a>
+<a name="ln157"> </a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159">//   insertStaff</a>
+<a name="ln160">//---------------------------------------------------------</a>
+<a name="ln161"> </a>
+<a name="ln162">SysStaff* System::insertStaff(int idx)</a>
+<a name="ln163">      {</a>
+<a name="ln164">      SysStaff* staff = new SysStaff;</a>
+<a name="ln165">      if (idx) {</a>
+<a name="ln166">            // HACK: guess position</a>
+<a name="ln167">            staff-&gt;bbox().setY(_staves[idx-1]-&gt;y() + 6 * spatium());</a>
+<a name="ln168">            }</a>
+<a name="ln169">      _staves.insert(idx, staff);</a>
+<a name="ln170">      return staff;</a>
+<a name="ln171">      }</a>
+<a name="ln172"> </a>
+<a name="ln173">//---------------------------------------------------------</a>
+<a name="ln174">//   removeStaff</a>
+<a name="ln175">//---------------------------------------------------------</a>
+<a name="ln176"> </a>
+<a name="ln177">void System::removeStaff(int idx)</a>
+<a name="ln178">      {</a>
+<a name="ln179">      _staves.takeAt(idx);</a>
+<a name="ln180">      }</a>
+<a name="ln181"> </a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183">//   adjustStavesNumber</a>
+<a name="ln184">//---------------------------------------------------------</a>
+<a name="ln185"> </a>
+<a name="ln186">void System::adjustStavesNumber(int nstaves)</a>
+<a name="ln187">      {</a>
+<a name="ln188">      for (int i = _staves.size(); i &lt; nstaves; ++i)</a>
+<a name="ln189">            insertStaff(i);</a>
+<a name="ln190">      const int dn = _staves.size() - nstaves;</a>
+<a name="ln191">      for (int i = 0; i &lt; dn; ++i)</a>
+<a name="ln192">            removeStaff(_staves.size() - 1);</a>
+<a name="ln193">      }</a>
+<a name="ln194"> </a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196">//   layoutSystem</a>
+<a name="ln197">///   Layout the System</a>
+<a name="ln198">//---------------------------------------------------------</a>
+<a name="ln199"> </a>
+<a name="ln200">void System::layoutSystem(qreal xo1)</a>
+<a name="ln201">      {</a>
+<a name="ln202">      if (_staves.empty())                 // ignore vbox</a>
+<a name="ln203">            return;</a>
+<a name="ln204"> </a>
+<a name="ln205">      static const Spatium instrumentNameOffset(1.0);       // TODO: make style value</a>
+<a name="ln206"> </a>
+<a name="ln207">      int nstaves  = _staves.size();</a>
+<a name="ln208"> </a>
+<a name="ln209">      //---------------------------------------------------</a>
+<a name="ln210">      //  find x position of staves</a>
+<a name="ln211">      //    create brackets</a>
+<a name="ln212">      //---------------------------------------------------</a>
+<a name="ln213"> </a>
+<a name="ln214">      qreal xoff2 = 0.0;         // x offset for instrument name</a>
+<a name="ln215"> </a>
+<a name="ln216">      int columns = getBracketsColumnsCount();</a>
+<a name="ln217"> </a>
+<a name="ln218">#if (!defined (_MSCVER) &amp;&amp; !defined (_MSC_VER))</a>
+<a name="ln219">      qreal bracketWidth[columns];</a>
+<a name="ln220">#else</a>
+<a name="ln221">      // MSVC does not support VLA. Replace with std::vector. If profiling determines that the</a>
+<a name="ln222">      //    heap allocation is slow, an optimization might be used.</a>
+<a name="ln223">      std::vector&lt;qreal&gt; bracketWidth(columns);</a>
+<a name="ln224">#endif</a>
+<a name="ln225">      for (int i = 0; i &lt; columns; ++i)</a>
+<a name="ln226">            bracketWidth[i] = 0.0;</a>
+<a name="ln227"> </a>
+<a name="ln228">      QList&lt;Bracket*&gt; bl;</a>
+<a name="ln229">      bl.swap(_brackets);</a>
+<a name="ln230"> </a>
+<a name="ln231">      for (int staffIdx = 0; staffIdx &lt; nstaves; ++staffIdx) {</a>
+<a name="ln232">            Staff* s = score()-&gt;staff(staffIdx);</a>
+<a name="ln233">            for (int i = 0; i &lt; columns; ++i) {</a>
+<a name="ln234">                  for (auto bi : s-&gt;brackets()) {</a>
+<a name="ln235">                        if (bi-&gt;column() != i || bi-&gt;bracketType() == BracketType::NO_BRACKET)</a>
+<a name="ln236">                              continue;</a>
+<a name="ln237">                        Bracket* b = createBracket(bi, i, staffIdx, bl, this-&gt;firstMeasure());</a>
+<a name="ln238">                        if (b != nullptr) bracketWidth[i] = qMax(bracketWidth[i], b-&gt;width());</a>
+<a name="ln239">                        }</a>
+<a name="ln240">                  }</a>
+<a name="ln241">            if (!staff(staffIdx)-&gt;show())</a>
+<a name="ln242">                  continue;</a>
+<a name="ln243">            for (InstrumentName* t : _staves[staffIdx]-&gt;instrumentNames) {</a>
+<a name="ln244">                  t-&gt;layout();</a>
+<a name="ln245">                  qreal w = t-&gt;width() + point(instrumentNameOffset);</a>
+<a name="ln246">                  if (w &gt; xoff2)</a>
+<a name="ln247">                        xoff2 = w;</a>
+<a name="ln248">                  }</a>
+<a name="ln249">            }</a>
+<a name="ln250"> </a>
+<a name="ln251">      for (Bracket* b : bl)</a>
+<a name="ln252">            delete b;</a>
+<a name="ln253"> </a>
+<a name="ln254">      //---------------------------------------------------</a>
+<a name="ln255">      //  layout  SysStaff and StaffLines</a>
+<a name="ln256">      //---------------------------------------------------</a>
+<a name="ln257"> </a>
+<a name="ln258">      _leftMargin = xoff2;</a>
+<a name="ln259"> </a>
+<a name="ln260">      qreal bd = score()-&gt;styleP(Sid::bracketDistance);</a>
+<a name="ln261">      if (!_brackets.empty()) {</a>
+<a name="ln262">            for (int w : bracketWidth)</a>
+<a name="ln263">                  _leftMargin += w + bd;</a>
+<a name="ln264">            }</a>
+<a name="ln265"> </a>
+<a name="ln266">      int nVisible = 0;</a>
+<a name="ln267">      for (int staffIdx = 0; staffIdx &lt; nstaves; ++staffIdx) {</a>
+<a name="ln268">            SysStaff* s  = _staves[staffIdx];</a>
+<a name="ln269">            Staff* staff = score()-&gt;staff(staffIdx);</a>
+<a name="ln270">            if (!staff-&gt;show() || !s-&gt;show()) {</a>
+<a name="ln271">                  s-&gt;setbbox(QRectF());</a>
+<a name="ln272">                  continue;</a>
+<a name="ln273">                  }</a>
+<a name="ln274">            ++nVisible;</a>
+<a name="ln275">            qreal staffMag = staff-&gt;mag(Fraction(0,1));     // ??? TODO</a>
+<a name="ln276">            int staffLines = staff-&gt;lines(Fraction(0,1));</a>
+<a name="ln277">            if (staffLines == 1) {</a>
+<a name="ln278">                  qreal h = staff-&gt;lineDistance(Fraction(0,1)) * staffMag * spatium();</a>
+<a name="ln279">                  s-&gt;bbox().setRect(_leftMargin + xo1, -h, 0.0, 2 * h);</a>
+<a name="ln280">                  }</a>
+<a name="ln281">            else {</a>
+<a name="ln282">                  qreal h = (staffLines - 1) * staff-&gt;lineDistance(Fraction(0,1));</a>
+<a name="ln283">                  h = h * staffMag * spatium();</a>
+<a name="ln284">                  s-&gt;bbox().setRect(_leftMargin + xo1, 0.0, 0.0, h);</a>
+<a name="ln285">                  }</a>
+<a name="ln286">            }</a>
+<a name="ln287"> </a>
+<a name="ln288">      //---------------------------------------------------</a>
+<a name="ln289">      //  layout brackets</a>
+<a name="ln290">      //---------------------------------------------------</a>
+<a name="ln291"> </a>
+<a name="ln292">      setBracketsXPosition(xo1 + _leftMargin);</a>
+<a name="ln293"> </a>
+<a name="ln294">      //---------------------------------------------------</a>
+<a name="ln295">      //  layout instrument names x position</a>
+<a name="ln296">      //---------------------------------------------------</a>
+<a name="ln297"> </a>
+<a name="ln298">      int idx = 0;</a>
+<a name="ln299">      for (const Part* p : score()-&gt;parts()) {</a>
+<a name="ln300">            SysStaff* s = staff(idx);</a>
+<a name="ln301">            if (s-&gt;show() &amp;&amp; p-&gt;show()) {</a>
+<a name="ln302">                  for (InstrumentName* t : s-&gt;instrumentNames) {</a>
+<a name="ln303">                        switch (int(t-&gt;align()) &amp; int(Align::HMASK)) {</a>
+<a name="ln304">                              case int(Align::LEFT):</a>
+<a name="ln305">                                    t-&gt;rxpos() = 0;</a>
+<a name="ln306">                                    break;</a>
+<a name="ln307">                              case int(Align::HCENTER):</a>
+<a name="ln308">                                    t-&gt;rxpos() = (xoff2 - point(instrumentNameOffset) + xo1) * .5;</a>
+<a name="ln309">                                    break;</a>
+<a name="ln310">                              case int(Align::RIGHT):</a>
+<a name="ln311">                              default:</a>
+<a name="ln312">                                    t-&gt;rxpos() = xoff2 - point(instrumentNameOffset) + xo1;</a>
+<a name="ln313">                                    break;</a>
+<a name="ln314">                              }</a>
+<a name="ln315">//                        t-&gt;rxpos() += t-&gt;offset(t-&gt;spatium()).x();</a>
+<a name="ln316">                        }</a>
+<a name="ln317">                  }</a>
+<a name="ln318">            idx += p-&gt;nstaves();</a>
+<a name="ln319">            }</a>
+<a name="ln320">      }</a>
+<a name="ln321"> </a>
+<a name="ln322">//---------------------------------------------------------</a>
+<a name="ln323">//   addBrackets</a>
+<a name="ln324">//   Add brackets in front of this measure, typically behind a HBox</a>
+<a name="ln325">//---------------------------------------------------------</a>
+<a name="ln326"> </a>
+<a name="ln327">void System::addBrackets(Measure* measure)</a>
+<a name="ln328">      {</a>
+<a name="ln329">      if (_staves.empty())                 // ignore vbox</a>
+<a name="ln330">            return;</a>
+<a name="ln331"> </a>
+<a name="ln332">      int nstaves = _staves.size();</a>
+<a name="ln333"> </a>
+<a name="ln334">      //---------------------------------------------------</a>
+<a name="ln335">      //  find x position of staves</a>
+<a name="ln336">      //    create brackets</a>
+<a name="ln337">      //---------------------------------------------------</a>
+<a name="ln338"> </a>
+<a name="ln339">      int columns = getBracketsColumnsCount();</a>
+<a name="ln340"> </a>
+<a name="ln341">      QList&lt;Bracket*&gt; bl;</a>
+<a name="ln342">      bl.swap(_brackets);</a>
+<a name="ln343"> </a>
+<a name="ln344">      for (int staffIdx = 0; staffIdx &lt; nstaves; ++staffIdx) {</a>
+<a name="ln345">            Staff* s = score()-&gt;staff(staffIdx);</a>
+<a name="ln346">            for (int i = 0; i &lt; columns; ++i) {</a>
+<a name="ln347">                  for (auto bi : s-&gt;brackets()) {</a>
+<a name="ln348">                        if (bi-&gt;column() != i || bi-&gt;bracketType() == BracketType::NO_BRACKET)</a>
+<a name="ln349">                              continue;</a>
+<a name="ln350">                        createBracket(bi, i, staffIdx, bl, measure);</a>
+<a name="ln351">                        }</a>
+<a name="ln352">                  }</a>
+<a name="ln353">            if (!staff(staffIdx)-&gt;show())</a>
+<a name="ln354">                  continue;</a>
+<a name="ln355">            }</a>
+<a name="ln356"> </a>
+<a name="ln357">      //---------------------------------------------------</a>
+<a name="ln358">      //  layout brackets</a>
+<a name="ln359">      //---------------------------------------------------</a>
+<a name="ln360"> </a>
+<a name="ln361">      setBracketsXPosition(measure-&gt;x());</a>
+<a name="ln362"> </a>
+<a name="ln363">      _brackets.append(bl);</a>
+<a name="ln364">      }</a>
+<a name="ln365"> </a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367">//   createBracket</a>
+<a name="ln368">//   Create a bracket if it spans more then one visible system</a>
+<a name="ln369">//   If measure is NULL adds the bracket in front of the system, else in front of the measure.</a>
+<a name="ln370">//   Returns the bracket if it got created, else NULL</a>
+<a name="ln371">//---------------------------------------------------------</a>
+<a name="ln372"> </a>
+<a name="ln373">Bracket* System::createBracket(Ms::BracketItem* bi, int column, int staffIdx, QList&lt;Ms::Bracket *&gt;&amp; bl, Measure* measure)</a>
+<a name="ln374">      {</a>
+<a name="ln375">      int nstaves = _staves.size();</a>
+<a name="ln376">      int firstStaff = staffIdx;</a>
+<a name="ln377">      int lastStaff = staffIdx + bi-&gt;bracketSpan() - 1;</a>
+<a name="ln378">      if (lastStaff &gt;= nstaves)</a>
+<a name="ln379">            lastStaff = nstaves - 1;</a>
+<a name="ln380"> </a>
+<a name="ln381">      for (; firstStaff &lt;= lastStaff; ++firstStaff) {</a>
+<a name="ln382">            if (score()-&gt;staff(firstStaff)-&gt;show())</a>
+<a name="ln383">                  break;</a>
+<a name="ln384">            }</a>
+<a name="ln385">      for (; lastStaff &gt;= firstStaff; --lastStaff) {</a>
+<a name="ln386">            if (score()-&gt;staff(lastStaff)-&gt;show())</a>
+<a name="ln387">                  break;</a>
+<a name="ln388">            }</a>
+<a name="ln389">      int span = lastStaff - firstStaff + 1;</a>
+<a name="ln390">      //</a>
+<a name="ln391">      // do not show bracket if it only spans one</a>
+<a name="ln392">      // system due to some invisible staves</a>
+<a name="ln393">      //</a>
+<a name="ln394">      if ((span &gt; 1) || (bi-&gt;bracketSpan() == span)) {</a>
+<a name="ln395">            //</a>
+<a name="ln396">            // this bracket is visible</a>
+<a name="ln397">            //</a>
+<a name="ln398">            Bracket* b = 0;</a>
+<a name="ln399">            int track = staffIdx * VOICES;</a>
+<a name="ln400">            for (int k = 0; k &lt; bl.size(); ++k) {</a>
+<a name="ln401">                  if (bl[k]-&gt;track() == track &amp;&amp; bl[k]-&gt;column() == column &amp;&amp; bl[k]-&gt;bracketType() == bi-&gt;bracketType() &amp;&amp; bl[k]-&gt;measure() == measure) {</a>
+<a name="ln402">                        b = bl.takeAt(k);</a>
+<a name="ln403">                        break;</a>
+<a name="ln404">                        }</a>
+<a name="ln405">                  }</a>
+<a name="ln406">            if (b == 0) {</a>
+<a name="ln407">                  b = new Bracket(score());</a>
+<a name="ln408">                  b-&gt;setBracketItem(bi);</a>
+<a name="ln409">                  b-&gt;setGenerated(true);</a>
+<a name="ln410">                  b-&gt;setTrack(track);</a>
+<a name="ln411">                  b-&gt;setMeasure(measure);</a>
+<a name="ln412">                  }</a>
+<a name="ln413">            add(b);</a>
+<a name="ln414">            b-&gt;setStaffSpan(firstStaff, lastStaff);</a>
+<a name="ln415">            return b;</a>
+<a name="ln416">            }</a>
+<a name="ln417"> </a>
+<a name="ln418">      return nullptr;</a>
+<a name="ln419">      }</a>
+<a name="ln420"> </a>
+<a name="ln421">int System::getBracketsColumnsCount()</a>
+<a name="ln422">      {</a>
+<a name="ln423">      int columns = 0;</a>
+<a name="ln424">      int nstaves = _staves.size();</a>
+<a name="ln425">      for (int idx = 0; idx &lt; nstaves; ++idx) {</a>
+<a name="ln426">            for (auto bi : score()-&gt;staff(idx)-&gt;brackets())</a>
+<a name="ln427">                  columns = qMax(columns, bi-&gt;column() + 1);</a>
+<a name="ln428">            }</a>
+<a name="ln429">      return columns;</a>
+<a name="ln430">      }</a>
+<a name="ln431"> </a>
+<a name="ln432">void System::setBracketsXPosition(const qreal xPosition)</a>
+<a name="ln433">      {</a>
+<a name="ln434">      qreal bracketDistance = score()-&gt;styleP(Sid::bracketDistance);</a>
+<a name="ln435">      for (Bracket* b1 : _brackets) {</a>
+<a name="ln436">            qreal xOffset = 0;</a>
+<a name="ln437">            for (const Bracket* b2 : _brackets) {</a>
+<a name="ln438">                  bool b1FirstStaffInB2 = (b1-&gt;firstStaff() &gt;= b2-&gt;firstStaff() &amp;&amp; b1-&gt;firstStaff() &lt;= b2-&gt;lastStaff());</a>
+<a name="ln439">                  bool b1LastStaffInB2 = (b1-&gt;lastStaff() &gt;= b2-&gt;firstStaff() &amp;&amp; b1-&gt;lastStaff() &lt;= b2-&gt;lastStaff());</a>
+<a name="ln440">                  if (b1-&gt;column() &gt; b2-&gt;column() &amp;&amp; </a>
+<a name="ln441">                        (b1FirstStaffInB2 || b1LastStaffInB2))</a>
+<a name="ln442">                        xOffset += b2-&gt;width() + bracketDistance;</a>
+<a name="ln443">                  }</a>
+<a name="ln444">            b1-&gt;rxpos() = xPosition - xOffset - b1-&gt;width();</a>
+<a name="ln445">            }</a>
+<a name="ln446">      }</a>
+<a name="ln447"> </a>
+<a name="ln448">//---------------------------------------------------------</a>
+<a name="ln449">//   nextVisibleStaff</a>
+<a name="ln450">//---------------------------------------------------------</a>
+<a name="ln451"> </a>
+<a name="ln452">int System::nextVisibleStaff(int staffIdx) const</a>
+<a name="ln453">      {</a>
+<a name="ln454">      int i;</a>
+<a name="ln455">      for (i = staffIdx + 1; i &lt; _staves.size(); ++i) {</a>
+<a name="ln456">            Staff*    s  = score()-&gt;staff(i);</a>
+<a name="ln457">            SysStaff* ss = _staves[i];</a>
+<a name="ln458">            if (s-&gt;show() &amp;&amp; ss-&gt;show())</a>
+<a name="ln459">                  break;</a>
+<a name="ln460">            }</a>
+<a name="ln461">      return i;</a>
+<a name="ln462">      }</a>
+<a name="ln463"> </a>
+<a name="ln464">//---------------------------------------------------------</a>
+<a name="ln465">//   firstVisibleStaff</a>
+<a name="ln466">//---------------------------------------------------------</a>
+<a name="ln467"> </a>
+<a name="ln468">int System::firstVisibleStaff() const</a>
+<a name="ln469">      {</a>
+<a name="ln470">      return nextVisibleStaff(-1);</a>
+<a name="ln471">      }</a>
+<a name="ln472"> </a>
+<a name="ln473">//---------------------------------------------------------</a>
+<a name="ln474">//   layout2</a>
+<a name="ln475">//    called after measure layout</a>
+<a name="ln476">//    adjusts staff distance</a>
+<a name="ln477">//---------------------------------------------------------</a>
+<a name="ln478"> </a>
+<a name="ln479">void System::layout2()</a>
+<a name="ln480">      {</a>
+<a name="ln481">      Box* vb = vbox();</a>
+<a name="ln482">      if (vb) {</a>
+<a name="ln483">            vb-&gt;layout();</a>
+<a name="ln484">            setbbox(vb-&gt;bbox());</a>
+<a name="ln485">            return;</a>
+<a name="ln486">            }</a>
+<a name="ln487"> </a>
+<a name="ln488">      setPos(0.0, 0.0);</a>
+<a name="ln489">      QList&lt;std::pair&lt;int,SysStaff*&gt;&gt; visibleStaves;</a>
+<a name="ln490"> </a>
+<a name="ln491">      for (int i = 0; i &lt; _staves.size(); ++i) {</a>
+<a name="ln492">            Staff*    s  = score()-&gt;staff(i);</a>
+<a name="ln493">            SysStaff* ss = _staves[i];</a>
+<a name="ln494">            if (s-&gt;show() &amp;&amp; ss-&gt;show())</a>
+<a name="ln495">                  visibleStaves.append(std::pair&lt;int,SysStaff*&gt;(i, ss));</a>
+<a name="ln496">            else</a>
+<a name="ln497">                  ss-&gt;setbbox(QRectF());  // already done in layout() ?</a>
+<a name="ln498">            }</a>
+<a name="ln499"> </a>
+<a name="ln500">      qreal _spatium            = spatium();</a>
+<a name="ln501">      qreal y                   = 0.0;</a>
+<a name="ln502">      qreal minVerticalDistance = score()-&gt;styleP(Sid::minVerticalDistance);</a>
+<a name="ln503">      qreal staffDistance       = score()-&gt;styleP(Sid::staffDistance);</a>
+<a name="ln504">      qreal akkoladeDistance    = score()-&gt;styleP(Sid::akkoladeDistance);</a>
+<a name="ln505"> </a>
+<a name="ln506">      if (visibleStaves.empty()) {</a>
+<a name="ln507">            qDebug(&quot;====no visible staves, staves %d, score staves %d&quot;, _staves.size(), score()-&gt;nstaves());</a>
+<a name="ln508">            return;</a>
+<a name="ln509">            }</a>
+<a name="ln510"> </a>
+<a name="ln511">      for (auto i = visibleStaves.begin();; ++i) {</a>
+<a name="ln512">            SysStaff* ss  = i-&gt;second;</a>
+<a name="ln513">            int si1       = i-&gt;first;</a>
+<a name="ln514">            Staff* staff  = score()-&gt;staff(si1);</a>
+<a name="ln515">            auto ni       = i + 1;</a>
+<a name="ln516"> </a>
+<a name="ln517">            qreal h = staff-&gt;height();</a>
+<a name="ln518">            if (ni == visibleStaves.end()) {</a>
+<a name="ln519">//                  ss-&gt;setYOff(staff-&gt;lines(0) == 1 ? _spatium * staff-&gt;mag(0) : 0.0);</a>
+<a name="ln520">                  ss-&gt;setYOff(0.0);</a>
+<a name="ln521">                  ss-&gt;bbox().setRect(_leftMargin, y, width() - _leftMargin, h);</a>
+<a name="ln522">                  break;</a>
+<a name="ln523">                  }</a>
+<a name="ln524"> </a>
+<a name="ln525">            int si2        = ni-&gt;first;</a>
+<a name="ln526">            Staff* staff2  = score()-&gt;staff(si2);</a>
+<a name="ln527">            qreal dist     = h;</a>
+<a name="ln528"> </a>
+<a name="ln529">#if 1</a>
+<a name="ln530">            if (staff-&gt;part() == staff2-&gt;part()) {</a>
+<a name="ln531">                  Measure* m = firstMeasure();</a>
+<a name="ln532">                  qreal mag = m ? staff-&gt;mag(m-&gt;tick()) : 1.0;</a>
+<a name="ln533">                  dist += akkoladeDistance * mag;</a>
+<a name="ln534">                  }</a>
+<a name="ln535">            else {</a>
+<a name="ln536">                  dist += staffDistance;</a>
+<a name="ln537">                  }</a>
+<a name="ln538">#else</a>
+<a name="ln539">            // TODO: provide style setting or brace property to allow braces to also define a grand staff</a>
+<a name="ln540">            switch (staff2-&gt;innerBracket()) {</a>
+<a name="ln541">                  case BracketType::BRACE:</a>
+<a name="ln542">                        dist += akkoladeDistance;</a>
+<a name="ln543">                        break;</a>
+<a name="ln544">                  case BracketType::NORMAL:</a>
+<a name="ln545">                  case BracketType::SQUARE:</a>
+<a name="ln546">                  case BracketType::LINE:</a>
+<a name="ln547">                  case BracketType::NO_BRACKET:</a>
+<a name="ln548">                        dist += staffDistance;</a>
+<a name="ln549">                        break;</a>
+<a name="ln550">                  }</a>
+<a name="ln551">#endif</a>
+<a name="ln552">            dist += staff2-&gt;userDist();</a>
+<a name="ln553">#if 0</a>
+<a name="ln554">            for (MeasureBase* mb : ml) {</a>
+<a name="ln555">                  if (!mb-&gt;isMeasure())</a>
+<a name="ln556">                        continue;</a>
+<a name="ln557">                  Measure* m = toMeasure(mb);</a>
+<a name="ln558">                  Shape&amp; s1  = m-&gt;staffShape(si1);</a>
+<a name="ln559">                  Shape&amp; s2  = m-&gt;staffShape(si2);</a>
+<a name="ln560"> </a>
+<a name="ln561">                  qreal d    = score()-&gt;lineMode() ? 0.0 : s1.minVerticalDistance(s2);</a>
+<a name="ln562">                  dist       = qMax(dist, d + minVerticalDistance);</a>
+<a name="ln563"> </a>
+<a name="ln564">                  Spacer* sp = m-&gt;vspacerDown(si1);</a>
+<a name="ln565">                  if (sp) {</a>
+<a name="ln566">                        if (sp-&gt;spacerType() == SpacerType::FIXED) {</a>
+<a name="ln567">                              dist = staff-&gt;height() + sp-&gt;gap();</a>
+<a name="ln568">                              break;</a>
+<a name="ln569">                              }</a>
+<a name="ln570">                        else</a>
+<a name="ln571">                              dist = qMax(dist, staff-&gt;height() + sp-&gt;gap());</a>
+<a name="ln572">                        }</a>
+<a name="ln573">                  sp = m-&gt;vspacerUp(si2);</a>
+<a name="ln574">                  if (sp)</a>
+<a name="ln575">                        dist = qMax(dist, sp-&gt;gap());</a>
+<a name="ln576">                  }</a>
+<a name="ln577">#else</a>
+<a name="ln578">            bool fixedSpace = false;</a>
+<a name="ln579">            for (MeasureBase* mb : ml) {</a>
+<a name="ln580">                  if (!mb-&gt;isMeasure())</a>
+<a name="ln581">                        continue;</a>
+<a name="ln582">                  Measure* m = toMeasure(mb);</a>
+<a name="ln583">                  Spacer* sp = m-&gt;vspacerDown(si1);</a>
+<a name="ln584">                  if (sp) {</a>
+<a name="ln585">                        if (sp-&gt;spacerType() == SpacerType::FIXED) {</a>
+<a name="ln586">                              dist = staff-&gt;height() + sp-&gt;gap();</a>
+<a name="ln587">                              fixedSpace = true;</a>
+<a name="ln588">                              break;</a>
+<a name="ln589">                              }</a>
+<a name="ln590">                        else</a>
+<a name="ln591">                              dist = qMax(dist, staff-&gt;height() + sp-&gt;gap());</a>
+<a name="ln592">                        }</a>
+<a name="ln593">                  sp = m-&gt;vspacerUp(si2);</a>
+<a name="ln594">                  if (sp)</a>
+<a name="ln595">                        dist = qMax(dist, sp-&gt;gap() + h);</a>
+<a name="ln596">                  }</a>
+<a name="ln597">            if (!fixedSpace) {</a>
+<a name="ln598">                  qreal d = score()-&gt;lineMode() ? 0.0 : ss-&gt;skyline().minDistance(System::staff(si2)-&gt;skyline());</a>
+<a name="ln599">                  dist = qMax(dist, d + minVerticalDistance);</a>
+<a name="ln600">                  }</a>
+<a name="ln601">#endif</a>
+<a name="ln602"> </a>
+<a name="ln603">//            ss-&gt;setYOff(staff-&gt;lines(0) == 1 ? _spatium * staff-&gt;mag(0) : 0.0);</a>
+<a name="ln604">            ss-&gt;setYOff(0.0);</a>
+<a name="ln605">            ss-&gt;bbox().setRect(_leftMargin, y, width() - _leftMargin, h);</a>
+<a name="ln606">            y += dist;</a>
+<a name="ln607">            }</a>
+<a name="ln608"> </a>
+<a name="ln609">      qreal systemHeight = staff(visibleStaves.back().first)-&gt;bbox().bottom();</a>
+<a name="ln610">      setHeight(systemHeight);</a>
+<a name="ln611"> </a>
+<a name="ln612">      for (MeasureBase* m : ml) {</a>
+<a name="ln613">            if (m-&gt;isMeasure()) {</a>
+<a name="ln614">                  // note that the factor 2 * _spatium must be corrected for when exporting</a>
+<a name="ln615">                  // system distance in MusicXML (issue #24733)</a>
+<a name="ln616">                  m-&gt;bbox().setRect(0.0, -_spatium, m-&gt;width(), systemHeight + 2.0 * _spatium);</a>
+<a name="ln617">                  }</a>
+<a name="ln618">            else if (m-&gt;isHBox()) {</a>
+<a name="ln619">                  m-&gt;bbox().setRect(0.0, 0.0, m-&gt;width(), systemHeight);</a>
+<a name="ln620">                  toHBox(m)-&gt;layout2();</a>
+<a name="ln621">                  }</a>
+<a name="ln622">            else if (m-&gt;isTBox()) {</a>
+<a name="ln623">//                  m-&gt;bbox().setRect(0.0, 0.0, m-&gt;width(), systemHeight);</a>
+<a name="ln624">                  toTBox(m)-&gt;layout();</a>
+<a name="ln625">                  }</a>
+<a name="ln626">            else</a>
+<a name="ln627">                  qDebug(&quot;unhandled measure type %s&quot;, m-&gt;name());</a>
+<a name="ln628">            }</a>
+<a name="ln629"> </a>
+<a name="ln630">      //---------------------------------------------------</a>
+<a name="ln631">      //  layout brackets vertical position</a>
+<a name="ln632">      //---------------------------------------------------</a>
+<a name="ln633"> </a>
+<a name="ln634">      for (Bracket* b : _brackets) {</a>
+<a name="ln635">            int staffIdx1 = b-&gt;firstStaff();</a>
+<a name="ln636">            int staffIdx2 = b-&gt;lastStaff();</a>
+<a name="ln637">            qreal sy = 0;                       // assume bracket not visible</a>
+<a name="ln638">            qreal ey = 0;</a>
+<a name="ln639">            // if start staff not visible, try next staff</a>
+<a name="ln640">            while (staffIdx1 &lt;= staffIdx2 &amp;&amp; !_staves[staffIdx1]-&gt;show())</a>
+<a name="ln641">                  ++staffIdx1;</a>
+<a name="ln642">            // if end staff not visible, try prev staff</a>
+<a name="ln643">            while (staffIdx1 &lt;= staffIdx2 &amp;&amp; !_staves[staffIdx2]-&gt;show())</a>
+<a name="ln644">                  --staffIdx2;</a>
+<a name="ln645">            // the bracket will be shown IF:</a>
+<a name="ln646">            // it spans at least 2 visible staves (staffIdx1 &lt; staffIdx2) OR</a>
+<a name="ln647">            // it spans just one visible staff (staffIdx1 == staffIdx2) but it is required to do so</a>
+<a name="ln648">            // (the second case happens at least when the bracket is initially dropped)</a>
+<a name="ln649">            bool notHidden = (staffIdx1 &lt; staffIdx2) || (b-&gt;span() == 1 &amp;&amp; staffIdx1 == staffIdx2);</a>
+<a name="ln650">            if (notHidden) {                    // set vert. pos. and height to visible spanned staves</a>
+<a name="ln651">                  sy = _staves[staffIdx1]-&gt;bbox().top();</a>
+<a name="ln652">                  ey = _staves[staffIdx2]-&gt;bbox().bottom();</a>
+<a name="ln653">                  }</a>
+<a name="ln654">            b-&gt;rypos() = sy;</a>
+<a name="ln655">            b-&gt;setHeight(ey - sy);</a>
+<a name="ln656">            b-&gt;layout();</a>
+<a name="ln657">            }</a>
+<a name="ln658"> </a>
+<a name="ln659">      //---------------------------------------------------</a>
+<a name="ln660">      //  layout instrument names</a>
+<a name="ln661">      //---------------------------------------------------</a>
+<a name="ln662"> </a>
+<a name="ln663">      int staffIdx = 0;</a>
+<a name="ln664"> </a>
+<a name="ln665">      for (Part* p : score()-&gt;parts()) {</a>
+<a name="ln666">            SysStaff* s = staff(staffIdx);</a>
+<a name="ln667">            SysStaff* s2;</a>
+<a name="ln668">            int nstaves = p-&gt;nstaves();</a>
+<a name="ln669">            if (s-&gt;show()) {</a>
+<a name="ln670">                  for (InstrumentName* t : s-&gt;instrumentNames) {</a>
+<a name="ln671">                        //</a>
+<a name="ln672">                        // override Text-&gt;layout()</a>
+<a name="ln673">                        //</a>
+<a name="ln674">                        qreal y1, y2;</a>
+<a name="ln675">                        switch (t-&gt;layoutPos()) {</a>
+<a name="ln676">                              default:</a>
+<a name="ln677">                              case 0:           // center at part</a>
+<a name="ln678">                                    y1 = s-&gt;bbox().top();</a>
+<a name="ln679">                                    s2 = staff(staffIdx);</a>
+<a name="ln680">                                    for (int i = staffIdx + nstaves - 1; i &gt; 0; --i) {</a>
+<a name="ln681">                                          SysStaff* s3 = staff(i);</a>
+<a name="ln682">                                          if (s3-&gt;show()) {</a>
+<a name="ln683">                                                s2 = s3;</a>
+<a name="ln684">                                                break;</a>
+<a name="ln685">                                                }</a>
+<a name="ln686">                                          }</a>
+<a name="ln687">                                    y2 = s2-&gt;bbox().bottom();</a>
+<a name="ln688">                                    break;</a>
+<a name="ln689">                              case 1:           // center at first staff</a>
+<a name="ln690">                                    y1 = s-&gt;bbox().top();</a>
+<a name="ln691">                                    y2 = s-&gt;bbox().bottom();</a>
+<a name="ln692">                                    break;</a>
+<a name="ln693"> </a>
+<a name="ln694">                              // TODO:</a>
+<a name="ln695">                              // sort out invisible staves</a>
+<a name="ln696"> </a>
+<a name="ln697">                              case 2:           // center between first and second staff</a>
+<a name="ln698">                                    y1 = s-&gt;bbox().top();</a>
+<a name="ln699">                                    y2 = staff(staffIdx + 1)-&gt;bbox().bottom();</a>
+<a name="ln700">                                    break;</a>
+<a name="ln701">                              case 3:           // center at second staff</a>
+<a name="ln702">                                    y1 = staff(staffIdx + 1)-&gt;bbox().top();</a>
+<a name="ln703">                                    y2 = staff(staffIdx + 1)-&gt;bbox().bottom();</a>
+<a name="ln704">                                    break;</a>
+<a name="ln705">                              case 4:           // center between first and second staff</a>
+<a name="ln706">                                    y1 = staff(staffIdx + 1)-&gt;bbox().top();</a>
+<a name="ln707">                                    y2 = staff(staffIdx + 2)-&gt;bbox().bottom();</a>
+<a name="ln708">                                    break;</a>
+<a name="ln709">                              case 5:           // center at third staff</a>
+<a name="ln710">                                    y1 = staff(staffIdx + 2)-&gt;bbox().top();</a>
+<a name="ln711">                                    y2 = staff(staffIdx + 2)-&gt;bbox().bottom();</a>
+<a name="ln712">                                    break;</a>
+<a name="ln713">                              }</a>
+<a name="ln714">                        t-&gt;rypos() = y1 + (y2 - y1) * .5 + t-&gt;offset().y();</a>
+<a name="ln715">                        }</a>
+<a name="ln716">                  }</a>
+<a name="ln717">            staffIdx += nstaves;</a>
+<a name="ln718">            }</a>
+<a name="ln719"> </a>
+<a name="ln720">      //---------------------------------------------------</a>
+<a name="ln721">      //  layout cross-staff slurs and ties</a>
+<a name="ln722">      //---------------------------------------------------</a>
+<a name="ln723"> </a>
+<a name="ln724">      Fraction stick = measures().front()-&gt;tick();</a>
+<a name="ln725">      Fraction etick = measures().back()-&gt;endTick();</a>
+<a name="ln726">      auto spanners = score()-&gt;spannerMap().findOverlapping(stick.ticks(), etick.ticks());</a>
+<a name="ln727"> </a>
+<a name="ln728">      std::vector&lt;Spanner*&gt; spanner;</a>
+<a name="ln729">      for (auto interval : spanners) {</a>
+<a name="ln730">            Spanner* sp = interval.value;</a>
+<a name="ln731">            if (sp-&gt;tick() &lt; etick &amp;&amp; sp-&gt;tick2() &gt;= stick) {</a>
+<a name="ln732">                  if (sp-&gt;isSlur()) {</a>
+<a name="ln733">                        ChordRest* scr = sp-&gt;startCR();</a>
+<a name="ln734">                        ChordRest* ecr = sp-&gt;endCR();</a>
+<a name="ln735">                        int idx = sp-&gt;vStaffIdx();</a>
+<a name="ln736">                        if (scr &amp;&amp; ecr &amp;&amp; (scr-&gt;vStaffIdx() != idx || ecr-&gt;vStaffIdx() != idx))</a>
+<a name="ln737">                              sp-&gt;layoutSystem(this);</a>
+<a name="ln738">                        }</a>
+<a name="ln739">                  }</a>
+<a name="ln740">            }</a>
+<a name="ln741"> </a>
+<a name="ln742">      }</a>
+<a name="ln743"> </a>
+<a name="ln744">//---------------------------------------------------------</a>
+<a name="ln745">//   setInstrumentNames</a>
+<a name="ln746">//---------------------------------------------------------</a>
+<a name="ln747"> </a>
+<a name="ln748">void System::setInstrumentNames(bool longName, Fraction tick)</a>
+<a name="ln749">      {</a>
+<a name="ln750">      //</a>
+<a name="ln751">      // remark: add/remove instrument names is not undo/redoable</a>
+<a name="ln752">      //         as add/remove of systems is not undoable</a>
+<a name="ln753">      //</a>
+<a name="ln754">      if (vbox())                 // ignore vbox</a>
+<a name="ln755">            return;</a>
+<a name="ln756">      if (!score()-&gt;showInstrumentNames()</a>
+<a name="ln757">              || (score()-&gt;styleB(Sid::hideInstrumentNameIfOneInstrument) &amp;&amp; score()-&gt;parts().size() == 1)) {</a>
+<a name="ln758">            for (SysStaff* staff : _staves) {</a>
+<a name="ln759">                  foreach (InstrumentName* t, staff-&gt;instrumentNames)</a>
+<a name="ln760">                        score()-&gt;removeElement(t);</a>
+<a name="ln761">                  }</a>
+<a name="ln762">            return;</a>
+<a name="ln763">            }</a>
+<a name="ln764"> </a>
+<a name="ln765">      int staffIdx = 0;</a>
+<a name="ln766">      for (SysStaff* staff : _staves) {</a>
+<a name="ln767">            Staff* s = score()-&gt;staff(staffIdx);</a>
+<a name="ln768">            if (!s-&gt;isTop() || !s-&gt;show()) {</a>
+<a name="ln769">                  for (InstrumentName* t : staff-&gt;instrumentNames)</a>
+<a name="ln770">                        score()-&gt;removeElement(t);</a>
+<a name="ln771">                  ++staffIdx;</a>
+<a name="ln772">                  continue;</a>
+<a name="ln773">                  }</a>
+<a name="ln774"> </a>
+<a name="ln775">            Part* part = s-&gt;part();</a>
+<a name="ln776">            const QList&lt;StaffName&gt;&amp; names = longName? part-&gt;longNames(tick) : part-&gt;shortNames(tick);</a>
+<a name="ln777"> </a>
+<a name="ln778">            int idx = 0;</a>
+<a name="ln779">            for (const StaffName&amp; sn : names) {</a>
+<a name="ln780">                  InstrumentName* iname = staff-&gt;instrumentNames.value(idx);</a>
+<a name="ln781">                  if (iname == 0) {</a>
+<a name="ln782">                        iname = new InstrumentName(score());</a>
+<a name="ln783">                        // iname-&gt;setGenerated(true);</a>
+<a name="ln784">                        iname-&gt;setParent(this);</a>
+<a name="ln785">                        iname-&gt;setTrack(staffIdx * VOICES);</a>
+<a name="ln786">                        iname-&gt;setInstrumentNameType(longName ? InstrumentNameType::LONG : InstrumentNameType::SHORT);</a>
+<a name="ln787">                        iname-&gt;setLayoutPos(sn.pos());</a>
+<a name="ln788">                        score()-&gt;addElement(iname);</a>
+<a name="ln789">                        }</a>
+<a name="ln790">                  iname-&gt;setXmlText(sn.name());</a>
+<a name="ln791">                  ++idx;</a>
+<a name="ln792">                  }</a>
+<a name="ln793">            for (; idx &lt; staff-&gt;instrumentNames.size(); ++idx)</a>
+<a name="ln794">                  score()-&gt;removeElement(staff-&gt;instrumentNames[idx]);</a>
+<a name="ln795">            ++staffIdx;</a>
+<a name="ln796">            }</a>
+<a name="ln797">      }</a>
+<a name="ln798"> </a>
+<a name="ln799">//---------------------------------------------------------</a>
+<a name="ln800">//   y2staff</a>
+<a name="ln801">//---------------------------------------------------------</a>
+<a name="ln802"> </a>
+<a name="ln803">/**</a>
+<a name="ln804"> Return staff number for canvas relative y position \a y</a>
+<a name="ln805"> or -1 if not found.</a>
+<a name="ln806"> </a>
+<a name="ln807"> To allow drag and drop above and below the staff, the actual y range</a>
+<a name="ln808"> considered &quot;inside&quot; the staff is increased by &quot;margin&quot;.</a>
+<a name="ln809">*/</a>
+<a name="ln810"> </a>
+<a name="ln811">int System::y2staff(qreal y) const</a>
+<a name="ln812">      {</a>
+<a name="ln813">      y -= pos().y();</a>
+<a name="ln814">      int idx = 0;</a>
+<a name="ln815">      qreal margin = spatium() * 2;</a>
+<a name="ln816">      foreach (SysStaff* s, _staves) {</a>
+<a name="ln817">            qreal y1 = s-&gt;bbox().top()    - margin;</a>
+<a name="ln818">            qreal y2 = s-&gt;bbox().bottom() + margin;</a>
+<a name="ln819">            if (y &gt;= y1 &amp;&amp; y &lt; y2)</a>
+<a name="ln820">                  return idx;</a>
+<a name="ln821">            ++idx;</a>
+<a name="ln822">            }</a>
+<a name="ln823">      return -1;</a>
+<a name="ln824">      }</a>
+<a name="ln825"> </a>
+<a name="ln826">//---------------------------------------------------------</a>
+<a name="ln827">//   add</a>
+<a name="ln828">//---------------------------------------------------------</a>
+<a name="ln829"> </a>
+<a name="ln830">void System::add(Element* el)</a>
+<a name="ln831">      {</a>
+<a name="ln832">      if (!el)</a>
+<a name="ln833">            return;</a>
+<a name="ln834">// qDebug(&quot;%p System::add: %p %s&quot;, this, el, el-&gt;name());</a>
+<a name="ln835"> </a>
+<a name="ln836">      el-&gt;setParent(this);</a>
+<a name="ln837">      switch(el-&gt;type()) {</a>
+<a name="ln838">            case ElementType::INSTRUMENT_NAME:</a>
+<a name="ln839">// qDebug(&quot;  staffIdx %d, staves %d&quot;, el-&gt;staffIdx(), _staves.size());</a>
+<a name="ln840">                  _staves[el-&gt;staffIdx()]-&gt;instrumentNames.append(toInstrumentName(el));</a>
+<a name="ln841">                  break;</a>
+<a name="ln842"> </a>
+<a name="ln843">            case ElementType::BEAM:</a>
+<a name="ln844">                  score()-&gt;addElement(el);</a>
+<a name="ln845">                  break;</a>
+<a name="ln846"> </a>
+<a name="ln847">            case ElementType::BRACKET: {</a>
+<a name="ln848">                  Bracket* b   = toBracket(el);</a>
+<a name="ln849">#if 0</a>
+<a name="ln850">                  int staffIdx = b-&gt;staffIdx();</a>
+<a name="ln851">                  int column   = b-&gt;column();</a>
+<a name="ln852">                  if (column == -1) {</a>
+<a name="ln853">                        column = 0;</a>
+<a name="ln854">                        for (const Bracket* bb : _brackets) {</a>
+<a name="ln855">                              if (staffIdx &gt;= bb-&gt;firstStaff() &amp;&amp; staffIdx &lt;= bb-&gt;lastStaff())</a>
+<a name="ln856">                                    ++column;</a>
+<a name="ln857">                              }</a>
+<a name="ln858">//                        b-&gt;setLevel(column);</a>
+<a name="ln859">//                        b-&gt;setSpan(1);</a>
+<a name="ln860">                        }</a>
+<a name="ln861">//                  b-&gt;staff()-&gt;setBracket(column,     b-&gt;bracketType());</a>
+<a name="ln862">//                  b-&gt;staff()-&gt;setBracketSpan(column, b-&gt;span());</a>
+<a name="ln863">#endif</a>
+<a name="ln864">                  _brackets.append(b);</a>
+<a name="ln865">                  }</a>
+<a name="ln866">                  break;</a>
+<a name="ln867"> </a>
+<a name="ln868">            case ElementType::MEASURE:</a>
+<a name="ln869">            case ElementType::HBOX:</a>
+<a name="ln870">            case ElementType::VBOX:</a>
+<a name="ln871">            case ElementType::TBOX:</a>
+<a name="ln872">            case ElementType::FBOX:</a>
+<a name="ln873">                  score()-&gt;addElement(el);</a>
+<a name="ln874">                  break;</a>
+<a name="ln875">            case ElementType::TEXTLINE_SEGMENT:</a>
+<a name="ln876">            case ElementType::HAIRPIN_SEGMENT:</a>
+<a name="ln877">            case ElementType::OTTAVA_SEGMENT:</a>
+<a name="ln878">            case ElementType::TRILL_SEGMENT:</a>
+<a name="ln879">            case ElementType::VIBRATO_SEGMENT:</a>
+<a name="ln880">            case ElementType::VOLTA_SEGMENT:</a>
+<a name="ln881">            case ElementType::SLUR_SEGMENT:</a>
+<a name="ln882">            case ElementType::TIE_SEGMENT:</a>
+<a name="ln883">            case ElementType::PEDAL_SEGMENT:</a>
+<a name="ln884">            case ElementType::LYRICSLINE_SEGMENT:</a>
+<a name="ln885">            case ElementType::GLISSANDO_SEGMENT:</a>
+<a name="ln886">            case ElementType::LET_RING_SEGMENT:</a>
+<a name="ln887">            case ElementType::PALM_MUTE_SEGMENT:</a>
+<a name="ln888">                  {</a>
+<a name="ln889">                  SpannerSegment* ss = toSpannerSegment(el);</a>
+<a name="ln890">#ifndef NDEBUG</a>
+<a name="ln891">                  if (_spannerSegments.contains(ss))</a>
+<a name="ln892">                        qDebug(&quot;System::add() %s %p already there&quot;, ss-&gt;name(), ss);</a>
+<a name="ln893">                  else</a>
+<a name="ln894">#endif</a>
+<a name="ln895">                  _spannerSegments.append(ss);</a>
+<a name="ln896">                  }</a>
+<a name="ln897">                  break;</a>
+<a name="ln898"> </a>
+<a name="ln899">            case ElementType::SYSTEM_DIVIDER:</a>
+<a name="ln900">                  {</a>
+<a name="ln901">                  SystemDivider* sd = toSystemDivider(el);</a>
+<a name="ln902">                  if (sd-&gt;dividerType() == SystemDivider::Type::LEFT)</a>
+<a name="ln903">                        _systemDividerLeft = sd;</a>
+<a name="ln904">                  else</a>
+<a name="ln905">                        _systemDividerRight = sd;</a>
+<a name="ln906">                  }</a>
+<a name="ln907">                  break;</a>
+<a name="ln908"> </a>
+<a name="ln909">            default:</a>
+<a name="ln910">                  qDebug(&quot;System::add(%s) not implemented&quot;, el-&gt;name());</a>
+<a name="ln911">                  break;</a>
+<a name="ln912">            }</a>
+<a name="ln913">      }</a>
+<a name="ln914"> </a>
+<a name="ln915">//---------------------------------------------------------</a>
+<a name="ln916">//   remove</a>
+<a name="ln917">//---------------------------------------------------------</a>
+<a name="ln918"> </a>
+<a name="ln919">void System::remove(Element* el)</a>
+<a name="ln920">      {</a>
+<a name="ln921">      switch (el-&gt;type()) {</a>
+<a name="ln922">            case ElementType::INSTRUMENT_NAME:</a>
+<a name="ln923">                  _staves[el-&gt;staffIdx()]-&gt;instrumentNames.removeOne(toInstrumentName(el));</a>
+<a name="ln924">                  break;</a>
+<a name="ln925">            case ElementType::BEAM:</a>
+<a name="ln926">                  score()-&gt;removeElement(el);</a>
+<a name="ln927">                  break;</a>
+<a name="ln928">            case ElementType::BRACKET:</a>
+<a name="ln929">                  {</a>
+<a name="ln930">                  Bracket* b = toBracket(el);</a>
+<a name="ln931">                  if (!_brackets.removeOne(b))</a>
+<a name="ln932">                        qDebug(&quot;System::remove: bracket not found&quot;);</a>
+<a name="ln933">                  }</a>
+<a name="ln934">                  break;</a>
+<a name="ln935">            case ElementType::MEASURE:</a>
+<a name="ln936">            case ElementType::HBOX:</a>
+<a name="ln937">            case ElementType::VBOX:</a>
+<a name="ln938">            case ElementType::TBOX:</a>
+<a name="ln939">            case ElementType::FBOX:</a>
+<a name="ln940">                  score()-&gt;removeElement(el);</a>
+<a name="ln941">                  break;</a>
+<a name="ln942">            case ElementType::TEXTLINE_SEGMENT:</a>
+<a name="ln943">            case ElementType::HAIRPIN_SEGMENT:</a>
+<a name="ln944">            case ElementType::OTTAVA_SEGMENT:</a>
+<a name="ln945">            case ElementType::TRILL_SEGMENT:</a>
+<a name="ln946">            case ElementType::VIBRATO_SEGMENT:</a>
+<a name="ln947">            case ElementType::VOLTA_SEGMENT:</a>
+<a name="ln948">            case ElementType::SLUR_SEGMENT:</a>
+<a name="ln949">            case ElementType::TIE_SEGMENT:</a>
+<a name="ln950">            case ElementType::PEDAL_SEGMENT:</a>
+<a name="ln951">            case ElementType::LYRICSLINE_SEGMENT:</a>
+<a name="ln952">            case ElementType::GLISSANDO_SEGMENT:</a>
+<a name="ln953">                  if (!_spannerSegments.removeOne(toSpannerSegment(el))) {</a>
+<a name="ln954">                        qDebug(&quot;System::remove: %p(%s) not found, score %p&quot;, el, el-&gt;name(), score());</a>
+<a name="ln955">                        Q_ASSERT(score() == el-&gt;score());</a>
+<a name="ln956">                        }</a>
+<a name="ln957">                  break;</a>
+<a name="ln958">            case ElementType::SYSTEM_DIVIDER:</a>
+<a name="ln959">                  if (el == _systemDividerLeft)</a>
+<a name="ln960">                        _systemDividerLeft = 0;</a>
+<a name="ln961">                  else {</a>
+<a name="ln962">                        Q_ASSERT(_systemDividerRight == el);</a>
+<a name="ln963">                        _systemDividerRight = 0;</a>
+<a name="ln964">                        }</a>
+<a name="ln965">                  break;</a>
+<a name="ln966"> </a>
+<a name="ln967">            default:</a>
+<a name="ln968">                  qDebug(&quot;System::remove(%s) not implemented&quot;, el-&gt;name());</a>
+<a name="ln969">                  break;</a>
+<a name="ln970">            }</a>
+<a name="ln971">      }</a>
+<a name="ln972"> </a>
+<a name="ln973">//---------------------------------------------------------</a>
+<a name="ln974">//   change</a>
+<a name="ln975">//---------------------------------------------------------</a>
+<a name="ln976"> </a>
+<a name="ln977">void System::change(Element* o, Element* n)</a>
+<a name="ln978">      {</a>
+<a name="ln979">      remove(o);</a>
+<a name="ln980">      add(n);</a>
+<a name="ln981">      }</a>
+<a name="ln982"> </a>
+<a name="ln983">//---------------------------------------------------------</a>
+<a name="ln984">//   snap</a>
+<a name="ln985">//---------------------------------------------------------</a>
+<a name="ln986"> </a>
+<a name="ln987">Fraction System::snap(const Fraction&amp; tick, const QPointF p) const</a>
+<a name="ln988">      {</a>
+<a name="ln989">      for (const MeasureBase* m : ml) {</a>
+<a name="ln990">            if (p.x() &lt; m-&gt;x() + m-&gt;width())</a>
+<a name="ln991">                  return toMeasure(m)-&gt;snap(tick, p - m-&gt;pos()); //TODO: MeasureBase</a>
+<a name="ln992">            }</a>
+<a name="ln993">      return toMeasure(ml.back())-&gt;snap(tick, p-pos());          //TODO: MeasureBase</a>
+<a name="ln994">      }</a>
+<a name="ln995"> </a>
+<a name="ln996">//---------------------------------------------------------</a>
+<a name="ln997">//   snap</a>
+<a name="ln998">//---------------------------------------------------------</a>
+<a name="ln999"> </a>
+<a name="ln1000">Fraction System::snapNote(const Fraction&amp; tick, const QPointF p, int staff) const</a>
+<a name="ln1001">      {</a>
+<a name="ln1002">      for (const MeasureBase* m : ml) {</a>
+<a name="ln1003">            if (p.x() &lt; m-&gt;x() + m-&gt;width())</a>
+<a name="ln1004">                  return toMeasure(m)-&gt;snapNote(tick, p - m-&gt;pos(), staff);  //TODO: MeasureBase</a>
+<a name="ln1005">            }</a>
+<a name="ln1006">      return toMeasure(ml.back())-&gt;snap(tick, p-pos());          // TODO: MeasureBase</a>
+<a name="ln1007">      }</a>
+<a name="ln1008"> </a>
+<a name="ln1009">//---------------------------------------------------------</a>
+<a name="ln1010">//   firstMeasure</a>
+<a name="ln1011">//---------------------------------------------------------</a>
+<a name="ln1012"> </a>
+<a name="ln1013">Measure* System::firstMeasure() const</a>
+<a name="ln1014">      {</a>
+<a name="ln1015">      auto i = std::find_if(ml.begin(), ml.end(), [](MeasureBase* mb){ return mb-&gt;isMeasure(); });</a>
+<a name="ln1016">      return i != ml.end() ? toMeasure(*i) : 0;</a>
+<a name="ln1017">      }</a>
+<a name="ln1018"> </a>
+<a name="ln1019">//---------------------------------------------------------</a>
+<a name="ln1020">//   lastMeasure</a>
+<a name="ln1021">//---------------------------------------------------------</a>
+<a name="ln1022"> </a>
+<a name="ln1023">Measure* System::lastMeasure() const</a>
+<a name="ln1024">      {</a>
+<a name="ln1025">      auto i = std::find_if(ml.rbegin(), ml.rend(), [](MeasureBase* mb){return mb-&gt;isMeasure();});</a>
+<a name="ln1026">      return i != ml.rend() ? toMeasure(*i) : 0;</a>
+<a name="ln1027">      }</a>
+<a name="ln1028"> </a>
+<a name="ln1029">//---------------------------------------------------------</a>
+<a name="ln1030">//   nextMeasure</a>
+<a name="ln1031">//---------------------------------------------------------</a>
+<a name="ln1032"> </a>
+<a name="ln1033">MeasureBase* System::nextMeasure(const MeasureBase* m) const</a>
+<a name="ln1034">      {</a>
+<a name="ln1035">      if (m == ml.back())</a>
+<a name="ln1036">            return 0;</a>
+<a name="ln1037">      MeasureBase* nm = m-&gt;next();</a>
+<a name="ln1038">      if (nm-&gt;isMeasure() &amp;&amp; score()-&gt;styleB(Sid::createMultiMeasureRests) &amp;&amp; toMeasure(nm)-&gt;hasMMRest())</a>
+<a name="ln1039">            nm = toMeasure(nm)-&gt;mmRest();</a>
+<a name="ln1040">      return nm;</a>
+<a name="ln1041">      }</a>
+<a name="ln1042"> </a>
+<a name="ln1043">//---------------------------------------------------------</a>
+<a name="ln1044">//   scanElements</a>
+<a name="ln1045">//    collect all visible elements</a>
+<a name="ln1046">//---------------------------------------------------------</a>
+<a name="ln1047"> </a>
+<a name="ln1048">void System::scanElements(void* data, void (*func)(void*, Element*), bool all)</a>
+<a name="ln1049">      {</a>
+<a name="ln1050">      if (vbox())</a>
+<a name="ln1051">            return;</a>
+<a name="ln1052">      for (Bracket* b : _brackets)</a>
+<a name="ln1053">            func(data, b);</a>
+<a name="ln1054"> </a>
+<a name="ln1055">      if (_systemDividerLeft)</a>
+<a name="ln1056">            func(data, _systemDividerLeft);</a>
+<a name="ln1057">      if (_systemDividerRight)</a>
+<a name="ln1058">            func(data, _systemDividerRight);</a>
+<a name="ln1059"> </a>
+<a name="ln1060">      int idx = 0;</a>
+<a name="ln1061">      for (const SysStaff* st : _staves) {</a>
+<a name="ln1062">            if (all || st-&gt;show()) {</a>
+<a name="ln1063">                  for (InstrumentName* t : st-&gt;instrumentNames)</a>
+<a name="ln1064">                        func(data, t);</a>
+<a name="ln1065">                  }</a>
+<a name="ln1066">            ++idx;</a>
+<a name="ln1067">            }</a>
+<a name="ln1068">      for (SpannerSegment* ss : _spannerSegments) {</a>
+<a name="ln1069">            int staffIdx = ss-&gt;spanner()-&gt;staffIdx();</a>
+<a name="ln1070">            if (staffIdx == -1) {</a>
+<a name="ln1071">                  qDebug(&quot;System::scanElements: staffIDx == -1: %s %p&quot;, ss-&gt;spanner()-&gt;name(), ss-&gt;spanner());</a>
+<a name="ln1072">                  staffIdx = 0;</a>
+<a name="ln1073">                  }</a>
+<a name="ln1074">            bool v = true;</a>
+<a name="ln1075">            Spanner* spanner = ss-&gt;spanner();</a>
+<a name="ln1076">            if (spanner-&gt;anchor() == Spanner::Anchor::SEGMENT || spanner-&gt;anchor() == Spanner::Anchor::CHORD) {</a>
+<a name="ln1077">                  Element* se = spanner-&gt;startElement();</a>
+<a name="ln1078">                  Element* ee = spanner-&gt;endElement();</a>
+<a name="ln1079">                  bool v1 = true;</a>
+<a name="ln1080">                  if (se &amp;&amp; se-&gt;isChordRest()) {</a>
+<a name="ln1081">                        ChordRest* cr = toChordRest(se);</a>
+<a name="ln1082">                        Measure* m    = cr-&gt;measure();</a>
+<a name="ln1083">                        v1            = m-&gt;visible(cr-&gt;staffIdx());</a>
+<a name="ln1084">                        }</a>
+<a name="ln1085">                  bool v2 = true;</a>
+<a name="ln1086">                  if (!v1 &amp;&amp; ee &amp;&amp; ee-&gt;isChordRest()) {</a>
+<a name="ln1087">                        ChordRest* cr = toChordRest(ee);</a>
+<a name="ln1088">                        Measure* m    = cr-&gt;measure();</a>
+<a name="ln1089">                        v2            = m-&gt;visible(cr-&gt;staffIdx());</a>
+<a name="ln1090">                        }</a>
+<a name="ln1091">                  v = v1 || v2; // hide spanner if both chords are hidden</a>
+<a name="ln1092">                  }</a>
+<a name="ln1093">            if (all || (score()-&gt;staff(staffIdx)-&gt;show() &amp;&amp; _staves[staffIdx]-&gt;show() &amp;&amp; v) || spanner-&gt;isVolta())</a>
+<a name="ln1094">                  ss-&gt;scanElements(data, func, all);</a>
+<a name="ln1095">            }</a>
+<a name="ln1096">      }</a>
+<a name="ln1097"> </a>
+<a name="ln1098">//---------------------------------------------------------</a>
+<a name="ln1099">//   staffYpage</a>
+<a name="ln1100">//    return page coordinates</a>
+<a name="ln1101">//---------------------------------------------------------</a>
+<a name="ln1102"> </a>
+<a name="ln1103">qreal System::staffYpage(int staffIdx) const</a>
+<a name="ln1104">      {</a>
+<a name="ln1105">      if (_staves.size() &lt;= staffIdx || staffIdx &lt; 0) {</a>
+<a name="ln1106">            qFatal(&quot;staffY: staves %d: bad staffIdx %d&quot;, _staves.size(), staffIdx);</a>
+<a name="ln1107">            return pagePos().y();</a>
+<a name="ln1108">            }</a>
+<a name="ln1109">      return _staves[staffIdx]-&gt;y() + y();</a>
+<a name="ln1110">      }</a>
+<a name="ln1111"> </a>
+<a name="ln1112">//---------------------------------------------------------</a>
+<a name="ln1113">//   staffCanvasYpage</a>
+<a name="ln1114">//    return canvas coordinates</a>
+<a name="ln1115">//---------------------------------------------------------</a>
+<a name="ln1116"> </a>
+<a name="ln1117">qreal System::staffCanvasYpage(int staffIdx) const</a>
+<a name="ln1118">      {</a>
+<a name="ln1119">      return _staves[staffIdx]-&gt;y() + y() + page()-&gt;canvasPos().y();</a>
+<a name="ln1120">      }</a>
+<a name="ln1121"> </a>
+<a name="ln1122">//---------------------------------------------------------</a>
+<a name="ln1123">//   write</a>
+<a name="ln1124">//---------------------------------------------------------</a>
+<a name="ln1125"> </a>
+<a name="ln1126">void System::write(XmlWriter&amp; xml) const</a>
+<a name="ln1127">      {</a>
+<a name="ln1128">      xml.stag(this);</a>
+<a name="ln1129">      if (_systemDividerLeft &amp;&amp; _systemDividerLeft-&gt;isUserModified())</a>
+<a name="ln1130">            _systemDividerLeft-&gt;write(xml);</a>
+<a name="ln1131">      if (_systemDividerRight &amp;&amp; _systemDividerRight-&gt;isUserModified())</a>
+<a name="ln1132">            _systemDividerRight-&gt;write(xml);</a>
+<a name="ln1133">      xml.etag();</a>
+<a name="ln1134">      }</a>
+<a name="ln1135"> </a>
+<a name="ln1136">//---------------------------------------------------------</a>
+<a name="ln1137">//   read</a>
+<a name="ln1138">//---------------------------------------------------------</a>
+<a name="ln1139"> </a>
+<a name="ln1140">void System::read(XmlReader&amp; e)</a>
+<a name="ln1141">      {</a>
+<a name="ln1142">      while (e.readNextStartElement()) {</a>
+<a name="ln1143">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1144">            if (tag == &quot;SystemDivider&quot;) {</a>
+<a name="ln1145">                  SystemDivider* sd = new SystemDivider(score());</a>
+<a name="ln1146">                  sd-&gt;read(e);</a>
+<a name="ln1147">                  add(sd);</a>
+<a name="ln1148">                  }</a>
+<a name="ln1149">            else</a>
+<a name="ln1150">                  e.unknown();</a>
+<a name="ln1151">            }</a>
+<a name="ln1152">      }</a>
+<a name="ln1153"> </a>
+<a name="ln1154">//---------------------------------------------------------</a>
+<a name="ln1155">//   nextSegmentElement</a>
+<a name="ln1156">//---------------------------------------------------------</a>
+<a name="ln1157"> </a>
+<a name="ln1158">Element* System::nextSegmentElement()</a>
+<a name="ln1159">      {</a>
+<a name="ln1160">      Measure* m = firstMeasure();</a>
+<a name="ln1161">      if (m) {</a>
+<a name="ln1162">            Segment* firstSeg = m-&gt;segments().first();</a>
+<a name="ln1163">            if (firstSeg)</a>
+<a name="ln1164">                  return firstSeg-&gt;element(0);</a>
+<a name="ln1165">            }</a>
+<a name="ln1166">      return score()-&gt;lastElement();</a>
+<a name="ln1167">      }</a>
+<a name="ln1168"> </a>
+<a name="ln1169">//---------------------------------------------------------</a>
+<a name="ln1170">//   prevSegmentElement</a>
+<a name="ln1171">//---------------------------------------------------------</a>
+<a name="ln1172"> </a>
+<a name="ln1173">Element* System::prevSegmentElement()</a>
+<a name="ln1174">      {</a>
+<a name="ln1175">      Segment* seg = firstMeasure()-&gt;first();</a>
+<a name="ln1176">      Element* re = 0;</a>
+<a name="ln1177">      while (!re) {</a>
+<a name="ln1178">            seg = seg-&gt;prev1MM();</a>
+<a name="ln1179">            if (!seg)</a>
+<a name="ln1180">                  return score()-&gt;firstElement();</a>
+<a name="ln1181"> </a>
+<a name="ln1182">            if (seg-&gt;segmentType() == SegmentType::EndBarLine)</a>
+<a name="ln1183">                  score()-&gt;inputState().setTrack((score()-&gt;staves().size() - 1) * VOICES); //correction</a>
+<a name="ln1184"> </a>
+<a name="ln1185">            re = seg-&gt;lastElement(score()-&gt;staves().size() - 1);</a>
+<a name="ln1186">            }</a>
+<a name="ln1187">      return re;</a>
+<a name="ln1188">      }</a>
+<a name="ln1189"> </a>
+<a name="ln1190">//---------------------------------------------------------</a>
+<a name="ln1191">//   minDistance</a>
+<a name="ln1192">//    Return the minimum distance between this system and s2</a>
+<a name="ln1193">//    without any element collisions.</a>
+<a name="ln1194">//</a>
+<a name="ln1195">//    this - top system</a>
+<a name="ln1196">//    s2   - bottom system</a>
+<a name="ln1197">//---------------------------------------------------------</a>
+<a name="ln1198"> </a>
+<a name="ln1199">qreal System::minDistance(System* s2) const</a>
+<a name="ln1200">      {</a>
+<a name="ln1201">      if (vbox() &amp;&amp; !s2-&gt;vbox())</a>
+<a name="ln1202">            return qMax(vbox()-&gt;bottomGap(), s2-&gt;minTop());</a>
+<a name="ln1203">      else if (!vbox() &amp;&amp; s2-&gt;vbox())</a>
+<a name="ln1204">            return qMax(s2-&gt;vbox()-&gt;topGap(), minBottom());</a>
+<a name="ln1205">      else if (vbox() &amp;&amp; s2-&gt;vbox())</a>
+<a name="ln1206">            return s2-&gt;vbox()-&gt;topGap() + vbox()-&gt;bottomGap();</a>
+<a name="ln1207"> </a>
+<a name="ln1208">      qreal minVerticalDistance = score()-&gt;styleP(Sid::minVerticalDistance);</a>
+<a name="ln1209">      qreal dist                = score()-&gt;styleP(Sid::minSystemDistance);</a>
+<a name="ln1210">      int firstStaff;</a>
+<a name="ln1211">      int lastStaff;</a>
+<a name="ln1212"> </a>
+<a name="ln1213">      for (firstStaff = 0; firstStaff &lt; _staves.size()-1; ++firstStaff) {</a>
+<a name="ln1214">            if (score()-&gt;staff(firstStaff)-&gt;show() &amp;&amp; s2-&gt;staff(firstStaff)-&gt;show())</a>
+<a name="ln1215">                  break;</a>
+<a name="ln1216">            }</a>
+<a name="ln1217">      for (lastStaff = _staves.size() -1; lastStaff &gt; 0; --lastStaff) {</a>
+<a name="ln1218">            if (score()-&gt;staff(lastStaff)-&gt;show() &amp;&amp; staff(lastStaff)-&gt;show())</a>
+<a name="ln1219">                  break;</a>
+<a name="ln1220">            }</a>
+<a name="ln1221"> </a>
+<a name="ln1222">      dist = qMax(dist, score()-&gt;staff(firstStaff)-&gt;userDist());</a>
+<a name="ln1223">      fixedDownDistance = false;</a>
+<a name="ln1224"> </a>
+<a name="ln1225">      for (MeasureBase* mb1 : ml) {</a>
+<a name="ln1226">            if (mb1-&gt;isMeasure()) {</a>
+<a name="ln1227">                  Measure* m = toMeasure(mb1);</a>
+<a name="ln1228">                  Spacer* sp = m-&gt;vspacerDown(lastStaff);</a>
+<a name="ln1229">                  if (sp) {</a>
+<a name="ln1230">                        if (sp-&gt;spacerType() == SpacerType::FIXED) {</a>
+<a name="ln1231">                              dist = sp-&gt;gap();</a>
+<a name="ln1232">                              fixedDownDistance = true;</a>
+<a name="ln1233">                              break;</a>
+<a name="ln1234">                              }</a>
+<a name="ln1235">                        else</a>
+<a name="ln1236">                              dist = qMax(dist, sp-&gt;gap());</a>
+<a name="ln1237">                        }</a>
+<a name="ln1238">                  }</a>
+<a name="ln1239">            }</a>
+<a name="ln1240">      if (!fixedDownDistance) {</a>
+<a name="ln1241">            for (MeasureBase* mb2 : s2-&gt;ml) {</a>
+<a name="ln1242">                  if (mb2-&gt;isMeasure()) {</a>
+<a name="ln1243">                        Measure* m = toMeasure(mb2);</a>
+<a name="ln1244">                        Spacer* sp = m-&gt;vspacerUp(firstStaff);</a>
+<a name="ln1245">                        if (sp)</a>
+<a name="ln1246">                              dist = qMax(dist, sp-&gt;gap());</a>
+<a name="ln1247">                        }</a>
+<a name="ln1248">                  }</a>
+<a name="ln1249">            qreal sld = staff(lastStaff)-&gt;skyline().minDistance(s2-&gt;staff(firstStaff)-&gt;skyline());</a>
+<a name="ln1250">            sld -=  staff(lastStaff)-&gt;bbox().height() - minVerticalDistance;</a>
+<a name="ln1251">            dist = qMax(dist, sld);</a>
+<a name="ln1252">//            dist = dist - staff(lastStaff)-&gt;bbox().height() + minVerticalDistance;</a>
+<a name="ln1253">            }</a>
+<a name="ln1254">      return dist;</a>
+<a name="ln1255">      }</a>
+<a name="ln1256"> </a>
+<a name="ln1257">//---------------------------------------------------------</a>
+<a name="ln1258">//   topDistance</a>
+<a name="ln1259">//    return minimum distance to the above south skyline</a>
+<a name="ln1260">//---------------------------------------------------------</a>
+<a name="ln1261"> </a>
+<a name="ln1262">qreal System::topDistance(int staffIdx, const SkylineLine&amp; s) const</a>
+<a name="ln1263">      {</a>
+<a name="ln1264">      Q_ASSERT(!vbox());</a>
+<a name="ln1265">      Q_ASSERT(!s.isNorth());</a>
+<a name="ln1266">      if (score()-&gt;lineMode())</a>
+<a name="ln1267">            return 0.0;</a>
+<a name="ln1268">      return s.minDistance(staff(staffIdx)-&gt;skyline().north());</a>
+<a name="ln1269">      }</a>
+<a name="ln1270"> </a>
+<a name="ln1271">//---------------------------------------------------------</a>
+<a name="ln1272">//   bottomDistance</a>
+<a name="ln1273">//---------------------------------------------------------</a>
+<a name="ln1274"> </a>
+<a name="ln1275">qreal System::bottomDistance(int staffIdx, const SkylineLine&amp; s) const</a>
+<a name="ln1276">      {</a>
+<a name="ln1277">      Q_ASSERT(!vbox());</a>
+<a name="ln1278">      Q_ASSERT(s.isNorth());</a>
+<a name="ln1279">      if (score()-&gt;lineMode())</a>
+<a name="ln1280">            return 0.0;</a>
+<a name="ln1281">      return staff(staffIdx)-&gt;skyline().south().minDistance(s);</a>
+<a name="ln1282">      }</a>
+<a name="ln1283"> </a>
+<a name="ln1284">//---------------------------------------------------------</a>
+<a name="ln1285">//   firstVisibleSysStaff</a>
+<a name="ln1286">//---------------------------------------------------------</a>
+<a name="ln1287"> </a>
+<a name="ln1288">int System::firstVisibleSysStaff() const</a>
+<a name="ln1289">      {</a>
+<a name="ln1290">      int nstaves = _staves.size();</a>
+<a name="ln1291">      for (int i = 0; i &lt; nstaves; ++i) {</a>
+<a name="ln1292">            if (_staves[i]-&gt;show())</a>
+<a name="ln1293">                  return i;</a>
+<a name="ln1294">            }</a>
+<a name="ln1295">      qDebug(&quot;no sys staff&quot;);</a>
+<a name="ln1296">      return -1;</a>
+<a name="ln1297">      }</a>
+<a name="ln1298"> </a>
+<a name="ln1299">//---------------------------------------------------------</a>
+<a name="ln1300">//   lastVisibleSysStaff</a>
+<a name="ln1301">//---------------------------------------------------------</a>
+<a name="ln1302"> </a>
+<a name="ln1303">int System::lastVisibleSysStaff() const</a>
+<a name="ln1304">      {</a>
+<a name="ln1305">      int nstaves = _staves.size();</a>
+<a name="ln1306">      for (int i = nstaves - 1; i &gt;= 0; --i) {</a>
+<a name="ln1307">            if (_staves[i]-&gt;show())</a>
+<a name="ln1308">                  return i;</a>
+<a name="ln1309">            }</a>
+<a name="ln1310">      qDebug(&quot;no sys staff&quot;);</a>
+<a name="ln1311">      return -1;</a>
+<a name="ln1312">      }</a>
+<a name="ln1313"> </a>
+<a name="ln1314">//---------------------------------------------------------</a>
+<a name="ln1315">//   minTop</a>
+<a name="ln1316">//    Return the minimum top margin.</a>
+<a name="ln1317">//---------------------------------------------------------</a>
+<a name="ln1318"> </a>
+<a name="ln1319">qreal System::minTop() const</a>
+<a name="ln1320">      {</a>
+<a name="ln1321">      int si = firstVisibleSysStaff();</a>
+<a name="ln1322">      SysStaff* s = si &lt; 0 ? nullptr : staff(si);</a>
+<a name="ln1323">      if (s)</a>
+<a name="ln1324">            return -s-&gt;skyline().north().max();</a>
+<a name="ln1325">      return 0.0;</a>
+<a name="ln1326">      }</a>
+<a name="ln1327"> </a>
+<a name="ln1328">//---------------------------------------------------------</a>
+<a name="ln1329">//   minBottom</a>
+<a name="ln1330">//    Return the minimum bottom margin.</a>
+<a name="ln1331">//---------------------------------------------------------</a>
+<a name="ln1332"> </a>
+<a name="ln1333">qreal System::minBottom() const</a>
+<a name="ln1334">      {</a>
+<a name="ln1335">      if (vbox())</a>
+<a name="ln1336">            return vbox()-&gt;bottomGap();</a>
+<a name="ln1337">      int si = lastVisibleSysStaff();</a>
+<a name="ln1338">      SysStaff* s = si &lt; 0 ? nullptr : staff(si);</a>
+<a name="ln1339">      if (s)</a>
+<a name="ln1340">            return s-&gt;skyline().south().max() - s-&gt;bbox().height();</a>
+<a name="ln1341">      return 0.0;</a>
+<a name="ln1342">      }</a>
+<a name="ln1343"> </a>
+<a name="ln1344">//---------------------------------------------------------</a>
+<a name="ln1345">//   spacerDistance</a>
+<a name="ln1346">//    Return the distance needed due to spacers</a>
+<a name="ln1347">//---------------------------------------------------------</a>
+<a name="ln1348"> </a>
+<a name="ln1349">qreal System::spacerDistance(bool up) const</a>
+<a name="ln1350">      {</a>
+<a name="ln1351">      int staff = up ? firstVisibleSysStaff() : lastVisibleSysStaff();</a>
+<a name="ln1352">      if (staff &lt; 0)</a>
+<a name="ln1353">            return 0.0;</a>
+<a name="ln1354">      qreal dist = 0.0;</a>
+<a name="ln1355">      for (MeasureBase* mb : measures()) {</a>
+<a name="ln1356">            if (mb-&gt;isMeasure()) {</a>
+<a name="ln1357">                  Measure* m = toMeasure(mb);</a>
+<a name="ln1358">                  Spacer* sp = up ? m-&gt;vspacerUp(staff) : m-&gt;vspacerDown(staff);</a>
+<a name="ln1359">                  if (sp) {</a>
+<a name="ln1360">                        if (sp-&gt;spacerType() == SpacerType::FIXED) {</a>
+<a name="ln1361">                              dist = sp-&gt;gap();</a>
+<a name="ln1362">                              break;</a>
+<a name="ln1363">                              }</a>
+<a name="ln1364">                        else</a>
+<a name="ln1365">                              dist = qMax(dist, sp-&gt;gap());</a>
+<a name="ln1366">                        }</a>
+<a name="ln1367">                  }</a>
+<a name="ln1368">            }</a>
+<a name="ln1369">      return dist;</a>
+<a name="ln1370">      }</a>
+<a name="ln1371"> </a>
+<a name="ln1372">//---------------------------------------------------------</a>
+<a name="ln1373">//   moveBracket</a>
+<a name="ln1374">//---------------------------------------------------------</a>
+<a name="ln1375"> </a>
+<a name="ln1376">void System::moveBracket(int /*staffIdx*/, int /*srcCol*/, int /*dstCol*/)</a>
+<a name="ln1377">      {</a>
+<a name="ln1378">#if 0</a>
+<a name="ln1379">printf(&quot;System::moveBracket\n&quot;);</a>
+<a name="ln1380">      if (vbox())</a>
+<a name="ln1381">            return;</a>
+<a name="ln1382">      for (Bracket* b : _brackets) {</a>
+<a name="ln1383">            if (b-&gt;staffIdx() == staffIdx &amp;&amp; b-&gt;column() == srcCol)</a>
+<a name="ln1384">                  b-&gt;setLevel(dstCol);</a>
+<a name="ln1385">            }</a>
+<a name="ln1386">#endif</a>
+<a name="ln1387">      }</a>
+<a name="ln1388"> </a>
+<a name="ln1389">//---------------------------------------------------------</a>
+<a name="ln1390">//   pageBreak</a>
+<a name="ln1391">//---------------------------------------------------------</a>
+<a name="ln1392"> </a>
+<a name="ln1393">bool System::pageBreak() const</a>
+<a name="ln1394">      {</a>
+<a name="ln1395">      return  ml.empty() ? false : ml.back()-&gt;pageBreak();</a>
+<a name="ln1396">      }</a>
+<a name="ln1397"> </a>
+<a name="ln1398">//---------------------------------------------------------</a>
+<a name="ln1399">//   endTick</a>
+<a name="ln1400">//---------------------------------------------------------</a>
+<a name="ln1401"> </a>
+<a name="ln1402">Fraction System::endTick() const</a>
+<a name="ln1403">      {</a>
+<a name="ln1404">      return measures().back()-&gt;endTick();</a>
+<a name="ln1405">      }</a>
+<a name="ln1406">}</a>
+<a name="ln1407"> </a>
+
+</code></pre>
+<div class="balloon" rel="627"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="910"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="844"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 844, 873</p></div>
+<div class="balloon" rel="968"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="926"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 926, 940</p></div>
+<div class="balloon" rel="63"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _distance.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,598 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>editlyrics.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2017 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;musescore.h&quot;</a>
+<a name="ln14">#include &quot;scoreview.h&quot;</a>
+<a name="ln15">#include &quot;texttools.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/chordrest.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/lyrics.h&quot;</a>
+<a name="ln18">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln19">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln20">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">namespace Ms {</a>
+<a name="ln23"> </a>
+<a name="ln24">//---------------------------------------------------------</a>
+<a name="ln25">//   editKeyLyrics</a>
+<a name="ln26">//    return true if key is handled</a>
+<a name="ln27">//---------------------------------------------------------</a>
+<a name="ln28"> </a>
+<a name="ln29">bool ScoreView::editKeyLyrics()</a>
+<a name="ln30">      {</a>
+<a name="ln31">      Q_ASSERT(editData.element-&gt;isLyrics());</a>
+<a name="ln32"> </a>
+<a name="ln33">      const bool textEditing = true;</a>
+<a name="ln34">      switch (editData.key) {</a>
+<a name="ln35">            case Qt::Key_Space:</a>
+<a name="ln36">                  if (!editData.control(textEditing)) {</a>
+<a name="ln37">                        if (editData.s == &quot;_&quot;)</a>
+<a name="ln38">                              lyricsUnderscore();</a>
+<a name="ln39">                        else // TODO: shift+tab events are filtered by qt</a>
+<a name="ln40">                              lyricsTab(editData.modifiers &amp; Qt::ShiftModifier, true, false);</a>
+<a name="ln41">                        }</a>
+<a name="ln42">                  else</a>
+<a name="ln43">                        return false;</a>
+<a name="ln44">                  break;</a>
+<a name="ln45"> </a>
+<a name="ln46">            case Qt::Key_Left:</a>
+<a name="ln47">            case Qt::Key_Right:</a>
+<a name="ln48">                  if (!editData.control(textEditing) &amp;&amp; editData.element-&gt;edit(editData))</a>
+<a name="ln49">                        mscore-&gt;textTools()-&gt;updateTools(editData);</a>
+<a name="ln50">                  else {</a>
+<a name="ln51">                        bool kl = editData.key == Qt::Key_Left;</a>
+<a name="ln52">                        lyricsTab(kl, kl, true);      // go to previous/next lyrics</a>
+<a name="ln53">                        }</a>
+<a name="ln54">                  break;</a>
+<a name="ln55"> </a>
+<a name="ln56">            case Qt::Key_Up:</a>
+<a name="ln57">            case Qt::Key_Down:</a>
+<a name="ln58">                  lyricsUpDown(editData.key == Qt::Key_Up, true);</a>
+<a name="ln59">                  break;</a>
+<a name="ln60"> </a>
+<a name="ln61">            case Qt::Key_Return:</a>
+<a name="ln62">                  lyricsReturn();</a>
+<a name="ln63">                  break;</a>
+<a name="ln64"> </a>
+<a name="ln65">            case Qt::Key_Minus:</a>
+<a name="ln66">                  if (editData.control(textEditing)) {</a>
+<a name="ln67">                        // change into normal minus</a>
+<a name="ln68">                        editData.modifiers &amp;= ~CONTROL_MODIFIER;</a>
+<a name="ln69">                        return false;</a>
+<a name="ln70">                        }</a>
+<a name="ln71">                  else</a>
+<a name="ln72">                        lyricsMinus();</a>
+<a name="ln73">                  break;</a>
+<a name="ln74"> </a>
+<a name="ln75">            case Qt::Key_Underscore:</a>
+<a name="ln76">                  if (editData.control(textEditing)) {</a>
+<a name="ln77">                        // change into normal underscore</a>
+<a name="ln78">                        editData.modifiers = 0; // &amp;= ~CONTROL_MODIFIER;</a>
+<a name="ln79">                        return false;</a>
+<a name="ln80">                        }</a>
+<a name="ln81">                  else</a>
+<a name="ln82">                        lyricsUnderscore();</a>
+<a name="ln83">                  break;</a>
+<a name="ln84"> </a>
+<a name="ln85">            default:</a>
+<a name="ln86">                  return false;</a>
+<a name="ln87">            }</a>
+<a name="ln88">      return true;</a>
+<a name="ln89">      }</a>
+<a name="ln90"> </a>
+<a name="ln91">//---------------------------------------------------------</a>
+<a name="ln92">//   lyricsUpDown</a>
+<a name="ln93">//---------------------------------------------------------</a>
+<a name="ln94"> </a>
+<a name="ln95">void ScoreView::lyricsUpDown(bool up, bool end)</a>
+<a name="ln96">      {</a>
+<a name="ln97">      Lyrics* lyrics       = toLyrics(editData.element);</a>
+<a name="ln98">      int track            = lyrics-&gt;track();</a>
+<a name="ln99">      ChordRest* cr        = lyrics-&gt;chordRest();</a>
+<a name="ln100">      int verse            = lyrics-&gt;no();</a>
+<a name="ln101">      Placement placement  = lyrics-&gt;placement();</a>
+<a name="ln102">      PropertyFlags pFlags = lyrics-&gt;propertyFlags(Pid::PLACEMENT);</a>
+<a name="ln103"> </a>
+<a name="ln104">      if (up) {</a>
+<a name="ln105">            if (verse == 0)</a>
+<a name="ln106">                  return;</a>
+<a name="ln107">            --verse;</a>
+<a name="ln108">            }</a>
+<a name="ln109">      else {</a>
+<a name="ln110">            ++verse;</a>
+<a name="ln111">            if (verse &gt; cr-&gt;lastVerse(placement))</a>
+<a name="ln112">                  return;</a>
+<a name="ln113">            }</a>
+<a name="ln114"> </a>
+<a name="ln115">      changeState(ViewState::NORMAL);</a>
+<a name="ln116">      lyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln117">      if (!lyrics) {</a>
+<a name="ln118">            lyrics = new Lyrics(_score);</a>
+<a name="ln119">            lyrics-&gt;setTrack(track);</a>
+<a name="ln120">            lyrics-&gt;setParent(cr);</a>
+<a name="ln121">            lyrics-&gt;setNo(verse);</a>
+<a name="ln122">            lyrics-&gt;setPlacement(placement);</a>
+<a name="ln123">            lyrics-&gt;setPropertyFlags(Pid::PLACEMENT, pFlags);</a>
+<a name="ln124">            _score-&gt;startCmd();</a>
+<a name="ln125">            _score-&gt;undoAddElement(lyrics);</a>
+<a name="ln126">            _score-&gt;endCmd();</a>
+<a name="ln127">            }</a>
+<a name="ln128"> </a>
+<a name="ln129">      _score-&gt;select(lyrics, SelectType::SINGLE, 0);</a>
+<a name="ln130">      startEdit(lyrics, Grip::NO_GRIP);</a>
+<a name="ln131">      mscore-&gt;changeState(mscoreState());</a>
+<a name="ln132">      adjustCanvasPosition(lyrics, false);</a>
+<a name="ln133"> </a>
+<a name="ln134">      lyrics = toLyrics(editData.element);</a>
+<a name="ln135">      TextCursor* cursor = lyrics-&gt;cursor(editData);</a>
+<a name="ln136">      if (end) {</a>
+<a name="ln137">            cursor-&gt;movePosition(QTextCursor::Start, QTextCursor::MoveAnchor);</a>
+<a name="ln138">            cursor-&gt;movePosition(QTextCursor::End, QTextCursor::KeepAnchor);</a>
+<a name="ln139">            }</a>
+<a name="ln140">      else {</a>
+<a name="ln141">            cursor-&gt;movePosition(QTextCursor::End, QTextCursor::MoveAnchor);</a>
+<a name="ln142">            cursor-&gt;movePosition(QTextCursor::Start, QTextCursor::KeepAnchor);</a>
+<a name="ln143">            }</a>
+<a name="ln144"> </a>
+<a name="ln145">      _score-&gt;setLayoutAll();</a>
+<a name="ln146">      _score-&gt;update();</a>
+<a name="ln147">      }</a>
+<a name="ln148"> </a>
+<a name="ln149">//---------------------------------------------------------</a>
+<a name="ln150">//   lyricsTab</a>
+<a name="ln151">//---------------------------------------------------------</a>
+<a name="ln152"> </a>
+<a name="ln153">void ScoreView::lyricsTab(bool back, bool end, bool moveOnly)</a>
+<a name="ln154">      {</a>
+<a name="ln155">      Lyrics* lyrics   = toLyrics(editData.element);</a>
+<a name="ln156">      int track        = lyrics-&gt;track();</a>
+<a name="ln157">      Segment* segment = lyrics-&gt;segment();</a>
+<a name="ln158">      int verse        = lyrics-&gt;no();</a>
+<a name="ln159">      Placement placement = lyrics-&gt;placement();</a>
+<a name="ln160">      PropertyFlags pFlags = lyrics-&gt;propertyFlags(Pid::PLACEMENT);</a>
+<a name="ln161"> </a>
+<a name="ln162">      Segment* nextSegment = segment;</a>
+<a name="ln163">      if (back) {</a>
+<a name="ln164">            // search prev chord</a>
+<a name="ln165">            while ((nextSegment = nextSegment-&gt;prev1(SegmentType::ChordRest))) {</a>
+<a name="ln166">                  Element* el = nextSegment-&gt;element(track);</a>
+<a name="ln167">                  if (el &amp;&amp;  el-&gt;isChord())</a>
+<a name="ln168">                        break;</a>
+<a name="ln169">                  }</a>
+<a name="ln170">            }</a>
+<a name="ln171">      else {</a>
+<a name="ln172">            // search next chord</a>
+<a name="ln173">            while ((nextSegment = nextSegment-&gt;next1(SegmentType::ChordRest))) {</a>
+<a name="ln174">                  Element* el = nextSegment-&gt;element(track);</a>
+<a name="ln175">                  if (el &amp;&amp;  el-&gt;isChord())</a>
+<a name="ln176">                        break;</a>
+<a name="ln177">                  }</a>
+<a name="ln178">            }</a>
+<a name="ln179">      if (nextSegment == 0)</a>
+<a name="ln180">            return;</a>
+<a name="ln181"> </a>
+<a name="ln182">      changeState(ViewState::NORMAL);</a>
+<a name="ln183"> </a>
+<a name="ln184">      // look for the lyrics we are moving from; may be the current lyrics or a previous one</a>
+<a name="ln185">      // if we are skipping several chords with spaces</a>
+<a name="ln186">      Lyrics* fromLyrics = 0;</a>
+<a name="ln187">      if (!back) {</a>
+<a name="ln188">            while (segment) {</a>
+<a name="ln189">                  ChordRest* cr = toChordRest(segment-&gt;element(track));</a>
+<a name="ln190">                  if (cr) {</a>
+<a name="ln191">                        fromLyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln192">                        if (fromLyrics)</a>
+<a name="ln193">                              break;</a>
+<a name="ln194">                        }</a>
+<a name="ln195">                  segment = segment-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln196">                  }</a>
+<a name="ln197">            }</a>
+<a name="ln198"> </a>
+<a name="ln199">      ChordRest* cr = toChordRest(nextSegment-&gt;element(track));</a>
+<a name="ln200">      if (!cr) {</a>
+<a name="ln201">            qDebug(&quot;no next lyrics list: %s&quot;, nextSegment-&gt;element(track)-&gt;name());</a>
+<a name="ln202">            return;</a>
+<a name="ln203">            }</a>
+<a name="ln204">      Lyrics* _toLyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln205"> </a>
+<a name="ln206">      bool newLyrics = false;</a>
+<a name="ln207">      if (!_toLyrics) {</a>
+<a name="ln208">            _toLyrics = new Lyrics(_score);</a>
+<a name="ln209">            _toLyrics-&gt;setTrack(track);</a>
+<a name="ln210">            cr = toChordRest(nextSegment-&gt;element(track));</a>
+<a name="ln211">            _toLyrics-&gt;setParent(cr);</a>
+<a name="ln212">            _toLyrics-&gt;setNo(verse);</a>
+<a name="ln213">            _toLyrics-&gt;setPlacement(placement);</a>
+<a name="ln214">            _toLyrics-&gt;setPropertyFlags(Pid::PLACEMENT, pFlags);</a>
+<a name="ln215">            _toLyrics-&gt;setSyllabic(Lyrics::Syllabic::SINGLE);</a>
+<a name="ln216">            newLyrics = true;</a>
+<a name="ln217">            }</a>
+<a name="ln218"> </a>
+<a name="ln219">      _score-&gt;startCmd();</a>
+<a name="ln220">      if (fromLyrics &amp;&amp; !moveOnly) {</a>
+<a name="ln221">            switch (_toLyrics-&gt;syllabic()) {</a>
+<a name="ln222">                  // as we arrived at toLyrics by a [Space], it can be the beginning</a>
+<a name="ln223">                  // of a multi-syllable, but cannot have syllabic dashes before</a>
+<a name="ln224">                  case Lyrics::Syllabic::SINGLE:</a>
+<a name="ln225">                  case Lyrics::Syllabic::BEGIN:</a>
+<a name="ln226">                        break;</a>
+<a name="ln227">                  case Lyrics::Syllabic::END:</a>
+<a name="ln228">                        _toLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::SINGLE));</a>
+<a name="ln229">                        break;</a>
+<a name="ln230">                  case Lyrics::Syllabic::MIDDLE:</a>
+<a name="ln231">                        _toLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::BEGIN));</a>
+<a name="ln232">                        break;</a>
+<a name="ln233">                  }</a>
+<a name="ln234">            // as we moved away from fromLyrics by a [Space], it can be</a>
+<a name="ln235">            // the end of a multi-syllable, but cannot have syllabic dashes after</a>
+<a name="ln236">            switch (fromLyrics-&gt;syllabic()) {</a>
+<a name="ln237">                  case Lyrics::Syllabic::SINGLE:</a>
+<a name="ln238">                  case Lyrics::Syllabic::END:</a>
+<a name="ln239">                        break;</a>
+<a name="ln240">                  case Lyrics::Syllabic::BEGIN:</a>
+<a name="ln241">                        fromLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::SINGLE));</a>
+<a name="ln242">                        break;</a>
+<a name="ln243">                  case Lyrics::Syllabic::MIDDLE:</a>
+<a name="ln244">                        fromLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::END));</a>
+<a name="ln245">                        break;</a>
+<a name="ln246">                  }</a>
+<a name="ln247">            // for the same reason, it cannot have a melisma</a>
+<a name="ln248">            fromLyrics-&gt;undoChangeProperty(Pid::LYRIC_TICKS, 0);</a>
+<a name="ln249">            }</a>
+<a name="ln250"> </a>
+<a name="ln251">      if (newLyrics)</a>
+<a name="ln252">            _score-&gt;undoAddElement(_toLyrics);</a>
+<a name="ln253">      _score-&gt;endCmd();</a>
+<a name="ln254"> </a>
+<a name="ln255">      _score-&gt;select(_toLyrics, SelectType::SINGLE, 0);</a>
+<a name="ln256">      startEdit(_toLyrics, Grip::NO_GRIP);</a>
+<a name="ln257"> </a>
+<a name="ln258">      adjustCanvasPosition(_toLyrics, false);</a>
+<a name="ln259"> </a>
+<a name="ln260">      TextCursor* cursor = toLyrics(editData.element)-&gt;cursor(editData);</a>
+<a name="ln261">      if (end) {</a>
+<a name="ln262">            cursor-&gt;movePosition(QTextCursor::Start, QTextCursor::MoveAnchor);</a>
+<a name="ln263">            cursor-&gt;movePosition(QTextCursor::End, QTextCursor::KeepAnchor);</a>
+<a name="ln264">            }</a>
+<a name="ln265">      else {</a>
+<a name="ln266">            cursor-&gt;movePosition(QTextCursor::End, QTextCursor::MoveAnchor);</a>
+<a name="ln267">            cursor-&gt;movePosition(QTextCursor::Start, QTextCursor::KeepAnchor);</a>
+<a name="ln268">            }</a>
+<a name="ln269">      _score-&gt;setLayoutAll();</a>
+<a name="ln270">      }</a>
+<a name="ln271"> </a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273">//   lyricsMinus</a>
+<a name="ln274">//---------------------------------------------------------</a>
+<a name="ln275"> </a>
+<a name="ln276">void ScoreView::lyricsMinus()</a>
+<a name="ln277">      {</a>
+<a name="ln278">      Lyrics* lyrics   = toLyrics(editData.element);</a>
+<a name="ln279">      int track        = lyrics-&gt;track();</a>
+<a name="ln280">      Segment* segment = lyrics-&gt;segment();</a>
+<a name="ln281">      int verse        = lyrics-&gt;no();</a>
+<a name="ln282">      Placement placement = lyrics-&gt;placement();</a>
+<a name="ln283">      PropertyFlags pFlags = lyrics-&gt;propertyFlags(Pid::PLACEMENT);</a>
+<a name="ln284"> </a>
+<a name="ln285">      changeState(ViewState::NORMAL);</a>
+<a name="ln286"> </a>
+<a name="ln287">      // search next chord</a>
+<a name="ln288">      Segment* nextSegment = segment;</a>
+<a name="ln289">      while ((nextSegment = nextSegment-&gt;next1(SegmentType::ChordRest))) {</a>
+<a name="ln290">            Element* el = nextSegment-&gt;element(track);</a>
+<a name="ln291">            if (el &amp;&amp;  el-&gt;isChord())</a>
+<a name="ln292">                  break;</a>
+<a name="ln293">            }</a>
+<a name="ln294">      if (nextSegment == 0)</a>
+<a name="ln295">            return;</a>
+<a name="ln296"> </a>
+<a name="ln297">      // look for the lyrics we are moving from; may be the current lyrics or a previous one</a>
+<a name="ln298">      // we are extending with several dashes</a>
+<a name="ln299">      Lyrics* fromLyrics = 0;</a>
+<a name="ln300">      while (segment) {</a>
+<a name="ln301">            ChordRest* cr = toChordRest(segment-&gt;element(track));</a>
+<a name="ln302">            if (!cr) {</a>
+<a name="ln303">                  segment = segment-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln304">                  continue;</a>
+<a name="ln305">                  }</a>
+<a name="ln306">            fromLyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln307">            if (fromLyrics)</a>
+<a name="ln308">                  break;</a>
+<a name="ln309">            segment = segment-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln310">            }</a>
+<a name="ln311"> </a>
+<a name="ln312">      _score-&gt;startCmd();</a>
+<a name="ln313">      ChordRest* cr = toChordRest(nextSegment-&gt;element(track));</a>
+<a name="ln314">      Lyrics* toLyrics           = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln315">      bool newLyrics = (toLyrics == 0);</a>
+<a name="ln316">      if (!toLyrics) {</a>
+<a name="ln317">            toLyrics = new Lyrics(_score);</a>
+<a name="ln318">            toLyrics-&gt;setTrack(track);</a>
+<a name="ln319">            toLyrics-&gt;setParent(nextSegment-&gt;element(track));</a>
+<a name="ln320">            toLyrics-&gt;setNo(verse);</a>
+<a name="ln321">            toLyrics-&gt;setPlacement(placement);</a>
+<a name="ln322">            toLyrics-&gt;setPropertyFlags(Pid::PLACEMENT, pFlags);</a>
+<a name="ln323">            toLyrics-&gt;setSyllabic(Lyrics::Syllabic::END);</a>
+<a name="ln324">            }</a>
+<a name="ln325">      else {</a>
+<a name="ln326">            // as we arrived at toLyrics by a dash, it cannot be initial or isolated</a>
+<a name="ln327">            if (toLyrics-&gt;syllabic() == Lyrics::Syllabic::BEGIN)</a>
+<a name="ln328">                  toLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::MIDDLE));</a>
+<a name="ln329">            else if (toLyrics-&gt;syllabic() == Lyrics::Syllabic::SINGLE)</a>
+<a name="ln330">                  toLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::END));</a>
+<a name="ln331">            }</a>
+<a name="ln332"> </a>
+<a name="ln333">      if (fromLyrics) {</a>
+<a name="ln334">            // as we moved away from fromLyrics by a dash,</a>
+<a name="ln335">            // it can have syll. dashes before and after but cannot be isolated or terminal</a>
+<a name="ln336">            switch(fromLyrics-&gt;syllabic()) {</a>
+<a name="ln337">                  case Lyrics::Syllabic::BEGIN:</a>
+<a name="ln338">                  case Lyrics::Syllabic::MIDDLE:</a>
+<a name="ln339">                        break;</a>
+<a name="ln340">                  case Lyrics::Syllabic::SINGLE:</a>
+<a name="ln341">                        fromLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::BEGIN));</a>
+<a name="ln342">                        break;</a>
+<a name="ln343">                  case Lyrics::Syllabic::END:</a>
+<a name="ln344">                        fromLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::MIDDLE));</a>
+<a name="ln345">                        break;</a>
+<a name="ln346">                  }</a>
+<a name="ln347">            // for the same reason, it cannot have a melisma</a>
+<a name="ln348">            fromLyrics-&gt;undoChangeProperty(Pid::LYRIC_TICKS, 0);</a>
+<a name="ln349">            }</a>
+<a name="ln350"> </a>
+<a name="ln351">      if (newLyrics)</a>
+<a name="ln352">            _score-&gt;undoAddElement(toLyrics);</a>
+<a name="ln353">      _score-&gt;endCmd();</a>
+<a name="ln354"> </a>
+<a name="ln355">      _score-&gt;select(toLyrics, SelectType::SINGLE, 0);</a>
+<a name="ln356">      startEdit(toLyrics, Grip::NO_GRIP);</a>
+<a name="ln357"> </a>
+<a name="ln358">      adjustCanvasPosition(toLyrics, false);</a>
+<a name="ln359">      TextCursor* cursor = Ms::toLyrics(editData.element)-&gt;cursor(editData);</a>
+<a name="ln360">      Ms::toLyrics(editData.element)-&gt;selectAll(cursor);</a>
+<a name="ln361">      _score-&gt;setLayoutAll();</a>
+<a name="ln362">      }</a>
+<a name="ln363"> </a>
+<a name="ln364">//---------------------------------------------------------</a>
+<a name="ln365">//   lyricsUnderscore</a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367"> </a>
+<a name="ln368">void ScoreView::lyricsUnderscore()</a>
+<a name="ln369">      {</a>
+<a name="ln370">      Lyrics* lyrics       = toLyrics(editData.element);</a>
+<a name="ln371">      int track            = lyrics-&gt;track();</a>
+<a name="ln372">      Segment* segment     = lyrics-&gt;segment();</a>
+<a name="ln373">      int verse            = lyrics-&gt;no();</a>
+<a name="ln374">      Placement placement  = lyrics-&gt;placement();</a>
+<a name="ln375">      PropertyFlags pFlags = lyrics-&gt;propertyFlags(Pid::PLACEMENT);</a>
+<a name="ln376">      Fraction endTick     = segment-&gt;tick(); // a previous melisma cannot extend beyond this point</a>
+<a name="ln377"> </a>
+<a name="ln378">      changeState(ViewState::NORMAL);</a>
+<a name="ln379"> </a>
+<a name="ln380">      // search next chord</a>
+<a name="ln381">      Segment* nextSegment = segment;</a>
+<a name="ln382">      while ((nextSegment = nextSegment-&gt;next1(SegmentType::ChordRest))) {</a>
+<a name="ln383">            Element* el = nextSegment-&gt;element(track);</a>
+<a name="ln384">            if (el &amp;&amp;  el-&gt;isChord())</a>
+<a name="ln385">                  break;</a>
+<a name="ln386">            }</a>
+<a name="ln387"> </a>
+<a name="ln388">      // look for the lyrics we are moving from; may be the current lyrics or a previous one</a>
+<a name="ln389">      // we are extending with several underscores</a>
+<a name="ln390">      Lyrics* fromLyrics = 0;</a>
+<a name="ln391">      while (segment) {</a>
+<a name="ln392">            ChordRest* cr = toChordRest(segment-&gt;element(track));</a>
+<a name="ln393">            if (cr) {</a>
+<a name="ln394">                  fromLyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln395">                  if (fromLyrics)</a>
+<a name="ln396">                        break;</a>
+<a name="ln397">                  }</a>
+<a name="ln398">            segment = segment-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln399">            // if the segment has a rest in this track, stop going back</a>
+<a name="ln400">            Element* e = segment ? segment-&gt;element(track) : 0;</a>
+<a name="ln401">            if (e &amp;&amp; !e-&gt;isChord())</a>
+<a name="ln402">                  break;</a>
+<a name="ln403">            }</a>
+<a name="ln404"> </a>
+<a name="ln405">      // one-chord melisma?</a>
+<a name="ln406">      // if still at melisma initial chord and there is a valid next chord (if not,</a>
+<a name="ln407">      // there will be no melisma anyway), set a temporary melisma duration</a>
+<a name="ln408">      if (fromLyrics == lyrics &amp;&amp; nextSegment) {</a>
+<a name="ln409">            _score-&gt;startCmd();</a>
+<a name="ln410">            lyrics-&gt;undoChangeProperty(Pid::LYRIC_TICKS, Fraction::fromTicks(Lyrics::TEMP_MELISMA_TICKS));</a>
+<a name="ln411">            _score-&gt;setLayoutAll();</a>
+<a name="ln412">            _score-&gt;endCmd();</a>
+<a name="ln413">            }</a>
+<a name="ln414"> </a>
+<a name="ln415">      if (nextSegment == 0) {</a>
+<a name="ln416">            _score-&gt;startCmd();</a>
+<a name="ln417">            if (fromLyrics) {</a>
+<a name="ln418">                  switch(fromLyrics-&gt;syllabic()) {</a>
+<a name="ln419">                        case Lyrics::Syllabic::SINGLE:</a>
+<a name="ln420">                        case Lyrics::Syllabic::END:</a>
+<a name="ln421">                              break;</a>
+<a name="ln422">                        default:</a>
+<a name="ln423">                              fromLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::END));</a>
+<a name="ln424">                              break;</a>
+<a name="ln425">                        }</a>
+<a name="ln426">                  if (fromLyrics-&gt;segment()-&gt;tick() &lt; endTick)</a>
+<a name="ln427">                        fromLyrics-&gt;undoChangeProperty(Pid::LYRIC_TICKS, endTick - fromLyrics-&gt;segment()-&gt;tick());</a>
+<a name="ln428">                  }</a>
+<a name="ln429">            // leave edit mode, select something (just for user feedback) and update to show extended melisam</a>
+<a name="ln430">            mscore-&gt;changeState(STATE_NORMAL);</a>
+<a name="ln431">            if (fromLyrics)</a>
+<a name="ln432">                  _score-&gt;select(fromLyrics, SelectType::SINGLE, 0);</a>
+<a name="ln433">            _score-&gt;setLayoutAll();</a>
+<a name="ln434">            _score-&gt;endCmd();</a>
+<a name="ln435">            return;</a>
+<a name="ln436">            }</a>
+<a name="ln437"> </a>
+<a name="ln438">      // if a place for a new lyrics has been found, create a lyrics there</a>
+<a name="ln439"> </a>
+<a name="ln440">      ChordRest* cr    = toChordRest(nextSegment-&gt;element(track));</a>
+<a name="ln441">      Lyrics* toLyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln442">      bool newLyrics   = (toLyrics == 0);</a>
+<a name="ln443">      if (!toLyrics) {</a>
+<a name="ln444">            toLyrics = new Lyrics(_score);</a>
+<a name="ln445">            toLyrics-&gt;setTrack(track);</a>
+<a name="ln446">            toLyrics-&gt;setParent(nextSegment-&gt;element(track));</a>
+<a name="ln447">            toLyrics-&gt;setNo(verse);</a>
+<a name="ln448">            toLyrics-&gt;setPlacement(placement);</a>
+<a name="ln449">            toLyrics-&gt;setPropertyFlags(Pid::PLACEMENT, pFlags);</a>
+<a name="ln450">            toLyrics-&gt;setSyllabic(Lyrics::Syllabic::SINGLE);</a>
+<a name="ln451">            }</a>
+<a name="ln452">      // as we arrived at toLyrics by an underscore, it cannot have syllabic dashes before</a>
+<a name="ln453">      else if (toLyrics-&gt;syllabic() == Lyrics::Syllabic::MIDDLE)</a>
+<a name="ln454">            toLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::BEGIN));</a>
+<a name="ln455">      else if (toLyrics-&gt;syllabic() == Lyrics::Syllabic::END)</a>
+<a name="ln456">            toLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::SINGLE));</a>
+<a name="ln457"> </a>
+<a name="ln458">      if (fromLyrics) {</a>
+<a name="ln459">            // as we moved away from fromLyrics by an underscore,</a>
+<a name="ln460">            // it can be isolated or terminal but cannot have dashes after</a>
+<a name="ln461">            switch(fromLyrics-&gt;syllabic()) {</a>
+<a name="ln462">                  case Lyrics::Syllabic::SINGLE:</a>
+<a name="ln463">                  case Lyrics::Syllabic::END:</a>
+<a name="ln464">                        break;</a>
+<a name="ln465">                  default:</a>
+<a name="ln466">                        fromLyrics-&gt;undoChangeProperty(Pid::SYLLABIC, int(Lyrics::Syllabic::END));</a>
+<a name="ln467">                        break;</a>
+<a name="ln468">                  }</a>
+<a name="ln469">            // for the same reason, if it has a melisma, this cannot extend beyond toLyrics</a>
+<a name="ln470">            if (fromLyrics-&gt;segment()-&gt;tick() &lt; endTick)</a>
+<a name="ln471">                  fromLyrics-&gt;undoChangeProperty(Pid::LYRIC_TICKS, endTick - fromLyrics-&gt;segment()-&gt;tick());</a>
+<a name="ln472">            }</a>
+<a name="ln473">      if (newLyrics)</a>
+<a name="ln474">            _score-&gt;undoAddElement(toLyrics);</a>
+<a name="ln475">      _score-&gt;endCmd();</a>
+<a name="ln476"> </a>
+<a name="ln477">      _score-&gt;select(toLyrics, SelectType::SINGLE, 0);</a>
+<a name="ln478">      startEdit(toLyrics, Grip::NO_GRIP);</a>
+<a name="ln479"> </a>
+<a name="ln480">      adjustCanvasPosition(toLyrics, false);</a>
+<a name="ln481">      TextCursor* cursor = Ms::toLyrics(editData.element)-&gt;cursor(editData);</a>
+<a name="ln482">      Ms::toLyrics(editData.element)-&gt;selectAll(cursor);</a>
+<a name="ln483">      }</a>
+<a name="ln484"> </a>
+<a name="ln485">//---------------------------------------------------------</a>
+<a name="ln486">//   lyricsReturn</a>
+<a name="ln487">//---------------------------------------------------------</a>
+<a name="ln488"> </a>
+<a name="ln489">void ScoreView::lyricsReturn()</a>
+<a name="ln490">      {</a>
+<a name="ln491">      Lyrics* lyrics = toLyrics(editData.element);</a>
+<a name="ln492"> </a>
+<a name="ln493">      changeState(ViewState::NORMAL);</a>
+<a name="ln494"> </a>
+<a name="ln495">      _score-&gt;startCmd();</a>
+<a name="ln496">      int newVerse;</a>
+<a name="ln497">      newVerse = lyrics-&gt;no() + 1;</a>
+<a name="ln498"> </a>
+<a name="ln499">      Lyrics* oldLyrics = lyrics;</a>
+<a name="ln500">      lyrics = new Lyrics(_score);</a>
+<a name="ln501">      lyrics-&gt;setTrack(oldLyrics-&gt;track());</a>
+<a name="ln502">      lyrics-&gt;setParent(oldLyrics-&gt;segment()-&gt;element(oldLyrics-&gt;track()));</a>
+<a name="ln503">      lyrics-&gt;setPlacement(oldLyrics-&gt;placement());</a>
+<a name="ln504">      lyrics-&gt;setPropertyFlags(Pid::PLACEMENT, oldLyrics-&gt;propertyFlags(Pid::PLACEMENT));</a>
+<a name="ln505">      lyrics-&gt;setNo(newVerse);</a>
+<a name="ln506"> </a>
+<a name="ln507">      _score-&gt;undoAddElement(lyrics);</a>
+<a name="ln508">      _score-&gt;endCmd();</a>
+<a name="ln509"> </a>
+<a name="ln510">      _score-&gt;select(lyrics, SelectType::SINGLE, 0);</a>
+<a name="ln511">      startEdit(lyrics, Grip::NO_GRIP);</a>
+<a name="ln512"> </a>
+<a name="ln513">      adjustCanvasPosition(lyrics, false);</a>
+<a name="ln514">      }</a>
+<a name="ln515"> </a>
+<a name="ln516">//---------------------------------------------------------</a>
+<a name="ln517">//   lyricsEndEdit</a>
+<a name="ln518">//---------------------------------------------------------</a>
+<a name="ln519"> </a>
+<a name="ln520">void ScoreView::lyricsEndEdit()</a>
+<a name="ln521">      {</a>
+<a name="ln522">      Lyrics* lyrics = toLyrics(editData.element);</a>
+<a name="ln523"> </a>
+<a name="ln524">      // if not empty, make sure this new lyrics does not fall in the middle</a>
+<a name="ln525">      // of an existing melisma from a previous lyrics; in case, shorten it</a>
+<a name="ln526">      int verse   = lyrics-&gt;no();</a>
+<a name="ln527">      Placement placement = lyrics-&gt;placement();</a>
+<a name="ln528">      int track   = lyrics-&gt;track();</a>
+<a name="ln529"> </a>
+<a name="ln530">      // search previous lyric</a>
+<a name="ln531">      Lyrics*  prevLyrics  = 0;</a>
+<a name="ln532">      Segment* prevSegment = lyrics-&gt;segment()-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln533">      Segment* segment     = prevSegment;</a>
+<a name="ln534">      while (segment) {</a>
+<a name="ln535">            ChordRest* cr = toChordRest(segment-&gt;element(track));</a>
+<a name="ln536">            if (cr) {</a>
+<a name="ln537">                  prevLyrics = cr-&gt;lyrics(verse, placement);</a>
+<a name="ln538">                  if (prevLyrics)</a>
+<a name="ln539">                        break;</a>
+<a name="ln540">                  }</a>
+<a name="ln541">            segment = segment-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln542">            }</a>
+<a name="ln543">      if (prevLyrics &amp;&amp; prevLyrics-&gt;syllabic() == Lyrics::Syllabic::END) {</a>
+<a name="ln544">            Fraction endTick = prevSegment-&gt;tick();      // a prev. melisma should not go beyond this segment</a>
+<a name="ln545">            if (prevLyrics-&gt;endTick() &gt;= endTick)</a>
+<a name="ln546">                  prevLyrics-&gt;undoChangeProperty(Pid::LYRIC_TICKS, endTick - prevLyrics-&gt;segment()-&gt;tick());</a>
+<a name="ln547">            }</a>
+<a name="ln548">      }</a>
+<a name="ln549"> </a>
+<a name="ln550">}</a>
+<a name="ln551"> </a>
+
+</code></pre>
+<div class="balloon" rel="201"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

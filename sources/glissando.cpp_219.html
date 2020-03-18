@@ -1,0 +1,742 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>glissando.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2008-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">/* TO DO:</a>
+<a name="ln14">- XML export</a>
+<a name="ln15"> </a>
+<a name="ln16">NICE-TO-HAVE TODO:</a>
+<a name="ln17">- draggable handles of glissando segments</a>
+<a name="ln18">- re-attachable glissando extrema (with [Shift]+arrows, use SlurSegment::edit()</a>
+<a name="ln19">      and SlurSegment::changeAnchor() in slur.cpp as models)</a>
+<a name="ln20">*/</a>
+<a name="ln21"> </a>
+<a name="ln22">#include &quot;arpeggio.h&quot;</a>
+<a name="ln23">#include &quot;glissando.h&quot;</a>
+<a name="ln24">#include &quot;chord.h&quot;</a>
+<a name="ln25">#include &quot;ledgerline.h&quot;</a>
+<a name="ln26">#include &quot;note.h&quot;</a>
+<a name="ln27">#include &quot;notedot.h&quot;</a>
+<a name="ln28">#include &quot;score.h&quot;</a>
+<a name="ln29">#include &quot;segment.h&quot;</a>
+<a name="ln30">#include &quot;staff.h&quot;</a>
+<a name="ln31">#include &quot;system.h&quot;</a>
+<a name="ln32">#include &quot;style.h&quot;</a>
+<a name="ln33">#include &quot;sym.h&quot;</a>
+<a name="ln34">#include &quot;xml.h&quot;</a>
+<a name="ln35">#include &quot;accidental.h&quot;</a>
+<a name="ln36"> </a>
+<a name="ln37">namespace Ms {</a>
+<a name="ln38"> </a>
+<a name="ln39">static const ElementStyle glissandoElementStyle {</a>
+<a name="ln40">      { Sid::glissandoFontFace,                  Pid::FONT_FACE               },</a>
+<a name="ln41">      { Sid::glissandoFontSize,                  Pid::FONT_SIZE               },</a>
+<a name="ln42">      { Sid::glissandoFontStyle,                 Pid::FONT_STYLE              },</a>
+<a name="ln43">      { Sid::glissandoLineWidth,                 Pid::LINE_WIDTH              },</a>
+<a name="ln44">      { Sid::glissandoText,                      Pid::GLISS_TEXT              },</a>
+<a name="ln45">      };</a>
+<a name="ln46"> </a>
+<a name="ln47">static const qreal      GLISS_PALETTE_WIDTH           = 4.0;</a>
+<a name="ln48">static const qreal      GLISS_PALETTE_HEIGHT          = 4.0;</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   GlisandoSegment</a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53"> </a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55">//   layout</a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57"> </a>
+<a name="ln58">void GlissandoSegment::layout()</a>
+<a name="ln59">      {</a>
+<a name="ln60">      if (staff())</a>
+<a name="ln61">            setMag(staff()-&gt;mag(tick()));</a>
+<a name="ln62">      QRectF r = QRectF(0.0, 0.0, pos2().x(), pos2().y()).normalized();</a>
+<a name="ln63">      qreal lw = glissando()-&gt;lineWidth() * .5;</a>
+<a name="ln64">      setbbox(r.adjusted(-lw, -lw, lw, lw));</a>
+<a name="ln65">      }</a>
+<a name="ln66"> </a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68">//   draw</a>
+<a name="ln69">//---------------------------------------------------------</a>
+<a name="ln70"> </a>
+<a name="ln71">void GlissandoSegment::draw(QPainter* painter) const</a>
+<a name="ln72">      {</a>
+<a name="ln73">      painter-&gt;save();</a>
+<a name="ln74">      qreal _spatium = spatium();</a>
+<a name="ln75"> </a>
+<a name="ln76">      QPen pen(curColor(visible(), glissando()-&gt;lineColor()));</a>
+<a name="ln77">      pen.setWidthF(glissando()-&gt;lineWidth());</a>
+<a name="ln78">      pen.setCapStyle(Qt::RoundCap);</a>
+<a name="ln79">      painter-&gt;setPen(pen);</a>
+<a name="ln80"> </a>
+<a name="ln81">      // rotate painter so that the line become horizontal</a>
+<a name="ln82">      qreal w     = pos2().x();</a>
+<a name="ln83">      qreal h     = pos2().y();</a>
+<a name="ln84">      qreal l     = sqrt(w * w + h * h);</a>
+<a name="ln85">      qreal wi    = asin(-h / l) * 180.0 / M_PI;</a>
+<a name="ln86">      qreal scale = painter-&gt;worldTransform().m11();</a>
+<a name="ln87">      painter-&gt;rotate(-wi);</a>
+<a name="ln88"> </a>
+<a name="ln89">      if (glissando()-&gt;glissandoType() == GlissandoType::STRAIGHT) {</a>
+<a name="ln90">            painter-&gt;drawLine(QLineF(0.0, 0.0, l, 0.0));</a>
+<a name="ln91">            }</a>
+<a name="ln92">      else if (glissando()-&gt;glissandoType() == GlissandoType::WAVY) {</a>
+<a name="ln93">            QRectF b = symBbox(SymId::wiggleTrill);</a>
+<a name="ln94">            qreal a  = symAdvance(SymId::wiggleTrill);</a>
+<a name="ln95">            int n    = static_cast&lt;int&gt;(l / a);      // always round down (truncate) to avoid overlap</a>
+<a name="ln96">            qreal x  = (l - n*a) * 0.5;   // centre line in available space</a>
+<a name="ln97">            std::vector&lt;SymId&gt; ids;</a>
+<a name="ln98">            for (int i = 0; i &lt; n; ++i)</a>
+<a name="ln99">                  ids.push_back(SymId::wiggleTrill);</a>
+<a name="ln100">            // this is very ugly but fix #68846 for now</a>
+<a name="ln101">            bool tmp = MScore::pdfPrinting;</a>
+<a name="ln102">            MScore::pdfPrinting = true;</a>
+<a name="ln103">            score()-&gt;scoreFont()-&gt;draw(ids, painter, magS(), QPointF(x, -(b.y() + b.height()*0.5) ), scale);</a>
+<a name="ln104">            MScore::pdfPrinting = tmp;</a>
+<a name="ln105">            }</a>
+<a name="ln106"> </a>
+<a name="ln107">      if (glissando()-&gt;showText()) {</a>
+<a name="ln108">            QFont f(glissando()-&gt;fontFace());</a>
+<a name="ln109">            f.setPointSizeF(glissando()-&gt;fontSize() * MScore::pixelRatio * _spatium / SPATIUM20);</a>
+<a name="ln110">            f.setBold(glissando()-&gt;fontStyle() &amp; FontStyle::Bold);</a>
+<a name="ln111">            f.setItalic(glissando()-&gt;fontStyle() &amp; FontStyle::Italic);</a>
+<a name="ln112">            f.setUnderline(glissando()-&gt;fontStyle() &amp; FontStyle::Underline);</a>
+<a name="ln113">            QFontMetricsF fm(f);</a>
+<a name="ln114">            QRectF r = fm.boundingRect(glissando()-&gt;text());</a>
+<a name="ln115"> </a>
+<a name="ln116">            // if text longer than available space, skip it</a>
+<a name="ln117">            if (r.width() &lt; l) {</a>
+<a name="ln118">                  qreal yOffset = r.height() + r.y();       // find text descender height</a>
+<a name="ln119">                  // raise text slightly above line and slightly more with WAVY than with STRAIGHT</a>
+<a name="ln120">                  yOffset += _spatium * (glissando()-&gt;glissandoType() == GlissandoType::WAVY ? 0.4 : 0.1);</a>
+<a name="ln121">                  painter-&gt;setFont(f);</a>
+<a name="ln122">                  qreal x = (l - r.width()) * 0.5;</a>
+<a name="ln123">                  painter-&gt;drawText(QPointF(x, -yOffset), glissando()-&gt;text());</a>
+<a name="ln124">                  }</a>
+<a name="ln125">            }</a>
+<a name="ln126">      painter-&gt;restore();</a>
+<a name="ln127">      }</a>
+<a name="ln128"> </a>
+<a name="ln129">//---------------------------------------------------------</a>
+<a name="ln130">//   propertyDelegate</a>
+<a name="ln131">//---------------------------------------------------------</a>
+<a name="ln132"> </a>
+<a name="ln133">Element* GlissandoSegment::propertyDelegate(Pid pid)</a>
+<a name="ln134">      {</a>
+<a name="ln135">      switch (pid) {</a>
+<a name="ln136">            case Pid::GLISS_TYPE:</a>
+<a name="ln137">            case Pid::GLISS_TEXT:</a>
+<a name="ln138">            case Pid::GLISS_SHOW_TEXT:</a>
+<a name="ln139">            case Pid::GLISSANDO_STYLE:</a>
+<a name="ln140">            case Pid::PLAY:</a>
+<a name="ln141">            case Pid::FONT_FACE:</a>
+<a name="ln142">            case Pid::FONT_SIZE:</a>
+<a name="ln143">            case Pid::FONT_STYLE:</a>
+<a name="ln144">            case Pid::LINE_WIDTH:</a>
+<a name="ln145">                  return glissando();</a>
+<a name="ln146">            default:</a>
+<a name="ln147">                  return LineSegment::propertyDelegate(pid);</a>
+<a name="ln148">            }</a>
+<a name="ln149">      }</a>
+<a name="ln150"> </a>
+<a name="ln151">//=========================================================</a>
+<a name="ln152">//   Glissando</a>
+<a name="ln153">//=========================================================</a>
+<a name="ln154"> </a>
+<a name="ln155">Glissando::Glissando(Score* s)</a>
+<a name="ln156">  : SLine(s, ElementFlag::MOVABLE)</a>
+<a name="ln157">      {</a>
+<a name="ln158">      setAnchor(Spanner::Anchor::NOTE);</a>
+<a name="ln159">      setDiagonal(true);</a>
+<a name="ln160"> </a>
+<a name="ln161">      initElementStyle(&amp;glissandoElementStyle);</a>
+<a name="ln162"> </a>
+<a name="ln163">      resetProperty(Pid::GLISS_SHOW_TEXT);</a>
+<a name="ln164">      resetProperty(Pid::PLAY);</a>
+<a name="ln165">      resetProperty(Pid::GLISSANDO_STYLE);</a>
+<a name="ln166">      resetProperty(Pid::GLISS_TYPE);</a>
+<a name="ln167">      resetProperty(Pid::GLISS_TEXT);</a>
+<a name="ln168">      }</a>
+<a name="ln169"> </a>
+<a name="ln170">Glissando::Glissando(const Glissando&amp; g)</a>
+<a name="ln171">   : SLine(g)</a>
+<a name="ln172">      {</a>
+<a name="ln173">      _text           = g._text;</a>
+<a name="ln174">      _fontFace       = g._fontFace;</a>
+<a name="ln175">      _fontSize       = g._fontSize;</a>
+<a name="ln176">      _glissandoType  = g._glissandoType;</a>
+<a name="ln177">      _glissandoStyle = g._glissandoStyle;</a>
+<a name="ln178">      _showText       = g._showText;</a>
+<a name="ln179">      _playGlissando  = g._playGlissando;</a>
+<a name="ln180">      _fontStyle      = g._fontStyle;</a>
+<a name="ln181">      }</a>
+<a name="ln182"> </a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184">//   createLineSegment</a>
+<a name="ln185">//---------------------------------------------------------</a>
+<a name="ln186"> </a>
+<a name="ln187">LineSegment* Glissando::createLineSegment()</a>
+<a name="ln188">      {</a>
+<a name="ln189">      GlissandoSegment* seg = new GlissandoSegment(this, score());</a>
+<a name="ln190">      seg-&gt;setTrack(track());</a>
+<a name="ln191">      seg-&gt;setColor(color());</a>
+<a name="ln192">      return seg;</a>
+<a name="ln193">      }</a>
+<a name="ln194"> </a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196">//   scanElements</a>
+<a name="ln197">//---------------------------------------------------------</a>
+<a name="ln198"> </a>
+<a name="ln199">void Glissando::scanElements(void* data, void (*func)(void*, Element*), bool all)</a>
+<a name="ln200">      {</a>
+<a name="ln201">      func(data, this);</a>
+<a name="ln202">      // don't scan segments belonging to systems; the systems themselves will scan them</a>
+<a name="ln203">      for (SpannerSegment* seg : spannerSegments()) {</a>
+<a name="ln204">            if (!seg-&gt;parent() || !seg-&gt;parent()-&gt;isSystem())</a>
+<a name="ln205">                  seg-&gt;scanElements(data, func, all);</a>
+<a name="ln206">            }</a>
+<a name="ln207">      }</a>
+<a name="ln208"> </a>
+<a name="ln209">//---------------------------------------------------------</a>
+<a name="ln210">//   layout</a>
+<a name="ln211">//---------------------------------------------------------</a>
+<a name="ln212"> </a>
+<a name="ln213">void Glissando::layout()</a>
+<a name="ln214">      {</a>
+<a name="ln215">      qreal _spatium = spatium();</a>
+<a name="ln216"> </a>
+<a name="ln217">      if (score() == gscore || !startElement() || !endElement()) {  // for use in palettes or while dragging</a>
+<a name="ln218">            if (spannerSegments().empty())</a>
+<a name="ln219">                  add(createLineSegment());</a>
+<a name="ln220">            LineSegment* s = frontSegment();</a>
+<a name="ln221">            s-&gt;setPos(QPointF());</a>
+<a name="ln222">            s-&gt;setPos2(QPointF(_spatium * GLISS_PALETTE_WIDTH, -_spatium * GLISS_PALETTE_HEIGHT));</a>
+<a name="ln223">            s-&gt;layout();</a>
+<a name="ln224">            return;</a>
+<a name="ln225">            }</a>
+<a name="ln226">      SLine::layout();</a>
+<a name="ln227">      if (spannerSegments().empty()) {</a>
+<a name="ln228">            qDebug(&quot;no segments&quot;);</a>
+<a name="ln229">            return;</a>
+<a name="ln230">            }</a>
+<a name="ln231">      setPos(0.0, 0.0);</a>
+<a name="ln232"> </a>
+<a name="ln233">      Note*       anchor1     = toNote(startElement());</a>
+<a name="ln234">      Note*       anchor2     = toNote(endElement());</a>
+<a name="ln235">      Chord*      cr1         = anchor1-&gt;chord();</a>
+<a name="ln236">      Chord*      cr2         = anchor2-&gt;chord();</a>
+<a name="ln237">      GlissandoSegment* segm1 = toGlissandoSegment(frontSegment());</a>
+<a name="ln238">      GlissandoSegment* segm2 = toGlissandoSegment(backSegment());</a>
+<a name="ln239"> </a>
+<a name="ln240">      // Note: line segments are defined by</a>
+<a name="ln241">      // initial point: ipos() (relative to system origin)</a>
+<a name="ln242">      // ending point:  pos2() (relative to initial point)</a>
+<a name="ln243"> </a>
+<a name="ln244">      // LINE ENDING POINTS TO NOTEHEAD CENTRES</a>
+<a name="ln245"> </a>
+<a name="ln246">      // assume gliss. line goes from centre of initial note centre to centre of ending note:</a>
+<a name="ln247">      // move first segment origin and last segment ending point from notehead origin to notehead centre</a>
+<a name="ln248">      QPointF offs1 = QPointF(anchor1-&gt;headWidth() * 0.5, 0.0);</a>
+<a name="ln249">      QPointF offs2 = QPointF(anchor2-&gt;headWidth() * 0.5, 0.0);</a>
+<a name="ln250"> </a>
+<a name="ln251">      // AVOID HORIZONTAL LINES</a>
+<a name="ln252"> </a>
+<a name="ln253">      int upDown = (0 &lt; (anchor2-&gt;pitch() - anchor1-&gt;pitch())) - ((anchor2-&gt;pitch() - anchor1-&gt;pitch()) &lt; 0);</a>
+<a name="ln254">      // on TAB's, glissando are by necessity on the same string, this gives an horizontal glissando line;</a>
+<a name="ln255">      // make bottom end point lower and top ending point higher</a>
+<a name="ln256">      if (cr1-&gt;staff()-&gt;isTabStaff(cr1-&gt;tick())) {</a>
+<a name="ln257">            qreal yOff = cr1-&gt;staff()-&gt;lineDistance(cr1-&gt;tick()) * 0.4 * _spatium;</a>
+<a name="ln258">            offs1.ry() += yOff * upDown;</a>
+<a name="ln259">            offs2.ry() -= yOff * upDown;</a>
+<a name="ln260">            }</a>
+<a name="ln261">      // if not TAB, angle glissando between notes on the same line</a>
+<a name="ln262">      else {</a>
+<a name="ln263">            if (anchor1-&gt;line() == anchor2-&gt;line()) {</a>
+<a name="ln264">                  offs1.ry() += _spatium * 0.25 * upDown;</a>
+<a name="ln265">                  offs2.ry() -= _spatium * 0.25 * upDown;</a>
+<a name="ln266">                  }</a>
+<a name="ln267">            }</a>
+<a name="ln268"> </a>
+<a name="ln269">      // move initial point of first segment and adjust its length accordingly</a>
+<a name="ln270">      segm1-&gt;setPos (segm1-&gt;ipos()  + offs1);</a>
+<a name="ln271">      segm1-&gt;setPos2(segm1-&gt;ipos2() - offs1);</a>
+<a name="ln272">      // adjust ending point of last segment</a>
+<a name="ln273">      segm2-&gt;setPos2(segm2-&gt;ipos2() + offs2);</a>
+<a name="ln274"> </a>
+<a name="ln275">      // FINAL SYSTEM-INITIAL NOTE</a>
+<a name="ln276">      // if the last gliss. segment attaches to a system-initial note, some extra width has to be added</a>
+<a name="ln277">      if (cr2-&gt;segment()-&gt;measure() == cr2-&gt;segment()-&gt;system()-&gt;firstMeasure() &amp;&amp; cr2-&gt;rtick().isZero()</a>
+<a name="ln278">         // but ignore graces after, as they are not the first note of the system,</a>
+<a name="ln279">         // even if their segment is the first segment of the system</a>
+<a name="ln280">         &amp;&amp; !(cr2-&gt;noteType() == NoteType::GRACE8_AFTER</a>
+<a name="ln281">            || cr2-&gt;noteType() == NoteType::GRACE16_AFTER || cr2-&gt;noteType() == NoteType::GRACE32_AFTER)</a>
+<a name="ln282">         // also ignore if cr1 is a child of cr2, which means cr1 is a grace-before of cr2</a>
+<a name="ln283">         &amp;&amp; !(cr1-&gt;parent() == cr2))</a>
+<a name="ln284">            {</a>
+<a name="ln285">            segm2-&gt;rxpos() -= GLISS_STARTOFSYSTEM_WIDTH * _spatium;</a>
+<a name="ln286">            segm2-&gt;rxpos2()+= GLISS_STARTOFSYSTEM_WIDTH * _spatium;</a>
+<a name="ln287">            }</a>
+<a name="ln288"> </a>
+<a name="ln289">      // INTERPOLATION OF INTERMEDIATE POINTS</a>
+<a name="ln290">      // This probably belongs to SLine class itself; currently it does not seem</a>
+<a name="ln291">      // to be needed for anything else than Glissando, though</a>
+<a name="ln292"> </a>
+<a name="ln293">      // get total x-width and total y-height of all segments</a>
+<a name="ln294">      qreal xTot = 0.0;</a>
+<a name="ln295">      for (SpannerSegment* segm : spannerSegments())</a>
+<a name="ln296">            xTot += segm-&gt;ipos2().x();</a>
+<a name="ln297">      qreal y0   = segm1-&gt;ipos().y();</a>
+<a name="ln298">      qreal yTot = segm2-&gt;ipos().y() + segm2-&gt;ipos2().y() - y0;</a>
+<a name="ln299">      qreal ratio = yTot / xTot;</a>
+<a name="ln300">      // interpolate y-coord of intermediate points across total width and height</a>
+<a name="ln301">      qreal xCurr = 0.0;</a>
+<a name="ln302">      qreal yCurr;</a>
+<a name="ln303">      for (unsigned i = 0; i + 1 &lt; spannerSegments().size(); i++) {</a>
+<a name="ln304">            SpannerSegment* segm = segmentAt(i);</a>
+<a name="ln305">            xCurr += segm-&gt;ipos2().x();</a>
+<a name="ln306">            yCurr = y0 + ratio * xCurr;</a>
+<a name="ln307">            segm-&gt;rypos2() = yCurr - segm-&gt;ipos().y();       // position segm. end point at yCurr</a>
+<a name="ln308">            // next segment shall start where this segment stopped</a>
+<a name="ln309">            segm = segmentAt(i+1);</a>
+<a name="ln310">            segm-&gt;rypos2() += segm-&gt;ipos().y() - yCurr;      // adjust next segm. vertical length</a>
+<a name="ln311">            segm-&gt;rypos() = yCurr;                           // position next segm. start point at yCurr</a>
+<a name="ln312">            }</a>
+<a name="ln313"> </a>
+<a name="ln314">      // STAY CLEAR OF NOTE APPENDAGES</a>
+<a name="ln315"> </a>
+<a name="ln316">      // initial note dots / ledger line / notehead</a>
+<a name="ln317">      offs1 *= -1.0;          // discount changes already applied</a>
+<a name="ln318">      int dots = anchor1-&gt;dots().size();</a>
+<a name="ln319">      LedgerLine * ledLin = cr1-&gt;ledgerLines();</a>
+<a name="ln320">      // if dots, start at right of last dot</a>
+<a name="ln321">      // if no dots, from right of ledger line, if any; from right of notehead, if no ledger line</a>
+<a name="ln322">      offs1.rx() += (dots &amp;&amp; anchor1-&gt;dot(dots-1) ? anchor1-&gt;dot(dots-1)-&gt;pos().x() + anchor1-&gt;dot(dots-1)-&gt;width()</a>
+<a name="ln323">                  : (ledLin ? ledLin-&gt;pos().x() + ledLin-&gt;width() : anchor1-&gt;headWidth()) );</a>
+<a name="ln324"> </a>
+<a name="ln325">      // final note arpeggio / accidental / ledger line / accidental / arpeggio (i.e. from outermost to innermost)</a>
+<a name="ln326">      offs2 *= -1.0;          // discount changes already applied</a>
+<a name="ln327">      if (Arpeggio* ap = cr2-&gt;arpeggio())</a>
+<a name="ln328">            offs2.rx() += ap-&gt;pos().x() + ap-&gt;offset().x();</a>
+<a name="ln329">      else if (Accidental* ac = anchor2-&gt;accidental())</a>
+<a name="ln330">            offs2.rx() += ac-&gt;pos().x() + ac-&gt;offset().x();</a>
+<a name="ln331">      else if ( (ledLin = cr2-&gt;ledgerLines()) != nullptr)</a>
+<a name="ln332">            offs2.rx() += ledLin-&gt;pos().x();</a>
+<a name="ln333"> </a>
+<a name="ln334">      // add another a quarter spatium of 'air'</a>
+<a name="ln335">      offs1.rx() += _spatium * 0.25;</a>
+<a name="ln336">      offs2.rx() -= _spatium * 0.25;</a>
+<a name="ln337"> </a>
+<a name="ln338">      // apply offsets: shorten first segment by x1 (and proportionally y) and adjust its length accordingly</a>
+<a name="ln339">      offs1.ry() = segm1-&gt;ipos2().y() * offs1.x() / segm1-&gt;ipos2().x();</a>
+<a name="ln340">      segm1-&gt;setPos(segm1-&gt;ipos() + offs1);</a>
+<a name="ln341">      segm1-&gt;setPos2(segm1-&gt;ipos2() - offs1);</a>
+<a name="ln342">      // adjust last segment length by x2 (and proportionally y)</a>
+<a name="ln343">      offs2.ry() = segm2-&gt;ipos2().y() * offs2.x() / segm2-&gt;ipos2().x();</a>
+<a name="ln344">      segm2-&gt;setPos2(segm2-&gt;ipos2() + offs2);</a>
+<a name="ln345"> </a>
+<a name="ln346">      for (SpannerSegment* segm : spannerSegments())</a>
+<a name="ln347">            segm-&gt;layout();</a>
+<a name="ln348"> </a>
+<a name="ln349">      // compute glissando bbox as the bbox of the last segment, relative to the end anchor note</a>
+<a name="ln350">      QPointF anchor2PagePos = anchor2-&gt;pagePos();</a>
+<a name="ln351">      QPointF system2PagePos = cr2-&gt;segment()-&gt;system()-&gt;pagePos();</a>
+<a name="ln352">      QPointF anchor2SystPos = anchor2PagePos - system2PagePos;</a>
+<a name="ln353">      QRectF r = QRectF(anchor2SystPos - segm2-&gt;pos(), anchor2SystPos - segm2-&gt;pos() - segm2-&gt;pos2()).normalized();</a>
+<a name="ln354">      qreal lw = lineWidth() * .5;</a>
+<a name="ln355">      setbbox(r.adjusted(-lw, -lw, lw, lw));</a>
+<a name="ln356">      }</a>
+<a name="ln357"> </a>
+<a name="ln358">//---------------------------------------------------------</a>
+<a name="ln359">//   write</a>
+<a name="ln360">//---------------------------------------------------------</a>
+<a name="ln361"> </a>
+<a name="ln362">void Glissando::write(XmlWriter&amp; xml) const</a>
+<a name="ln363">      {</a>
+<a name="ln364">      if (!xml.canWrite(this))</a>
+<a name="ln365">            return;</a>
+<a name="ln366">      xml.stag(this);</a>
+<a name="ln367">      if (_showText &amp;&amp; !_text.isEmpty())</a>
+<a name="ln368">            xml.tag(&quot;text&quot;, _text);</a>
+<a name="ln369"> </a>
+<a name="ln370">      for (auto id : { Pid::GLISS_TYPE, Pid::PLAY, Pid::GLISSANDO_STYLE } )</a>
+<a name="ln371">            writeProperty(xml, id);</a>
+<a name="ln372"> </a>
+<a name="ln373">      SLine::writeProperties(xml);</a>
+<a name="ln374">      xml.etag();</a>
+<a name="ln375">      }</a>
+<a name="ln376"> </a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378">//   read</a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380"> </a>
+<a name="ln381">void Glissando::read(XmlReader&amp; e)</a>
+<a name="ln382">      {</a>
+<a name="ln383">      eraseSpannerSegments();</a>
+<a name="ln384"> </a>
+<a name="ln385">      if (score()-&gt;mscVersion() &lt; 301)</a>
+<a name="ln386">            e.addSpanner(e.intAttribute(&quot;id&quot;, -1), this);</a>
+<a name="ln387"> </a>
+<a name="ln388">      _showText = false;</a>
+<a name="ln389">      while (e.readNextStartElement()) {</a>
+<a name="ln390">            const QStringRef&amp; tag = e.name();</a>
+<a name="ln391">            if (tag == &quot;text&quot;) {</a>
+<a name="ln392">                  _showText = true;</a>
+<a name="ln393">                  _text = e.readElementText();</a>
+<a name="ln394">                  }</a>
+<a name="ln395">            else if (tag == &quot;subtype&quot;)</a>
+<a name="ln396">                  _glissandoType = GlissandoType(e.readInt());</a>
+<a name="ln397">            else if (tag == &quot;glissandoStyle&quot;)</a>
+<a name="ln398">                  readProperty(e, Pid::GLISSANDO_STYLE);</a>
+<a name="ln399">            else if (tag == &quot;play&quot;)</a>
+<a name="ln400">                  setPlayGlissando(e.readBool());</a>
+<a name="ln401">            else if (readStyledProperty(e, tag))</a>
+<a name="ln402">                  ;</a>
+<a name="ln403">            else if (!SLine::readProperties(e))</a>
+<a name="ln404">                  e.unknown();</a>
+<a name="ln405">            }</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">//---------------------------------------------------------</a>
+<a name="ln409">//   STATIC FUNCTIONS: guessInitialNote</a>
+<a name="ln410">//</a>
+<a name="ln411">//    Used while reading old scores (either 1.x or transitional 2.0) to determine (guess!)</a>
+<a name="ln412">//    the glissando initial note from its final chord. Returns the top note of previous chord</a>
+<a name="ln413">//    of the same instrument, preferring the chord in the same track as chord, if it exists.</a>
+<a name="ln414">//</a>
+<a name="ln415">//    CANNOT be called if the final chord and/or its segment do not exist yet in the score</a>
+<a name="ln416">//</a>
+<a name="ln417">//    Parameter:  chord: the chord this glissando ends into</a>
+<a name="ln418">//    Returns:    the top note in a suitable previous chord or nullptr if none found.</a>
+<a name="ln419">//---------------------------------------------------------</a>
+<a name="ln420"> </a>
+<a name="ln421">Note* Glissando::guessInitialNote(Chord* chord)</a>
+<a name="ln422">      {</a>
+<a name="ln423">      switch (chord-&gt;noteType()) {</a>
+<a name="ln424">//            case NoteType::INVALID:</a>
+<a name="ln425">//                  return 0;</a>
+<a name="ln426">            // for grace notes before, previous chord is previous chord of parent chord</a>
+<a name="ln427">            case NoteType::ACCIACCATURA:</a>
+<a name="ln428">            case NoteType::APPOGGIATURA:</a>
+<a name="ln429">            case NoteType::GRACE4:</a>
+<a name="ln430">            case NoteType::GRACE16:</a>
+<a name="ln431">            case NoteType::GRACE32:</a>
+<a name="ln432">                  // move unto parent chord and proceed to standard case</a>
+<a name="ln433">                  if (chord-&gt;parent() &amp;&amp; chord-&gt;parent()-&gt;isChord())</a>
+<a name="ln434">                        chord = toChord(chord-&gt;parent());</a>
+<a name="ln435">                  else</a>
+<a name="ln436">                        return 0;</a>
+<a name="ln437">                  break;</a>
+<a name="ln438">            // for grace notes after, return top note of parent chord</a>
+<a name="ln439">            case NoteType::GRACE8_AFTER:</a>
+<a name="ln440">            case NoteType::GRACE16_AFTER:</a>
+<a name="ln441">            case NoteType::GRACE32_AFTER:</a>
+<a name="ln442">                  if (chord-&gt;parent() &amp;&amp; chord-&gt;parent()-&gt;isChord())</a>
+<a name="ln443">                        return toChord(chord-&gt;parent())-&gt;upNote();</a>
+<a name="ln444">                  else                          // no parent or parent is not a chord?</a>
+<a name="ln445">                        return nullptr;</a>
+<a name="ln446">            case NoteType::NORMAL:</a>
+<a name="ln447">                  {</a>
+<a name="ln448">                  // if chord has grace notes before, the last one is the previous note</a>
+<a name="ln449">                  QVector&lt;Chord*&gt; graces = chord-&gt;graceNotesBefore();</a>
+<a name="ln450">                  if (graces.size() &gt; 0)</a>
+<a name="ln451">                        return graces.last()-&gt;upNote();</a>
+<a name="ln452">                  }</a>
+<a name="ln453">                  break;                        // else process to standard case</a>
+<a name="ln454">            default:</a>
+<a name="ln455">                  break;</a>
+<a name="ln456">            }</a>
+<a name="ln457"> </a>
+<a name="ln458">      // standard case (NORMAL or grace before chord)</a>
+<a name="ln459"> </a>
+<a name="ln460">      // if parent not a segment, can't locate a target note</a>
+<a name="ln461">      if (!chord-&gt;parent()-&gt;isSegment())</a>
+<a name="ln462">            return 0;</a>
+<a name="ln463"> </a>
+<a name="ln464">      int         chordTrack  = chord-&gt;track();</a>
+<a name="ln465">      Segment*    segm        = chord-&gt;segment();</a>
+<a name="ln466">      Part*       part        = chord-&gt;part();</a>
+<a name="ln467">      if (segm != nullptr)</a>
+<a name="ln468">            segm = segm-&gt;prev1();</a>
+<a name="ln469">      while (segm) {</a>
+<a name="ln470">            // if previous segment is a ChordRest segment</a>
+<a name="ln471">            if (segm-&gt;segmentType() == SegmentType::ChordRest) {</a>
+<a name="ln472">                  Chord* target = nullptr;</a>
+<a name="ln473">                  // look for a Chord in the same track</a>
+<a name="ln474">                  if (segm-&gt;element(chordTrack) &amp;&amp; segm-&gt;element(chordTrack)-&gt;isChord())</a>
+<a name="ln475">                        target = toChord(segm-&gt;element(chordTrack));</a>
+<a name="ln476">                  else {             // if no same track, look for other chords in the same instrument</a>
+<a name="ln477">                        for (Element* currChord : segm-&gt;elist()) {</a>
+<a name="ln478">                              if (currChord &amp;&amp; currChord-&gt;isChord() &amp;&amp; toChord(currChord)-&gt;part() == part) {</a>
+<a name="ln479">                                    target = toChord(currChord);</a>
+<a name="ln480">                                    break;</a>
+<a name="ln481">                                    }</a>
+<a name="ln482">                              }</a>
+<a name="ln483">                        }</a>
+<a name="ln484">                  // if we found a target previous chord</a>
+<a name="ln485">                  if (target) {</a>
+<a name="ln486">                        // if chord has grace notes after, the last one is the previous note</a>
+<a name="ln487">                        QVector&lt;Chord*&gt;graces = target-&gt;graceNotesAfter();</a>
+<a name="ln488">                        if (graces.size() &gt; 0)</a>
+<a name="ln489">                              return graces.last()-&gt;upNote();</a>
+<a name="ln490">                        return target-&gt;upNote();      // if no grace after, return top note</a>
+<a name="ln491">                        }</a>
+<a name="ln492">                  }</a>
+<a name="ln493">            segm = segm-&gt;prev1();</a>
+<a name="ln494">            }</a>
+<a name="ln495">      qDebug(&quot;no first note for glissando found&quot;);</a>
+<a name="ln496">      return 0;</a>
+<a name="ln497">      }</a>
+<a name="ln498"> </a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500">//   STATIC FUNCTIONS: guessFinalNote</a>
+<a name="ln501">//</a>
+<a name="ln502">//    Used while dropping a glissando on a note to determine (guess!) the glissando final</a>
+<a name="ln503">//    note from its initial chord.</a>
+<a name="ln504">//    Returns the top note of next chord of the same instrument,</a>
+<a name="ln505">//    preferring the chord in the same track as chord, if it exists.</a>
+<a name="ln506">//</a>
+<a name="ln507">//    Parameter:  chord: the chord this glissando start from</a>
+<a name="ln508">//    Returns:    the top note in a suitable following chord or nullptr if none found</a>
+<a name="ln509">//---------------------------------------------------------</a>
+<a name="ln510"> </a>
+<a name="ln511">Note* Glissando::guessFinalNote(Chord* chord)</a>
+<a name="ln512">      {</a>
+<a name="ln513">      switch (chord-&gt;noteType()) {</a>
+<a name="ln514">//            case NoteType::INVALID:</a>
+<a name="ln515">//                  return nullptr;</a>
+<a name="ln516">            // for grace notes before, return top note of parent chord</a>
+<a name="ln517">            // TODO : if the grace-before is not the LAST ONE, this still returns the main note</a>
+<a name="ln518">            //    which is probably not correct; however a glissando between two grace notes</a>
+<a name="ln519">            //    probably makes little sense.</a>
+<a name="ln520">            case NoteType::ACCIACCATURA:</a>
+<a name="ln521">            case NoteType::APPOGGIATURA:</a>
+<a name="ln522">            case NoteType::GRACE4:</a>
+<a name="ln523">            case NoteType::GRACE16:</a>
+<a name="ln524">            case NoteType::GRACE32:</a>
+<a name="ln525">                  if (chord-&gt;parent() &amp;&amp; chord-&gt;parent()-&gt;isChord())</a>
+<a name="ln526">                        return toChord(chord-&gt;parent())-&gt;upNote();</a>
+<a name="ln527">                  else                          // no parent or parent is not a chord?</a>
+<a name="ln528">                        return nullptr;</a>
+<a name="ln529">            // for grace notes after, next chord is next chord of parent chord</a>
+<a name="ln530">            // TODO : same note as case above!</a>
+<a name="ln531">            case NoteType::GRACE8_AFTER:</a>
+<a name="ln532">            case NoteType::GRACE16_AFTER:</a>
+<a name="ln533">            case NoteType::GRACE32_AFTER:</a>
+<a name="ln534">                  // move unto parent chord and proceed to standard case</a>
+<a name="ln535">                  if (chord-&gt;parent() &amp;&amp; chord-&gt;parent()-&gt;isChord())</a>
+<a name="ln536">                        chord = toChord(chord-&gt;parent());</a>
+<a name="ln537">                  else</a>
+<a name="ln538">                        return 0;</a>
+<a name="ln539">                  break;</a>
+<a name="ln540">            case NoteType::NORMAL:</a>
+<a name="ln541">                  {</a>
+<a name="ln542">                  // if chord has grace notes after, the first one is the next note</a>
+<a name="ln543">                  QVector&lt;Chord*&gt;graces = chord-&gt;graceNotesAfter();</a>
+<a name="ln544">                  if (graces.size() &gt; 0)</a>
+<a name="ln545">                        return graces.first()-&gt;upNote();</a>
+<a name="ln546">                  }</a>
+<a name="ln547">                  break;</a>
+<a name="ln548">            default:</a>
+<a name="ln549">                  break;</a>
+<a name="ln550">            }</a>
+<a name="ln551"> </a>
+<a name="ln552">      // standard case (NORMAL or grace after chord)</a>
+<a name="ln553"> </a>
+<a name="ln554">      // if parent not a segment, can't locate a target note</a>
+<a name="ln555">      if (!chord-&gt;parent()-&gt;isSegment())</a>
+<a name="ln556">            return 0;</a>
+<a name="ln557"> </a>
+<a name="ln558">      // look for first ChordRest segment after initial note is elapsed</a>
+<a name="ln559">      Segment*    segm        = chord-&gt;score()-&gt;tick2rightSegment(chord-&gt;tick() + chord-&gt;actualTicks());</a>
+<a name="ln560">      int         chordTrack  = chord-&gt;track();</a>
+<a name="ln561">      Part*       part        = chord-&gt;part();</a>
+<a name="ln562">      while (segm) {</a>
+<a name="ln563">            // if next segment is a ChordRest segment</a>
+<a name="ln564">            if (segm-&gt;segmentType() == SegmentType::ChordRest) {</a>
+<a name="ln565">                  Chord* target = nullptr;</a>
+<a name="ln566"> </a>
+<a name="ln567">                  // look for a Chord in the same track</a>
+<a name="ln568">                  if (segm-&gt;element(chordTrack) &amp;&amp; segm-&gt;element(chordTrack)-&gt;isChord())</a>
+<a name="ln569">                        target = toChord(segm-&gt;element(chordTrack));</a>
+<a name="ln570">                  else {              // if no same track, look for other chords in the same instrument</a>
+<a name="ln571">                        for (Element* currChord : segm-&gt;elist()) {</a>
+<a name="ln572">                              if (currChord &amp;&amp; currChord-&gt;isChord() &amp;&amp; toChord(currChord)-&gt;part() == part) {</a>
+<a name="ln573">                                    target = toChord(currChord);</a>
+<a name="ln574">                                    break;</a>
+<a name="ln575">                                    }</a>
+<a name="ln576">                              }</a>
+<a name="ln577">                        }</a>
+<a name="ln578"> </a>
+<a name="ln579">                  // if we found a target next chord</a>
+<a name="ln580">                  if (target) {</a>
+<a name="ln581">                        // if chord has grace notes before, the first one is the next note</a>
+<a name="ln582">                        QVector&lt;Chord*&gt;graces = target-&gt;graceNotesBefore();</a>
+<a name="ln583">                        if (graces.size() &gt; 0)</a>
+<a name="ln584">                              return graces.first()-&gt;upNote();</a>
+<a name="ln585">                        return target-&gt;upNote();      // if no grace before, return top note</a>
+<a name="ln586">                        }</a>
+<a name="ln587">                  }</a>
+<a name="ln588">            segm = segm-&gt;next1();</a>
+<a name="ln589">            }</a>
+<a name="ln590">      qDebug(&quot;no second note for glissando found&quot;);</a>
+<a name="ln591">      return 0;</a>
+<a name="ln592">      }</a>
+<a name="ln593"> </a>
+<a name="ln594">//---------------------------------------------------------</a>
+<a name="ln595">//   getProperty</a>
+<a name="ln596">//---------------------------------------------------------</a>
+<a name="ln597"> </a>
+<a name="ln598">QVariant Glissando::getProperty(Pid propertyId) const</a>
+<a name="ln599">      {</a>
+<a name="ln600">      switch (propertyId) {</a>
+<a name="ln601">            case Pid::GLISS_TYPE:</a>
+<a name="ln602">                  return int(glissandoType());</a>
+<a name="ln603">            case Pid::GLISS_TEXT:</a>
+<a name="ln604">                  return text();</a>
+<a name="ln605">            case Pid::GLISS_SHOW_TEXT:</a>
+<a name="ln606">                  return showText();</a>
+<a name="ln607">            case Pid::GLISSANDO_STYLE:</a>
+<a name="ln608">                  return int(glissandoStyle());</a>
+<a name="ln609">            case Pid::PLAY:</a>
+<a name="ln610">                  return bool(playGlissando());</a>
+<a name="ln611">            case Pid::FONT_FACE:</a>
+<a name="ln612">                  return _fontFace;</a>
+<a name="ln613">            case Pid::FONT_SIZE:</a>
+<a name="ln614">                  return _fontSize;</a>
+<a name="ln615">            case Pid::FONT_STYLE:</a>
+<a name="ln616">                  return int(_fontStyle);</a>
+<a name="ln617">            default:</a>
+<a name="ln618">                  break;</a>
+<a name="ln619">            }</a>
+<a name="ln620">      return SLine::getProperty(propertyId);</a>
+<a name="ln621">      }</a>
+<a name="ln622"> </a>
+<a name="ln623">//---------------------------------------------------------</a>
+<a name="ln624">//   setProperty</a>
+<a name="ln625">//---------------------------------------------------------</a>
+<a name="ln626"> </a>
+<a name="ln627">bool Glissando::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln628">      {</a>
+<a name="ln629">      switch (propertyId) {</a>
+<a name="ln630">            case Pid::GLISS_TYPE:</a>
+<a name="ln631">                  setGlissandoType(GlissandoType(v.toInt()));</a>
+<a name="ln632">                  break;</a>
+<a name="ln633">            case Pid::GLISS_TEXT:</a>
+<a name="ln634">                  setText(v.toString());</a>
+<a name="ln635">                  break;</a>
+<a name="ln636">            case Pid::GLISS_SHOW_TEXT:</a>
+<a name="ln637">                  setShowText(v.toBool());</a>
+<a name="ln638">                  break;</a>
+<a name="ln639">            case Pid::GLISSANDO_STYLE:</a>
+<a name="ln640">                  setGlissandoStyle(GlissandoStyle(v.toInt()));</a>
+<a name="ln641">                  break;</a>
+<a name="ln642">            case Pid::PLAY:</a>
+<a name="ln643">                  setPlayGlissando(v.toBool());</a>
+<a name="ln644">                  break;</a>
+<a name="ln645">            case Pid::FONT_FACE:</a>
+<a name="ln646">                  setFontFace(v.toString());</a>
+<a name="ln647">                  break;</a>
+<a name="ln648">            case Pid::FONT_SIZE:</a>
+<a name="ln649">                  setFontSize(v.toReal());</a>
+<a name="ln650">                  break;</a>
+<a name="ln651">            case Pid::FONT_STYLE:</a>
+<a name="ln652">                  setFontStyle(FontStyle(v.toInt()));</a>
+<a name="ln653">                  break;</a>
+<a name="ln654">            default:</a>
+<a name="ln655">                  if (!SLine::setProperty(propertyId, v))</a>
+<a name="ln656">                        return false;</a>
+<a name="ln657">                  break;</a>
+<a name="ln658">            }</a>
+<a name="ln659">      triggerLayoutAll();</a>
+<a name="ln660">      return true;</a>
+<a name="ln661">      }</a>
+<a name="ln662"> </a>
+<a name="ln663">//---------------------------------------------------------</a>
+<a name="ln664">//   propertyDefault</a>
+<a name="ln665">//---------------------------------------------------------</a>
+<a name="ln666"> </a>
+<a name="ln667">QVariant Glissando::propertyDefault(Pid propertyId) const</a>
+<a name="ln668">      {</a>
+<a name="ln669">      switch (propertyId) {</a>
+<a name="ln670">            case Pid::GLISS_TYPE:</a>
+<a name="ln671">                  return int(GlissandoType::STRAIGHT);</a>
+<a name="ln672">            case Pid::GLISS_SHOW_TEXT:</a>
+<a name="ln673">                  return true;</a>
+<a name="ln674">            case Pid::GLISSANDO_STYLE:</a>
+<a name="ln675">                  return int(GlissandoStyle::CHROMATIC);</a>
+<a name="ln676">            case Pid::PLAY:</a>
+<a name="ln677">                  return true;</a>
+<a name="ln678">            default:</a>
+<a name="ln679">                  break;</a>
+<a name="ln680">            }</a>
+<a name="ln681">      return SLine::propertyDefault(propertyId);</a>
+<a name="ln682">      }</a>
+<a name="ln683"> </a>
+<a name="ln684">//---------------------------------------------------------</a>
+<a name="ln685">//   Glissando::propertyId</a>
+<a name="ln686">//---------------------------------------------------------</a>
+<a name="ln687"> </a>
+<a name="ln688">Pid Glissando::propertyId(const QStringRef&amp; name) const</a>
+<a name="ln689">      {</a>
+<a name="ln690">      if (name == propertyName(Pid::GLISS_TYPE))</a>
+<a name="ln691">            return Pid::GLISS_TYPE;</a>
+<a name="ln692">      return SLine::propertyId(name);</a>
+<a name="ln693">      }</a>
+<a name="ln694">}</a>
+<a name="ln695"> </a>
+
+</code></pre>
+<div class="balloon" rel="155"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _glissandoType, _glissandoStyle, _fontSize, _showText, _playGlissando, _fontStyle.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

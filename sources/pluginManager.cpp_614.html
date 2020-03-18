@@ -1,0 +1,454 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pluginManager.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2011 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENSE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;pluginManager.h&quot;</a>
+<a name="ln14">#include &quot;qmlpluginengine.h&quot;</a>
+<a name="ln15">#include &quot;shortcutcapturedialog.h&quot;</a>
+<a name="ln16">#include &quot;musescore.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln18">#include &quot;preferences.h&quot;</a>
+<a name="ln19"> </a>
+<a name="ln20"> </a>
+<a name="ln21">namespace Ms {</a>
+<a name="ln22"> </a>
+<a name="ln23">static const QByteArray pluginShortcutActionName = &quot;plugin-run&quot;;</a>
+<a name="ln24"> </a>
+<a name="ln25">//---------------------------------------------------------</a>
+<a name="ln26">//   PluginManager</a>
+<a name="ln27">//---------------------------------------------------------</a>
+<a name="ln28"> </a>
+<a name="ln29">PluginManager::PluginManager(QWidget* parent)</a>
+<a name="ln30">   : QDialog(parent)</a>
+<a name="ln31">      {</a>
+<a name="ln32">      setObjectName(&quot;PluginManager&quot;);</a>
+<a name="ln33">      setupUi(this);</a>
+<a name="ln34">      setWindowFlags(this-&gt;windowFlags() &amp; ~Qt::WindowContextHelpButtonHint);</a>
+<a name="ln35">      connect(definePluginShortcut, SIGNAL(clicked()), SLOT(definePluginShortcutClicked()));</a>
+<a name="ln36">      connect(clearPluginShortcut, SIGNAL(clicked()), SLOT(clearPluginShortcutClicked()));</a>
+<a name="ln37">      connect(reloadPlugins, SIGNAL(clicked()), SLOT(reloadPluginsClicked()));</a>
+<a name="ln38">      readSettings();</a>
+<a name="ln39">      }</a>
+<a name="ln40"> </a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42">//   init</a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44"> </a>
+<a name="ln45">void PluginManager::init()</a>
+<a name="ln46">      {</a>
+<a name="ln47">      //</a>
+<a name="ln48">      // initialize local shortcut table</a>
+<a name="ln49">      //    we need a deep copy to be able to rewind all</a>
+<a name="ln50">      //    changes on &quot;Abort&quot;</a>
+<a name="ln51">      //</a>
+<a name="ln52">      qDeleteAll(localShortcuts);</a>
+<a name="ln53">      localShortcuts.clear();</a>
+<a name="ln54">      foreach(const Shortcut* s, Shortcut::shortcuts())</a>
+<a name="ln55">            localShortcuts[s-&gt;key()] = new Shortcut(*s);</a>
+<a name="ln56">      shortcutsChanged = false;</a>
+<a name="ln57">      loadList(false);</a>
+<a name="ln58">      connect(pluginListWidget, SIGNAL(itemChanged(QListWidgetItem*)), SLOT(pluginLoadToggled(QListWidgetItem*)));</a>
+<a name="ln59">      connect(pluginListWidget, SIGNAL(currentItemChanged(QListWidgetItem*, QListWidgetItem*)),</a>
+<a name="ln60">              SLOT(pluginListWidgetItemChanged(QListWidgetItem*, QListWidgetItem*)));</a>
+<a name="ln61">}</a>
+<a name="ln62"> </a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64">//   readPluginList</a>
+<a name="ln65">//---------------------------------------------------------</a>
+<a name="ln66"> </a>
+<a name="ln67">bool PluginManager::readPluginList()</a>
+<a name="ln68">      {</a>
+<a name="ln69">      QFile f(dataPath + &quot;/plugins.xml&quot;);</a>
+<a name="ln70">      if (!f.exists())</a>
+<a name="ln71">            return false;</a>
+<a name="ln72">      if (!f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln73">            qDebug(&quot;Cannot open plugins file &lt;%s&gt;&quot;, qPrintable(f.fileName()));</a>
+<a name="ln74">            return false;</a>
+<a name="ln75">            }</a>
+<a name="ln76">      XmlReader e(&amp;f);</a>
+<a name="ln77">      while (e.readNextStartElement()) {</a>
+<a name="ln78">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln79">                  while (e.readNextStartElement()) {</a>
+<a name="ln80">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln81">                        if (tag == &quot;Plugin&quot;) {</a>
+<a name="ln82">                              PluginDescription d;</a>
+<a name="ln83">                              while (e.readNextStartElement()) {</a>
+<a name="ln84">                                    const QStringRef&amp; t(e.name());</a>
+<a name="ln85">                                    if (t == &quot;path&quot;)</a>
+<a name="ln86">                                          d.path = e.readElementText();</a>
+<a name="ln87">                                    else if (t == &quot;load&quot;)</a>
+<a name="ln88">                                          d.load = e.readInt();</a>
+<a name="ln89">                                    else if (t == &quot;SC&quot;)</a>
+<a name="ln90">                                          d.shortcut.read(e);</a>
+<a name="ln91">                                    else if (t == &quot;version&quot;)</a>
+<a name="ln92">                                          d.version = e.readElementText();</a>
+<a name="ln93">                                    else if (t == &quot;description&quot;)</a>
+<a name="ln94">                                          d.description = e.readElementText();</a>
+<a name="ln95">                                    else</a>
+<a name="ln96">                                          e.unknown();</a>
+<a name="ln97">                                    }</a>
+<a name="ln98">                              d.shortcut.setState(STATE_NORMAL | STATE_NOTE_ENTRY | STATE_EDIT |</a>
+<a name="ln99">                                          STATE_ALLTEXTUAL_EDIT | STATE_PLAY | STATE_FOTO | STATE_LOCK );</a>
+<a name="ln100">                              d.shortcut.setKey(pluginShortcutActionName);</a>
+<a name="ln101">                              if (d.path.endsWith(&quot;.qml&quot;))</a>
+<a name="ln102">                                    _pluginList.append(d);</a>
+<a name="ln103">                              }</a>
+<a name="ln104">                        else</a>
+<a name="ln105">                              e.unknown();</a>
+<a name="ln106">                        }</a>
+<a name="ln107">                  }</a>
+<a name="ln108">            else</a>
+<a name="ln109">                  e.unknown();</a>
+<a name="ln110">            }</a>
+<a name="ln111">      return true;</a>
+<a name="ln112">}</a>
+<a name="ln113"> </a>
+<a name="ln114">//---------------------------------------------------------</a>
+<a name="ln115">//   writePluginList</a>
+<a name="ln116">//---------------------------------------------------------</a>
+<a name="ln117"> </a>
+<a name="ln118">void PluginManager::writePluginList()</a>
+<a name="ln119">      {</a>
+<a name="ln120">      QDir dir;</a>
+<a name="ln121">      dir.mkpath(dataPath);</a>
+<a name="ln122">      QFile f(dataPath + &quot;/plugins.xml&quot;);</a>
+<a name="ln123">      if (!f.open(QIODevice::WriteOnly)) {</a>
+<a name="ln124">            qDebug(&quot;cannot create plugin file &lt;%s&gt;&quot;, qPrintable(f.fileName()));</a>
+<a name="ln125">            return;</a>
+<a name="ln126">            }</a>
+<a name="ln127">      XmlWriter xml(0, &amp;f);</a>
+<a name="ln128">      xml.header();</a>
+<a name="ln129">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln130">      foreach(const PluginDescription&amp; d, _pluginList) {</a>
+<a name="ln131">            xml.stag(&quot;Plugin&quot;);</a>
+<a name="ln132">            xml.tag(&quot;path&quot;, d.path);</a>
+<a name="ln133">            xml.tag(&quot;load&quot;, d.load);</a>
+<a name="ln134">            xml.tag(&quot;version&quot;, d.version);</a>
+<a name="ln135">            xml.tag(&quot;description&quot;, d.description);</a>
+<a name="ln136">            if (!d.shortcut.keys().isEmpty())</a>
+<a name="ln137">                  d.shortcut.write(xml);</a>
+<a name="ln138">            xml.etag();</a>
+<a name="ln139">            }</a>
+<a name="ln140">      xml.etag();</a>
+<a name="ln141">      f.close();</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">//---------------------------------------------------------</a>
+<a name="ln145">//   updatePluginList</a>
+<a name="ln146">//    scan plugin folders for new plugins and update</a>
+<a name="ln147">//    pluginList</a>
+<a name="ln148">//---------------------------------------------------------</a>
+<a name="ln149"> </a>
+<a name="ln150">#ifdef SCRIPT_INTERFACE</a>
+<a name="ln151">static void updatePluginList(QList&lt;QString&gt;&amp; pluginPathList, const QString&amp; pluginPath,</a>
+<a name="ln152">   QList&lt;PluginDescription&gt;&amp; pluginList)</a>
+<a name="ln153">      {</a>
+<a name="ln154">      QDirIterator it(pluginPath, QDir::NoDot|QDir::NoDotDot|QDir::Dirs|QDir::Files,</a>
+<a name="ln155">         QDirIterator::Subdirectories);</a>
+<a name="ln156">      while (it.hasNext()) {</a>
+<a name="ln157">            it.next();</a>
+<a name="ln158">            QFileInfo fi = it.fileInfo();</a>
+<a name="ln159">            QString path(fi.absoluteFilePath());</a>
+<a name="ln160">            if (fi.isFile()) {</a>
+<a name="ln161">                  if (path.endsWith(&quot;.qml&quot;)) {</a>
+<a name="ln162">                        bool alreadyInList = false;</a>
+<a name="ln163">                        foreach (const PluginDescription&amp; p, pluginList) {</a>
+<a name="ln164">                              if (p.path == path) {</a>
+<a name="ln165">                                    alreadyInList = true;</a>
+<a name="ln166">                                    break;</a>
+<a name="ln167">                                    }</a>
+<a name="ln168">                              }</a>
+<a name="ln169">                        if (!alreadyInList) {</a>
+<a name="ln170">                              PluginDescription p;</a>
+<a name="ln171">                              p.path = path;</a>
+<a name="ln172">                              p.load = false;</a>
+<a name="ln173">                              p.shortcut.setKey(pluginShortcutActionName);</a>
+<a name="ln174">                              if (collectPluginMetaInformation(&amp;p))</a>
+<a name="ln175">                                    pluginList.append(p);</a>
+<a name="ln176">                              }</a>
+<a name="ln177">                        }</a>
+<a name="ln178">                  }</a>
+<a name="ln179">            else</a>
+<a name="ln180">                  updatePluginList(pluginPathList, path, pluginList);</a>
+<a name="ln181">            }</a>
+<a name="ln182">      }</a>
+<a name="ln183">#endif</a>
+<a name="ln184"> </a>
+<a name="ln185">void PluginManager::updatePluginList(bool forceRefresh)</a>
+<a name="ln186">      {</a>
+<a name="ln187">#ifdef SCRIPT_INTERFACE</a>
+<a name="ln188">      QList&lt;QString&gt; pluginPathList;</a>
+<a name="ln189">      pluginPathList.append(dataPath + &quot;/plugins&quot;);</a>
+<a name="ln190">      pluginPathList.append(mscoreGlobalShare + &quot;plugins&quot;);</a>
+<a name="ln191">      pluginPathList.append(preferences.getString(PREF_APP_PATHS_MYPLUGINS));</a>
+<a name="ln192">      if (forceRefresh) {</a>
+<a name="ln193">            _pluginList.clear();</a>
+<a name="ln194">            QmlPluginEngine* engine = mscore-&gt;getPluginEngine();</a>
+<a name="ln195">            engine-&gt;clearComponentCache(); //TODO: Check this doesn't have unwanted side effects.</a>
+<a name="ln196">            }</a>
+<a name="ln197"> </a>
+<a name="ln198">      for (QString _pluginPath : pluginPathList) {</a>
+<a name="ln199">            Ms::updatePluginList(pluginPathList, _pluginPath, _pluginList);</a>
+<a name="ln200">            }</a>
+<a name="ln201">      //remove non existing files</a>
+<a name="ln202">      auto i = _pluginList.begin();</a>
+<a name="ln203">      while (i != _pluginList.end()) {</a>
+<a name="ln204">            PluginDescription d = *i;</a>
+<a name="ln205">            QFileInfo fi(d.path);</a>
+<a name="ln206">            if (!fi.exists())</a>
+<a name="ln207">                  i = _pluginList.erase(i);</a>
+<a name="ln208">            else</a>
+<a name="ln209">                  ++i;</a>
+<a name="ln210">            }</a>
+<a name="ln211">#endif</a>
+<a name="ln212">      }</a>
+<a name="ln213"> </a>
+<a name="ln214">//---------------------------------------------------------</a>
+<a name="ln215">//   loadList - populate the listbox.</a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217"> </a>
+<a name="ln218">void PluginManager::loadList(bool forceRefresh)</a>
+<a name="ln219">      {</a>
+<a name="ln220">      QStringList saveLoaded; // If forcing a refresh, the load flags are lost. Keep a copy and reapply.</a>
+<a name="ln221">      int n = _pluginList.size();</a>
+<a name="ln222">      if (forceRefresh &amp;&amp; n &gt; 0) {</a>
+<a name="ln223">            for (int i = 0; i &lt; n; i++) {</a>
+<a name="ln224">                  PluginDescription&amp; d = _pluginList[i];</a>
+<a name="ln225">                  if (d.load) {</a>
+<a name="ln226">                        saveLoaded.append(d.path);</a>
+<a name="ln227">                        mscore-&gt;unregisterPlugin(&amp;d);  // This will force the menu to rebuild.</a>
+<a name="ln228">                        }</a>
+<a name="ln229">                  }</a>
+<a name="ln230">            }</a>
+<a name="ln231">      updatePluginList(forceRefresh);</a>
+<a name="ln232">      n = _pluginList.size();</a>
+<a name="ln233">      pluginListWidget-&gt;clear();</a>
+<a name="ln234">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln235">            PluginDescription&amp; d = _pluginList[i];</a>
+<a name="ln236">            Shortcut* s = &amp;d.shortcut;</a>
+<a name="ln237">            localShortcuts[s-&gt;key()] = new Shortcut(*s);</a>
+<a name="ln238">            if (saveLoaded.contains(d.path)) d.load = true;</a>
+<a name="ln239">            QListWidgetItem* item = new QListWidgetItem(QFileInfo(d.path).completeBaseName(),  pluginListWidget);</a>
+<a name="ln240">            item-&gt;setFlags(item-&gt;flags() | Qt::ItemIsEnabled);</a>
+<a name="ln241">            item-&gt;setCheckState(d.load ? Qt::Checked : Qt::Unchecked);</a>
+<a name="ln242">            item-&gt;setData(Qt::UserRole, i);</a>
+<a name="ln243">            }</a>
+<a name="ln244"> </a>
+<a name="ln245">      if (n) {</a>
+<a name="ln246">            pluginListWidget-&gt;setCurrentRow(0);</a>
+<a name="ln247">            pluginListWidgetItemChanged(pluginListWidget-&gt;item(0), 0);</a>
+<a name="ln248">            }</a>
+<a name="ln249">      }</a>
+<a name="ln250"> </a>
+<a name="ln251">//---------------------------------------------------------</a>
+<a name="ln252">//   apply</a>
+<a name="ln253">//---------------------------------------------------------</a>
+<a name="ln254"> </a>
+<a name="ln255">void PluginManager::accept()</a>
+<a name="ln256">      {</a>
+<a name="ln257">      if (shortcutsChanged) {</a>
+<a name="ln258">            shortcutsChanged = false;</a>
+<a name="ln259">            foreach(const Shortcut* s, localShortcuts) {</a>
+<a name="ln260">                  Shortcut* os = Shortcut::getShortcut(s-&gt;key());</a>
+<a name="ln261">                  if (os) {</a>
+<a name="ln262">                        if (!os-&gt;compareKeys(*s))</a>
+<a name="ln263">                              os-&gt;setKeys(s-&gt;keys());</a>
+<a name="ln264">                        }</a>
+<a name="ln265">                  }</a>
+<a name="ln266">            Shortcut::dirty = true;</a>
+<a name="ln267">            }</a>
+<a name="ln268">      int n = _pluginList.size();</a>
+<a name="ln269">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln270">            PluginDescription&amp; d = _pluginList[i];</a>
+<a name="ln271">            if (d.load)</a>
+<a name="ln272">                  mscore-&gt;registerPlugin(&amp;d);</a>
+<a name="ln273">            else</a>
+<a name="ln274">                  mscore-&gt;unregisterPlugin(&amp;d);</a>
+<a name="ln275">            }</a>
+<a name="ln276"> </a>
+<a name="ln277">      writePluginList();</a>
+<a name="ln278">      if (Shortcut::dirty)</a>
+<a name="ln279">            Shortcut::save();</a>
+<a name="ln280">      Shortcut::dirty = false;</a>
+<a name="ln281"> </a>
+<a name="ln282">      disconnect(pluginListWidget, SIGNAL(itemChanged(QListWidgetItem*)));</a>
+<a name="ln283">      disconnect(pluginListWidget, SIGNAL(currentItemChanged(QListWidgetItem*, QListWidgetItem*)));</a>
+<a name="ln284">      QDialog::accept();</a>
+<a name="ln285">      }</a>
+<a name="ln286"> </a>
+<a name="ln287">//---------------------------------------------------------</a>
+<a name="ln288">//   closeEvent</a>
+<a name="ln289">//---------------------------------------------------------</a>
+<a name="ln290"> </a>
+<a name="ln291">void PluginManager::closeEvent(QCloseEvent* ev)</a>
+<a name="ln292">      {</a>
+<a name="ln293">      emit closed(false);</a>
+<a name="ln294">      QWidget::closeEvent(ev);</a>
+<a name="ln295">      }</a>
+<a name="ln296"> </a>
+<a name="ln297">//---------------------------------------------------------</a>
+<a name="ln298">//   pluginListWidgetItemChanged</a>
+<a name="ln299">//---------------------------------------------------------</a>
+<a name="ln300"> </a>
+<a name="ln301">void PluginManager::pluginListWidgetItemChanged(QListWidgetItem* item, QListWidgetItem*)</a>
+<a name="ln302">      {</a>
+<a name="ln303">      if (!item)</a>
+<a name="ln304">            return;</a>
+<a name="ln305">      int idx = item-&gt;data(Qt::UserRole).toInt();</a>
+<a name="ln306">      const PluginDescription&amp; d = _pluginList[idx];</a>
+<a name="ln307">      QFileInfo fi(d.path);</a>
+<a name="ln308">      pluginName-&gt;setText(fi.completeBaseName());</a>
+<a name="ln309">      pluginPath-&gt;setText(fi.absolutePath());</a>
+<a name="ln310">      pluginVersion-&gt;setText(d.version);</a>
+<a name="ln311">      pluginShortcut-&gt;setText(d.shortcut.keysToString());</a>
+<a name="ln312">      pluginDescription-&gt;setText(d.description);</a>
+<a name="ln313">      }</a>
+<a name="ln314"> </a>
+<a name="ln315">//---------------------------------------------------------</a>
+<a name="ln316">//   pluginLoadToggled</a>
+<a name="ln317">//---------------------------------------------------------</a>
+<a name="ln318"> </a>
+<a name="ln319">void PluginManager::pluginLoadToggled(QListWidgetItem* item)</a>
+<a name="ln320">      {</a>
+<a name="ln321">      int idx = item-&gt;data(Qt::UserRole).toInt();</a>
+<a name="ln322">      PluginDescription* d = &amp;_pluginList[idx];</a>
+<a name="ln323">      d-&gt;load = (item-&gt;checkState() == Qt::Checked);</a>
+<a name="ln324">      }</a>
+<a name="ln325"> </a>
+<a name="ln326">//---------------------------------------------------------</a>
+<a name="ln327">//   definePluginShortcutClicked</a>
+<a name="ln328">//---------------------------------------------------------</a>
+<a name="ln329"> </a>
+<a name="ln330">void PluginManager::definePluginShortcutClicked()</a>
+<a name="ln331">      {</a>
+<a name="ln332">      QListWidgetItem* item = pluginListWidget-&gt;currentItem();</a>
+<a name="ln333">      if (!item)</a>
+<a name="ln334">            return;</a>
+<a name="ln335">      int idx = item-&gt;data(Qt::UserRole).toInt();</a>
+<a name="ln336">      PluginDescription* pd = &amp;_pluginList[idx];</a>
+<a name="ln337">      Shortcut* s = &amp;pd-&gt;shortcut;</a>
+<a name="ln338">      ShortcutCaptureDialog sc(s, localShortcuts, this);</a>
+<a name="ln339">      int rv = sc.exec();</a>
+<a name="ln340">      if (rv == 0)            // abort</a>
+<a name="ln341">            return;</a>
+<a name="ln342">      if (rv == 2)            // replace</a>
+<a name="ln343">            s-&gt;clear();</a>
+<a name="ln344"> </a>
+<a name="ln345">      s-&gt;addShortcut(sc.getKey());</a>
+<a name="ln346">      QAction* action = s-&gt;action();</a>
+<a name="ln347">      action-&gt;setShortcuts(s-&gt;keys());</a>
+<a name="ln348">      mscore-&gt;addAction(action);</a>
+<a name="ln349"> </a>
+<a name="ln350">      pluginShortcut-&gt;setText(s-&gt;keysToString());</a>
+<a name="ln351">      }</a>
+<a name="ln352"> </a>
+<a name="ln353">//---------------------------------------------------------</a>
+<a name="ln354">//   reloadPluginShortcutClicked</a>
+<a name="ln355">//---------------------------------------------------------</a>
+<a name="ln356"> </a>
+<a name="ln357">void PluginManager::reloadPluginsClicked()</a>
+<a name="ln358">      {</a>
+<a name="ln359">      loadList(true);</a>
+<a name="ln360">      QMessageBox::information(0,</a>
+<a name="ln361">            tr(&quot;MuseScore&quot;),</a>
+<a name="ln362">            tr(&quot;Plugins reloaded.&quot;),</a>
+<a name="ln363">            QMessageBox::Ok, QMessageBox::NoButton);</a>
+<a name="ln364">      }</a>
+<a name="ln365"> </a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367">//   clearPluginShortcutClicked</a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369"> </a>
+<a name="ln370">void PluginManager::clearPluginShortcutClicked()</a>
+<a name="ln371">      {</a>
+<a name="ln372">      QListWidgetItem* item = pluginListWidget-&gt;currentItem();</a>
+<a name="ln373">      if (!item)</a>
+<a name="ln374">            return;</a>
+<a name="ln375">      int idx = item-&gt;data(Qt::UserRole).toInt();</a>
+<a name="ln376">      PluginDescription* pd = &amp;_pluginList[idx];</a>
+<a name="ln377">      Shortcut* s = &amp;pd-&gt;shortcut;</a>
+<a name="ln378">      s-&gt;clear();</a>
+<a name="ln379"> </a>
+<a name="ln380">      QAction* action = s-&gt;action();</a>
+<a name="ln381">      action-&gt;setShortcuts(s-&gt;keys());</a>
+<a name="ln382">//      mscore-&gt;addAction(action);</a>
+<a name="ln383"> </a>
+<a name="ln384">      pluginShortcut-&gt;setText(s-&gt;keysToString());</a>
+<a name="ln385">      }</a>
+<a name="ln386"> </a>
+<a name="ln387">//---------------------------------------------------------</a>
+<a name="ln388">//   writeSettings</a>
+<a name="ln389">//---------------------------------------------------------</a>
+<a name="ln390"> </a>
+<a name="ln391">void PluginManager::writeSettings()</a>
+<a name="ln392">      {</a>
+<a name="ln393">      MuseScore::saveGeometry(this);</a>
+<a name="ln394">      }</a>
+<a name="ln395"> </a>
+<a name="ln396">//---------------------------------------------------------</a>
+<a name="ln397">//   readSettings</a>
+<a name="ln398">//---------------------------------------------------------</a>
+<a name="ln399"> </a>
+<a name="ln400">void PluginManager::readSettings()</a>
+<a name="ln401">      {</a>
+<a name="ln402">      MuseScore::restoreGeometry(this);</a>
+<a name="ln403">      }</a>
+<a name="ln404"> </a>
+<a name="ln405">}</a>
+<a name="ln406"> </a>
+
+</code></pre>
+<div class="balloon" rel="73"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="124"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

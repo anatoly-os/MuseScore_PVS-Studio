@@ -1,0 +1,338 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>uploadscoredialog.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2014 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;musescore.h&quot;</a>
+<a name="ln14">#include &quot;downloadUtils.h&quot;</a>
+<a name="ln15">#include &quot;icons.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln18">#include &quot;network/loginmanager.h&quot;</a>
+<a name="ln19">#include &quot;uploadscoredialog.h&quot;</a>
+<a name="ln20"> </a>
+<a name="ln21">namespace Ms {</a>
+<a name="ln22"> </a>
+<a name="ln23">//---------------------------------------------------------</a>
+<a name="ln24">//   showUploadScore</a>
+<a name="ln25">//---------------------------------------------------------</a>
+<a name="ln26"> </a>
+<a name="ln27">void MuseScore::showUploadScoreDialog()</a>
+<a name="ln28">      {</a>
+<a name="ln29">      if (!currentScore())</a>
+<a name="ln30">            return;</a>
+<a name="ln31">      if (!currentScore()-&gt;sanityCheck(QString())) {</a>
+<a name="ln32">            QMessageBox msgBox;</a>
+<a name="ln33">            msgBox.setWindowTitle(QObject::tr(&quot;Upload Error&quot;));</a>
+<a name="ln34">            msgBox.setText(tr(&quot;This score cannot be saved online. Please fix the corrupted measures and try again.&quot;));</a>
+<a name="ln35">            msgBox.setDetailedText(MScore::lastError);</a>
+<a name="ln36">            msgBox.setTextFormat(Qt::RichText);</a>
+<a name="ln37">            msgBox.setIcon(QMessageBox::Warning);</a>
+<a name="ln38">            msgBox.setStandardButtons(QMessageBox::Ok);</a>
+<a name="ln39">            msgBox.exec();</a>
+<a name="ln40">            return;</a>
+<a name="ln41">            }</a>
+<a name="ln42">      if (uploadScoreDialog == nullptr) {</a>
+<a name="ln43">            uploadScoreDialog = new UploadScoreDialog(_loginManager);</a>
+<a name="ln44">            }</a>
+<a name="ln45"> </a>
+<a name="ln46">      uploadScoreDialog-&gt;setTitle(currentScore()-&gt;title());</a>
+<a name="ln47">      _loginManager-&gt;tryLogin();</a>
+<a name="ln48">      }</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   UploadScoreDialog</a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53"> </a>
+<a name="ln54">UploadScoreDialog::UploadScoreDialog(LoginManager* loginManager)</a>
+<a name="ln55"> : QDialog(0)</a>
+<a name="ln56">      {</a>
+<a name="ln57">      setObjectName(&quot;UploadScoreDialog&quot;); // changed object name to reset the saved geometry of the previous dialog which contained a lot more content</a>
+<a name="ln58">      setupUi(this);</a>
+<a name="ln59">      setWindowFlags(this-&gt;windowFlags() &amp; ~Qt::WindowContextHelpButtonHint);</a>
+<a name="ln60"> </a>
+<a name="ln61">      scoreIconLabel-&gt;setPixmap(icons[int(Icons::mscz_ICON)]-&gt;pixmap(scoreIconLabel-&gt;size()));</a>
+<a name="ln62"> </a>
+<a name="ln63">      buttonBox-&gt;addButton(tr(&quot;Continue&quot;), QDialogButtonBox::AcceptRole);</a>
+<a name="ln64">      buttonBox-&gt;addButton(QDialogButtonBox::Cancel);</a>
+<a name="ln65"> </a>
+<a name="ln66">      connect(buttonBox,   SIGNAL(clicked(QAbstractButton*)), SLOT(buttonBoxClicked(QAbstractButton*)));</a>
+<a name="ln67">      _loginManager = loginManager;</a>
+<a name="ln68">      connect(_loginManager, SIGNAL(uploadSuccess(QString, QString, QString)), this, SLOT(uploadSuccess(QString, QString, QString)));</a>
+<a name="ln69">      connect(_loginManager, SIGNAL(uploadError(QString)), this, SLOT(uploadError(QString)));</a>
+<a name="ln70">      connect(_loginManager, SIGNAL(getScoreSuccess(QString, QString, bool, QString, QString, QString)), this, SLOT(onGetScoreSuccess(QString, QString, bool, QString, QString, QString)));</a>
+<a name="ln71">      connect(_loginManager, SIGNAL(getScoreError(QString)), this, SLOT(onGetScoreError(QString)));</a>
+<a name="ln72">      connect(_loginManager, SIGNAL(tryLoginSuccess()), this, SLOT(display()));</a>
+<a name="ln73">      connect(_loginManager, &amp;LoginManager::mediaUploadSuccess, this, QOverload&lt;&gt;::of(&amp;UploadScoreDialog::updateScoreData));</a>
+<a name="ln74">      connect(btnSignout, SIGNAL(pressed()), this, SLOT(logout()));</a>
+<a name="ln75">      }</a>
+<a name="ln76"> </a>
+<a name="ln77">//---------------------------------------------------------</a>
+<a name="ln78">//   buttonBoxClicked</a>
+<a name="ln79">//---------------------------------------------------------</a>
+<a name="ln80"> </a>
+<a name="ln81">void UploadScoreDialog::buttonBoxClicked(QAbstractButton* button)</a>
+<a name="ln82">      {</a>
+<a name="ln83">      QDialogButtonBox::ButtonRole role = buttonBox-&gt;buttonRole(button);</a>
+<a name="ln84">      if (role == QDialogButtonBox::AcceptRole)</a>
+<a name="ln85">            upload(updateExistingCb-&gt;isChecked() ? _nid : -1);</a>
+<a name="ln86">      else</a>
+<a name="ln87">           setVisible(false);</a>
+<a name="ln88">      }</a>
+<a name="ln89"> </a>
+<a name="ln90">//---------------------------------------------------------</a>
+<a name="ln91">//   upload</a>
+<a name="ln92">//---------------------------------------------------------</a>
+<a name="ln93"> </a>
+<a name="ln94">void UploadScoreDialog::upload(int nid)</a>
+<a name="ln95">     {</a>
+<a name="ln96">     Score* score = mscore-&gt;currentScore()-&gt;masterScore();</a>
+<a name="ln97">     const QString scoreTitle = title-&gt;text().trimmed().isEmpty() ? score-&gt;title() : title-&gt;text();</a>
+<a name="ln98">     QString path = QDir::tempPath() + QString(&quot;/temp_%1.mscz&quot;).arg(qrand() % 100000);</a>
+<a name="ln99">     if(mscore-&gt;saveAs(score, true, path, &quot;mscz&quot;)) {</a>
+<a name="ln100">           _nid = nid;</a>
+<a name="ln101">           _loginManager-&gt;upload(path, nid, scoreTitle);</a>
+<a name="ln102">           }</a>
+<a name="ln103">     }</a>
+<a name="ln104"> </a>
+<a name="ln105">//---------------------------------------------------------</a>
+<a name="ln106">//   uploadSuccess</a>
+<a name="ln107">//---------------------------------------------------------</a>
+<a name="ln108"> </a>
+<a name="ln109">void UploadScoreDialog::uploadSuccess(const QString&amp; url, const QString&amp; nid, const QString&amp; vid)</a>
+<a name="ln110">      {</a>
+<a name="ln111">      setVisible(false);</a>
+<a name="ln112">      _url = url;</a>
+<a name="ln113">      const int oldScoreID = _nid;</a>
+<a name="ln114"> </a>
+<a name="ln115">      bool ok;</a>
+<a name="ln116">      _nid = nid.toInt(&amp;ok);</a>
+<a name="ln117">      if (!ok)</a>
+<a name="ln118">            _nid = 0;</a>
+<a name="ln119"> </a>
+<a name="ln120">      _newScore = !(oldScoreID &amp;&amp; oldScoreID == _nid);</a>
+<a name="ln121"> </a>
+<a name="ln122">      Score* score = mscore-&gt;currentScore()-&gt;masterScore();</a>
+<a name="ln123">      QMap&lt;QString, QString&gt;  metatags = score-&gt;metaTags();</a>
+<a name="ln124">      if (metatags.value(&quot;source&quot;) != url) {</a>
+<a name="ln125">            metatags.insert(&quot;source&quot;, url);</a>
+<a name="ln126">            score-&gt;startCmd();</a>
+<a name="ln127">            score-&gt;undo(new ChangeMetaTags(score, metatags));</a>
+<a name="ln128">            score-&gt;endCmd();</a>
+<a name="ln129">      }</a>
+<a name="ln130">      if (uploadAudio-&gt;isChecked())</a>
+<a name="ln131">            _loginManager-&gt;getMediaUrl(nid, vid, &quot;mp3&quot;);</a>
+<a name="ln132">      else</a>
+<a name="ln133">            updateScoreData(nid, _newScore);</a>
+<a name="ln134">      }</a>
+<a name="ln135"> </a>
+<a name="ln136">//---------------------------------------------------------</a>
+<a name="ln137">//   updateScoreData</a>
+<a name="ln138">//---------------------------------------------------------</a>
+<a name="ln139"> </a>
+<a name="ln140">void UploadScoreDialog::updateScoreData(const QString&amp; nid, bool newScore)</a>
+<a name="ln141">      {</a>
+<a name="ln142">      _loginManager-&gt;updateScoreData(nid, newScore);</a>
+<a name="ln143">      }</a>
+<a name="ln144"> </a>
+<a name="ln145">void UploadScoreDialog::updateScoreData()</a>
+<a name="ln146">      {</a>
+<a name="ln147">      updateScoreData(QString::number(_nid), _newScore);</a>
+<a name="ln148">      }</a>
+<a name="ln149"> </a>
+<a name="ln150">//---------------------------------------------------------</a>
+<a name="ln151">//   uploadSuccess</a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153"> </a>
+<a name="ln154">void UploadScoreDialog::displaySuccess()</a>
+<a name="ln155">      {</a>
+<a name="ln156">      QMessageBox::information(this,</a>
+<a name="ln157">               tr(&quot;Success&quot;),</a>
+<a name="ln158">               tr(&quot;Finished! %1Go to my score%2.&quot;)</a>
+<a name="ln159">                               .arg(&quot;&lt;a href=\&quot;&quot; + _url + &quot;\&quot;&gt;&quot;)</a>
+<a name="ln160">                               .arg(&quot;&lt;/a&gt;&quot;),</a>
+<a name="ln161">               QMessageBox::Ok, QMessageBox::NoButton);</a>
+<a name="ln162">      }</a>
+<a name="ln163"> </a>
+<a name="ln164">//---------------------------------------------------------</a>
+<a name="ln165">//   uploadError</a>
+<a name="ln166">//---------------------------------------------------------</a>
+<a name="ln167"> </a>
+<a name="ln168">void UploadScoreDialog::uploadError(const QString&amp; error)</a>
+<a name="ln169">      {</a>
+<a name="ln170">      QMessageBox::information(this,</a>
+<a name="ln171">               tr(&quot;Error&quot;),</a>
+<a name="ln172">               error,</a>
+<a name="ln173">               QMessageBox::Ok, QMessageBox::NoButton);</a>
+<a name="ln174">      }</a>
+<a name="ln175"> </a>
+<a name="ln176">//---------------------------------------------------------</a>
+<a name="ln177">//   showOrHideUploadAudio</a>
+<a name="ln178">//---------------------------------------------------------</a>
+<a name="ln179"> </a>
+<a name="ln180">void UploadScoreDialog::showOrHideUploadAudio()</a>
+<a name="ln181">      {</a>
+<a name="ln182">      uploadAudio-&gt;setEnabled(mscore-&gt;canSaveMp3());</a>
+<a name="ln183">      bool v = !mscore-&gt;synthesizerState().isDefaultSynthSoundfont();</a>
+<a name="ln184">      uploadAudio-&gt;setVisible(v);</a>
+<a name="ln185">      }</a>
+<a name="ln186"> </a>
+<a name="ln187">//---------------------------------------------------------</a>
+<a name="ln188">//   display</a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190"> </a>
+<a name="ln191">void UploadScoreDialog::display()</a>
+<a name="ln192">      {</a>
+<a name="ln193">      DownloadUtils* avatarDownload = new DownloadUtils(this);</a>
+<a name="ln194">      const QSize avatarSize = userAvatarLabel-&gt;maximumSize();</a>
+<a name="ln195">      const QString avatarUrl = _loginManager-&gt;avatar().toString().replace(QRegExp(&quot;\\@[0-9]+x[0-9]+&quot;), QString(&quot;@%1x%2&quot;).arg(avatarSize.width()).arg(avatarSize.height()));</a>
+<a name="ln196">      avatarDownload-&gt;setTarget(avatarUrl);</a>
+<a name="ln197">      connect(avatarDownload, &amp;DownloadUtils::done, this, [this, avatarSize, avatarDownload]() {</a>
+<a name="ln198">            QPixmap pm;</a>
+<a name="ln199">            pm.loadFromData(avatarDownload-&gt;returnData());</a>
+<a name="ln200">            if (pm.size() != avatarSize)</a>
+<a name="ln201">                  pm = pm.scaled(avatarSize);</a>
+<a name="ln202"> </a>
+<a name="ln203">            userAvatarLabel-&gt;setPixmap(pm);</a>
+<a name="ln204"> </a>
+<a name="ln205">            avatarDownload-&gt;deleteLater();</a>
+<a name="ln206">            });</a>
+<a name="ln207">      avatarDownload-&gt;download();</a>
+<a name="ln208"> </a>
+<a name="ln209">      lblUsername-&gt;setText(_loginManager-&gt;userName());</a>
+<a name="ln210">      QString source = mscore-&gt;currentScore()-&gt;masterScore()-&gt;metaTag(&quot;source&quot;);</a>
+<a name="ln211">      if (!source.isEmpty()) {</a>
+<a name="ln212">            QStringList sl = source.split(&quot;/&quot;);</a>
+<a name="ln213">            if (sl.length() &gt; 0) {</a>
+<a name="ln214">                  QString nidString = sl.last();</a>
+<a name="ln215">                  bool ok;</a>
+<a name="ln216">                  int nid = nidString.toInt(&amp;ok);</a>
+<a name="ln217">                  if (ok) {</a>
+<a name="ln218">                        _nid = nid;</a>
+<a name="ln219">                        _loginManager-&gt;getScoreInfo(nid);</a>
+<a name="ln220">                        return;</a>
+<a name="ln221">                        }</a>
+<a name="ln222">                  }</a>
+<a name="ln223">            }</a>
+<a name="ln224">      showOrHideUploadAudio();</a>
+<a name="ln225">      clear();</a>
+<a name="ln226">      setVisible(true);</a>
+<a name="ln227">      }</a>
+<a name="ln228"> </a>
+<a name="ln229">//---------------------------------------------------------</a>
+<a name="ln230">//   onGetScoreSuccess</a>
+<a name="ln231">//---------------------------------------------------------</a>
+<a name="ln232"> </a>
+<a name="ln233">void UploadScoreDialog::onGetScoreSuccess(const QString&amp; t, const QString&amp; /*desc*/, bool /*priv*/, const QString&amp; /*lic*/, const QString&amp; /*tag*/, const QString&amp; url)</a>
+<a name="ln234">      {</a>
+<a name="ln235">      // fill with score info</a>
+<a name="ln236">      title-&gt;setText(t);</a>
+<a name="ln237">      updateExistingCb-&gt;setChecked(true);</a>
+<a name="ln238">      updateExistingCb-&gt;setVisible(true);</a>
+<a name="ln239">      linkToScore-&gt;setVisible(true);</a>
+<a name="ln240">      linkToScore-&gt;setText(&quot;[&lt;a href=\&quot;&quot; + url + &quot;\&quot;&gt;&quot; + tr(&quot;Link&quot;) + &quot;&lt;/a&gt;]&quot;);</a>
+<a name="ln241">      showOrHideUploadAudio();</a>
+<a name="ln242">      setVisible(true);</a>
+<a name="ln243">      }</a>
+<a name="ln244"> </a>
+<a name="ln245">//---------------------------------------------------------</a>
+<a name="ln246">//   onGetScoreError</a>
+<a name="ln247">//---------------------------------------------------------</a>
+<a name="ln248"> </a>
+<a name="ln249">void UploadScoreDialog::onGetScoreError(const QString&amp; /*error*/)</a>
+<a name="ln250">      {</a>
+<a name="ln251">      clear();</a>
+<a name="ln252">      setVisible(true);</a>
+<a name="ln253">      }</a>
+<a name="ln254"> </a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256">//   clear</a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258"> </a>
+<a name="ln259">void UploadScoreDialog::clear()</a>
+<a name="ln260">      {</a>
+<a name="ln261">      updateExistingCb-&gt;setChecked(false);</a>
+<a name="ln262">      updateExistingCb-&gt;setVisible(false);</a>
+<a name="ln263">      linkToScore-&gt;setVisible(false);</a>
+<a name="ln264">      linkToScore-&gt;setText(&quot;&quot;);</a>
+<a name="ln265">      uploadAudio-&gt;setChecked(false);</a>
+<a name="ln266">      _nid = -1;</a>
+<a name="ln267">      _url = &quot;&quot;;</a>
+<a name="ln268">      }</a>
+<a name="ln269"> </a>
+<a name="ln270">//---------------------------------------------------------</a>
+<a name="ln271">//   logout</a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273"> </a>
+<a name="ln274">void UploadScoreDialog::logout()</a>
+<a name="ln275">      {</a>
+<a name="ln276">      _loginManager-&gt;logout();</a>
+<a name="ln277">      setVisible(false);</a>
+<a name="ln278">      }</a>
+<a name="ln279"> </a>
+<a name="ln280">//---------------------------------------------------------</a>
+<a name="ln281">//   hideEvent</a>
+<a name="ln282">//---------------------------------------------------------</a>
+<a name="ln283"> </a>
+<a name="ln284">void UploadScoreDialog::showEvent(QShowEvent* event)</a>
+<a name="ln285">      {</a>
+<a name="ln286">      if (!event-&gt;spontaneous())</a>
+<a name="ln287">            adjustSize();</a>
+<a name="ln288"> </a>
+<a name="ln289">      QWidget::showEvent(event);</a>
+<a name="ln290">      }</a>
+<a name="ln291">}</a>
+<a name="ln292"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

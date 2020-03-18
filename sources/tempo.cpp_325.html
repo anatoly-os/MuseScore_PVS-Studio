@@ -1,0 +1,358 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>tempo.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;tempo.h&quot;</a>
+<a name="ln14">#include &quot;xml.h&quot;</a>
+<a name="ln15"> </a>
+<a name="ln16">namespace Ms {</a>
+<a name="ln17"> </a>
+<a name="ln18">//---------------------------------------------------------</a>
+<a name="ln19">//   TEvent</a>
+<a name="ln20">//---------------------------------------------------------</a>
+<a name="ln21"> </a>
+<a name="ln22">TEvent::TEvent()</a>
+<a name="ln23">      {</a>
+<a name="ln24">      type     = TempoType::INVALID;</a>
+<a name="ln25">      tempo    = 0.0;</a>
+<a name="ln26">      pause    = 0.0;</a>
+<a name="ln27">      }</a>
+<a name="ln28"> </a>
+<a name="ln29">TEvent::TEvent(const TEvent&amp; e)</a>
+<a name="ln30">      {</a>
+<a name="ln31">      type  = e.type;</a>
+<a name="ln32">      tempo = e.tempo;</a>
+<a name="ln33">      pause = e.pause;</a>
+<a name="ln34">      time  = e.time;</a>
+<a name="ln35">      }</a>
+<a name="ln36"> </a>
+<a name="ln37">TEvent::TEvent(qreal t, qreal p, TempoType tp)</a>
+<a name="ln38">      {</a>
+<a name="ln39">      type  = tp;</a>
+<a name="ln40">      tempo = t;</a>
+<a name="ln41">      pause = p;</a>
+<a name="ln42">      time  = 0.0;</a>
+<a name="ln43">      }</a>
+<a name="ln44"> </a>
+<a name="ln45">bool TEvent::valid() const</a>
+<a name="ln46">      {</a>
+<a name="ln47">      return !(!type);</a>
+<a name="ln48">      }</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   TempoMap</a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53"> </a>
+<a name="ln54">TempoMap::TempoMap()</a>
+<a name="ln55">      {</a>
+<a name="ln56">      _tempo    = 2.0;        // default fixed tempo in beat per second</a>
+<a name="ln57">      _tempoSN  = 1;</a>
+<a name="ln58">      _relTempo = 1.0;</a>
+<a name="ln59">      }</a>
+<a name="ln60"> </a>
+<a name="ln61">//---------------------------------------------------------</a>
+<a name="ln62">//   setPause</a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64"> </a>
+<a name="ln65">void TempoMap::setPause(int tick, qreal pause)</a>
+<a name="ln66">      {</a>
+<a name="ln67">      auto e = find(tick);</a>
+<a name="ln68">      if (e != end()) {</a>
+<a name="ln69">            e-&gt;second.pause = pause;</a>
+<a name="ln70">            e-&gt;second.type |= TempoType::PAUSE;</a>
+<a name="ln71">            }</a>
+<a name="ln72">      else {</a>
+<a name="ln73">            qreal t = tempo(tick);</a>
+<a name="ln74">            insert(std::pair&lt;const int, TEvent&gt; (tick, TEvent(t, pause, TempoType::PAUSE)));</a>
+<a name="ln75">            }</a>
+<a name="ln76">      normalize();</a>
+<a name="ln77">      }</a>
+<a name="ln78"> </a>
+<a name="ln79">//---------------------------------------------------------</a>
+<a name="ln80">//   setTempo</a>
+<a name="ln81">//---------------------------------------------------------</a>
+<a name="ln82"> </a>
+<a name="ln83">void TempoMap::setTempo(int tick, qreal tempo)</a>
+<a name="ln84">      {</a>
+<a name="ln85">      auto e = find(tick);</a>
+<a name="ln86">      if (e != end()) {</a>
+<a name="ln87">            e-&gt;second.tempo = tempo;</a>
+<a name="ln88">            e-&gt;second.type |= TempoType::FIX;</a>
+<a name="ln89">            }</a>
+<a name="ln90">      else</a>
+<a name="ln91">            insert(std::pair&lt;const int, TEvent&gt; (tick, TEvent(tempo, 0.0, TempoType::FIX)));</a>
+<a name="ln92">      normalize();</a>
+<a name="ln93">      }</a>
+<a name="ln94"> </a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96">//   TempoMap::normalize</a>
+<a name="ln97">//---------------------------------------------------------</a>
+<a name="ln98"> </a>
+<a name="ln99">void TempoMap::normalize()</a>
+<a name="ln100">      {</a>
+<a name="ln101">      qreal time  = 0;</a>
+<a name="ln102">      int tick    = 0;</a>
+<a name="ln103">      qreal tempo = 2.0;</a>
+<a name="ln104">      for (auto e = begin(); e != end(); ++e) {</a>
+<a name="ln105">            // entries that represent a pause *only* (not tempo change also)</a>
+<a name="ln106">            // need to be corrected to continue previous tempo</a>
+<a name="ln107">            if (!(e-&gt;second.type &amp; (TempoType::FIX|TempoType::RAMP)))</a>
+<a name="ln108">                  e-&gt;second.tempo = tempo;</a>
+<a name="ln109">            int delta = e-&gt;first - tick;</a>
+<a name="ln110">            time += qreal(delta) / (MScore::division * tempo * _relTempo);</a>
+<a name="ln111">            time += e-&gt;second.pause;</a>
+<a name="ln112">            e-&gt;second.time = time;</a>
+<a name="ln113">            tick  = e-&gt;first;</a>
+<a name="ln114">            tempo = e-&gt;second.tempo;</a>
+<a name="ln115">            }</a>
+<a name="ln116">      ++_tempoSN;</a>
+<a name="ln117">      }</a>
+<a name="ln118"> </a>
+<a name="ln119">//---------------------------------------------------------</a>
+<a name="ln120">//   TempoMap::dump</a>
+<a name="ln121">//---------------------------------------------------------</a>
+<a name="ln122"> </a>
+<a name="ln123">void TempoMap::dump() const</a>
+<a name="ln124">      {</a>
+<a name="ln125">      qDebug(&quot;\nTempoMap:&quot;);</a>
+<a name="ln126">      for (auto i = begin(); i != end(); ++i)</a>
+<a name="ln127">            qDebug(&quot;%6d type: %2d tempo: %f pause: %f time: %f&quot;,</a>
+<a name="ln128">               i-&gt;first, static_cast&lt;int&gt;(i-&gt;second.type), i-&gt;second.tempo, i-&gt;second.pause, i-&gt;second.time);</a>
+<a name="ln129">      }</a>
+<a name="ln130"> </a>
+<a name="ln131">//---------------------------------------------------------</a>
+<a name="ln132">//   clear</a>
+<a name="ln133">//---------------------------------------------------------</a>
+<a name="ln134"> </a>
+<a name="ln135">void TempoMap::clear()</a>
+<a name="ln136">      {</a>
+<a name="ln137">      std::map&lt;int,TEvent&gt;::clear();</a>
+<a name="ln138">      ++_tempoSN;</a>
+<a name="ln139">      }</a>
+<a name="ln140"> </a>
+<a name="ln141">//---------------------------------------------------------</a>
+<a name="ln142">//   clearRange</a>
+<a name="ln143">//    Clears the given range, start tick included, end tick</a>
+<a name="ln144">//    excluded.</a>
+<a name="ln145">//---------------------------------------------------------</a>
+<a name="ln146"> </a>
+<a name="ln147">void TempoMap::clearRange(int tick1, int tick2)</a>
+<a name="ln148">      {</a>
+<a name="ln149">      iterator first = lower_bound(tick1);</a>
+<a name="ln150">      iterator last = lower_bound(tick2);</a>
+<a name="ln151">      if (first == last)</a>
+<a name="ln152">            return;</a>
+<a name="ln153">      erase(first, last);</a>
+<a name="ln154">      ++_tempoSN;</a>
+<a name="ln155">      }</a>
+<a name="ln156"> </a>
+<a name="ln157">//---------------------------------------------------------</a>
+<a name="ln158">//   tempo</a>
+<a name="ln159">//---------------------------------------------------------</a>
+<a name="ln160"> </a>
+<a name="ln161">qreal TempoMap::tempo(int tick) const</a>
+<a name="ln162">      {</a>
+<a name="ln163">      if (empty())</a>
+<a name="ln164">            return 2.0;</a>
+<a name="ln165">      auto i = lower_bound(tick);</a>
+<a name="ln166">      if (i == end()) {</a>
+<a name="ln167">            --i;</a>
+<a name="ln168">            return i-&gt;second.tempo;</a>
+<a name="ln169">            }</a>
+<a name="ln170">      if (i-&gt;first == tick)</a>
+<a name="ln171">            return i-&gt;second.tempo;</a>
+<a name="ln172">      if (i == begin())</a>
+<a name="ln173">            return 2.0;</a>
+<a name="ln174">      --i;</a>
+<a name="ln175">      return i-&gt;second.tempo;</a>
+<a name="ln176">      }</a>
+<a name="ln177"> </a>
+<a name="ln178">//---------------------------------------------------------</a>
+<a name="ln179">//   del</a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181"> </a>
+<a name="ln182">void TempoMap::del(int tick)</a>
+<a name="ln183">      {</a>
+<a name="ln184">      auto e = find(tick);</a>
+<a name="ln185">      if (e == end()) {</a>
+<a name="ln186">            qDebug(&quot;TempoMap::del event at (%d): not found&quot;, tick);</a>
+<a name="ln187">            // abort();</a>
+<a name="ln188">            return;</a>
+<a name="ln189">            }</a>
+<a name="ln190">      // don't delete event if still being used for pause</a>
+<a name="ln191">      if (e-&gt;second.type &amp; TempoType::PAUSE)</a>
+<a name="ln192">            e-&gt;second.type = TempoType::PAUSE;</a>
+<a name="ln193">      else</a>
+<a name="ln194">            erase(e);</a>
+<a name="ln195">      normalize();</a>
+<a name="ln196">      }</a>
+<a name="ln197"> </a>
+<a name="ln198">//---------------------------------------------------------</a>
+<a name="ln199">//   setRelTempo</a>
+<a name="ln200">//---------------------------------------------------------</a>
+<a name="ln201"> </a>
+<a name="ln202">void TempoMap::setRelTempo(qreal val)</a>
+<a name="ln203">      {</a>
+<a name="ln204">      _relTempo = val;</a>
+<a name="ln205">      normalize();</a>
+<a name="ln206">      }</a>
+<a name="ln207"> </a>
+<a name="ln208">//---------------------------------------------------------</a>
+<a name="ln209">//   delTempo</a>
+<a name="ln210">//---------------------------------------------------------</a>
+<a name="ln211"> </a>
+<a name="ln212">void TempoMap::delTempo(int tick)</a>
+<a name="ln213">      {</a>
+<a name="ln214">      del(tick);</a>
+<a name="ln215">      ++_tempoSN;</a>
+<a name="ln216">      }</a>
+<a name="ln217"> </a>
+<a name="ln218">//---------------------------------------------------------</a>
+<a name="ln219">//   tick2time</a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221"> </a>
+<a name="ln222">qreal TempoMap::tick2time(int tick, qreal time, int* sn) const</a>
+<a name="ln223">      {</a>
+<a name="ln224">      return (*sn == _tempoSN) ? time : tick2time(tick, sn);</a>
+<a name="ln225">      }</a>
+<a name="ln226"> </a>
+<a name="ln227">//---------------------------------------------------------</a>
+<a name="ln228">//   time2tick</a>
+<a name="ln229">//    return cached value t if list did not change</a>
+<a name="ln230">//---------------------------------------------------------</a>
+<a name="ln231"> </a>
+<a name="ln232">int TempoMap::time2tick(qreal time, int t, int* sn) const</a>
+<a name="ln233">      {</a>
+<a name="ln234">      return (*sn == _tempoSN) ? t : time2tick(time, sn);</a>
+<a name="ln235">      }</a>
+<a name="ln236"> </a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238">//   tick2time</a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240"> </a>
+<a name="ln241">qreal TempoMap::tick2time(int tick, int* sn) const</a>
+<a name="ln242">      {</a>
+<a name="ln243">      qreal time  = 0.0;</a>
+<a name="ln244">      qreal delta = qreal(tick);</a>
+<a name="ln245">      qreal tempo = 2.0;</a>
+<a name="ln246"> </a>
+<a name="ln247">      if (!empty()) {</a>
+<a name="ln248">            int ptick  = 0;</a>
+<a name="ln249">            auto e = lower_bound(tick);</a>
+<a name="ln250">            if (e == end()) {</a>
+<a name="ln251">                  auto pe = e;</a>
+<a name="ln252">                  --pe;</a>
+<a name="ln253">                  ptick = pe-&gt;first;</a>
+<a name="ln254">                  tempo = pe-&gt;second.tempo;</a>
+<a name="ln255">                  time  = pe-&gt;second.time;</a>
+<a name="ln256">                  }</a>
+<a name="ln257">            else if (e-&gt;first == tick) {</a>
+<a name="ln258">                  ptick = tick;</a>
+<a name="ln259">                  tempo = e-&gt;second.tempo;</a>
+<a name="ln260">                  time  = e-&gt;second.time;</a>
+<a name="ln261">                  }</a>
+<a name="ln262">            else if (e != begin()) {</a>
+<a name="ln263">                  auto pe = e;</a>
+<a name="ln264">                  --pe;</a>
+<a name="ln265">                  ptick = pe-&gt;first;</a>
+<a name="ln266">                  tempo = pe-&gt;second.tempo;</a>
+<a name="ln267">                  time  = pe-&gt;second.time;</a>
+<a name="ln268">                  }</a>
+<a name="ln269">            delta = qreal(tick - ptick);</a>
+<a name="ln270">            }</a>
+<a name="ln271">      else</a>
+<a name="ln272">            qDebug(&quot;TempoMap: empty&quot;);</a>
+<a name="ln273">      if (sn)</a>
+<a name="ln274">            *sn = _tempoSN;</a>
+<a name="ln275">      time += delta / (MScore::division * tempo * _relTempo);</a>
+<a name="ln276">      return time;</a>
+<a name="ln277">      }</a>
+<a name="ln278"> </a>
+<a name="ln279">//---------------------------------------------------------</a>
+<a name="ln280">//   time2tick</a>
+<a name="ln281">//---------------------------------------------------------</a>
+<a name="ln282"> </a>
+<a name="ln283">int TempoMap::time2tick(qreal time, int* sn) const</a>
+<a name="ln284">      {</a>
+<a name="ln285">      int tick     = 0;</a>
+<a name="ln286">      qreal delta = time;</a>
+<a name="ln287">      qreal tempo = _tempo;</a>
+<a name="ln288"> </a>
+<a name="ln289">      delta = 0.0;</a>
+<a name="ln290">      tempo = 2.0;</a>
+<a name="ln291">      for (auto e = begin(); e != end(); ++e) {</a>
+<a name="ln292">            // if in a pause period, wait on previous tick</a>
+<a name="ln293">            if ((time &lt;= e-&gt;second.time) &amp;&amp; (time &gt; e-&gt;second.time - e-&gt;second.pause)) {</a>
+<a name="ln294">                  delta = (time - (e-&gt;second.time - e-&gt;second.pause) + delta);</a>
+<a name="ln295">                  break;</a>
+<a name="ln296">                  }</a>
+<a name="ln297">            if (e-&gt;second.time &gt;= time)</a>
+<a name="ln298">                  break;</a>
+<a name="ln299">            delta = e-&gt;second.time;</a>
+<a name="ln300">            tick  = e-&gt;first;</a>
+<a name="ln301">            tempo = e-&gt;second.tempo;</a>
+<a name="ln302">            }</a>
+<a name="ln303">      delta = time - delta;</a>
+<a name="ln304">      tick += lrint(delta * _relTempo * MScore::division * tempo);</a>
+<a name="ln305">      if (sn)</a>
+<a name="ln306">            *sn = _tempoSN;</a>
+<a name="ln307">      return tick;</a>
+<a name="ln308">      }</a>
+<a name="ln309"> </a>
+<a name="ln310">}</a>
+<a name="ln311"> </a>
+
+</code></pre>
+<div class="balloon" rel="22"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: time.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

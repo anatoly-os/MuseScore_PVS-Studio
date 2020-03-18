@@ -1,0 +1,280 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>cidparse.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  cidparse.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    CID-keyed Type1 parser (body).                                       */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln21">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln22">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;cidparse.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">#include &quot;ciderrs.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28"> </a>
+<a name="ln29">  /*************************************************************************/</a>
+<a name="ln30">  /*                                                                       */</a>
+<a name="ln31">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln32">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln33">  /* messages during execution.                                            */</a>
+<a name="ln34">  /*                                                                       */</a>
+<a name="ln35">#undef  FT_COMPONENT</a>
+<a name="ln36">#define FT_COMPONENT  trace_cidparse</a>
+<a name="ln37"> </a>
+<a name="ln38"> </a>
+<a name="ln39">  /*************************************************************************/</a>
+<a name="ln40">  /*************************************************************************/</a>
+<a name="ln41">  /*************************************************************************/</a>
+<a name="ln42">  /*****                                                               *****/</a>
+<a name="ln43">  /*****                    INPUT STREAM PARSER                        *****/</a>
+<a name="ln44">  /*****                                                               *****/</a>
+<a name="ln45">  /*************************************************************************/</a>
+<a name="ln46">  /*************************************************************************/</a>
+<a name="ln47">  /*************************************************************************/</a>
+<a name="ln48"> </a>
+<a name="ln49"> </a>
+<a name="ln50">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln51">  cid_parser_new( CID_Parser*    parser,</a>
+<a name="ln52">                  FT_Stream      stream,</a>
+<a name="ln53">                  FT_Memory      memory,</a>
+<a name="ln54">                  PSAux_Service  psaux )</a>
+<a name="ln55">  {</a>
+<a name="ln56">    FT_Error  error;</a>
+<a name="ln57">    FT_ULong  base_offset, offset, ps_len;</a>
+<a name="ln58">    FT_Byte   *cur, *limit;</a>
+<a name="ln59">    FT_Byte   *arg1, *arg2;</a>
+<a name="ln60"> </a>
+<a name="ln61"> </a>
+<a name="ln62">    FT_MEM_ZERO( parser, sizeof ( *parser ) );</a>
+<a name="ln63">    psaux-&gt;ps_parser_funcs-&gt;init( &amp;parser-&gt;root, 0, 0, memory );</a>
+<a name="ln64"> </a>
+<a name="ln65">    parser-&gt;stream = stream;</a>
+<a name="ln66"> </a>
+<a name="ln67">    base_offset = FT_STREAM_POS();</a>
+<a name="ln68"> </a>
+<a name="ln69">    /* first of all, check the font format in the header */</a>
+<a name="ln70">    if ( FT_FRAME_ENTER( 31 ) )</a>
+<a name="ln71">      goto Exit;</a>
+<a name="ln72"> </a>
+<a name="ln73">    if ( ft_strncmp( (char *)stream-&gt;cursor,</a>
+<a name="ln74">                     &quot;%!PS-Adobe-3.0 Resource-CIDFont&quot;, 31 ) )</a>
+<a name="ln75">    {</a>
+<a name="ln76">      FT_TRACE2(( &quot;  not a CID-keyed font\n&quot; ));</a>
+<a name="ln77">      error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln78">    }</a>
+<a name="ln79"> </a>
+<a name="ln80">    FT_FRAME_EXIT();</a>
+<a name="ln81">    if ( error )</a>
+<a name="ln82">      goto Exit;</a>
+<a name="ln83"> </a>
+<a name="ln84">  Again:</a>
+<a name="ln85">    /* now, read the rest of the file until we find */</a>
+<a name="ln86">    /* `StartData' or `/sfnts'                      */</a>
+<a name="ln87">    {</a>
+<a name="ln88">      FT_Byte   buffer[256 + 10];</a>
+<a name="ln89">      FT_ULong  read_len = 256 + 10;</a>
+<a name="ln90">      FT_Byte*  p        = buffer;</a>
+<a name="ln91"> </a>
+<a name="ln92"> </a>
+<a name="ln93">      for ( offset = FT_STREAM_POS(); ; offset += 256 )</a>
+<a name="ln94">      {</a>
+<a name="ln95">        FT_ULong  stream_len;</a>
+<a name="ln96"> </a>
+<a name="ln97"> </a>
+<a name="ln98">        stream_len = stream-&gt;size - FT_STREAM_POS();</a>
+<a name="ln99">        if ( stream_len == 0 )</a>
+<a name="ln100">        {</a>
+<a name="ln101">          FT_TRACE2(( &quot;cid_parser_new: no `StartData' keyword found\n&quot; ));</a>
+<a name="ln102">          error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln103">          goto Exit;</a>
+<a name="ln104">        }</a>
+<a name="ln105"> </a>
+<a name="ln106">        read_len = FT_MIN( read_len, stream_len );</a>
+<a name="ln107">        if ( FT_STREAM_READ( p, read_len ) )</a>
+<a name="ln108">          goto Exit;</a>
+<a name="ln109"> </a>
+<a name="ln110">        if ( read_len &lt; 256 )</a>
+<a name="ln111">          p[read_len]  = '\0';</a>
+<a name="ln112"> </a>
+<a name="ln113">        limit = p + read_len - 10;</a>
+<a name="ln114"> </a>
+<a name="ln115">        for ( p = buffer; p &lt; limit; p++ )</a>
+<a name="ln116">        {</a>
+<a name="ln117">          if ( p[0] == 'S' &amp;&amp; ft_strncmp( (char*)p, &quot;StartData&quot;, 9 ) == 0 )</a>
+<a name="ln118">          {</a>
+<a name="ln119">            /* save offset of binary data after `StartData' */</a>
+<a name="ln120">            offset += (FT_ULong)( p - buffer + 10 );</a>
+<a name="ln121">            goto Found;</a>
+<a name="ln122">          }</a>
+<a name="ln123">          else if ( p[1] == 's' &amp;&amp; ft_strncmp( (char*)p, &quot;/sfnts&quot;, 6 ) == 0 )</a>
+<a name="ln124">          {</a>
+<a name="ln125">            offset += (FT_ULong)( p - buffer + 7 );</a>
+<a name="ln126">            goto Found;</a>
+<a name="ln127">          }</a>
+<a name="ln128">        }</a>
+<a name="ln129"> </a>
+<a name="ln130">        FT_MEM_MOVE( buffer, p, 10 );</a>
+<a name="ln131">        read_len = 256;</a>
+<a name="ln132">        p = buffer + 10;</a>
+<a name="ln133">      }</a>
+<a name="ln134">    }</a>
+<a name="ln135"> </a>
+<a name="ln136">  Found:</a>
+<a name="ln137">    /* We have found the start of the binary data or the `/sfnts' token. */</a>
+<a name="ln138">    /* Now rewind and extract the frame corresponding to this PostScript */</a>
+<a name="ln139">    /* section.                                                          */</a>
+<a name="ln140"> </a>
+<a name="ln141">    ps_len = offset - base_offset;</a>
+<a name="ln142">    if ( FT_STREAM_SEEK( base_offset )                  ||</a>
+<a name="ln143">         FT_FRAME_EXTRACT( ps_len, parser-&gt;postscript ) )</a>
+<a name="ln144">      goto Exit;</a>
+<a name="ln145"> </a>
+<a name="ln146">    parser-&gt;data_offset    = offset;</a>
+<a name="ln147">    parser-&gt;postscript_len = ps_len;</a>
+<a name="ln148">    parser-&gt;root.base      = parser-&gt;postscript;</a>
+<a name="ln149">    parser-&gt;root.cursor    = parser-&gt;postscript;</a>
+<a name="ln150">    parser-&gt;root.limit     = parser-&gt;root.cursor + ps_len;</a>
+<a name="ln151">    parser-&gt;num_dict       = -1;</a>
+<a name="ln152"> </a>
+<a name="ln153">    /* Finally, we check whether `StartData' or `/sfnts' was real --  */</a>
+<a name="ln154">    /* it could be in a comment or string.  We also get the arguments */</a>
+<a name="ln155">    /* of `StartData' to find out whether the data is represented in  */</a>
+<a name="ln156">    /* binary or hex format.                                          */</a>
+<a name="ln157"> </a>
+<a name="ln158">    arg1 = parser-&gt;root.cursor;</a>
+<a name="ln159">    cid_parser_skip_PS_token( parser );</a>
+<a name="ln160">    cid_parser_skip_spaces  ( parser );</a>
+<a name="ln161">    arg2 = parser-&gt;root.cursor;</a>
+<a name="ln162">    cid_parser_skip_PS_token( parser );</a>
+<a name="ln163">    cid_parser_skip_spaces  ( parser );</a>
+<a name="ln164"> </a>
+<a name="ln165">    limit = parser-&gt;root.limit;</a>
+<a name="ln166">    cur   = parser-&gt;root.cursor;</a>
+<a name="ln167"> </a>
+<a name="ln168">    while ( cur &lt; limit )</a>
+<a name="ln169">    {</a>
+<a name="ln170">      if ( parser-&gt;root.error )</a>
+<a name="ln171">      {</a>
+<a name="ln172">        error = parser-&gt;root.error;</a>
+<a name="ln173">        goto Exit;</a>
+<a name="ln174">      }</a>
+<a name="ln175"> </a>
+<a name="ln176">      if ( cur[0] == 'S' &amp;&amp; ft_strncmp( (char*)cur, &quot;StartData&quot;, 9 ) == 0 )</a>
+<a name="ln177">      {</a>
+<a name="ln178">        if ( ft_strncmp( (char*)arg1, &quot;(Hex)&quot;, 5 ) == 0 )</a>
+<a name="ln179">        {</a>
+<a name="ln180">          FT_Long  tmp = ft_atol( (const char *)arg2 );</a>
+<a name="ln181"> </a>
+<a name="ln182"> </a>
+<a name="ln183">          if ( tmp &lt; 0 )</a>
+<a name="ln184">          {</a>
+<a name="ln185">            FT_ERROR(( &quot;cid_parser_new: invalid length of hex data\n&quot; ));</a>
+<a name="ln186">            error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln187">          }</a>
+<a name="ln188">          else</a>
+<a name="ln189">            parser-&gt;binary_length = (FT_ULong)tmp;</a>
+<a name="ln190">        }</a>
+<a name="ln191"> </a>
+<a name="ln192">        goto Exit;</a>
+<a name="ln193">      }</a>
+<a name="ln194">      else if ( cur[1] == 's' &amp;&amp; ft_strncmp( (char*)cur, &quot;/sfnts&quot;, 6 ) == 0 )</a>
+<a name="ln195">      {</a>
+<a name="ln196">        FT_TRACE2(( &quot;cid_parser_new: cannot handle Type 11 fonts\n&quot; ));</a>
+<a name="ln197">        error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln198">        goto Exit;</a>
+<a name="ln199">      }</a>
+<a name="ln200"> </a>
+<a name="ln201">      cid_parser_skip_PS_token( parser );</a>
+<a name="ln202">      cid_parser_skip_spaces  ( parser );</a>
+<a name="ln203">      arg1 = arg2;</a>
+<a name="ln204">      arg2 = cur;</a>
+<a name="ln205">      cur  = parser-&gt;root.cursor;</a>
+<a name="ln206">    }</a>
+<a name="ln207"> </a>
+<a name="ln208">    /* we haven't found the correct `StartData'; go back and continue */</a>
+<a name="ln209">    /* searching                                                      */</a>
+<a name="ln210">    FT_FRAME_RELEASE( parser-&gt;postscript );</a>
+<a name="ln211">    if ( !FT_STREAM_SEEK( offset ) )</a>
+<a name="ln212">      goto Again;</a>
+<a name="ln213"> </a>
+<a name="ln214">  Exit:</a>
+<a name="ln215">    return error;</a>
+<a name="ln216">  }</a>
+<a name="ln217"> </a>
+<a name="ln218"> </a>
+<a name="ln219">  FT_LOCAL_DEF( void )</a>
+<a name="ln220">  cid_parser_done( CID_Parser*  parser )</a>
+<a name="ln221">  {</a>
+<a name="ln222">    /* always free the private dictionary */</a>
+<a name="ln223">    if ( parser-&gt;postscript )</a>
+<a name="ln224">    {</a>
+<a name="ln225">      FT_Stream  stream = parser-&gt;stream;</a>
+<a name="ln226"> </a>
+<a name="ln227"> </a>
+<a name="ln228">      FT_FRAME_RELEASE( parser-&gt;postscript );</a>
+<a name="ln229">    }</a>
+<a name="ln230">    parser-&gt;root.funcs.done( &amp;parser-&gt;root );</a>
+<a name="ln231">  }</a>
+<a name="ln232"> </a>
+<a name="ln233"> </a>
+<a name="ln234">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="130"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v512/" target="_blank">V512</a> A call of the '__builtin___memmove_chk' function will lead to underflow of the buffer 'buffer'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

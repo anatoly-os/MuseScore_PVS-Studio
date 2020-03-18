@@ -1,0 +1,190 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ptmacosx_cf.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/* ptmacosx.c -- portable timer implementation for mac os x */</a>
+<a name="ln2"></a>
+<a name="ln3">#include &lt;stdlib.h&gt;</a>
+<a name="ln4">#include &lt;stdio.h&gt;</a>
+<a name="ln5">#include &lt;pthread.h&gt;</a>
+<a name="ln6">#include &lt;CoreFoundation/CoreFoundation.h&gt;</a>
+<a name="ln7"></a>
+<a name="ln8">#import &lt;mach/mach.h&gt;</a>
+<a name="ln9">#import &lt;mach/mach_error.h&gt;</a>
+<a name="ln10">#import &lt;mach/mach_time.h&gt;</a>
+<a name="ln11">#import &lt;mach/clock.h&gt;</a>
+<a name="ln12"></a>
+<a name="ln13">#include &quot;porttime.h&quot;</a>
+<a name="ln14"></a>
+<a name="ln15">#define THREAD_IMPORTANCE 30</a>
+<a name="ln16">#define LONG_TIME 1000000000.0</a>
+<a name="ln17"></a>
+<a name="ln18">static int time_started_flag = FALSE;</a>
+<a name="ln19">static CFAbsoluteTime startTime = 0.0;</a>
+<a name="ln20">static CFRunLoopRef timerRunLoop = 0;</a>
+<a name="ln21"></a>
+<a name="ln22">typedef struct {</a>
+<a name="ln23">    int resolution;</a>
+<a name="ln24">    PtCallback *callback;</a>
+<a name="ln25">    void *userData;</a>
+<a name="ln26">} PtThreadParams;</a>
+<a name="ln27"></a>
+<a name="ln28"></a>
+<a name="ln29">void Pt_CFTimerCallback(CFRunLoopTimerRef timer, void *info)</a>
+<a name="ln30">{</a>
+<a name="ln31">    PtThreadParams *params = (PtThreadParams*)info;</a>
+<a name="ln32">    (*params-&gt;callback)(Pt_Time(), params-&gt;userData);</a>
+<a name="ln33">}</a>
+<a name="ln34"></a>
+<a name="ln35">static void* Pt_Thread(void *p)</a>
+<a name="ln36">{</a>
+<a name="ln37">    CFTimeInterval timerInterval;</a>
+<a name="ln38">    CFRunLoopTimerContext timerContext;</a>
+<a name="ln39">    CFRunLoopTimerRef timer;</a>
+<a name="ln40">    PtThreadParams *params = (PtThreadParams*)p;</a>
+<a name="ln41">    //CFTimeInterval timeout;</a>
+<a name="ln42"></a>
+<a name="ln43">    /* raise the thread's priority */</a>
+<a name="ln44">    kern_return_t error;</a>
+<a name="ln45">    thread_extended_policy_data_t extendedPolicy;</a>
+<a name="ln46">    thread_precedence_policy_data_t precedencePolicy;</a>
+<a name="ln47"></a>
+<a name="ln48">    extendedPolicy.timeshare = 0;</a>
+<a name="ln49">    error = thread_policy_set(mach_thread_self(), THREAD_EXTENDED_POLICY,</a>
+<a name="ln50">                              (thread_policy_t)&amp;extendedPolicy,</a>
+<a name="ln51">                              THREAD_EXTENDED_POLICY_COUNT);</a>
+<a name="ln52">    if (error != KERN_SUCCESS) {</a>
+<a name="ln53">        mach_error(&quot;Couldn't set thread timeshare policy&quot;, error);</a>
+<a name="ln54">    }</a>
+<a name="ln55"></a>
+<a name="ln56">    precedencePolicy.importance = THREAD_IMPORTANCE;</a>
+<a name="ln57">    error = thread_policy_set(mach_thread_self(), THREAD_PRECEDENCE_POLICY,</a>
+<a name="ln58">                              (thread_policy_t)&amp;precedencePolicy,</a>
+<a name="ln59">                              THREAD_PRECEDENCE_POLICY_COUNT);</a>
+<a name="ln60">    if (error != KERN_SUCCESS) {</a>
+<a name="ln61">        mach_error(&quot;Couldn't set thread precedence policy&quot;, error);</a>
+<a name="ln62">    }</a>
+<a name="ln63"></a>
+<a name="ln64">    /* set up the timer context */</a>
+<a name="ln65">    timerContext.version = 0;</a>
+<a name="ln66">    timerContext.info = params;</a>
+<a name="ln67">    timerContext.retain = NULL;</a>
+<a name="ln68">    timerContext.release = NULL;</a>
+<a name="ln69">    timerContext.copyDescription = NULL;</a>
+<a name="ln70"></a>
+<a name="ln71">    /* create a new timer */</a>
+<a name="ln72">    timerInterval = (double)params-&gt;resolution / 1000.0;</a>
+<a name="ln73">    timer = CFRunLoopTimerCreate(NULL, startTime+timerInterval, timerInterval,</a>
+<a name="ln74">                                 0, 0, Pt_CFTimerCallback, &amp;timerContext);</a>
+<a name="ln75"></a>
+<a name="ln76">    timerRunLoop = CFRunLoopGetCurrent();</a>
+<a name="ln77">    CFRunLoopAddTimer(timerRunLoop, timer, CFSTR(&quot;PtTimeMode&quot;));</a>
+<a name="ln78"></a>
+<a name="ln79">    /* run until we're told to stop by Pt_Stop() */</a>
+<a name="ln80">    CFRunLoopRunInMode(CFSTR(&quot;PtTimeMode&quot;), LONG_TIME, false);</a>
+<a name="ln81">    </a>
+<a name="ln82">    CFRunLoopRemoveTimer(CFRunLoopGetCurrent(), timer, CFSTR(&quot;PtTimeMode&quot;));</a>
+<a name="ln83">    CFRelease(timer);</a>
+<a name="ln84">    free(params);</a>
+<a name="ln85"></a>
+<a name="ln86">    return NULL;</a>
+<a name="ln87">}</a>
+<a name="ln88"></a>
+<a name="ln89">PtError Pt_Start(int resolution, PtCallback *callback, void *userData)</a>
+<a name="ln90">{</a>
+<a name="ln91">    PtThreadParams *params = (PtThreadParams*)malloc(sizeof(PtThreadParams));</a>
+<a name="ln92">    pthread_t pthread_id;</a>
+<a name="ln93"></a>
+<a name="ln94">    printf(&quot;Pt_Start() called\n&quot;);</a>
+<a name="ln95"></a>
+<a name="ln96">    // /* make sure we're not already playing */</a>
+<a name="ln97">    if (time_started_flag) return ptAlreadyStarted;</a>
+<a name="ln98">    startTime = CFAbsoluteTimeGetCurrent();</a>
+<a name="ln99"></a>
+<a name="ln100">    if (callback) {</a>
+<a name="ln101">    </a>
+<a name="ln102">        params-&gt;resolution = resolution;</a>
+<a name="ln103">        params-&gt;callback = callback;</a>
+<a name="ln104">        params-&gt;userData = userData;</a>
+<a name="ln105">    </a>
+<a name="ln106">        pthread_create(&amp;pthread_id, NULL, Pt_Thread, params);</a>
+<a name="ln107">    }</a>
+<a name="ln108"></a>
+<a name="ln109">    time_started_flag = TRUE;</a>
+<a name="ln110">    return ptNoError;</a>
+<a name="ln111">}</a>
+<a name="ln112"></a>
+<a name="ln113"></a>
+<a name="ln114">PtError Pt_Stop()</a>
+<a name="ln115">{</a>
+<a name="ln116">    printf(&quot;Pt_Stop called\n&quot;);</a>
+<a name="ln117"></a>
+<a name="ln118">    if (timerRunLoop) {</a>
+<a name="ln119">        CFRunLoopStop(timerRunLoop);</a>
+<a name="ln120">        timerRunLoop = 0;</a>
+<a name="ln121">        }</a>
+<a name="ln122">    time_started_flag = FALSE;</a>
+<a name="ln123">    return ptNoError;</a>
+<a name="ln124">}</a>
+<a name="ln125"></a>
+<a name="ln126"></a>
+<a name="ln127">int Pt_Started()</a>
+<a name="ln128">{</a>
+<a name="ln129">    return time_started_flag;</a>
+<a name="ln130">}</a>
+<a name="ln131"></a>
+<a name="ln132"></a>
+<a name="ln133">PtTimestamp Pt_Time()</a>
+<a name="ln134">{</a>
+<a name="ln135">    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();</a>
+<a name="ln136">    return (PtTimestamp) ((now - startTime) * 1000.0);</a>
+<a name="ln137">}</a>
+<a name="ln138"></a>
+<a name="ln139"></a>
+<a name="ln140">void Pt_Sleep(int32_t duration)</a>
+<a name="ln141">{</a>
+<a name="ln142">    usleep(duration * 1000);</a>
+<a name="ln143">}</a>
+
+</code></pre>
+<div class="balloon" rel="97"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v773/" target="_blank">V773</a> The function was exited without releasing the 'params' pointer. A memory leak is possible.</p></div>
+<div class="balloon" rel="102"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'params'. Check lines: 102, 91.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

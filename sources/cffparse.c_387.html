@@ -1,0 +1,1240 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>cffparse.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  cffparse.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    CFF token stream parser (body)                                       */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include &quot;cffparse.h&quot;</a>
+<a name="ln21">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln22">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;cfferrs.h&quot;</a>
+<a name="ln25">#include &quot;cffpic.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27"> </a>
+<a name="ln28">  /*************************************************************************/</a>
+<a name="ln29">  /*                                                                       */</a>
+<a name="ln30">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln31">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln32">  /* messages during execution.                                            */</a>
+<a name="ln33">  /*                                                                       */</a>
+<a name="ln34">#undef  FT_COMPONENT</a>
+<a name="ln35">#define FT_COMPONENT  trace_cffparse</a>
+<a name="ln36"> </a>
+<a name="ln37"> </a>
+<a name="ln38">  FT_LOCAL_DEF( void )</a>
+<a name="ln39">  cff_parser_init( CFF_Parser  parser,</a>
+<a name="ln40">                   FT_UInt     code,</a>
+<a name="ln41">                   void*       object,</a>
+<a name="ln42">                   FT_Library  library)</a>
+<a name="ln43">  {</a>
+<a name="ln44">    FT_MEM_ZERO( parser, sizeof ( *parser ) );</a>
+<a name="ln45"> </a>
+<a name="ln46">    parser-&gt;top         = parser-&gt;stack;</a>
+<a name="ln47">    parser-&gt;object_code = code;</a>
+<a name="ln48">    parser-&gt;object      = object;</a>
+<a name="ln49">    parser-&gt;library     = library;</a>
+<a name="ln50">  }</a>
+<a name="ln51"> </a>
+<a name="ln52"> </a>
+<a name="ln53">  /* read an integer */</a>
+<a name="ln54">  static FT_Long</a>
+<a name="ln55">  cff_parse_integer( FT_Byte*  start,</a>
+<a name="ln56">                     FT_Byte*  limit )</a>
+<a name="ln57">  {</a>
+<a name="ln58">    FT_Byte*  p   = start;</a>
+<a name="ln59">    FT_Int    v   = *p++;</a>
+<a name="ln60">    FT_Long   val = 0;</a>
+<a name="ln61"> </a>
+<a name="ln62"> </a>
+<a name="ln63">    if ( v == 28 )</a>
+<a name="ln64">    {</a>
+<a name="ln65">      if ( p + 2 &gt; limit )</a>
+<a name="ln66">        goto Bad;</a>
+<a name="ln67"> </a>
+<a name="ln68">      val = (FT_Short)( ( (FT_UShort)p[0] &lt;&lt; 8 ) | p[1] );</a>
+<a name="ln69">    }</a>
+<a name="ln70">    else if ( v == 29 )</a>
+<a name="ln71">    {</a>
+<a name="ln72">      if ( p + 4 &gt; limit )</a>
+<a name="ln73">        goto Bad;</a>
+<a name="ln74"> </a>
+<a name="ln75">      val = (FT_Long)( ( (FT_ULong)p[0] &lt;&lt; 24 ) |</a>
+<a name="ln76">                       ( (FT_ULong)p[1] &lt;&lt; 16 ) |</a>
+<a name="ln77">                       ( (FT_ULong)p[2] &lt;&lt;  8 ) |</a>
+<a name="ln78">                         (FT_ULong)p[3]         );</a>
+<a name="ln79">    }</a>
+<a name="ln80">    else if ( v &lt; 247 )</a>
+<a name="ln81">    {</a>
+<a name="ln82">      val = v - 139;</a>
+<a name="ln83">    }</a>
+<a name="ln84">    else if ( v &lt; 251 )</a>
+<a name="ln85">    {</a>
+<a name="ln86">      if ( p + 1 &gt; limit )</a>
+<a name="ln87">        goto Bad;</a>
+<a name="ln88"> </a>
+<a name="ln89">      val = ( v - 247 ) * 256 + p[0] + 108;</a>
+<a name="ln90">    }</a>
+<a name="ln91">    else</a>
+<a name="ln92">    {</a>
+<a name="ln93">      if ( p + 1 &gt; limit )</a>
+<a name="ln94">        goto Bad;</a>
+<a name="ln95"> </a>
+<a name="ln96">      val = -( v - 251 ) * 256 - p[0] - 108;</a>
+<a name="ln97">    }</a>
+<a name="ln98"> </a>
+<a name="ln99">  Exit:</a>
+<a name="ln100">    return val;</a>
+<a name="ln101"> </a>
+<a name="ln102">  Bad:</a>
+<a name="ln103">    val = 0;</a>
+<a name="ln104">    FT_TRACE4(( &quot;!!!END OF DATA:!!!&quot; ));</a>
+<a name="ln105">    goto Exit;</a>
+<a name="ln106">  }</a>
+<a name="ln107"> </a>
+<a name="ln108"> </a>
+<a name="ln109">  static const FT_Long power_tens[] =</a>
+<a name="ln110">  {</a>
+<a name="ln111">    1L,</a>
+<a name="ln112">    10L,</a>
+<a name="ln113">    100L,</a>
+<a name="ln114">    1000L,</a>
+<a name="ln115">    10000L,</a>
+<a name="ln116">    100000L,</a>
+<a name="ln117">    1000000L,</a>
+<a name="ln118">    10000000L,</a>
+<a name="ln119">    100000000L,</a>
+<a name="ln120">    1000000000L</a>
+<a name="ln121">  };</a>
+<a name="ln122"> </a>
+<a name="ln123"> </a>
+<a name="ln124">  /* read a real */</a>
+<a name="ln125">  static FT_Fixed</a>
+<a name="ln126">  cff_parse_real( FT_Byte*  start,</a>
+<a name="ln127">                  FT_Byte*  limit,</a>
+<a name="ln128">                  FT_Long   power_ten,</a>
+<a name="ln129">                  FT_Long*  scaling )</a>
+<a name="ln130">  {</a>
+<a name="ln131">    FT_Byte*  p = start;</a>
+<a name="ln132">    FT_Int    nib;</a>
+<a name="ln133">    FT_UInt   phase;</a>
+<a name="ln134"> </a>
+<a name="ln135">    FT_Long   result, number, exponent;</a>
+<a name="ln136">    FT_Int    sign = 0, exponent_sign = 0, have_overflow = 0;</a>
+<a name="ln137">    FT_Long   exponent_add, integer_length, fraction_length;</a>
+<a name="ln138"> </a>
+<a name="ln139"> </a>
+<a name="ln140">    if ( scaling )</a>
+<a name="ln141">      *scaling = 0;</a>
+<a name="ln142"> </a>
+<a name="ln143">    result = 0;</a>
+<a name="ln144"> </a>
+<a name="ln145">    number   = 0;</a>
+<a name="ln146">    exponent = 0;</a>
+<a name="ln147"> </a>
+<a name="ln148">    exponent_add    = 0;</a>
+<a name="ln149">    integer_length  = 0;</a>
+<a name="ln150">    fraction_length = 0;</a>
+<a name="ln151"> </a>
+<a name="ln152">    /* First of all, read the integer part. */</a>
+<a name="ln153">    phase = 4;</a>
+<a name="ln154"> </a>
+<a name="ln155">    for (;;)</a>
+<a name="ln156">    {</a>
+<a name="ln157">      /* If we entered this iteration with phase == 4, we need to */</a>
+<a name="ln158">      /* read a new byte.  This also skips past the initial 0x1E. */</a>
+<a name="ln159">      if ( phase )</a>
+<a name="ln160">      {</a>
+<a name="ln161">        p++;</a>
+<a name="ln162"> </a>
+<a name="ln163">        /* Make sure we don't read past the end. */</a>
+<a name="ln164">        if ( p &gt;= limit )</a>
+<a name="ln165">          goto Bad;</a>
+<a name="ln166">      }</a>
+<a name="ln167"> </a>
+<a name="ln168">      /* Get the nibble. */</a>
+<a name="ln169">      nib   = (FT_Int)( p[0] &gt;&gt; phase ) &amp; 0xF;</a>
+<a name="ln170">      phase = 4 - phase;</a>
+<a name="ln171"> </a>
+<a name="ln172">      if ( nib == 0xE )</a>
+<a name="ln173">        sign = 1;</a>
+<a name="ln174">      else if ( nib &gt; 9 )</a>
+<a name="ln175">        break;</a>
+<a name="ln176">      else</a>
+<a name="ln177">      {</a>
+<a name="ln178">        /* Increase exponent if we can't add the digit. */</a>
+<a name="ln179">        if ( number &gt;= 0xCCCCCCCL )</a>
+<a name="ln180">          exponent_add++;</a>
+<a name="ln181">        /* Skip leading zeros. */</a>
+<a name="ln182">        else if ( nib || number )</a>
+<a name="ln183">        {</a>
+<a name="ln184">          integer_length++;</a>
+<a name="ln185">          number = number * 10 + nib;</a>
+<a name="ln186">        }</a>
+<a name="ln187">      }</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    /* Read fraction part, if any. */</a>
+<a name="ln191">    if ( nib == 0xA )</a>
+<a name="ln192">      for (;;)</a>
+<a name="ln193">      {</a>
+<a name="ln194">        /* If we entered this iteration with phase == 4, we need */</a>
+<a name="ln195">        /* to read a new byte.                                   */</a>
+<a name="ln196">        if ( phase )</a>
+<a name="ln197">        {</a>
+<a name="ln198">          p++;</a>
+<a name="ln199"> </a>
+<a name="ln200">          /* Make sure we don't read past the end. */</a>
+<a name="ln201">          if ( p &gt;= limit )</a>
+<a name="ln202">            goto Bad;</a>
+<a name="ln203">        }</a>
+<a name="ln204"> </a>
+<a name="ln205">        /* Get the nibble. */</a>
+<a name="ln206">        nib   = ( p[0] &gt;&gt; phase ) &amp; 0xF;</a>
+<a name="ln207">        phase = 4 - phase;</a>
+<a name="ln208">        if ( nib &gt;= 10 )</a>
+<a name="ln209">          break;</a>
+<a name="ln210"> </a>
+<a name="ln211">        /* Skip leading zeros if possible. */</a>
+<a name="ln212">        if ( !nib &amp;&amp; !number )</a>
+<a name="ln213">          exponent_add--;</a>
+<a name="ln214">        /* Only add digit if we don't overflow. */</a>
+<a name="ln215">        else if ( number &lt; 0xCCCCCCCL &amp;&amp; fraction_length &lt; 9 )</a>
+<a name="ln216">        {</a>
+<a name="ln217">          fraction_length++;</a>
+<a name="ln218">          number = number * 10 + nib;</a>
+<a name="ln219">        }</a>
+<a name="ln220">      }</a>
+<a name="ln221"> </a>
+<a name="ln222">    /* Read exponent, if any. */</a>
+<a name="ln223">    if ( nib == 12 )</a>
+<a name="ln224">    {</a>
+<a name="ln225">      exponent_sign = 1;</a>
+<a name="ln226">      nib           = 11;</a>
+<a name="ln227">    }</a>
+<a name="ln228"> </a>
+<a name="ln229">    if ( nib == 11 )</a>
+<a name="ln230">    {</a>
+<a name="ln231">      for (;;)</a>
+<a name="ln232">      {</a>
+<a name="ln233">        /* If we entered this iteration with phase == 4, */</a>
+<a name="ln234">        /* we need to read a new byte.                   */</a>
+<a name="ln235">        if ( phase )</a>
+<a name="ln236">        {</a>
+<a name="ln237">          p++;</a>
+<a name="ln238"> </a>
+<a name="ln239">          /* Make sure we don't read past the end. */</a>
+<a name="ln240">          if ( p &gt;= limit )</a>
+<a name="ln241">            goto Bad;</a>
+<a name="ln242">        }</a>
+<a name="ln243"> </a>
+<a name="ln244">        /* Get the nibble. */</a>
+<a name="ln245">        nib   = ( p[0] &gt;&gt; phase ) &amp; 0xF;</a>
+<a name="ln246">        phase = 4 - phase;</a>
+<a name="ln247">        if ( nib &gt;= 10 )</a>
+<a name="ln248">          break;</a>
+<a name="ln249"> </a>
+<a name="ln250">        /* Arbitrarily limit exponent. */</a>
+<a name="ln251">        if ( exponent &gt; 1000 )</a>
+<a name="ln252">          have_overflow = 1;</a>
+<a name="ln253">        else</a>
+<a name="ln254">          exponent = exponent * 10 + nib;</a>
+<a name="ln255">      }</a>
+<a name="ln256"> </a>
+<a name="ln257">      if ( exponent_sign )</a>
+<a name="ln258">        exponent = -exponent;</a>
+<a name="ln259">    }</a>
+<a name="ln260"> </a>
+<a name="ln261">    if ( !number )</a>
+<a name="ln262">      goto Exit;</a>
+<a name="ln263"> </a>
+<a name="ln264">    if ( have_overflow )</a>
+<a name="ln265">    {</a>
+<a name="ln266">      if ( exponent_sign )</a>
+<a name="ln267">        goto Underflow;</a>
+<a name="ln268">      else</a>
+<a name="ln269">        goto Overflow;</a>
+<a name="ln270">    }</a>
+<a name="ln271"> </a>
+<a name="ln272">    /* We don't check `power_ten' and `exponent_add'. */</a>
+<a name="ln273">    exponent += power_ten + exponent_add;</a>
+<a name="ln274"> </a>
+<a name="ln275">    if ( scaling )</a>
+<a name="ln276">    {</a>
+<a name="ln277">      /* Only use `fraction_length'. */</a>
+<a name="ln278">      fraction_length += integer_length;</a>
+<a name="ln279">      exponent        += integer_length;</a>
+<a name="ln280"> </a>
+<a name="ln281">      if ( fraction_length &lt;= 5 )</a>
+<a name="ln282">      {</a>
+<a name="ln283">        if ( number &gt; 0x7FFFL )</a>
+<a name="ln284">        {</a>
+<a name="ln285">          result   = FT_DivFix( number, 10 );</a>
+<a name="ln286">          *scaling = exponent - fraction_length + 1;</a>
+<a name="ln287">        }</a>
+<a name="ln288">        else</a>
+<a name="ln289">        {</a>
+<a name="ln290">          if ( exponent &gt; 0 )</a>
+<a name="ln291">          {</a>
+<a name="ln292">            FT_Long  new_fraction_length, shift;</a>
+<a name="ln293"> </a>
+<a name="ln294"> </a>
+<a name="ln295">            /* Make `scaling' as small as possible. */</a>
+<a name="ln296">            new_fraction_length = FT_MIN( exponent, 5 );</a>
+<a name="ln297">            shift               = new_fraction_length - fraction_length;</a>
+<a name="ln298"> </a>
+<a name="ln299">            if ( shift &gt; 0 )</a>
+<a name="ln300">            {</a>
+<a name="ln301">              exponent -= new_fraction_length;</a>
+<a name="ln302">              number   *= power_tens[shift];</a>
+<a name="ln303">              if ( number &gt; 0x7FFFL )</a>
+<a name="ln304">              {</a>
+<a name="ln305">                number   /= 10;</a>
+<a name="ln306">                exponent += 1;</a>
+<a name="ln307">              }</a>
+<a name="ln308">            }</a>
+<a name="ln309">            else</a>
+<a name="ln310">              exponent -= fraction_length;</a>
+<a name="ln311">          }</a>
+<a name="ln312">          else</a>
+<a name="ln313">            exponent -= fraction_length;</a>
+<a name="ln314"> </a>
+<a name="ln315">          result   = (FT_Long)( (FT_ULong)number &lt;&lt; 16 );</a>
+<a name="ln316">          *scaling = exponent;</a>
+<a name="ln317">        }</a>
+<a name="ln318">      }</a>
+<a name="ln319">      else</a>
+<a name="ln320">      {</a>
+<a name="ln321">        if ( ( number / power_tens[fraction_length - 5] ) &gt; 0x7FFFL )</a>
+<a name="ln322">        {</a>
+<a name="ln323">          result   = FT_DivFix( number, power_tens[fraction_length - 4] );</a>
+<a name="ln324">          *scaling = exponent - 4;</a>
+<a name="ln325">        }</a>
+<a name="ln326">        else</a>
+<a name="ln327">        {</a>
+<a name="ln328">          result   = FT_DivFix( number, power_tens[fraction_length - 5] );</a>
+<a name="ln329">          *scaling = exponent - 5;</a>
+<a name="ln330">        }</a>
+<a name="ln331">      }</a>
+<a name="ln332">    }</a>
+<a name="ln333">    else</a>
+<a name="ln334">    {</a>
+<a name="ln335">      integer_length  += exponent;</a>
+<a name="ln336">      fraction_length -= exponent;</a>
+<a name="ln337"> </a>
+<a name="ln338">      if ( integer_length &gt; 5 )</a>
+<a name="ln339">        goto Overflow;</a>
+<a name="ln340">      if ( integer_length &lt; -5 )</a>
+<a name="ln341">        goto Underflow;</a>
+<a name="ln342"> </a>
+<a name="ln343">      /* Remove non-significant digits. */</a>
+<a name="ln344">      if ( integer_length &lt; 0 )</a>
+<a name="ln345">      {</a>
+<a name="ln346">        number          /= power_tens[-integer_length];</a>
+<a name="ln347">        fraction_length += integer_length;</a>
+<a name="ln348">      }</a>
+<a name="ln349"> </a>
+<a name="ln350">      /* this can only happen if exponent was non-zero */</a>
+<a name="ln351">      if ( fraction_length == 10 )</a>
+<a name="ln352">      {</a>
+<a name="ln353">        number          /= 10;</a>
+<a name="ln354">        fraction_length -= 1;</a>
+<a name="ln355">      }</a>
+<a name="ln356"> </a>
+<a name="ln357">      /* Convert into 16.16 format. */</a>
+<a name="ln358">      if ( fraction_length &gt; 0 )</a>
+<a name="ln359">      {</a>
+<a name="ln360">        if ( ( number / power_tens[fraction_length] ) &gt; 0x7FFFL )</a>
+<a name="ln361">          goto Exit;</a>
+<a name="ln362"> </a>
+<a name="ln363">        result = FT_DivFix( number, power_tens[fraction_length] );</a>
+<a name="ln364">      }</a>
+<a name="ln365">      else</a>
+<a name="ln366">      {</a>
+<a name="ln367">        number *= power_tens[-fraction_length];</a>
+<a name="ln368"> </a>
+<a name="ln369">        if ( number &gt; 0x7FFFL )</a>
+<a name="ln370">          goto Overflow;</a>
+<a name="ln371"> </a>
+<a name="ln372">        result = (FT_Long)( (FT_ULong)number &lt;&lt; 16 );</a>
+<a name="ln373">      }</a>
+<a name="ln374">    }</a>
+<a name="ln375"> </a>
+<a name="ln376">  Exit:</a>
+<a name="ln377">    if ( sign )</a>
+<a name="ln378">      result = -result;</a>
+<a name="ln379"> </a>
+<a name="ln380">    return result;</a>
+<a name="ln381"> </a>
+<a name="ln382">  Overflow:</a>
+<a name="ln383">    result = 0x7FFFFFFFL;</a>
+<a name="ln384">    FT_TRACE4(( &quot;!!!OVERFLOW:!!!&quot; ));</a>
+<a name="ln385">    goto Exit;</a>
+<a name="ln386"> </a>
+<a name="ln387">  Underflow:</a>
+<a name="ln388">    result = 0;</a>
+<a name="ln389">    FT_TRACE4(( &quot;!!!UNDERFLOW:!!!&quot; ));</a>
+<a name="ln390">    goto Exit;</a>
+<a name="ln391"> </a>
+<a name="ln392">  Bad:</a>
+<a name="ln393">    result = 0;</a>
+<a name="ln394">    FT_TRACE4(( &quot;!!!END OF DATA:!!!&quot; ));</a>
+<a name="ln395">    goto Exit;</a>
+<a name="ln396">  }</a>
+<a name="ln397"> </a>
+<a name="ln398"> </a>
+<a name="ln399">  /* read a number, either integer or real */</a>
+<a name="ln400">  static FT_Long</a>
+<a name="ln401">  cff_parse_num( FT_Byte**  d )</a>
+<a name="ln402">  {</a>
+<a name="ln403">    return **d == 30 ? ( cff_parse_real( d[0], d[1], 0, NULL ) &gt;&gt; 16 )</a>
+<a name="ln404">                     :   cff_parse_integer( d[0], d[1] );</a>
+<a name="ln405">  }</a>
+<a name="ln406"> </a>
+<a name="ln407"> </a>
+<a name="ln408">  /* read a floating point number, either integer or real */</a>
+<a name="ln409">  static FT_Fixed</a>
+<a name="ln410">  do_fixed( FT_Byte**  d,</a>
+<a name="ln411">            FT_Long    scaling )</a>
+<a name="ln412">  {</a>
+<a name="ln413">    if ( **d == 30 )</a>
+<a name="ln414">      return cff_parse_real( d[0], d[1], scaling, NULL );</a>
+<a name="ln415">    else</a>
+<a name="ln416">    {</a>
+<a name="ln417">      FT_Long  val = cff_parse_integer( d[0], d[1] );</a>
+<a name="ln418"> </a>
+<a name="ln419"> </a>
+<a name="ln420">      if ( scaling )</a>
+<a name="ln421">        val *= power_tens[scaling];</a>
+<a name="ln422"> </a>
+<a name="ln423">      if ( val &gt; 0x7FFF )</a>
+<a name="ln424">      {</a>
+<a name="ln425">        val = 0x7FFFFFFFL;</a>
+<a name="ln426">        goto Overflow;</a>
+<a name="ln427">      }</a>
+<a name="ln428">      else if ( val &lt; -0x7FFF )</a>
+<a name="ln429">      {</a>
+<a name="ln430">        val = -0x7FFFFFFFL;</a>
+<a name="ln431">        goto Overflow;</a>
+<a name="ln432">      }</a>
+<a name="ln433"> </a>
+<a name="ln434">      return (FT_Long)( (FT_ULong)val &lt;&lt; 16 );</a>
+<a name="ln435"> </a>
+<a name="ln436">    Overflow:</a>
+<a name="ln437">      FT_TRACE4(( &quot;!!!OVERFLOW:!!!&quot; ));</a>
+<a name="ln438">      return val;</a>
+<a name="ln439">    }</a>
+<a name="ln440">  }</a>
+<a name="ln441"> </a>
+<a name="ln442"> </a>
+<a name="ln443">  /* read a floating point number, either integer or real */</a>
+<a name="ln444">  static FT_Fixed</a>
+<a name="ln445">  cff_parse_fixed( FT_Byte**  d )</a>
+<a name="ln446">  {</a>
+<a name="ln447">    return do_fixed( d, 0 );</a>
+<a name="ln448">  }</a>
+<a name="ln449"> </a>
+<a name="ln450"> </a>
+<a name="ln451">  /* read a floating point number, either integer or real, */</a>
+<a name="ln452">  /* but return `10^scaling' times the number read in      */</a>
+<a name="ln453">  static FT_Fixed</a>
+<a name="ln454">  cff_parse_fixed_scaled( FT_Byte**  d,</a>
+<a name="ln455">                          FT_Long    scaling )</a>
+<a name="ln456">  {</a>
+<a name="ln457">    return do_fixed( d, scaling );</a>
+<a name="ln458">  }</a>
+<a name="ln459"> </a>
+<a name="ln460"> </a>
+<a name="ln461">  /* read a floating point number, either integer or real,     */</a>
+<a name="ln462">  /* and return it as precise as possible -- `scaling' returns */</a>
+<a name="ln463">  /* the scaling factor (as a power of 10)                     */</a>
+<a name="ln464">  static FT_Fixed</a>
+<a name="ln465">  cff_parse_fixed_dynamic( FT_Byte**  d,</a>
+<a name="ln466">                           FT_Long*   scaling )</a>
+<a name="ln467">  {</a>
+<a name="ln468">    FT_ASSERT( scaling );</a>
+<a name="ln469"> </a>
+<a name="ln470">    if ( **d == 30 )</a>
+<a name="ln471">      return cff_parse_real( d[0], d[1], 0, scaling );</a>
+<a name="ln472">    else</a>
+<a name="ln473">    {</a>
+<a name="ln474">      FT_Long  number;</a>
+<a name="ln475">      FT_Int   integer_length;</a>
+<a name="ln476"> </a>
+<a name="ln477"> </a>
+<a name="ln478">      number = cff_parse_integer( d[0], d[1] );</a>
+<a name="ln479"> </a>
+<a name="ln480">      if ( number &gt; 0x7FFFL )</a>
+<a name="ln481">      {</a>
+<a name="ln482">        for ( integer_length = 5; integer_length &lt; 10; integer_length++ )</a>
+<a name="ln483">          if ( number &lt; power_tens[integer_length] )</a>
+<a name="ln484">            break;</a>
+<a name="ln485"> </a>
+<a name="ln486">        if ( ( number / power_tens[integer_length - 5] ) &gt; 0x7FFFL )</a>
+<a name="ln487">        {</a>
+<a name="ln488">          *scaling = integer_length - 4;</a>
+<a name="ln489">          return FT_DivFix( number, power_tens[integer_length - 4] );</a>
+<a name="ln490">        }</a>
+<a name="ln491">        else</a>
+<a name="ln492">        {</a>
+<a name="ln493">          *scaling = integer_length - 5;</a>
+<a name="ln494">          return FT_DivFix( number, power_tens[integer_length - 5] );</a>
+<a name="ln495">        }</a>
+<a name="ln496">      }</a>
+<a name="ln497">      else</a>
+<a name="ln498">      {</a>
+<a name="ln499">        *scaling = 0;</a>
+<a name="ln500">        return (FT_Long)( (FT_ULong)number &lt;&lt; 16 );</a>
+<a name="ln501">      }</a>
+<a name="ln502">    }</a>
+<a name="ln503">  }</a>
+<a name="ln504"> </a>
+<a name="ln505"> </a>
+<a name="ln506">  static FT_Error</a>
+<a name="ln507">  cff_parse_font_matrix( CFF_Parser  parser )</a>
+<a name="ln508">  {</a>
+<a name="ln509">    CFF_FontRecDict  dict   = (CFF_FontRecDict)parser-&gt;object;</a>
+<a name="ln510">    FT_Matrix*       matrix = &amp;dict-&gt;font_matrix;</a>
+<a name="ln511">    FT_Vector*       offset = &amp;dict-&gt;font_offset;</a>
+<a name="ln512">    FT_ULong*        upm    = &amp;dict-&gt;units_per_em;</a>
+<a name="ln513">    FT_Byte**        data   = parser-&gt;stack;</a>
+<a name="ln514">    FT_Error         error  = FT_ERR( Stack_Underflow );</a>
+<a name="ln515"> </a>
+<a name="ln516"> </a>
+<a name="ln517">    if ( parser-&gt;top &gt;= parser-&gt;stack + 6 )</a>
+<a name="ln518">    {</a>
+<a name="ln519">      FT_Long  scaling;</a>
+<a name="ln520"> </a>
+<a name="ln521"> </a>
+<a name="ln522">      error = FT_Err_Ok;</a>
+<a name="ln523"> </a>
+<a name="ln524">      dict-&gt;has_font_matrix = TRUE;</a>
+<a name="ln525"> </a>
+<a name="ln526">      /* We expect a well-formed font matrix, this is, the matrix elements */</a>
+<a name="ln527">      /* `xx' and `yy' are of approximately the same magnitude.  To avoid  */</a>
+<a name="ln528">      /* loss of precision, we use the magnitude of element `xx' to scale  */</a>
+<a name="ln529">      /* all other elements.  The scaling factor is then contained in the  */</a>
+<a name="ln530">      /* `units_per_em' value.                                             */</a>
+<a name="ln531"> </a>
+<a name="ln532">      matrix-&gt;xx = cff_parse_fixed_dynamic( data++, &amp;scaling );</a>
+<a name="ln533"> </a>
+<a name="ln534">      scaling = -scaling;</a>
+<a name="ln535"> </a>
+<a name="ln536">      if ( scaling &lt; 0 || scaling &gt; 9 )</a>
+<a name="ln537">      {</a>
+<a name="ln538">        /* Return default matrix in case of unlikely values. */</a>
+<a name="ln539"> </a>
+<a name="ln540">        FT_TRACE1(( &quot;cff_parse_font_matrix:&quot;</a>
+<a name="ln541">                    &quot; strange scaling value for xx element (%d),\n&quot;</a>
+<a name="ln542">                    &quot;                      &quot;</a>
+<a name="ln543">                    &quot; using default matrix\n&quot;, scaling ));</a>
+<a name="ln544"> </a>
+<a name="ln545">        matrix-&gt;xx = 0x10000L;</a>
+<a name="ln546">        matrix-&gt;yx = 0;</a>
+<a name="ln547">        matrix-&gt;xy = 0;</a>
+<a name="ln548">        matrix-&gt;yy = 0x10000L;</a>
+<a name="ln549">        offset-&gt;x  = 0;</a>
+<a name="ln550">        offset-&gt;y  = 0;</a>
+<a name="ln551">        *upm       = 1;</a>
+<a name="ln552"> </a>
+<a name="ln553">        goto Exit;</a>
+<a name="ln554">      }</a>
+<a name="ln555"> </a>
+<a name="ln556">      matrix-&gt;yx = cff_parse_fixed_scaled( data++, scaling );</a>
+<a name="ln557">      matrix-&gt;xy = cff_parse_fixed_scaled( data++, scaling );</a>
+<a name="ln558">      matrix-&gt;yy = cff_parse_fixed_scaled( data++, scaling );</a>
+<a name="ln559">      offset-&gt;x  = cff_parse_fixed_scaled( data++, scaling );</a>
+<a name="ln560">      offset-&gt;y  = cff_parse_fixed_scaled( data,   scaling );</a>
+<a name="ln561"> </a>
+<a name="ln562">      *upm = (FT_ULong)power_tens[scaling];</a>
+<a name="ln563"> </a>
+<a name="ln564">      FT_TRACE4(( &quot; [%f %f %f %f %f %f]\n&quot;,</a>
+<a name="ln565">                  (double)matrix-&gt;xx / *upm / 65536,</a>
+<a name="ln566">                  (double)matrix-&gt;xy / *upm / 65536,</a>
+<a name="ln567">                  (double)matrix-&gt;yx / *upm / 65536,</a>
+<a name="ln568">                  (double)matrix-&gt;yy / *upm / 65536,</a>
+<a name="ln569">                  (double)offset-&gt;x  / *upm / 65536,</a>
+<a name="ln570">                  (double)offset-&gt;y  / *upm / 65536 ));</a>
+<a name="ln571">    }</a>
+<a name="ln572"> </a>
+<a name="ln573">  Exit:</a>
+<a name="ln574">    return error;</a>
+<a name="ln575">  }</a>
+<a name="ln576"> </a>
+<a name="ln577"> </a>
+<a name="ln578">  static FT_Error</a>
+<a name="ln579">  cff_parse_font_bbox( CFF_Parser  parser )</a>
+<a name="ln580">  {</a>
+<a name="ln581">    CFF_FontRecDict  dict = (CFF_FontRecDict)parser-&gt;object;</a>
+<a name="ln582">    FT_BBox*         bbox = &amp;dict-&gt;font_bbox;</a>
+<a name="ln583">    FT_Byte**        data = parser-&gt;stack;</a>
+<a name="ln584">    FT_Error         error;</a>
+<a name="ln585"> </a>
+<a name="ln586"> </a>
+<a name="ln587">    error = FT_ERR( Stack_Underflow );</a>
+<a name="ln588"> </a>
+<a name="ln589">    if ( parser-&gt;top &gt;= parser-&gt;stack + 4 )</a>
+<a name="ln590">    {</a>
+<a name="ln591">      bbox-&gt;xMin = FT_RoundFix( cff_parse_fixed( data++ ) );</a>
+<a name="ln592">      bbox-&gt;yMin = FT_RoundFix( cff_parse_fixed( data++ ) );</a>
+<a name="ln593">      bbox-&gt;xMax = FT_RoundFix( cff_parse_fixed( data++ ) );</a>
+<a name="ln594">      bbox-&gt;yMax = FT_RoundFix( cff_parse_fixed( data   ) );</a>
+<a name="ln595">      error = FT_Err_Ok;</a>
+<a name="ln596"> </a>
+<a name="ln597">      FT_TRACE4(( &quot; [%d %d %d %d]\n&quot;,</a>
+<a name="ln598">                  bbox-&gt;xMin / 65536,</a>
+<a name="ln599">                  bbox-&gt;yMin / 65536,</a>
+<a name="ln600">                  bbox-&gt;xMax / 65536,</a>
+<a name="ln601">                  bbox-&gt;yMax / 65536 ));</a>
+<a name="ln602">    }</a>
+<a name="ln603"> </a>
+<a name="ln604">    return error;</a>
+<a name="ln605">  }</a>
+<a name="ln606"> </a>
+<a name="ln607"> </a>
+<a name="ln608">  static FT_Error</a>
+<a name="ln609">  cff_parse_private_dict( CFF_Parser  parser )</a>
+<a name="ln610">  {</a>
+<a name="ln611">    CFF_FontRecDict  dict = (CFF_FontRecDict)parser-&gt;object;</a>
+<a name="ln612">    FT_Byte**        data = parser-&gt;stack;</a>
+<a name="ln613">    FT_Error         error;</a>
+<a name="ln614"> </a>
+<a name="ln615"> </a>
+<a name="ln616">    error = FT_ERR( Stack_Underflow );</a>
+<a name="ln617"> </a>
+<a name="ln618">    if ( parser-&gt;top &gt;= parser-&gt;stack + 2 )</a>
+<a name="ln619">    {</a>
+<a name="ln620">      FT_Long  tmp;</a>
+<a name="ln621"> </a>
+<a name="ln622"> </a>
+<a name="ln623">      tmp = cff_parse_num( data++ );</a>
+<a name="ln624">      if ( tmp &lt; 0 )</a>
+<a name="ln625">      {</a>
+<a name="ln626">        FT_ERROR(( &quot;cff_parse_private_dict: Invalid dictionary size\n&quot; ));</a>
+<a name="ln627">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln628">        goto Fail;</a>
+<a name="ln629">      }</a>
+<a name="ln630">      dict-&gt;private_size = (FT_ULong)tmp;</a>
+<a name="ln631"> </a>
+<a name="ln632">      tmp = cff_parse_num( data );</a>
+<a name="ln633">      if ( tmp &lt; 0 )</a>
+<a name="ln634">      {</a>
+<a name="ln635">        FT_ERROR(( &quot;cff_parse_private_dict: Invalid dictionary offset\n&quot; ));</a>
+<a name="ln636">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln637">        goto Fail;</a>
+<a name="ln638">      }</a>
+<a name="ln639">      dict-&gt;private_offset = (FT_ULong)tmp;</a>
+<a name="ln640"> </a>
+<a name="ln641">      FT_TRACE4(( &quot; %lu %lu\n&quot;,</a>
+<a name="ln642">                  dict-&gt;private_size, dict-&gt;private_offset ));</a>
+<a name="ln643"> </a>
+<a name="ln644">      error = FT_Err_Ok;</a>
+<a name="ln645">    }</a>
+<a name="ln646"> </a>
+<a name="ln647">  Fail:</a>
+<a name="ln648">    return error;</a>
+<a name="ln649">  }</a>
+<a name="ln650"> </a>
+<a name="ln651"> </a>
+<a name="ln652">  static FT_Error</a>
+<a name="ln653">  cff_parse_cid_ros( CFF_Parser  parser )</a>
+<a name="ln654">  {</a>
+<a name="ln655">    CFF_FontRecDict  dict = (CFF_FontRecDict)parser-&gt;object;</a>
+<a name="ln656">    FT_Byte**        data = parser-&gt;stack;</a>
+<a name="ln657">    FT_Error         error;</a>
+<a name="ln658"> </a>
+<a name="ln659"> </a>
+<a name="ln660">    error = FT_ERR( Stack_Underflow );</a>
+<a name="ln661"> </a>
+<a name="ln662">    if ( parser-&gt;top &gt;= parser-&gt;stack + 3 )</a>
+<a name="ln663">    {</a>
+<a name="ln664">      dict-&gt;cid_registry = (FT_UInt)cff_parse_num( data++ );</a>
+<a name="ln665">      dict-&gt;cid_ordering = (FT_UInt)cff_parse_num( data++ );</a>
+<a name="ln666">      if ( **data == 30 )</a>
+<a name="ln667">        FT_TRACE1(( &quot;cff_parse_cid_ros: real supplement is rounded\n&quot; ));</a>
+<a name="ln668">      dict-&gt;cid_supplement = cff_parse_num( data );</a>
+<a name="ln669">      if ( dict-&gt;cid_supplement &lt; 0 )</a>
+<a name="ln670">        FT_TRACE1(( &quot;cff_parse_cid_ros: negative supplement %d is found\n&quot;,</a>
+<a name="ln671">                   dict-&gt;cid_supplement ));</a>
+<a name="ln672">      error = FT_Err_Ok;</a>
+<a name="ln673"> </a>
+<a name="ln674">      FT_TRACE4(( &quot; %d %d %d\n&quot;,</a>
+<a name="ln675">                  dict-&gt;cid_registry,</a>
+<a name="ln676">                  dict-&gt;cid_ordering,</a>
+<a name="ln677">                  dict-&gt;cid_supplement ));</a>
+<a name="ln678">    }</a>
+<a name="ln679"> </a>
+<a name="ln680">    return error;</a>
+<a name="ln681">  }</a>
+<a name="ln682"> </a>
+<a name="ln683"> </a>
+<a name="ln684">#define CFF_FIELD_NUM( code, name, id )             \</a>
+<a name="ln685">          CFF_FIELD( code, name, id, cff_kind_num )</a>
+<a name="ln686">#define CFF_FIELD_FIXED( code, name, id )             \</a>
+<a name="ln687">          CFF_FIELD( code, name, id, cff_kind_fixed )</a>
+<a name="ln688">#define CFF_FIELD_FIXED_1000( code, name, id )                 \</a>
+<a name="ln689">          CFF_FIELD( code, name, id, cff_kind_fixed_thousand )</a>
+<a name="ln690">#define CFF_FIELD_STRING( code, name, id )             \</a>
+<a name="ln691">          CFF_FIELD( code, name, id, cff_kind_string )</a>
+<a name="ln692">#define CFF_FIELD_BOOL( code, name, id )             \</a>
+<a name="ln693">          CFF_FIELD( code, name, id, cff_kind_bool )</a>
+<a name="ln694"> </a>
+<a name="ln695">#define CFFCODE_TOPDICT  0x1000</a>
+<a name="ln696">#define CFFCODE_PRIVATE  0x2000</a>
+<a name="ln697"> </a>
+<a name="ln698"> </a>
+<a name="ln699">#ifndef FT_CONFIG_OPTION_PIC</a>
+<a name="ln700"> </a>
+<a name="ln701"> </a>
+<a name="ln702">#undef  CFF_FIELD</a>
+<a name="ln703">#undef  CFF_FIELD_DELTA</a>
+<a name="ln704"> </a>
+<a name="ln705"> </a>
+<a name="ln706">#ifndef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln707"> </a>
+<a name="ln708"> </a>
+<a name="ln709">#define CFF_FIELD_CALLBACK( code, name, id ) \</a>
+<a name="ln710">          {                                  \</a>
+<a name="ln711">            cff_kind_callback,               \</a>
+<a name="ln712">            code | CFFCODE,                  \</a>
+<a name="ln713">            0, 0,                            \</a>
+<a name="ln714">            cff_parse_ ## name,              \</a>
+<a name="ln715">            0, 0                             \</a>
+<a name="ln716">          },</a>
+<a name="ln717"> </a>
+<a name="ln718">#define CFF_FIELD( code, name, id, kind ) \</a>
+<a name="ln719">          {                               \</a>
+<a name="ln720">            kind,                         \</a>
+<a name="ln721">            code | CFFCODE,               \</a>
+<a name="ln722">            FT_FIELD_OFFSET( name ),      \</a>
+<a name="ln723">            FT_FIELD_SIZE( name ),        \</a>
+<a name="ln724">            0, 0, 0                       \</a>
+<a name="ln725">          },</a>
+<a name="ln726"> </a>
+<a name="ln727">#define CFF_FIELD_DELTA( code, name, max, id ) \</a>
+<a name="ln728">          {                                    \</a>
+<a name="ln729">            cff_kind_delta,                    \</a>
+<a name="ln730">            code | CFFCODE,                    \</a>
+<a name="ln731">            FT_FIELD_OFFSET( name ),           \</a>
+<a name="ln732">            FT_FIELD_SIZE_DELTA( name ),       \</a>
+<a name="ln733">            0,                                 \</a>
+<a name="ln734">            max,                               \</a>
+<a name="ln735">            FT_FIELD_OFFSET( num_ ## name )    \</a>
+<a name="ln736">          },</a>
+<a name="ln737"> </a>
+<a name="ln738">  static const CFF_Field_Handler  cff_field_handlers[] =</a>
+<a name="ln739">  {</a>
+<a name="ln740"> </a>
+<a name="ln741">#include &quot;cfftoken.h&quot;</a>
+<a name="ln742"> </a>
+<a name="ln743">    { 0, 0, 0, 0, 0, 0, 0 }</a>
+<a name="ln744">  };</a>
+<a name="ln745"> </a>
+<a name="ln746"> </a>
+<a name="ln747">#else /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln748"> </a>
+<a name="ln749"> </a>
+<a name="ln750"> </a>
+<a name="ln751">#define CFF_FIELD_CALLBACK( code, name, id ) \</a>
+<a name="ln752">          {                                  \</a>
+<a name="ln753">            cff_kind_callback,               \</a>
+<a name="ln754">            code | CFFCODE,                  \</a>
+<a name="ln755">            0, 0,                            \</a>
+<a name="ln756">            cff_parse_ ## name,              \</a>
+<a name="ln757">            0, 0,                            \</a>
+<a name="ln758">            id                               \</a>
+<a name="ln759">          },</a>
+<a name="ln760"> </a>
+<a name="ln761">#define CFF_FIELD( code, name, id, kind ) \</a>
+<a name="ln762">          {                               \</a>
+<a name="ln763">            kind,                         \</a>
+<a name="ln764">            code | CFFCODE,               \</a>
+<a name="ln765">            FT_FIELD_OFFSET( name ),      \</a>
+<a name="ln766">            FT_FIELD_SIZE( name ),        \</a>
+<a name="ln767">            0, 0, 0,                      \</a>
+<a name="ln768">            id                            \</a>
+<a name="ln769">          },</a>
+<a name="ln770"> </a>
+<a name="ln771">#define CFF_FIELD_DELTA( code, name, max, id ) \</a>
+<a name="ln772">          {                                    \</a>
+<a name="ln773">            cff_kind_delta,                    \</a>
+<a name="ln774">            code | CFFCODE,                    \</a>
+<a name="ln775">            FT_FIELD_OFFSET( name ),           \</a>
+<a name="ln776">            FT_FIELD_SIZE_DELTA( name ),       \</a>
+<a name="ln777">            0,                                 \</a>
+<a name="ln778">            max,                               \</a>
+<a name="ln779">            FT_FIELD_OFFSET( num_ ## name ),   \</a>
+<a name="ln780">            id                                 \</a>
+<a name="ln781">          },</a>
+<a name="ln782"> </a>
+<a name="ln783">  static const CFF_Field_Handler  cff_field_handlers[] =</a>
+<a name="ln784">  {</a>
+<a name="ln785"> </a>
+<a name="ln786">#include &quot;cfftoken.h&quot;</a>
+<a name="ln787"> </a>
+<a name="ln788">    { 0, 0, 0, 0, 0, 0, 0, 0 }</a>
+<a name="ln789">  };</a>
+<a name="ln790"> </a>
+<a name="ln791"> </a>
+<a name="ln792">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln793"> </a>
+<a name="ln794"> </a>
+<a name="ln795">#else /* FT_CONFIG_OPTION_PIC */</a>
+<a name="ln796"> </a>
+<a name="ln797"> </a>
+<a name="ln798">  void</a>
+<a name="ln799">  FT_Destroy_Class_cff_field_handlers( FT_Library          library,</a>
+<a name="ln800">                                       CFF_Field_Handler*  clazz )</a>
+<a name="ln801">  {</a>
+<a name="ln802">    FT_Memory  memory = library-&gt;memory;</a>
+<a name="ln803"> </a>
+<a name="ln804"> </a>
+<a name="ln805">    if ( clazz )</a>
+<a name="ln806">      FT_FREE( clazz );</a>
+<a name="ln807">  }</a>
+<a name="ln808"> </a>
+<a name="ln809"> </a>
+<a name="ln810">  FT_Error</a>
+<a name="ln811">  FT_Create_Class_cff_field_handlers( FT_Library           library,</a>
+<a name="ln812">                                      CFF_Field_Handler**  output_class )</a>
+<a name="ln813">  {</a>
+<a name="ln814">    CFF_Field_Handler*  clazz  = NULL;</a>
+<a name="ln815">    FT_Error            error;</a>
+<a name="ln816">    FT_Memory           memory = library-&gt;memory;</a>
+<a name="ln817"> </a>
+<a name="ln818">    int  i = 0;</a>
+<a name="ln819"> </a>
+<a name="ln820"> </a>
+<a name="ln821">#undef CFF_FIELD</a>
+<a name="ln822">#define CFF_FIELD( code, name, id, kind ) i++;</a>
+<a name="ln823">#undef CFF_FIELD_DELTA</a>
+<a name="ln824">#define CFF_FIELD_DELTA( code, name, max, id ) i++;</a>
+<a name="ln825">#undef CFF_FIELD_CALLBACK</a>
+<a name="ln826">#define CFF_FIELD_CALLBACK( code, name, id ) i++;</a>
+<a name="ln827"> </a>
+<a name="ln828">#include &quot;cfftoken.h&quot;</a>
+<a name="ln829"> </a>
+<a name="ln830">    i++; /* { 0, 0, 0, 0, 0, 0, 0 } */</a>
+<a name="ln831"> </a>
+<a name="ln832">    if ( FT_ALLOC( clazz, sizeof ( CFF_Field_Handler ) * i ) )</a>
+<a name="ln833">      return error;</a>
+<a name="ln834"> </a>
+<a name="ln835">    i = 0;</a>
+<a name="ln836"> </a>
+<a name="ln837"> </a>
+<a name="ln838">#ifndef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln839"> </a>
+<a name="ln840"> </a>
+<a name="ln841">#undef CFF_FIELD_CALLBACK</a>
+<a name="ln842">#define CFF_FIELD_CALLBACK( code_, name_, id_ )        \</a>
+<a name="ln843">          clazz[i].kind         = cff_kind_callback;   \</a>
+<a name="ln844">          clazz[i].code         = code_ | CFFCODE;     \</a>
+<a name="ln845">          clazz[i].offset       = 0;                   \</a>
+<a name="ln846">          clazz[i].size         = 0;                   \</a>
+<a name="ln847">          clazz[i].reader       = cff_parse_ ## name_; \</a>
+<a name="ln848">          clazz[i].array_max    = 0;                   \</a>
+<a name="ln849">          clazz[i].count_offset = 0;                   \</a>
+<a name="ln850">          i++;</a>
+<a name="ln851"> </a>
+<a name="ln852">#undef  CFF_FIELD</a>
+<a name="ln853">#define CFF_FIELD( code_, name_, id_, kind_ )               \</a>
+<a name="ln854">          clazz[i].kind         = kind_;                    \</a>
+<a name="ln855">          clazz[i].code         = code_ | CFFCODE;          \</a>
+<a name="ln856">          clazz[i].offset       = FT_FIELD_OFFSET( name_ ); \</a>
+<a name="ln857">          clazz[i].size         = FT_FIELD_SIZE( name_ );   \</a>
+<a name="ln858">          clazz[i].reader       = 0;                        \</a>
+<a name="ln859">          clazz[i].array_max    = 0;                        \</a>
+<a name="ln860">          clazz[i].count_offset = 0;                        \</a>
+<a name="ln861">          i++;                                              \</a>
+<a name="ln862"> </a>
+<a name="ln863">#undef  CFF_FIELD_DELTA</a>
+<a name="ln864">#define CFF_FIELD_DELTA( code_, name_, max_, id_ )                  \</a>
+<a name="ln865">          clazz[i].kind         = cff_kind_delta;                   \</a>
+<a name="ln866">          clazz[i].code         = code_ | CFFCODE;                  \</a>
+<a name="ln867">          clazz[i].offset       = FT_FIELD_OFFSET( name_ );         \</a>
+<a name="ln868">          clazz[i].size         = FT_FIELD_SIZE_DELTA( name_ );     \</a>
+<a name="ln869">          clazz[i].reader       = 0;                                \</a>
+<a name="ln870">          clazz[i].array_max    = max_;                             \</a>
+<a name="ln871">          clazz[i].count_offset = FT_FIELD_OFFSET( num_ ## name_ ); \</a>
+<a name="ln872">          i++;</a>
+<a name="ln873"> </a>
+<a name="ln874">#include &quot;cfftoken.h&quot;</a>
+<a name="ln875"> </a>
+<a name="ln876">    clazz[i].kind         = 0;</a>
+<a name="ln877">    clazz[i].code         = 0;</a>
+<a name="ln878">    clazz[i].offset       = 0;</a>
+<a name="ln879">    clazz[i].size         = 0;</a>
+<a name="ln880">    clazz[i].reader       = 0;</a>
+<a name="ln881">    clazz[i].array_max    = 0;</a>
+<a name="ln882">    clazz[i].count_offset = 0;</a>
+<a name="ln883"> </a>
+<a name="ln884"> </a>
+<a name="ln885">#else /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln886"> </a>
+<a name="ln887"> </a>
+<a name="ln888">#undef CFF_FIELD_CALLBACK</a>
+<a name="ln889">#define CFF_FIELD_CALLBACK( code_, name_, id_ )        \</a>
+<a name="ln890">          clazz[i].kind         = cff_kind_callback;   \</a>
+<a name="ln891">          clazz[i].code         = code_ | CFFCODE;     \</a>
+<a name="ln892">          clazz[i].offset       = 0;                   \</a>
+<a name="ln893">          clazz[i].size         = 0;                   \</a>
+<a name="ln894">          clazz[i].reader       = cff_parse_ ## name_; \</a>
+<a name="ln895">          clazz[i].array_max    = 0;                   \</a>
+<a name="ln896">          clazz[i].count_offset = 0;                   \</a>
+<a name="ln897">          clazz[i].id           = id_;                 \</a>
+<a name="ln898">          i++;</a>
+<a name="ln899"> </a>
+<a name="ln900">#undef  CFF_FIELD</a>
+<a name="ln901">#define CFF_FIELD( code_, name_, id_, kind_ )               \</a>
+<a name="ln902">          clazz[i].kind         = kind_;                    \</a>
+<a name="ln903">          clazz[i].code         = code_ | CFFCODE;          \</a>
+<a name="ln904">          clazz[i].offset       = FT_FIELD_OFFSET( name_ ); \</a>
+<a name="ln905">          clazz[i].size         = FT_FIELD_SIZE( name_ );   \</a>
+<a name="ln906">          clazz[i].reader       = 0;                        \</a>
+<a name="ln907">          clazz[i].array_max    = 0;                        \</a>
+<a name="ln908">          clazz[i].count_offset = 0;                        \</a>
+<a name="ln909">          clazz[i].id           = id_;                      \</a>
+<a name="ln910">          i++;                                              \</a>
+<a name="ln911"> </a>
+<a name="ln912">#undef  CFF_FIELD_DELTA</a>
+<a name="ln913">#define CFF_FIELD_DELTA( code_, name_, max_, id_ )                  \</a>
+<a name="ln914">          clazz[i].kind         = cff_kind_delta;                   \</a>
+<a name="ln915">          clazz[i].code         = code_ | CFFCODE;                  \</a>
+<a name="ln916">          clazz[i].offset       = FT_FIELD_OFFSET( name_ );         \</a>
+<a name="ln917">          clazz[i].size         = FT_FIELD_SIZE_DELTA( name_ );     \</a>
+<a name="ln918">          clazz[i].reader       = 0;                                \</a>
+<a name="ln919">          clazz[i].array_max    = max_;                             \</a>
+<a name="ln920">          clazz[i].count_offset = FT_FIELD_OFFSET( num_ ## name_ ); \</a>
+<a name="ln921">          clazz[i].id           = id_;                              \</a>
+<a name="ln922">          i++;</a>
+<a name="ln923"> </a>
+<a name="ln924">#include &quot;cfftoken.h&quot;</a>
+<a name="ln925"> </a>
+<a name="ln926">    clazz[i].kind         = 0;</a>
+<a name="ln927">    clazz[i].code         = 0;</a>
+<a name="ln928">    clazz[i].offset       = 0;</a>
+<a name="ln929">    clazz[i].size         = 0;</a>
+<a name="ln930">    clazz[i].reader       = 0;</a>
+<a name="ln931">    clazz[i].array_max    = 0;</a>
+<a name="ln932">    clazz[i].count_offset = 0;</a>
+<a name="ln933">    clazz[i].id           = 0;</a>
+<a name="ln934"> </a>
+<a name="ln935"> </a>
+<a name="ln936">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln937"> </a>
+<a name="ln938"> </a>
+<a name="ln939">    *output_class = clazz;</a>
+<a name="ln940"> </a>
+<a name="ln941">    return FT_Err_Ok;</a>
+<a name="ln942">  }</a>
+<a name="ln943"> </a>
+<a name="ln944"> </a>
+<a name="ln945">#endif /* FT_CONFIG_OPTION_PIC */</a>
+<a name="ln946"> </a>
+<a name="ln947"> </a>
+<a name="ln948">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln949">  cff_parser_run( CFF_Parser  parser,</a>
+<a name="ln950">                  FT_Byte*    start,</a>
+<a name="ln951">                  FT_Byte*    limit )</a>
+<a name="ln952">  {</a>
+<a name="ln953">    FT_Byte*    p       = start;</a>
+<a name="ln954">    FT_Error    error   = FT_Err_Ok;</a>
+<a name="ln955">    FT_Library  library = parser-&gt;library;</a>
+<a name="ln956">    FT_UNUSED( library );</a>
+<a name="ln957"> </a>
+<a name="ln958"> </a>
+<a name="ln959">    parser-&gt;top    = parser-&gt;stack;</a>
+<a name="ln960">    parser-&gt;start  = start;</a>
+<a name="ln961">    parser-&gt;limit  = limit;</a>
+<a name="ln962">    parser-&gt;cursor = start;</a>
+<a name="ln963"> </a>
+<a name="ln964">    while ( p &lt; limit )</a>
+<a name="ln965">    {</a>
+<a name="ln966">      FT_UInt  v = *p;</a>
+<a name="ln967"> </a>
+<a name="ln968"> </a>
+<a name="ln969">      if ( v &gt;= 27 &amp;&amp; v != 31 )</a>
+<a name="ln970">      {</a>
+<a name="ln971">        /* it's a number; we will push its position on the stack */</a>
+<a name="ln972">        if ( parser-&gt;top - parser-&gt;stack &gt;= CFF_MAX_STACK_DEPTH )</a>
+<a name="ln973">          goto Stack_Overflow;</a>
+<a name="ln974"> </a>
+<a name="ln975">        *parser-&gt;top ++ = p;</a>
+<a name="ln976"> </a>
+<a name="ln977">        /* now, skip it */</a>
+<a name="ln978">        if ( v == 30 )</a>
+<a name="ln979">        {</a>
+<a name="ln980">          /* skip real number */</a>
+<a name="ln981">          p++;</a>
+<a name="ln982">          for (;;)</a>
+<a name="ln983">          {</a>
+<a name="ln984">            /* An unterminated floating point number at the */</a>
+<a name="ln985">            /* end of a dictionary is invalid but harmless. */</a>
+<a name="ln986">            if ( p &gt;= limit )</a>
+<a name="ln987">              goto Exit;</a>
+<a name="ln988">            v = p[0] &gt;&gt; 4;</a>
+<a name="ln989">            if ( v == 15 )</a>
+<a name="ln990">              break;</a>
+<a name="ln991">            v = p[0] &amp; 0xF;</a>
+<a name="ln992">            if ( v == 15 )</a>
+<a name="ln993">              break;</a>
+<a name="ln994">            p++;</a>
+<a name="ln995">          }</a>
+<a name="ln996">        }</a>
+<a name="ln997">        else if ( v == 28 )</a>
+<a name="ln998">          p += 2;</a>
+<a name="ln999">        else if ( v == 29 )</a>
+<a name="ln1000">          p += 4;</a>
+<a name="ln1001">        else if ( v &gt; 246 )</a>
+<a name="ln1002">          p += 1;</a>
+<a name="ln1003">      }</a>
+<a name="ln1004">      else</a>
+<a name="ln1005">      {</a>
+<a name="ln1006">        /* This is not a number, hence it's an operator.  Compute its code */</a>
+<a name="ln1007">        /* and look for it in our current list.                            */</a>
+<a name="ln1008"> </a>
+<a name="ln1009">        FT_UInt                   code;</a>
+<a name="ln1010">        FT_UInt                   num_args = (FT_UInt)</a>
+<a name="ln1011">                                             ( parser-&gt;top - parser-&gt;stack );</a>
+<a name="ln1012">        const CFF_Field_Handler*  field;</a>
+<a name="ln1013"> </a>
+<a name="ln1014"> </a>
+<a name="ln1015">        *parser-&gt;top = p;</a>
+<a name="ln1016">        code = v;</a>
+<a name="ln1017">        if ( v == 12 )</a>
+<a name="ln1018">        {</a>
+<a name="ln1019">          /* two byte operator */</a>
+<a name="ln1020">          p++;</a>
+<a name="ln1021">          if ( p &gt;= limit )</a>
+<a name="ln1022">            goto Syntax_Error;</a>
+<a name="ln1023"> </a>
+<a name="ln1024">          code = 0x100 | p[0];</a>
+<a name="ln1025">        }</a>
+<a name="ln1026">        code = code | parser-&gt;object_code;</a>
+<a name="ln1027"> </a>
+<a name="ln1028">        for ( field = CFF_FIELD_HANDLERS_GET; field-&gt;kind; field++ )</a>
+<a name="ln1029">        {</a>
+<a name="ln1030">          if ( field-&gt;code == (FT_Int)code )</a>
+<a name="ln1031">          {</a>
+<a name="ln1032">            /* we found our field's handler; read it */</a>
+<a name="ln1033">            FT_Long   val;</a>
+<a name="ln1034">            FT_Byte*  q = (FT_Byte*)parser-&gt;object + field-&gt;offset;</a>
+<a name="ln1035"> </a>
+<a name="ln1036"> </a>
+<a name="ln1037">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1038">            FT_TRACE4(( &quot;  %s&quot;, field-&gt;id ));</a>
+<a name="ln1039">#endif</a>
+<a name="ln1040"> </a>
+<a name="ln1041">            /* check that we have enough arguments -- except for */</a>
+<a name="ln1042">            /* delta encoded arrays, which can be empty          */</a>
+<a name="ln1043">            if ( field-&gt;kind != cff_kind_delta &amp;&amp; num_args &lt; 1 )</a>
+<a name="ln1044">              goto Stack_Underflow;</a>
+<a name="ln1045"> </a>
+<a name="ln1046">            switch ( field-&gt;kind )</a>
+<a name="ln1047">            {</a>
+<a name="ln1048">            case cff_kind_bool:</a>
+<a name="ln1049">            case cff_kind_string:</a>
+<a name="ln1050">            case cff_kind_num:</a>
+<a name="ln1051">              val = cff_parse_num( parser-&gt;stack );</a>
+<a name="ln1052">              goto Store_Number;</a>
+<a name="ln1053"> </a>
+<a name="ln1054">            case cff_kind_fixed:</a>
+<a name="ln1055">              val = cff_parse_fixed( parser-&gt;stack );</a>
+<a name="ln1056">              goto Store_Number;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">            case cff_kind_fixed_thousand:</a>
+<a name="ln1059">              val = cff_parse_fixed_scaled( parser-&gt;stack, 3 );</a>
+<a name="ln1060"> </a>
+<a name="ln1061">            Store_Number:</a>
+<a name="ln1062">              switch ( field-&gt;size )</a>
+<a name="ln1063">              {</a>
+<a name="ln1064">              case (8 / FT_CHAR_BIT):</a>
+<a name="ln1065">                *(FT_Byte*)q = (FT_Byte)val;</a>
+<a name="ln1066">                break;</a>
+<a name="ln1067"> </a>
+<a name="ln1068">              case (16 / FT_CHAR_BIT):</a>
+<a name="ln1069">                *(FT_Short*)q = (FT_Short)val;</a>
+<a name="ln1070">                break;</a>
+<a name="ln1071"> </a>
+<a name="ln1072">              case (32 / FT_CHAR_BIT):</a>
+<a name="ln1073">                *(FT_Int32*)q = (FT_Int)val;</a>
+<a name="ln1074">                break;</a>
+<a name="ln1075"> </a>
+<a name="ln1076">              default:  /* for 64-bit systems */</a>
+<a name="ln1077">                *(FT_Long*)q = val;</a>
+<a name="ln1078">              }</a>
+<a name="ln1079"> </a>
+<a name="ln1080">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1081">              switch ( field-&gt;kind )</a>
+<a name="ln1082">              {</a>
+<a name="ln1083">              case cff_kind_bool:</a>
+<a name="ln1084">                FT_TRACE4(( &quot; %s\n&quot;, val ? &quot;true&quot; : &quot;false&quot; ));</a>
+<a name="ln1085">                break;</a>
+<a name="ln1086"> </a>
+<a name="ln1087">              case cff_kind_string:</a>
+<a name="ln1088">                FT_TRACE4(( &quot; %ld (SID)\n&quot;, val ));</a>
+<a name="ln1089">                break;</a>
+<a name="ln1090"> </a>
+<a name="ln1091">              case cff_kind_num:</a>
+<a name="ln1092">                FT_TRACE4(( &quot; %ld\n&quot;, val ));</a>
+<a name="ln1093">                break;</a>
+<a name="ln1094"> </a>
+<a name="ln1095">              case cff_kind_fixed:</a>
+<a name="ln1096">                FT_TRACE4(( &quot; %f\n&quot;, (double)val / 65536 ));</a>
+<a name="ln1097">                break;</a>
+<a name="ln1098"> </a>
+<a name="ln1099">              case cff_kind_fixed_thousand:</a>
+<a name="ln1100">                FT_TRACE4(( &quot; %f\n&quot;, (double)val / 65536 / 1000 ));</a>
+<a name="ln1101"> </a>
+<a name="ln1102">              default:</a>
+<a name="ln1103">                ; /* never reached */</a>
+<a name="ln1104">              }</a>
+<a name="ln1105">#endif</a>
+<a name="ln1106"> </a>
+<a name="ln1107">              break;</a>
+<a name="ln1108"> </a>
+<a name="ln1109">            case cff_kind_delta:</a>
+<a name="ln1110">              {</a>
+<a name="ln1111">                FT_Byte*   qcount = (FT_Byte*)parser-&gt;object +</a>
+<a name="ln1112">                                      field-&gt;count_offset;</a>
+<a name="ln1113"> </a>
+<a name="ln1114">                FT_Byte**  data = parser-&gt;stack;</a>
+<a name="ln1115"> </a>
+<a name="ln1116"> </a>
+<a name="ln1117">                if ( num_args &gt; field-&gt;array_max )</a>
+<a name="ln1118">                  num_args = field-&gt;array_max;</a>
+<a name="ln1119"> </a>
+<a name="ln1120">                FT_TRACE4(( &quot; [&quot; ));</a>
+<a name="ln1121"> </a>
+<a name="ln1122">                /* store count */</a>
+<a name="ln1123">                *qcount = (FT_Byte)num_args;</a>
+<a name="ln1124"> </a>
+<a name="ln1125">                val = 0;</a>
+<a name="ln1126">                while ( num_args &gt; 0 )</a>
+<a name="ln1127">                {</a>
+<a name="ln1128">                  val += cff_parse_num( data++ );</a>
+<a name="ln1129">                  switch ( field-&gt;size )</a>
+<a name="ln1130">                  {</a>
+<a name="ln1131">                  case (8 / FT_CHAR_BIT):</a>
+<a name="ln1132">                    *(FT_Byte*)q = (FT_Byte)val;</a>
+<a name="ln1133">                    break;</a>
+<a name="ln1134"> </a>
+<a name="ln1135">                  case (16 / FT_CHAR_BIT):</a>
+<a name="ln1136">                    *(FT_Short*)q = (FT_Short)val;</a>
+<a name="ln1137">                    break;</a>
+<a name="ln1138"> </a>
+<a name="ln1139">                  case (32 / FT_CHAR_BIT):</a>
+<a name="ln1140">                    *(FT_Int32*)q = (FT_Int)val;</a>
+<a name="ln1141">                    break;</a>
+<a name="ln1142"> </a>
+<a name="ln1143">                  default:  /* for 64-bit systems */</a>
+<a name="ln1144">                    *(FT_Long*)q = val;</a>
+<a name="ln1145">                  }</a>
+<a name="ln1146"> </a>
+<a name="ln1147">                  FT_TRACE4(( &quot; %ld&quot;, val ));</a>
+<a name="ln1148"> </a>
+<a name="ln1149">                  q += field-&gt;size;</a>
+<a name="ln1150">                  num_args--;</a>
+<a name="ln1151">                }</a>
+<a name="ln1152"> </a>
+<a name="ln1153">                FT_TRACE4(( &quot;]\n&quot; ));</a>
+<a name="ln1154">              }</a>
+<a name="ln1155">              break;</a>
+<a name="ln1156"> </a>
+<a name="ln1157">            default:  /* callback */</a>
+<a name="ln1158">              error = field-&gt;reader( parser );</a>
+<a name="ln1159">              if ( error )</a>
+<a name="ln1160">                goto Exit;</a>
+<a name="ln1161">            }</a>
+<a name="ln1162">            goto Found;</a>
+<a name="ln1163">          }</a>
+<a name="ln1164">        }</a>
+<a name="ln1165"> </a>
+<a name="ln1166">        /* this is an unknown operator, or it is unsupported; */</a>
+<a name="ln1167">        /* we will ignore it for now.                         */</a>
+<a name="ln1168"> </a>
+<a name="ln1169">      Found:</a>
+<a name="ln1170">        /* clear stack */</a>
+<a name="ln1171">        parser-&gt;top = parser-&gt;stack;</a>
+<a name="ln1172">      }</a>
+<a name="ln1173">      p++;</a>
+<a name="ln1174">    }</a>
+<a name="ln1175"> </a>
+<a name="ln1176">  Exit:</a>
+<a name="ln1177">    return error;</a>
+<a name="ln1178"> </a>
+<a name="ln1179">  Stack_Overflow:</a>
+<a name="ln1180">    error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1181">    goto Exit;</a>
+<a name="ln1182"> </a>
+<a name="ln1183">  Stack_Underflow:</a>
+<a name="ln1184">    error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1185">    goto Exit;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">  Syntax_Error:</a>
+<a name="ln1188">    error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1189">    goto Exit;</a>
+<a name="ln1190">  }</a>
+<a name="ln1191"> </a>
+<a name="ln1192"> </a>
+<a name="ln1193">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="388"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'result' variable was assigned the same value.</p></div>
+<div class="balloon" rel="393"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'result' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

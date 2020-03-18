@@ -1,0 +1,1267 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pshrec.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  pshrec.c                                                               */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    FreeType PostScript hints recorder (body).                           */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2001-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_FREETYPE_H</a>
+<a name="ln21">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln22">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln23">#include FT_INTERNAL_CALC_H</a>
+<a name="ln24"> </a>
+<a name="ln25">#include &quot;pshrec.h&quot;</a>
+<a name="ln26">#include &quot;pshalgo.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">#include &quot;pshnterr.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">#undef  FT_COMPONENT</a>
+<a name="ln31">#define FT_COMPONENT  trace_pshrec</a>
+<a name="ln32"> </a>
+<a name="ln33">#ifdef DEBUG_HINTER</a>
+<a name="ln34">  PS_Hints  ps_debug_hints         = NULL;</a>
+<a name="ln35">  int       ps_debug_no_horz_hints = 0;</a>
+<a name="ln36">  int       ps_debug_no_vert_hints = 0;</a>
+<a name="ln37">#endif</a>
+<a name="ln38"> </a>
+<a name="ln39"> </a>
+<a name="ln40">  /*************************************************************************/</a>
+<a name="ln41">  /*************************************************************************/</a>
+<a name="ln42">  /*****                                                               *****/</a>
+<a name="ln43">  /*****                      PS_HINT MANAGEMENT                       *****/</a>
+<a name="ln44">  /*****                                                               *****/</a>
+<a name="ln45">  /*************************************************************************/</a>
+<a name="ln46">  /*************************************************************************/</a>
+<a name="ln47"> </a>
+<a name="ln48">  /* destroy hints table */</a>
+<a name="ln49">  static void</a>
+<a name="ln50">  ps_hint_table_done( PS_Hint_Table  table,</a>
+<a name="ln51">                      FT_Memory      memory )</a>
+<a name="ln52">  {</a>
+<a name="ln53">    FT_FREE( table-&gt;hints );</a>
+<a name="ln54">    table-&gt;num_hints = 0;</a>
+<a name="ln55">    table-&gt;max_hints = 0;</a>
+<a name="ln56">  }</a>
+<a name="ln57"> </a>
+<a name="ln58"> </a>
+<a name="ln59">  /* ensure that a table can contain &quot;count&quot; elements */</a>
+<a name="ln60">  static FT_Error</a>
+<a name="ln61">  ps_hint_table_ensure( PS_Hint_Table  table,</a>
+<a name="ln62">                        FT_UInt        count,</a>
+<a name="ln63">                        FT_Memory      memory )</a>
+<a name="ln64">  {</a>
+<a name="ln65">    FT_UInt   old_max = table-&gt;max_hints;</a>
+<a name="ln66">    FT_UInt   new_max = count;</a>
+<a name="ln67">    FT_Error  error   = FT_Err_Ok;</a>
+<a name="ln68"> </a>
+<a name="ln69"> </a>
+<a name="ln70">    if ( new_max &gt; old_max )</a>
+<a name="ln71">    {</a>
+<a name="ln72">      /* try to grow the table */</a>
+<a name="ln73">      new_max = FT_PAD_CEIL( new_max, 8 );</a>
+<a name="ln74">      if ( !FT_RENEW_ARRAY( table-&gt;hints, old_max, new_max ) )</a>
+<a name="ln75">        table-&gt;max_hints = new_max;</a>
+<a name="ln76">    }</a>
+<a name="ln77">    return error;</a>
+<a name="ln78">  }</a>
+<a name="ln79"> </a>
+<a name="ln80"> </a>
+<a name="ln81">  static FT_Error</a>
+<a name="ln82">  ps_hint_table_alloc( PS_Hint_Table  table,</a>
+<a name="ln83">                       FT_Memory      memory,</a>
+<a name="ln84">                       PS_Hint       *ahint )</a>
+<a name="ln85">  {</a>
+<a name="ln86">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln87">    FT_UInt   count;</a>
+<a name="ln88">    PS_Hint   hint = NULL;</a>
+<a name="ln89"> </a>
+<a name="ln90"> </a>
+<a name="ln91">    count = table-&gt;num_hints;</a>
+<a name="ln92">    count++;</a>
+<a name="ln93"> </a>
+<a name="ln94">    if ( count &gt;= table-&gt;max_hints )</a>
+<a name="ln95">    {</a>
+<a name="ln96">      error = ps_hint_table_ensure( table, count, memory );</a>
+<a name="ln97">      if ( error )</a>
+<a name="ln98">        goto Exit;</a>
+<a name="ln99">    }</a>
+<a name="ln100"> </a>
+<a name="ln101">    hint        = table-&gt;hints + count - 1;</a>
+<a name="ln102">    hint-&gt;pos   = 0;</a>
+<a name="ln103">    hint-&gt;len   = 0;</a>
+<a name="ln104">    hint-&gt;flags = 0;</a>
+<a name="ln105"> </a>
+<a name="ln106">    table-&gt;num_hints = count;</a>
+<a name="ln107"> </a>
+<a name="ln108">  Exit:</a>
+<a name="ln109">    *ahint = hint;</a>
+<a name="ln110">    return error;</a>
+<a name="ln111">  }</a>
+<a name="ln112"> </a>
+<a name="ln113"> </a>
+<a name="ln114">  /*************************************************************************/</a>
+<a name="ln115">  /*************************************************************************/</a>
+<a name="ln116">  /*****                                                               *****/</a>
+<a name="ln117">  /*****                      PS_MASK MANAGEMENT                       *****/</a>
+<a name="ln118">  /*****                                                               *****/</a>
+<a name="ln119">  /*************************************************************************/</a>
+<a name="ln120">  /*************************************************************************/</a>
+<a name="ln121"> </a>
+<a name="ln122">  /* destroy mask */</a>
+<a name="ln123">  static void</a>
+<a name="ln124">  ps_mask_done( PS_Mask    mask,</a>
+<a name="ln125">                FT_Memory  memory )</a>
+<a name="ln126">  {</a>
+<a name="ln127">    FT_FREE( mask-&gt;bytes );</a>
+<a name="ln128">    mask-&gt;num_bits  = 0;</a>
+<a name="ln129">    mask-&gt;max_bits  = 0;</a>
+<a name="ln130">    mask-&gt;end_point = 0;</a>
+<a name="ln131">  }</a>
+<a name="ln132"> </a>
+<a name="ln133"> </a>
+<a name="ln134">  /* ensure that a mask can contain &quot;count&quot; bits */</a>
+<a name="ln135">  static FT_Error</a>
+<a name="ln136">  ps_mask_ensure( PS_Mask    mask,</a>
+<a name="ln137">                  FT_UInt    count,</a>
+<a name="ln138">                  FT_Memory  memory )</a>
+<a name="ln139">  {</a>
+<a name="ln140">    FT_UInt   old_max = ( mask-&gt;max_bits + 7 ) &gt;&gt; 3;</a>
+<a name="ln141">    FT_UInt   new_max = ( count          + 7 ) &gt;&gt; 3;</a>
+<a name="ln142">    FT_Error  error   = FT_Err_Ok;</a>
+<a name="ln143"> </a>
+<a name="ln144"> </a>
+<a name="ln145">    if ( new_max &gt; old_max )</a>
+<a name="ln146">    {</a>
+<a name="ln147">      new_max = FT_PAD_CEIL( new_max, 8 );</a>
+<a name="ln148">      if ( !FT_RENEW_ARRAY( mask-&gt;bytes, old_max, new_max ) )</a>
+<a name="ln149">        mask-&gt;max_bits = new_max * 8;</a>
+<a name="ln150">    }</a>
+<a name="ln151">    return error;</a>
+<a name="ln152">  }</a>
+<a name="ln153"> </a>
+<a name="ln154"> </a>
+<a name="ln155">  /* test a bit value in a given mask */</a>
+<a name="ln156">  static FT_Int</a>
+<a name="ln157">  ps_mask_test_bit( PS_Mask  mask,</a>
+<a name="ln158">                    FT_Int   idx )</a>
+<a name="ln159">  {</a>
+<a name="ln160">    if ( (FT_UInt)idx &gt;= mask-&gt;num_bits )</a>
+<a name="ln161">      return 0;</a>
+<a name="ln162"> </a>
+<a name="ln163">    return mask-&gt;bytes[idx &gt;&gt; 3] &amp; ( 0x80 &gt;&gt; ( idx &amp; 7 ) );</a>
+<a name="ln164">  }</a>
+<a name="ln165"> </a>
+<a name="ln166"> </a>
+<a name="ln167">  /* clear a given bit */</a>
+<a name="ln168">  static void</a>
+<a name="ln169">  ps_mask_clear_bit( PS_Mask  mask,</a>
+<a name="ln170">                     FT_UInt  idx )</a>
+<a name="ln171">  {</a>
+<a name="ln172">    FT_Byte*  p;</a>
+<a name="ln173"> </a>
+<a name="ln174"> </a>
+<a name="ln175">    if ( idx &gt;= mask-&gt;num_bits )</a>
+<a name="ln176">      return;</a>
+<a name="ln177"> </a>
+<a name="ln178">    p    = mask-&gt;bytes + ( idx &gt;&gt; 3 );</a>
+<a name="ln179">    p[0] = (FT_Byte)( p[0] &amp; ~( 0x80 &gt;&gt; ( idx &amp; 7 ) ) );</a>
+<a name="ln180">  }</a>
+<a name="ln181"> </a>
+<a name="ln182"> </a>
+<a name="ln183">  /* set a given bit, possibly grow the mask */</a>
+<a name="ln184">  static FT_Error</a>
+<a name="ln185">  ps_mask_set_bit( PS_Mask    mask,</a>
+<a name="ln186">                   FT_UInt    idx,</a>
+<a name="ln187">                   FT_Memory  memory )</a>
+<a name="ln188">  {</a>
+<a name="ln189">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln190">    FT_Byte*  p;</a>
+<a name="ln191"> </a>
+<a name="ln192"> </a>
+<a name="ln193">    if ( idx &gt;= mask-&gt;num_bits )</a>
+<a name="ln194">    {</a>
+<a name="ln195">      error = ps_mask_ensure( mask, idx + 1, memory );</a>
+<a name="ln196">      if ( error )</a>
+<a name="ln197">        goto Exit;</a>
+<a name="ln198"> </a>
+<a name="ln199">      mask-&gt;num_bits = idx + 1;</a>
+<a name="ln200">    }</a>
+<a name="ln201"> </a>
+<a name="ln202">    p    = mask-&gt;bytes + ( idx &gt;&gt; 3 );</a>
+<a name="ln203">    p[0] = (FT_Byte)( p[0] | ( 0x80 &gt;&gt; ( idx &amp; 7 ) ) );</a>
+<a name="ln204"> </a>
+<a name="ln205">  Exit:</a>
+<a name="ln206">    return error;</a>
+<a name="ln207">  }</a>
+<a name="ln208"> </a>
+<a name="ln209"> </a>
+<a name="ln210">  /* destroy mask table */</a>
+<a name="ln211">  static void</a>
+<a name="ln212">  ps_mask_table_done( PS_Mask_Table  table,</a>
+<a name="ln213">                      FT_Memory      memory )</a>
+<a name="ln214">  {</a>
+<a name="ln215">    FT_UInt  count = table-&gt;max_masks;</a>
+<a name="ln216">    PS_Mask  mask  = table-&gt;masks;</a>
+<a name="ln217"> </a>
+<a name="ln218"> </a>
+<a name="ln219">    for ( ; count &gt; 0; count--, mask++ )</a>
+<a name="ln220">      ps_mask_done( mask, memory );</a>
+<a name="ln221"> </a>
+<a name="ln222">    FT_FREE( table-&gt;masks );</a>
+<a name="ln223">    table-&gt;num_masks = 0;</a>
+<a name="ln224">    table-&gt;max_masks = 0;</a>
+<a name="ln225">  }</a>
+<a name="ln226"> </a>
+<a name="ln227"> </a>
+<a name="ln228">  /* ensure that a mask table can contain &quot;count&quot; masks */</a>
+<a name="ln229">  static FT_Error</a>
+<a name="ln230">  ps_mask_table_ensure( PS_Mask_Table  table,</a>
+<a name="ln231">                        FT_UInt        count,</a>
+<a name="ln232">                        FT_Memory      memory )</a>
+<a name="ln233">  {</a>
+<a name="ln234">    FT_UInt   old_max = table-&gt;max_masks;</a>
+<a name="ln235">    FT_UInt   new_max = count;</a>
+<a name="ln236">    FT_Error  error   = FT_Err_Ok;</a>
+<a name="ln237"> </a>
+<a name="ln238"> </a>
+<a name="ln239">    if ( new_max &gt; old_max )</a>
+<a name="ln240">    {</a>
+<a name="ln241">      new_max = FT_PAD_CEIL( new_max, 8 );</a>
+<a name="ln242">      if ( !FT_RENEW_ARRAY( table-&gt;masks, old_max, new_max ) )</a>
+<a name="ln243">        table-&gt;max_masks = new_max;</a>
+<a name="ln244">    }</a>
+<a name="ln245">    return error;</a>
+<a name="ln246">  }</a>
+<a name="ln247"> </a>
+<a name="ln248"> </a>
+<a name="ln249">  /* allocate a new mask in a table */</a>
+<a name="ln250">  static FT_Error</a>
+<a name="ln251">  ps_mask_table_alloc( PS_Mask_Table  table,</a>
+<a name="ln252">                       FT_Memory      memory,</a>
+<a name="ln253">                       PS_Mask       *amask )</a>
+<a name="ln254">  {</a>
+<a name="ln255">    FT_UInt   count;</a>
+<a name="ln256">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln257">    PS_Mask   mask  = NULL;</a>
+<a name="ln258"> </a>
+<a name="ln259"> </a>
+<a name="ln260">    count = table-&gt;num_masks;</a>
+<a name="ln261">    count++;</a>
+<a name="ln262"> </a>
+<a name="ln263">    if ( count &gt; table-&gt;max_masks )</a>
+<a name="ln264">    {</a>
+<a name="ln265">      error = ps_mask_table_ensure( table, count, memory );</a>
+<a name="ln266">      if ( error )</a>
+<a name="ln267">        goto Exit;</a>
+<a name="ln268">    }</a>
+<a name="ln269"> </a>
+<a name="ln270">    mask             = table-&gt;masks + count - 1;</a>
+<a name="ln271">    mask-&gt;num_bits   = 0;</a>
+<a name="ln272">    mask-&gt;end_point  = 0;</a>
+<a name="ln273">    table-&gt;num_masks = count;</a>
+<a name="ln274"> </a>
+<a name="ln275">  Exit:</a>
+<a name="ln276">    *amask = mask;</a>
+<a name="ln277">    return error;</a>
+<a name="ln278">  }</a>
+<a name="ln279"> </a>
+<a name="ln280"> </a>
+<a name="ln281">  /* return last hint mask in a table, create one if the table is empty */</a>
+<a name="ln282">  static FT_Error</a>
+<a name="ln283">  ps_mask_table_last( PS_Mask_Table  table,</a>
+<a name="ln284">                      FT_Memory      memory,</a>
+<a name="ln285">                      PS_Mask       *amask )</a>
+<a name="ln286">  {</a>
+<a name="ln287">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln288">    FT_UInt   count;</a>
+<a name="ln289">    PS_Mask   mask;</a>
+<a name="ln290"> </a>
+<a name="ln291"> </a>
+<a name="ln292">    count = table-&gt;num_masks;</a>
+<a name="ln293">    if ( count == 0 )</a>
+<a name="ln294">    {</a>
+<a name="ln295">      error = ps_mask_table_alloc( table, memory, &amp;mask );</a>
+<a name="ln296">      if ( error )</a>
+<a name="ln297">        goto Exit;</a>
+<a name="ln298">    }</a>
+<a name="ln299">    else</a>
+<a name="ln300">      mask = table-&gt;masks + count - 1;</a>
+<a name="ln301"> </a>
+<a name="ln302">  Exit:</a>
+<a name="ln303">    *amask = mask;</a>
+<a name="ln304">    return error;</a>
+<a name="ln305">  }</a>
+<a name="ln306"> </a>
+<a name="ln307"> </a>
+<a name="ln308">  /* set a new mask to a given bit range */</a>
+<a name="ln309">  static FT_Error</a>
+<a name="ln310">  ps_mask_table_set_bits( PS_Mask_Table   table,</a>
+<a name="ln311">                          const FT_Byte*  source,</a>
+<a name="ln312">                          FT_UInt         bit_pos,</a>
+<a name="ln313">                          FT_UInt         bit_count,</a>
+<a name="ln314">                          FT_Memory       memory )</a>
+<a name="ln315">  {</a>
+<a name="ln316">    FT_Error  error;</a>
+<a name="ln317">    PS_Mask   mask;</a>
+<a name="ln318"> </a>
+<a name="ln319"> </a>
+<a name="ln320">    error = ps_mask_table_last( table, memory, &amp;mask );</a>
+<a name="ln321">    if ( error )</a>
+<a name="ln322">      goto Exit;</a>
+<a name="ln323"> </a>
+<a name="ln324">    error = ps_mask_ensure( mask, bit_count, memory );</a>
+<a name="ln325">    if ( error )</a>
+<a name="ln326">      goto Exit;</a>
+<a name="ln327"> </a>
+<a name="ln328">    mask-&gt;num_bits = bit_count;</a>
+<a name="ln329"> </a>
+<a name="ln330">    /* now, copy bits */</a>
+<a name="ln331">    {</a>
+<a name="ln332">      FT_Byte*  read  = (FT_Byte*)source + ( bit_pos &gt;&gt; 3 );</a>
+<a name="ln333">      FT_Int    rmask = 0x80 &gt;&gt; ( bit_pos &amp; 7 );</a>
+<a name="ln334">      FT_Byte*  write = mask-&gt;bytes;</a>
+<a name="ln335">      FT_Int    wmask = 0x80;</a>
+<a name="ln336">      FT_Int    val;</a>
+<a name="ln337"> </a>
+<a name="ln338"> </a>
+<a name="ln339">      for ( ; bit_count &gt; 0; bit_count-- )</a>
+<a name="ln340">      {</a>
+<a name="ln341">        val = write[0] &amp; ~wmask;</a>
+<a name="ln342"> </a>
+<a name="ln343">        if ( read[0] &amp; rmask )</a>
+<a name="ln344">          val |= wmask;</a>
+<a name="ln345"> </a>
+<a name="ln346">        write[0] = (FT_Byte)val;</a>
+<a name="ln347"> </a>
+<a name="ln348">        rmask &gt;&gt;= 1;</a>
+<a name="ln349">        if ( rmask == 0 )</a>
+<a name="ln350">        {</a>
+<a name="ln351">          read++;</a>
+<a name="ln352">          rmask = 0x80;</a>
+<a name="ln353">        }</a>
+<a name="ln354"> </a>
+<a name="ln355">        wmask &gt;&gt;= 1;</a>
+<a name="ln356">        if ( wmask == 0 )</a>
+<a name="ln357">        {</a>
+<a name="ln358">          write++;</a>
+<a name="ln359">          wmask = 0x80;</a>
+<a name="ln360">        }</a>
+<a name="ln361">      }</a>
+<a name="ln362">    }</a>
+<a name="ln363"> </a>
+<a name="ln364">  Exit:</a>
+<a name="ln365">    return error;</a>
+<a name="ln366">  }</a>
+<a name="ln367"> </a>
+<a name="ln368"> </a>
+<a name="ln369">  /* test whether two masks in a table intersect */</a>
+<a name="ln370">  static FT_Int</a>
+<a name="ln371">  ps_mask_table_test_intersect( PS_Mask_Table  table,</a>
+<a name="ln372">                                FT_UInt        index1,</a>
+<a name="ln373">                                FT_UInt        index2 )</a>
+<a name="ln374">  {</a>
+<a name="ln375">    PS_Mask   mask1  = table-&gt;masks + index1;</a>
+<a name="ln376">    PS_Mask   mask2  = table-&gt;masks + index2;</a>
+<a name="ln377">    FT_Byte*  p1     = mask1-&gt;bytes;</a>
+<a name="ln378">    FT_Byte*  p2     = mask2-&gt;bytes;</a>
+<a name="ln379">    FT_UInt   count1 = mask1-&gt;num_bits;</a>
+<a name="ln380">    FT_UInt   count2 = mask2-&gt;num_bits;</a>
+<a name="ln381">    FT_UInt   count;</a>
+<a name="ln382"> </a>
+<a name="ln383"> </a>
+<a name="ln384">    count = FT_MIN( count1, count2 );</a>
+<a name="ln385">    for ( ; count &gt;= 8; count -= 8 )</a>
+<a name="ln386">    {</a>
+<a name="ln387">      if ( p1[0] &amp; p2[0] )</a>
+<a name="ln388">        return 1;</a>
+<a name="ln389"> </a>
+<a name="ln390">      p1++;</a>
+<a name="ln391">      p2++;</a>
+<a name="ln392">    }</a>
+<a name="ln393"> </a>
+<a name="ln394">    if ( count == 0 )</a>
+<a name="ln395">      return 0;</a>
+<a name="ln396"> </a>
+<a name="ln397">    return ( p1[0] &amp; p2[0] ) &amp; ~( 0xFF &gt;&gt; count );</a>
+<a name="ln398">  }</a>
+<a name="ln399"> </a>
+<a name="ln400"> </a>
+<a name="ln401">  /* merge two masks, used by ps_mask_table_merge_all */</a>
+<a name="ln402">  static FT_Error</a>
+<a name="ln403">  ps_mask_table_merge( PS_Mask_Table  table,</a>
+<a name="ln404">                       FT_UInt        index1,</a>
+<a name="ln405">                       FT_UInt        index2,</a>
+<a name="ln406">                       FT_Memory      memory )</a>
+<a name="ln407">  {</a>
+<a name="ln408">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln409"> </a>
+<a name="ln410"> </a>
+<a name="ln411">    /* swap index1 and index2 so that index1 &lt; index2 */</a>
+<a name="ln412">    if ( index1 &gt; index2 )</a>
+<a name="ln413">    {</a>
+<a name="ln414">      FT_UInt  temp;</a>
+<a name="ln415"> </a>
+<a name="ln416"> </a>
+<a name="ln417">      temp   = index1;</a>
+<a name="ln418">      index1 = index2;</a>
+<a name="ln419">      index2 = temp;</a>
+<a name="ln420">    }</a>
+<a name="ln421"> </a>
+<a name="ln422">    if ( index1 &lt; index2 &amp;&amp; index2 &lt; table-&gt;num_masks )</a>
+<a name="ln423">    {</a>
+<a name="ln424">      /* we need to merge the bitsets of index1 and index2 with a */</a>
+<a name="ln425">      /* simple union                                             */</a>
+<a name="ln426">      PS_Mask  mask1  = table-&gt;masks + index1;</a>
+<a name="ln427">      PS_Mask  mask2  = table-&gt;masks + index2;</a>
+<a name="ln428">      FT_UInt  count1 = mask1-&gt;num_bits;</a>
+<a name="ln429">      FT_UInt  count2 = mask2-&gt;num_bits;</a>
+<a name="ln430">      FT_Int   delta;</a>
+<a name="ln431"> </a>
+<a name="ln432"> </a>
+<a name="ln433">      if ( count2 &gt; 0 )</a>
+<a name="ln434">      {</a>
+<a name="ln435">        FT_UInt   pos;</a>
+<a name="ln436">        FT_Byte*  read;</a>
+<a name="ln437">        FT_Byte*  write;</a>
+<a name="ln438"> </a>
+<a name="ln439"> </a>
+<a name="ln440">        /* if &quot;count2&quot; is greater than &quot;count1&quot;, we need to grow the */</a>
+<a name="ln441">        /* first bitset, and clear the highest bits                  */</a>
+<a name="ln442">        if ( count2 &gt; count1 )</a>
+<a name="ln443">        {</a>
+<a name="ln444">          error = ps_mask_ensure( mask1, count2, memory );</a>
+<a name="ln445">          if ( error )</a>
+<a name="ln446">            goto Exit;</a>
+<a name="ln447"> </a>
+<a name="ln448">          for ( pos = count1; pos &lt; count2; pos++ )</a>
+<a name="ln449">            ps_mask_clear_bit( mask1, pos );</a>
+<a name="ln450">        }</a>
+<a name="ln451"> </a>
+<a name="ln452">        /* merge (unite) the bitsets */</a>
+<a name="ln453">        read  = mask2-&gt;bytes;</a>
+<a name="ln454">        write = mask1-&gt;bytes;</a>
+<a name="ln455">        pos   = ( count2 + 7 ) &gt;&gt; 3;</a>
+<a name="ln456"> </a>
+<a name="ln457">        for ( ; pos &gt; 0; pos-- )</a>
+<a name="ln458">        {</a>
+<a name="ln459">          write[0] = (FT_Byte)( write[0] | read[0] );</a>
+<a name="ln460">          write++;</a>
+<a name="ln461">          read++;</a>
+<a name="ln462">        }</a>
+<a name="ln463">      }</a>
+<a name="ln464"> </a>
+<a name="ln465">      /* Now, remove &quot;mask2&quot; from the list.  We need to keep the masks */</a>
+<a name="ln466">      /* sorted in order of importance, so move table elements.        */</a>
+<a name="ln467">      mask2-&gt;num_bits  = 0;</a>
+<a name="ln468">      mask2-&gt;end_point = 0;</a>
+<a name="ln469"> </a>
+<a name="ln470">      /* number of masks to move */</a>
+<a name="ln471">      delta = (FT_Int)( table-&gt;num_masks - 1 - index2 );</a>
+<a name="ln472">      if ( delta &gt; 0 )</a>
+<a name="ln473">      {</a>
+<a name="ln474">        /* move to end of table for reuse */</a>
+<a name="ln475">        PS_MaskRec  dummy = *mask2;</a>
+<a name="ln476"> </a>
+<a name="ln477"> </a>
+<a name="ln478">        ft_memmove( mask2,</a>
+<a name="ln479">                    mask2 + 1,</a>
+<a name="ln480">                    (FT_UInt)delta * sizeof ( PS_MaskRec ) );</a>
+<a name="ln481"> </a>
+<a name="ln482">        mask2[delta] = dummy;</a>
+<a name="ln483">      }</a>
+<a name="ln484"> </a>
+<a name="ln485">      table-&gt;num_masks--;</a>
+<a name="ln486">    }</a>
+<a name="ln487">    else</a>
+<a name="ln488">      FT_TRACE0(( &quot;ps_mask_table_merge: ignoring invalid indices (%d,%d)\n&quot;,</a>
+<a name="ln489">                  index1, index2 ));</a>
+<a name="ln490"> </a>
+<a name="ln491">  Exit:</a>
+<a name="ln492">    return error;</a>
+<a name="ln493">  }</a>
+<a name="ln494"> </a>
+<a name="ln495"> </a>
+<a name="ln496">  /* Try to merge all masks in a given table.  This is used to merge */</a>
+<a name="ln497">  /* all counter masks into independent counter &quot;paths&quot;.             */</a>
+<a name="ln498">  /*                                                                 */</a>
+<a name="ln499">  static FT_Error</a>
+<a name="ln500">  ps_mask_table_merge_all( PS_Mask_Table  table,</a>
+<a name="ln501">                           FT_Memory      memory )</a>
+<a name="ln502">  {</a>
+<a name="ln503">    FT_Int    index1, index2;</a>
+<a name="ln504">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln505"> </a>
+<a name="ln506"> </a>
+<a name="ln507">    /* both loops go down to 0, thus FT_Int for index1 and index2 */</a>
+<a name="ln508">    for ( index1 = (FT_Int)table-&gt;num_masks - 1; index1 &gt; 0; index1-- )</a>
+<a name="ln509">    {</a>
+<a name="ln510">      for ( index2 = index1 - 1; index2 &gt;= 0; index2-- )</a>
+<a name="ln511">      {</a>
+<a name="ln512">        if ( ps_mask_table_test_intersect( table,</a>
+<a name="ln513">                                           (FT_UInt)index1,</a>
+<a name="ln514">                                           (FT_UInt)index2 ) )</a>
+<a name="ln515">        {</a>
+<a name="ln516">          error = ps_mask_table_merge( table,</a>
+<a name="ln517">                                       (FT_UInt)index2,</a>
+<a name="ln518">                                       (FT_UInt)index1,</a>
+<a name="ln519">                                       memory );</a>
+<a name="ln520">          if ( error )</a>
+<a name="ln521">            goto Exit;</a>
+<a name="ln522"> </a>
+<a name="ln523">          break;</a>
+<a name="ln524">        }</a>
+<a name="ln525">      }</a>
+<a name="ln526">    }</a>
+<a name="ln527"> </a>
+<a name="ln528">  Exit:</a>
+<a name="ln529">    return error;</a>
+<a name="ln530">  }</a>
+<a name="ln531"> </a>
+<a name="ln532"> </a>
+<a name="ln533">  /*************************************************************************/</a>
+<a name="ln534">  /*************************************************************************/</a>
+<a name="ln535">  /*****                                                               *****/</a>
+<a name="ln536">  /*****                    PS_DIMENSION MANAGEMENT                    *****/</a>
+<a name="ln537">  /*****                                                               *****/</a>
+<a name="ln538">  /*************************************************************************/</a>
+<a name="ln539">  /*************************************************************************/</a>
+<a name="ln540"> </a>
+<a name="ln541"> </a>
+<a name="ln542">  /* finalize a given dimension */</a>
+<a name="ln543">  static void</a>
+<a name="ln544">  ps_dimension_done( PS_Dimension  dimension,</a>
+<a name="ln545">                     FT_Memory     memory )</a>
+<a name="ln546">  {</a>
+<a name="ln547">    ps_mask_table_done( &amp;dimension-&gt;counters, memory );</a>
+<a name="ln548">    ps_mask_table_done( &amp;dimension-&gt;masks,    memory );</a>
+<a name="ln549">    ps_hint_table_done( &amp;dimension-&gt;hints,    memory );</a>
+<a name="ln550">  }</a>
+<a name="ln551"> </a>
+<a name="ln552"> </a>
+<a name="ln553">  /* initialize a given dimension */</a>
+<a name="ln554">  static void</a>
+<a name="ln555">  ps_dimension_init( PS_Dimension  dimension )</a>
+<a name="ln556">  {</a>
+<a name="ln557">    dimension-&gt;hints.num_hints    = 0;</a>
+<a name="ln558">    dimension-&gt;masks.num_masks    = 0;</a>
+<a name="ln559">    dimension-&gt;counters.num_masks = 0;</a>
+<a name="ln560">  }</a>
+<a name="ln561"> </a>
+<a name="ln562"> </a>
+<a name="ln563">#if 0</a>
+<a name="ln564"> </a>
+<a name="ln565">  /* set a bit at a given index in the current hint mask */</a>
+<a name="ln566">  static FT_Error</a>
+<a name="ln567">  ps_dimension_set_mask_bit( PS_Dimension  dim,</a>
+<a name="ln568">                             FT_UInt       idx,</a>
+<a name="ln569">                             FT_Memory     memory )</a>
+<a name="ln570">  {</a>
+<a name="ln571">    PS_Mask   mask;</a>
+<a name="ln572">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln573"> </a>
+<a name="ln574"> </a>
+<a name="ln575">    /* get last hint mask */</a>
+<a name="ln576">    error = ps_mask_table_last( &amp;dim-&gt;masks, memory, &amp;mask );</a>
+<a name="ln577">    if ( error )</a>
+<a name="ln578">      goto Exit;</a>
+<a name="ln579"> </a>
+<a name="ln580">    error = ps_mask_set_bit( mask, idx, memory );</a>
+<a name="ln581"> </a>
+<a name="ln582">  Exit:</a>
+<a name="ln583">    return error;</a>
+<a name="ln584">  }</a>
+<a name="ln585"> </a>
+<a name="ln586">#endif</a>
+<a name="ln587"> </a>
+<a name="ln588">  /* set the end point in a mask, called from &quot;End&quot; &amp; &quot;Reset&quot; methods */</a>
+<a name="ln589">  static void</a>
+<a name="ln590">  ps_dimension_end_mask( PS_Dimension  dim,</a>
+<a name="ln591">                         FT_UInt       end_point )</a>
+<a name="ln592">  {</a>
+<a name="ln593">    FT_UInt  count = dim-&gt;masks.num_masks;</a>
+<a name="ln594"> </a>
+<a name="ln595"> </a>
+<a name="ln596">    if ( count &gt; 0 )</a>
+<a name="ln597">    {</a>
+<a name="ln598">      PS_Mask  mask = dim-&gt;masks.masks + count - 1;</a>
+<a name="ln599"> </a>
+<a name="ln600"> </a>
+<a name="ln601">      mask-&gt;end_point = end_point;</a>
+<a name="ln602">    }</a>
+<a name="ln603">  }</a>
+<a name="ln604"> </a>
+<a name="ln605"> </a>
+<a name="ln606">  /* set the end point in the current mask, then create a new empty one */</a>
+<a name="ln607">  /* (called by &quot;Reset&quot; method)                                         */</a>
+<a name="ln608">  static FT_Error</a>
+<a name="ln609">  ps_dimension_reset_mask( PS_Dimension  dim,</a>
+<a name="ln610">                           FT_UInt       end_point,</a>
+<a name="ln611">                           FT_Memory     memory )</a>
+<a name="ln612">  {</a>
+<a name="ln613">    PS_Mask  mask;</a>
+<a name="ln614"> </a>
+<a name="ln615"> </a>
+<a name="ln616">    /* end current mask */</a>
+<a name="ln617">    ps_dimension_end_mask( dim, end_point );</a>
+<a name="ln618"> </a>
+<a name="ln619">    /* allocate new one */</a>
+<a name="ln620">    return ps_mask_table_alloc( &amp;dim-&gt;masks, memory, &amp;mask );</a>
+<a name="ln621">  }</a>
+<a name="ln622"> </a>
+<a name="ln623"> </a>
+<a name="ln624">  /* set a new mask, called from the &quot;T2Stem&quot; method */</a>
+<a name="ln625">  static FT_Error</a>
+<a name="ln626">  ps_dimension_set_mask_bits( PS_Dimension    dim,</a>
+<a name="ln627">                              const FT_Byte*  source,</a>
+<a name="ln628">                              FT_UInt         source_pos,</a>
+<a name="ln629">                              FT_UInt         source_bits,</a>
+<a name="ln630">                              FT_UInt         end_point,</a>
+<a name="ln631">                              FT_Memory       memory )</a>
+<a name="ln632">  {</a>
+<a name="ln633">    FT_Error  error;</a>
+<a name="ln634"> </a>
+<a name="ln635"> </a>
+<a name="ln636">    /* reset current mask, if any */</a>
+<a name="ln637">    error = ps_dimension_reset_mask( dim, end_point, memory );</a>
+<a name="ln638">    if ( error )</a>
+<a name="ln639">      goto Exit;</a>
+<a name="ln640"> </a>
+<a name="ln641">    /* set bits in new mask */</a>
+<a name="ln642">    error = ps_mask_table_set_bits( &amp;dim-&gt;masks, source,</a>
+<a name="ln643">                                    source_pos, source_bits, memory );</a>
+<a name="ln644"> </a>
+<a name="ln645">  Exit:</a>
+<a name="ln646">    return error;</a>
+<a name="ln647">  }</a>
+<a name="ln648"> </a>
+<a name="ln649"> </a>
+<a name="ln650">  /* add a new single stem (called from &quot;T1Stem&quot; method) */</a>
+<a name="ln651">  static FT_Error</a>
+<a name="ln652">  ps_dimension_add_t1stem( PS_Dimension  dim,</a>
+<a name="ln653">                           FT_Int        pos,</a>
+<a name="ln654">                           FT_Int        len,</a>
+<a name="ln655">                           FT_Memory     memory,</a>
+<a name="ln656">                           FT_Int       *aindex )</a>
+<a name="ln657">  {</a>
+<a name="ln658">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln659">    FT_UInt   flags = 0;</a>
+<a name="ln660"> </a>
+<a name="ln661"> </a>
+<a name="ln662">    /* detect ghost stem */</a>
+<a name="ln663">    if ( len &lt; 0 )</a>
+<a name="ln664">    {</a>
+<a name="ln665">      flags |= PS_HINT_FLAG_GHOST;</a>
+<a name="ln666">      if ( len == -21 )</a>
+<a name="ln667">      {</a>
+<a name="ln668">        flags |= PS_HINT_FLAG_BOTTOM;</a>
+<a name="ln669">        pos   += len;</a>
+<a name="ln670">      }</a>
+<a name="ln671">      len = 0;</a>
+<a name="ln672">    }</a>
+<a name="ln673"> </a>
+<a name="ln674">    if ( aindex )</a>
+<a name="ln675">      *aindex = -1;</a>
+<a name="ln676"> </a>
+<a name="ln677">    /* now, lookup stem in the current hints table */</a>
+<a name="ln678">    {</a>
+<a name="ln679">      PS_Mask  mask;</a>
+<a name="ln680">      FT_UInt  idx;</a>
+<a name="ln681">      FT_UInt  max  = dim-&gt;hints.num_hints;</a>
+<a name="ln682">      PS_Hint  hint = dim-&gt;hints.hints;</a>
+<a name="ln683"> </a>
+<a name="ln684"> </a>
+<a name="ln685">      for ( idx = 0; idx &lt; max; idx++, hint++ )</a>
+<a name="ln686">      {</a>
+<a name="ln687">        if ( hint-&gt;pos == pos &amp;&amp; hint-&gt;len == len )</a>
+<a name="ln688">          break;</a>
+<a name="ln689">      }</a>
+<a name="ln690"> </a>
+<a name="ln691">      /* we need to create a new hint in the table */</a>
+<a name="ln692">      if ( idx &gt;= max )</a>
+<a name="ln693">      {</a>
+<a name="ln694">        error = ps_hint_table_alloc( &amp;dim-&gt;hints, memory, &amp;hint );</a>
+<a name="ln695">        if ( error )</a>
+<a name="ln696">          goto Exit;</a>
+<a name="ln697"> </a>
+<a name="ln698">        hint-&gt;pos   = pos;</a>
+<a name="ln699">        hint-&gt;len   = len;</a>
+<a name="ln700">        hint-&gt;flags = flags;</a>
+<a name="ln701">      }</a>
+<a name="ln702"> </a>
+<a name="ln703">      /* now, store the hint in the current mask */</a>
+<a name="ln704">      error = ps_mask_table_last( &amp;dim-&gt;masks, memory, &amp;mask );</a>
+<a name="ln705">      if ( error )</a>
+<a name="ln706">        goto Exit;</a>
+<a name="ln707"> </a>
+<a name="ln708">      error = ps_mask_set_bit( mask, idx, memory );</a>
+<a name="ln709">      if ( error )</a>
+<a name="ln710">        goto Exit;</a>
+<a name="ln711"> </a>
+<a name="ln712">      if ( aindex )</a>
+<a name="ln713">        *aindex = (FT_Int)idx;</a>
+<a name="ln714">    }</a>
+<a name="ln715"> </a>
+<a name="ln716">  Exit:</a>
+<a name="ln717">    return error;</a>
+<a name="ln718">  }</a>
+<a name="ln719"> </a>
+<a name="ln720"> </a>
+<a name="ln721">  /* add a &quot;hstem3/vstem3&quot; counter to our dimension table */</a>
+<a name="ln722">  static FT_Error</a>
+<a name="ln723">  ps_dimension_add_counter( PS_Dimension  dim,</a>
+<a name="ln724">                            FT_Int        hint1,</a>
+<a name="ln725">                            FT_Int        hint2,</a>
+<a name="ln726">                            FT_Int        hint3,</a>
+<a name="ln727">                            FT_Memory     memory )</a>
+<a name="ln728">  {</a>
+<a name="ln729">    FT_Error  error   = FT_Err_Ok;</a>
+<a name="ln730">    FT_UInt   count   = dim-&gt;counters.num_masks;</a>
+<a name="ln731">    PS_Mask   counter = dim-&gt;counters.masks;</a>
+<a name="ln732"> </a>
+<a name="ln733"> </a>
+<a name="ln734">    /* try to find an existing counter mask that already uses */</a>
+<a name="ln735">    /* one of these stems here                                */</a>
+<a name="ln736">    for ( ; count &gt; 0; count--, counter++ )</a>
+<a name="ln737">    {</a>
+<a name="ln738">      if ( ps_mask_test_bit( counter, hint1 ) ||</a>
+<a name="ln739">           ps_mask_test_bit( counter, hint2 ) ||</a>
+<a name="ln740">           ps_mask_test_bit( counter, hint3 ) )</a>
+<a name="ln741">        break;</a>
+<a name="ln742">    }</a>
+<a name="ln743"> </a>
+<a name="ln744">    /* create a new counter when needed */</a>
+<a name="ln745">    if ( count == 0 )</a>
+<a name="ln746">    {</a>
+<a name="ln747">      error = ps_mask_table_alloc( &amp;dim-&gt;counters, memory, &amp;counter );</a>
+<a name="ln748">      if ( error )</a>
+<a name="ln749">        goto Exit;</a>
+<a name="ln750">    }</a>
+<a name="ln751"> </a>
+<a name="ln752">    /* now, set the bits for our hints in the counter mask */</a>
+<a name="ln753">    if ( hint1 &gt;= 0 )</a>
+<a name="ln754">    {</a>
+<a name="ln755">      error = ps_mask_set_bit( counter, (FT_UInt)hint1, memory );</a>
+<a name="ln756">      if ( error )</a>
+<a name="ln757">        goto Exit;</a>
+<a name="ln758">    }</a>
+<a name="ln759"> </a>
+<a name="ln760">    if ( hint2 &gt;= 0 )</a>
+<a name="ln761">    {</a>
+<a name="ln762">      error = ps_mask_set_bit( counter, (FT_UInt)hint2, memory );</a>
+<a name="ln763">      if ( error )</a>
+<a name="ln764">        goto Exit;</a>
+<a name="ln765">    }</a>
+<a name="ln766"> </a>
+<a name="ln767">    if ( hint3 &gt;= 0 )</a>
+<a name="ln768">    {</a>
+<a name="ln769">      error = ps_mask_set_bit( counter, (FT_UInt)hint3, memory );</a>
+<a name="ln770">      if ( error )</a>
+<a name="ln771">        goto Exit;</a>
+<a name="ln772">    }</a>
+<a name="ln773"> </a>
+<a name="ln774">  Exit:</a>
+<a name="ln775">    return error;</a>
+<a name="ln776">  }</a>
+<a name="ln777"> </a>
+<a name="ln778"> </a>
+<a name="ln779">  /* end of recording session for a given dimension */</a>
+<a name="ln780">  static FT_Error</a>
+<a name="ln781">  ps_dimension_end( PS_Dimension  dim,</a>
+<a name="ln782">                    FT_UInt       end_point,</a>
+<a name="ln783">                    FT_Memory     memory )</a>
+<a name="ln784">  {</a>
+<a name="ln785">    /* end hint mask table */</a>
+<a name="ln786">    ps_dimension_end_mask( dim, end_point );</a>
+<a name="ln787"> </a>
+<a name="ln788">    /* merge all counter masks into independent &quot;paths&quot; */</a>
+<a name="ln789">    return ps_mask_table_merge_all( &amp;dim-&gt;counters, memory );</a>
+<a name="ln790">  }</a>
+<a name="ln791"> </a>
+<a name="ln792"> </a>
+<a name="ln793">  /*************************************************************************/</a>
+<a name="ln794">  /*************************************************************************/</a>
+<a name="ln795">  /*****                                                               *****/</a>
+<a name="ln796">  /*****                    PS_RECORDER MANAGEMENT                     *****/</a>
+<a name="ln797">  /*****                                                               *****/</a>
+<a name="ln798">  /*************************************************************************/</a>
+<a name="ln799">  /*************************************************************************/</a>
+<a name="ln800"> </a>
+<a name="ln801"> </a>
+<a name="ln802">  /* destroy hints */</a>
+<a name="ln803">  FT_LOCAL( void )</a>
+<a name="ln804">  ps_hints_done( PS_Hints  hints )</a>
+<a name="ln805">  {</a>
+<a name="ln806">    FT_Memory  memory = hints-&gt;memory;</a>
+<a name="ln807"> </a>
+<a name="ln808"> </a>
+<a name="ln809">    ps_dimension_done( &amp;hints-&gt;dimension[0], memory );</a>
+<a name="ln810">    ps_dimension_done( &amp;hints-&gt;dimension[1], memory );</a>
+<a name="ln811"> </a>
+<a name="ln812">    hints-&gt;error  = FT_Err_Ok;</a>
+<a name="ln813">    hints-&gt;memory = NULL;</a>
+<a name="ln814">  }</a>
+<a name="ln815"> </a>
+<a name="ln816"> </a>
+<a name="ln817">  FT_LOCAL( void )</a>
+<a name="ln818">  ps_hints_init( PS_Hints   hints,</a>
+<a name="ln819">                 FT_Memory  memory )</a>
+<a name="ln820">  {</a>
+<a name="ln821">    FT_MEM_ZERO( hints, sizeof ( *hints ) );</a>
+<a name="ln822">    hints-&gt;memory = memory;</a>
+<a name="ln823">  }</a>
+<a name="ln824"> </a>
+<a name="ln825"> </a>
+<a name="ln826">  /* initialize a hints for a new session */</a>
+<a name="ln827">  static void</a>
+<a name="ln828">  ps_hints_open( PS_Hints      hints,</a>
+<a name="ln829">                 PS_Hint_Type  hint_type )</a>
+<a name="ln830">  {</a>
+<a name="ln831">    hints-&gt;error     = FT_Err_Ok;</a>
+<a name="ln832">    hints-&gt;hint_type = hint_type;</a>
+<a name="ln833"> </a>
+<a name="ln834">    ps_dimension_init( &amp;hints-&gt;dimension[0] );</a>
+<a name="ln835">    ps_dimension_init( &amp;hints-&gt;dimension[1] );</a>
+<a name="ln836">  }</a>
+<a name="ln837"> </a>
+<a name="ln838"> </a>
+<a name="ln839">  /* add one or more stems to the current hints table */</a>
+<a name="ln840">  static void</a>
+<a name="ln841">  ps_hints_stem( PS_Hints  hints,</a>
+<a name="ln842">                 FT_UInt   dimension,</a>
+<a name="ln843">                 FT_Int    count,</a>
+<a name="ln844">                 FT_Long*  stems )</a>
+<a name="ln845">  {</a>
+<a name="ln846">    PS_Dimension  dim;</a>
+<a name="ln847"> </a>
+<a name="ln848"> </a>
+<a name="ln849">    if ( hints-&gt;error )</a>
+<a name="ln850">      return;</a>
+<a name="ln851"> </a>
+<a name="ln852">    /* limit &quot;dimension&quot; to 0..1 */</a>
+<a name="ln853">    if ( dimension &gt; 1 )</a>
+<a name="ln854">    {</a>
+<a name="ln855">      FT_TRACE0(( &quot;ps_hints_stem: invalid dimension (%d) used\n&quot;,</a>
+<a name="ln856">                  dimension ));</a>
+<a name="ln857">      dimension = ( dimension != 0 );</a>
+<a name="ln858">    }</a>
+<a name="ln859"> </a>
+<a name="ln860">    /* record the stems in the current hints/masks table */</a>
+<a name="ln861">    /* (Type 1 &amp; 2's `hstem' or `vstem' operators)       */</a>
+<a name="ln862">    dim = &amp;hints-&gt;dimension[dimension];</a>
+<a name="ln863"> </a>
+<a name="ln864">    for ( ; count &gt; 0; count--, stems += 2 )</a>
+<a name="ln865">    {</a>
+<a name="ln866">      FT_Error   error;</a>
+<a name="ln867">      FT_Memory  memory = hints-&gt;memory;</a>
+<a name="ln868"> </a>
+<a name="ln869"> </a>
+<a name="ln870">      error = ps_dimension_add_t1stem( dim,</a>
+<a name="ln871">                                       (FT_Int)stems[0],</a>
+<a name="ln872">                                       (FT_Int)stems[1],</a>
+<a name="ln873">                                       memory,</a>
+<a name="ln874">                                       NULL );</a>
+<a name="ln875">      if ( error )</a>
+<a name="ln876">      {</a>
+<a name="ln877">        FT_ERROR(( &quot;ps_hints_stem: could not add stem&quot;</a>
+<a name="ln878">                   &quot; (%d,%d) to hints table\n&quot;, stems[0], stems[1] ));</a>
+<a name="ln879"> </a>
+<a name="ln880">        hints-&gt;error = error;</a>
+<a name="ln881">        return;</a>
+<a name="ln882">      }</a>
+<a name="ln883">    }</a>
+<a name="ln884">  }</a>
+<a name="ln885"> </a>
+<a name="ln886"> </a>
+<a name="ln887">  /* add one Type1 counter stem to the current hints table */</a>
+<a name="ln888">  static void</a>
+<a name="ln889">  ps_hints_t1stem3( PS_Hints   hints,</a>
+<a name="ln890">                    FT_UInt    dimension,</a>
+<a name="ln891">                    FT_Fixed*  stems )</a>
+<a name="ln892">  {</a>
+<a name="ln893">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln894"> </a>
+<a name="ln895"> </a>
+<a name="ln896">    if ( !hints-&gt;error )</a>
+<a name="ln897">    {</a>
+<a name="ln898">      PS_Dimension  dim;</a>
+<a name="ln899">      FT_Memory     memory = hints-&gt;memory;</a>
+<a name="ln900">      FT_Int        count;</a>
+<a name="ln901">      FT_Int        idx[3];</a>
+<a name="ln902"> </a>
+<a name="ln903"> </a>
+<a name="ln904">      /* limit &quot;dimension&quot; to 0..1 */</a>
+<a name="ln905">      if ( dimension &gt; 1 )</a>
+<a name="ln906">      {</a>
+<a name="ln907">        FT_TRACE0(( &quot;ps_hints_t1stem3: invalid dimension (%d) used\n&quot;,</a>
+<a name="ln908">                    dimension ));</a>
+<a name="ln909">        dimension = ( dimension != 0 );</a>
+<a name="ln910">      }</a>
+<a name="ln911"> </a>
+<a name="ln912">      dim = &amp;hints-&gt;dimension[dimension];</a>
+<a name="ln913"> </a>
+<a name="ln914">      /* there must be 6 elements in the 'stem' array */</a>
+<a name="ln915">      if ( hints-&gt;hint_type == PS_HINT_TYPE_1 )</a>
+<a name="ln916">      {</a>
+<a name="ln917">        /* add the three stems to our hints/masks table */</a>
+<a name="ln918">        for ( count = 0; count &lt; 3; count++, stems += 2 )</a>
+<a name="ln919">        {</a>
+<a name="ln920">          error = ps_dimension_add_t1stem( dim,</a>
+<a name="ln921">                                           (FT_Int)FIXED_TO_INT( stems[0] ),</a>
+<a name="ln922">                                           (FT_Int)FIXED_TO_INT( stems[1] ),</a>
+<a name="ln923">                                           memory, &amp;idx[count] );</a>
+<a name="ln924">          if ( error )</a>
+<a name="ln925">            goto Fail;</a>
+<a name="ln926">        }</a>
+<a name="ln927"> </a>
+<a name="ln928">        /* now, add the hints to the counters table */</a>
+<a name="ln929">        error = ps_dimension_add_counter( dim, idx[0], idx[1], idx[2],</a>
+<a name="ln930">                                          memory );</a>
+<a name="ln931">        if ( error )</a>
+<a name="ln932">          goto Fail;</a>
+<a name="ln933">      }</a>
+<a name="ln934">      else</a>
+<a name="ln935">      {</a>
+<a name="ln936">        FT_ERROR(( &quot;ps_hints_t1stem3: called with invalid hint type\n&quot; ));</a>
+<a name="ln937">        error = FT_THROW( Invalid_Argument );</a>
+<a name="ln938">        goto Fail;</a>
+<a name="ln939">      }</a>
+<a name="ln940">    }</a>
+<a name="ln941"> </a>
+<a name="ln942">    return;</a>
+<a name="ln943"> </a>
+<a name="ln944">  Fail:</a>
+<a name="ln945">    FT_ERROR(( &quot;ps_hints_t1stem3: could not add counter stems to table\n&quot; ));</a>
+<a name="ln946">    hints-&gt;error = error;</a>
+<a name="ln947">  }</a>
+<a name="ln948"> </a>
+<a name="ln949"> </a>
+<a name="ln950">  /* reset hints (only with Type 1 hints) */</a>
+<a name="ln951">  static void</a>
+<a name="ln952">  ps_hints_t1reset( PS_Hints  hints,</a>
+<a name="ln953">                    FT_UInt   end_point )</a>
+<a name="ln954">  {</a>
+<a name="ln955">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln956"> </a>
+<a name="ln957"> </a>
+<a name="ln958">    if ( !hints-&gt;error )</a>
+<a name="ln959">    {</a>
+<a name="ln960">      FT_Memory  memory = hints-&gt;memory;</a>
+<a name="ln961"> </a>
+<a name="ln962"> </a>
+<a name="ln963">      if ( hints-&gt;hint_type == PS_HINT_TYPE_1 )</a>
+<a name="ln964">      {</a>
+<a name="ln965">        error = ps_dimension_reset_mask( &amp;hints-&gt;dimension[0],</a>
+<a name="ln966">                                         end_point, memory );</a>
+<a name="ln967">        if ( error )</a>
+<a name="ln968">          goto Fail;</a>
+<a name="ln969"> </a>
+<a name="ln970">        error = ps_dimension_reset_mask( &amp;hints-&gt;dimension[1],</a>
+<a name="ln971">                                         end_point, memory );</a>
+<a name="ln972">        if ( error )</a>
+<a name="ln973">          goto Fail;</a>
+<a name="ln974">      }</a>
+<a name="ln975">      else</a>
+<a name="ln976">      {</a>
+<a name="ln977">        /* invalid hint type */</a>
+<a name="ln978">        error = FT_THROW( Invalid_Argument );</a>
+<a name="ln979">        goto Fail;</a>
+<a name="ln980">      }</a>
+<a name="ln981">    }</a>
+<a name="ln982">    return;</a>
+<a name="ln983"> </a>
+<a name="ln984">  Fail:</a>
+<a name="ln985">    hints-&gt;error = error;</a>
+<a name="ln986">  }</a>
+<a name="ln987"> </a>
+<a name="ln988"> </a>
+<a name="ln989">  /* Type2 &quot;hintmask&quot; operator, add a new hintmask to each direction */</a>
+<a name="ln990">  static void</a>
+<a name="ln991">  ps_hints_t2mask( PS_Hints        hints,</a>
+<a name="ln992">                   FT_UInt         end_point,</a>
+<a name="ln993">                   FT_UInt         bit_count,</a>
+<a name="ln994">                   const FT_Byte*  bytes )</a>
+<a name="ln995">  {</a>
+<a name="ln996">    FT_Error  error;</a>
+<a name="ln997"> </a>
+<a name="ln998"> </a>
+<a name="ln999">    if ( !hints-&gt;error )</a>
+<a name="ln1000">    {</a>
+<a name="ln1001">      PS_Dimension  dim    = hints-&gt;dimension;</a>
+<a name="ln1002">      FT_Memory     memory = hints-&gt;memory;</a>
+<a name="ln1003">      FT_UInt       count1 = dim[0].hints.num_hints;</a>
+<a name="ln1004">      FT_UInt       count2 = dim[1].hints.num_hints;</a>
+<a name="ln1005"> </a>
+<a name="ln1006"> </a>
+<a name="ln1007">      /* check bit count; must be equal to current total hint count */</a>
+<a name="ln1008">      if ( bit_count !=  count1 + count2 )</a>
+<a name="ln1009">      {</a>
+<a name="ln1010">        FT_TRACE0(( &quot;ps_hints_t2mask:&quot;</a>
+<a name="ln1011">                    &quot; called with invalid bitcount %d (instead of %d)\n&quot;,</a>
+<a name="ln1012">                   bit_count, count1 + count2 ));</a>
+<a name="ln1013"> </a>
+<a name="ln1014">        /* simply ignore the operator */</a>
+<a name="ln1015">        return;</a>
+<a name="ln1016">      }</a>
+<a name="ln1017"> </a>
+<a name="ln1018">      /* set-up new horizontal and vertical hint mask now */</a>
+<a name="ln1019">      error = ps_dimension_set_mask_bits( &amp;dim[0], bytes, count2, count1,</a>
+<a name="ln1020">                                          end_point, memory );</a>
+<a name="ln1021">      if ( error )</a>
+<a name="ln1022">        goto Fail;</a>
+<a name="ln1023"> </a>
+<a name="ln1024">      error = ps_dimension_set_mask_bits( &amp;dim[1], bytes, 0, count2,</a>
+<a name="ln1025">                                          end_point, memory );</a>
+<a name="ln1026">      if ( error )</a>
+<a name="ln1027">        goto Fail;</a>
+<a name="ln1028">    }</a>
+<a name="ln1029">    return;</a>
+<a name="ln1030"> </a>
+<a name="ln1031">  Fail:</a>
+<a name="ln1032">    hints-&gt;error = error;</a>
+<a name="ln1033">  }</a>
+<a name="ln1034"> </a>
+<a name="ln1035"> </a>
+<a name="ln1036">  static void</a>
+<a name="ln1037">  ps_hints_t2counter( PS_Hints        hints,</a>
+<a name="ln1038">                      FT_UInt         bit_count,</a>
+<a name="ln1039">                      const FT_Byte*  bytes )</a>
+<a name="ln1040">  {</a>
+<a name="ln1041">    FT_Error  error;</a>
+<a name="ln1042"> </a>
+<a name="ln1043"> </a>
+<a name="ln1044">    if ( !hints-&gt;error )</a>
+<a name="ln1045">    {</a>
+<a name="ln1046">      PS_Dimension  dim    = hints-&gt;dimension;</a>
+<a name="ln1047">      FT_Memory     memory = hints-&gt;memory;</a>
+<a name="ln1048">      FT_UInt       count1 = dim[0].hints.num_hints;</a>
+<a name="ln1049">      FT_UInt       count2 = dim[1].hints.num_hints;</a>
+<a name="ln1050"> </a>
+<a name="ln1051"> </a>
+<a name="ln1052">      /* check bit count, must be equal to current total hint count */</a>
+<a name="ln1053">      if ( bit_count !=  count1 + count2 )</a>
+<a name="ln1054">      {</a>
+<a name="ln1055">        FT_TRACE0(( &quot;ps_hints_t2counter:&quot;</a>
+<a name="ln1056">                    &quot; called with invalid bitcount %d (instead of %d)\n&quot;,</a>
+<a name="ln1057">                   bit_count, count1 + count2 ));</a>
+<a name="ln1058"> </a>
+<a name="ln1059">        /* simply ignore the operator */</a>
+<a name="ln1060">        return;</a>
+<a name="ln1061">      }</a>
+<a name="ln1062"> </a>
+<a name="ln1063">      /* set-up new horizontal and vertical hint mask now */</a>
+<a name="ln1064">      error = ps_dimension_set_mask_bits( &amp;dim[0], bytes, 0, count1,</a>
+<a name="ln1065">                                          0, memory );</a>
+<a name="ln1066">      if ( error )</a>
+<a name="ln1067">        goto Fail;</a>
+<a name="ln1068"> </a>
+<a name="ln1069">      error = ps_dimension_set_mask_bits( &amp;dim[1], bytes, count1, count2,</a>
+<a name="ln1070">                                          0, memory );</a>
+<a name="ln1071">      if ( error )</a>
+<a name="ln1072">        goto Fail;</a>
+<a name="ln1073">    }</a>
+<a name="ln1074">    return;</a>
+<a name="ln1075"> </a>
+<a name="ln1076">  Fail:</a>
+<a name="ln1077">    hints-&gt;error = error;</a>
+<a name="ln1078">  }</a>
+<a name="ln1079"> </a>
+<a name="ln1080"> </a>
+<a name="ln1081">  /* end recording session */</a>
+<a name="ln1082">  static FT_Error</a>
+<a name="ln1083">  ps_hints_close( PS_Hints  hints,</a>
+<a name="ln1084">                  FT_UInt   end_point )</a>
+<a name="ln1085">  {</a>
+<a name="ln1086">    FT_Error  error;</a>
+<a name="ln1087"> </a>
+<a name="ln1088"> </a>
+<a name="ln1089">    error = hints-&gt;error;</a>
+<a name="ln1090">    if ( !error )</a>
+<a name="ln1091">    {</a>
+<a name="ln1092">      FT_Memory     memory = hints-&gt;memory;</a>
+<a name="ln1093">      PS_Dimension  dim    = hints-&gt;dimension;</a>
+<a name="ln1094"> </a>
+<a name="ln1095"> </a>
+<a name="ln1096">      error = ps_dimension_end( &amp;dim[0], end_point, memory );</a>
+<a name="ln1097">      if ( !error )</a>
+<a name="ln1098">      {</a>
+<a name="ln1099">        error = ps_dimension_end( &amp;dim[1], end_point, memory );</a>
+<a name="ln1100">      }</a>
+<a name="ln1101">    }</a>
+<a name="ln1102"> </a>
+<a name="ln1103">#ifdef DEBUG_HINTER</a>
+<a name="ln1104">    if ( !error )</a>
+<a name="ln1105">      ps_debug_hints = hints;</a>
+<a name="ln1106">#endif</a>
+<a name="ln1107">    return error;</a>
+<a name="ln1108">  }</a>
+<a name="ln1109"> </a>
+<a name="ln1110"> </a>
+<a name="ln1111">  /*************************************************************************/</a>
+<a name="ln1112">  /*************************************************************************/</a>
+<a name="ln1113">  /*****                                                               *****/</a>
+<a name="ln1114">  /*****                TYPE 1 HINTS RECORDING INTERFACE               *****/</a>
+<a name="ln1115">  /*****                                                               *****/</a>
+<a name="ln1116">  /*************************************************************************/</a>
+<a name="ln1117">  /*************************************************************************/</a>
+<a name="ln1118"> </a>
+<a name="ln1119">  static void</a>
+<a name="ln1120">  t1_hints_open( T1_Hints  hints )</a>
+<a name="ln1121">  {</a>
+<a name="ln1122">    ps_hints_open( (PS_Hints)hints, PS_HINT_TYPE_1 );</a>
+<a name="ln1123">  }</a>
+<a name="ln1124"> </a>
+<a name="ln1125">  static void</a>
+<a name="ln1126">  t1_hints_stem( T1_Hints   hints,</a>
+<a name="ln1127">                 FT_UInt    dimension,</a>
+<a name="ln1128">                 FT_Fixed*  coords )</a>
+<a name="ln1129">  {</a>
+<a name="ln1130">    FT_Pos  stems[2];</a>
+<a name="ln1131"> </a>
+<a name="ln1132"> </a>
+<a name="ln1133">    stems[0] = FIXED_TO_INT( coords[0] );</a>
+<a name="ln1134">    stems[1] = FIXED_TO_INT( coords[1] );</a>
+<a name="ln1135"> </a>
+<a name="ln1136">    ps_hints_stem( (PS_Hints)hints, dimension, 1, stems );</a>
+<a name="ln1137">  }</a>
+<a name="ln1138"> </a>
+<a name="ln1139"> </a>
+<a name="ln1140">  FT_LOCAL_DEF( void )</a>
+<a name="ln1141">  t1_hints_funcs_init( T1_Hints_FuncsRec*  funcs )</a>
+<a name="ln1142">  {</a>
+<a name="ln1143">    FT_MEM_ZERO( (char*)funcs, sizeof ( *funcs ) );</a>
+<a name="ln1144"> </a>
+<a name="ln1145">    funcs-&gt;open  = (T1_Hints_OpenFunc)    t1_hints_open;</a>
+<a name="ln1146">    funcs-&gt;close = (T1_Hints_CloseFunc)   ps_hints_close;</a>
+<a name="ln1147">    funcs-&gt;stem  = (T1_Hints_SetStemFunc) t1_hints_stem;</a>
+<a name="ln1148">    funcs-&gt;stem3 = (T1_Hints_SetStem3Func)ps_hints_t1stem3;</a>
+<a name="ln1149">    funcs-&gt;reset = (T1_Hints_ResetFunc)   ps_hints_t1reset;</a>
+<a name="ln1150">    funcs-&gt;apply = (T1_Hints_ApplyFunc)   ps_hints_apply;</a>
+<a name="ln1151">  }</a>
+<a name="ln1152"> </a>
+<a name="ln1153"> </a>
+<a name="ln1154">  /*************************************************************************/</a>
+<a name="ln1155">  /*************************************************************************/</a>
+<a name="ln1156">  /*****                                                               *****/</a>
+<a name="ln1157">  /*****                TYPE 2 HINTS RECORDING INTERFACE               *****/</a>
+<a name="ln1158">  /*****                                                               *****/</a>
+<a name="ln1159">  /*************************************************************************/</a>
+<a name="ln1160">  /*************************************************************************/</a>
+<a name="ln1161"> </a>
+<a name="ln1162">  static void</a>
+<a name="ln1163">  t2_hints_open( T2_Hints  hints )</a>
+<a name="ln1164">  {</a>
+<a name="ln1165">    ps_hints_open( (PS_Hints)hints, PS_HINT_TYPE_2 );</a>
+<a name="ln1166">  }</a>
+<a name="ln1167"> </a>
+<a name="ln1168"> </a>
+<a name="ln1169">  static void</a>
+<a name="ln1170">  t2_hints_stems( T2_Hints   hints,</a>
+<a name="ln1171">                  FT_UInt    dimension,</a>
+<a name="ln1172">                  FT_Int     count,</a>
+<a name="ln1173">                  FT_Fixed*  coords )</a>
+<a name="ln1174">  {</a>
+<a name="ln1175">    FT_Pos  stems[32], y;</a>
+<a name="ln1176">    FT_Int  total = count, n;</a>
+<a name="ln1177"> </a>
+<a name="ln1178"> </a>
+<a name="ln1179">    y = 0;</a>
+<a name="ln1180">    while ( total &gt; 0 )</a>
+<a name="ln1181">    {</a>
+<a name="ln1182">      /* determine number of stems to write */</a>
+<a name="ln1183">      count = total;</a>
+<a name="ln1184">      if ( count &gt; 16 )</a>
+<a name="ln1185">        count = 16;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">      /* compute integer stem positions in font units */</a>
+<a name="ln1188">      for ( n = 0; n &lt; count * 2; n++ )</a>
+<a name="ln1189">      {</a>
+<a name="ln1190">        y       += coords[n];</a>
+<a name="ln1191">        stems[n] = FIXED_TO_INT( y );</a>
+<a name="ln1192">      }</a>
+<a name="ln1193"> </a>
+<a name="ln1194">      /* compute lengths */</a>
+<a name="ln1195">      for ( n = 0; n &lt; count * 2; n += 2 )</a>
+<a name="ln1196">        stems[n + 1] = stems[n + 1] - stems[n];</a>
+<a name="ln1197"> </a>
+<a name="ln1198">      /* add them to the current dimension */</a>
+<a name="ln1199">      ps_hints_stem( (PS_Hints)hints, dimension, count, stems );</a>
+<a name="ln1200"> </a>
+<a name="ln1201">      total -= count;</a>
+<a name="ln1202">    }</a>
+<a name="ln1203">  }</a>
+<a name="ln1204"> </a>
+<a name="ln1205"> </a>
+<a name="ln1206">  FT_LOCAL_DEF( void )</a>
+<a name="ln1207">  t2_hints_funcs_init( T2_Hints_FuncsRec*  funcs )</a>
+<a name="ln1208">  {</a>
+<a name="ln1209">    FT_MEM_ZERO( funcs, sizeof ( *funcs ) );</a>
+<a name="ln1210"> </a>
+<a name="ln1211">    funcs-&gt;open    = (T2_Hints_OpenFunc)   t2_hints_open;</a>
+<a name="ln1212">    funcs-&gt;close   = (T2_Hints_CloseFunc)  ps_hints_close;</a>
+<a name="ln1213">    funcs-&gt;stems   = (T2_Hints_StemsFunc)  t2_hints_stems;</a>
+<a name="ln1214">    funcs-&gt;hintmask= (T2_Hints_MaskFunc)   ps_hints_t2mask;</a>
+<a name="ln1215">    funcs-&gt;counter = (T2_Hints_CounterFunc)ps_hints_t2counter;</a>
+<a name="ln1216">    funcs-&gt;apply   = (T2_Hints_ApplyFunc)  ps_hints_apply;</a>
+<a name="ln1217">  }</a>
+<a name="ln1218"> </a>
+<a name="ln1219"> </a>
+<a name="ln1220">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="857"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'dimension != 0' is always true.</p></div>
+<div class="balloon" rel="909"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'dimension != 0' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

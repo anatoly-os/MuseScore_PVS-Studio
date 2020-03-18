@@ -1,0 +1,1436 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pcfread.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*  pcfread.c</a>
+<a name="ln2"> </a>
+<a name="ln3">    FreeType font driver for pcf fonts</a>
+<a name="ln4"> </a>
+<a name="ln5">  Copyright 2000-2010, 2012-2014 by</a>
+<a name="ln6">  Francesco Zappa Nardelli</a>
+<a name="ln7"> </a>
+<a name="ln8">Permission is hereby granted, free of charge, to any person obtaining a copy</a>
+<a name="ln9">of this software and associated documentation files (the &quot;Software&quot;), to deal</a>
+<a name="ln10">in the Software without restriction, including without limitation the rights</a>
+<a name="ln11">to use, copy, modify, merge, publish, distribute, sublicense, and/or sell</a>
+<a name="ln12">copies of the Software, and to permit persons to whom the Software is</a>
+<a name="ln13">furnished to do so, subject to the following conditions:</a>
+<a name="ln14"> </a>
+<a name="ln15">The above copyright notice and this permission notice shall be included in</a>
+<a name="ln16">all copies or substantial portions of the Software.</a>
+<a name="ln17"> </a>
+<a name="ln18">THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</a>
+<a name="ln19">IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</a>
+<a name="ln20">FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE</a>
+<a name="ln21">AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER</a>
+<a name="ln22">LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,</a>
+<a name="ln23">OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN</a>
+<a name="ln24">THE SOFTWARE.</a>
+<a name="ln25">*/</a>
+<a name="ln26"> </a>
+<a name="ln27"> </a>
+<a name="ln28">#include &lt;ft2build.h&gt;</a>
+<a name="ln29"> </a>
+<a name="ln30">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln31">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln32">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln33"> </a>
+<a name="ln34">#include &quot;pcf.h&quot;</a>
+<a name="ln35">#include &quot;pcfread.h&quot;</a>
+<a name="ln36"> </a>
+<a name="ln37">#include &quot;pcferror.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39"> </a>
+<a name="ln40">  /*************************************************************************/</a>
+<a name="ln41">  /*                                                                       */</a>
+<a name="ln42">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln43">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln44">  /* messages during execution.                                            */</a>
+<a name="ln45">  /*                                                                       */</a>
+<a name="ln46">#undef  FT_COMPONENT</a>
+<a name="ln47">#define FT_COMPONENT  trace_pcfread</a>
+<a name="ln48"> </a>
+<a name="ln49"> </a>
+<a name="ln50">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln51">  static const char* const  tableNames[] =</a>
+<a name="ln52">  {</a>
+<a name="ln53">    &quot;prop&quot;, &quot;accl&quot;, &quot;mtrcs&quot;, &quot;bmps&quot;, &quot;imtrcs&quot;,</a>
+<a name="ln54">    &quot;enc&quot;, &quot;swidth&quot;, &quot;names&quot;, &quot;accel&quot;</a>
+<a name="ln55">  };</a>
+<a name="ln56">#endif</a>
+<a name="ln57"> </a>
+<a name="ln58"> </a>
+<a name="ln59">  static</a>
+<a name="ln60">  const FT_Frame_Field  pcf_toc_header[] =</a>
+<a name="ln61">  {</a>
+<a name="ln62">#undef  FT_STRUCTURE</a>
+<a name="ln63">#define FT_STRUCTURE  PCF_TocRec</a>
+<a name="ln64"> </a>
+<a name="ln65">    FT_FRAME_START( 8 ),</a>
+<a name="ln66">      FT_FRAME_ULONG_LE( version ),</a>
+<a name="ln67">      FT_FRAME_ULONG_LE( count ),</a>
+<a name="ln68">    FT_FRAME_END</a>
+<a name="ln69">  };</a>
+<a name="ln70"> </a>
+<a name="ln71"> </a>
+<a name="ln72">  static</a>
+<a name="ln73">  const FT_Frame_Field  pcf_table_header[] =</a>
+<a name="ln74">  {</a>
+<a name="ln75">#undef  FT_STRUCTURE</a>
+<a name="ln76">#define FT_STRUCTURE  PCF_TableRec</a>
+<a name="ln77"> </a>
+<a name="ln78">    FT_FRAME_START( 16  ),</a>
+<a name="ln79">      FT_FRAME_ULONG_LE( type ),</a>
+<a name="ln80">      FT_FRAME_ULONG_LE( format ),</a>
+<a name="ln81">      FT_FRAME_ULONG_LE( size ),   /* rounded up to a multiple of 4 */</a>
+<a name="ln82">      FT_FRAME_ULONG_LE( offset ),</a>
+<a name="ln83">    FT_FRAME_END</a>
+<a name="ln84">  };</a>
+<a name="ln85"> </a>
+<a name="ln86"> </a>
+<a name="ln87">  static FT_Error</a>
+<a name="ln88">  pcf_read_TOC( FT_Stream  stream,</a>
+<a name="ln89">                PCF_Face   face )</a>
+<a name="ln90">  {</a>
+<a name="ln91">    FT_Error   error;</a>
+<a name="ln92">    PCF_Toc    toc = &amp;face-&gt;toc;</a>
+<a name="ln93">    PCF_Table  tables;</a>
+<a name="ln94"> </a>
+<a name="ln95">    FT_Memory  memory = FT_FACE( face )-&gt;memory;</a>
+<a name="ln96">    FT_UInt    n;</a>
+<a name="ln97"> </a>
+<a name="ln98">    FT_ULong   size;</a>
+<a name="ln99"> </a>
+<a name="ln100"> </a>
+<a name="ln101">    if ( FT_STREAM_SEEK( 0 )                          ||</a>
+<a name="ln102">         FT_STREAM_READ_FIELDS( pcf_toc_header, toc ) )</a>
+<a name="ln103">      return FT_THROW( Cannot_Open_Resource );</a>
+<a name="ln104"> </a>
+<a name="ln105">    if ( toc-&gt;version != PCF_FILE_VERSION                 ||</a>
+<a name="ln106">         toc-&gt;count   &gt;  FT_ARRAY_MAX( face-&gt;toc.tables ) ||</a>
+<a name="ln107">         toc-&gt;count   == 0                                )</a>
+<a name="ln108">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln109"> </a>
+<a name="ln110">    if ( FT_NEW_ARRAY( face-&gt;toc.tables, toc-&gt;count ) )</a>
+<a name="ln111">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln112"> </a>
+<a name="ln113">    tables = face-&gt;toc.tables;</a>
+<a name="ln114">    for ( n = 0; n &lt; toc-&gt;count; n++ )</a>
+<a name="ln115">    {</a>
+<a name="ln116">      if ( FT_STREAM_READ_FIELDS( pcf_table_header, tables ) )</a>
+<a name="ln117">        goto Exit;</a>
+<a name="ln118">      tables++;</a>
+<a name="ln119">    }</a>
+<a name="ln120"> </a>
+<a name="ln121">    /* Sort tables and check for overlaps.  Because they are almost      */</a>
+<a name="ln122">    /* always ordered already, an in-place bubble sort with simultaneous */</a>
+<a name="ln123">    /* boundary checking seems appropriate.                              */</a>
+<a name="ln124">    tables = face-&gt;toc.tables;</a>
+<a name="ln125"> </a>
+<a name="ln126">    for ( n = 0; n &lt; toc-&gt;count - 1; n++ )</a>
+<a name="ln127">    {</a>
+<a name="ln128">      FT_UInt  i, have_change;</a>
+<a name="ln129"> </a>
+<a name="ln130"> </a>
+<a name="ln131">      have_change = 0;</a>
+<a name="ln132"> </a>
+<a name="ln133">      for ( i = 0; i &lt; toc-&gt;count - 1 - n; i++ )</a>
+<a name="ln134">      {</a>
+<a name="ln135">        PCF_TableRec  tmp;</a>
+<a name="ln136"> </a>
+<a name="ln137"> </a>
+<a name="ln138">        if ( tables[i].offset &gt; tables[i + 1].offset )</a>
+<a name="ln139">        {</a>
+<a name="ln140">          tmp           = tables[i];</a>
+<a name="ln141">          tables[i]     = tables[i + 1];</a>
+<a name="ln142">          tables[i + 1] = tmp;</a>
+<a name="ln143"> </a>
+<a name="ln144">          have_change = 1;</a>
+<a name="ln145">        }</a>
+<a name="ln146"> </a>
+<a name="ln147">        if ( ( tables[i].size   &gt; tables[i + 1].offset )                  ||</a>
+<a name="ln148">             ( tables[i].offset &gt; tables[i + 1].offset - tables[i].size ) )</a>
+<a name="ln149">        {</a>
+<a name="ln150">          error = FT_THROW( Invalid_Offset );</a>
+<a name="ln151">          goto Exit;</a>
+<a name="ln152">        }</a>
+<a name="ln153">      }</a>
+<a name="ln154"> </a>
+<a name="ln155">      if ( !have_change )</a>
+<a name="ln156">        break;</a>
+<a name="ln157">    }</a>
+<a name="ln158"> </a>
+<a name="ln159">    /*</a>
+<a name="ln160">     *  We now check whether the `size' and `offset' values are reasonable:</a>
+<a name="ln161">     *  `offset' + `size' must not exceed the stream size.</a>
+<a name="ln162">     *</a>
+<a name="ln163">     *  Note, however, that X11's `pcfWriteFont' routine (used by the</a>
+<a name="ln164">     *  `bdftopcf' program to create PDF font files) has two special</a>
+<a name="ln165">     *  features.</a>
+<a name="ln166">     *</a>
+<a name="ln167">     *  - It always assigns the accelerator table a size of 100 bytes in the</a>
+<a name="ln168">     *    TOC, regardless of its real size, which can vary between 34 and 72</a>
+<a name="ln169">     *    bytes.</a>
+<a name="ln170">     *</a>
+<a name="ln171">     *  - Due to the way the routine is designed, it ships out the last font</a>
+<a name="ln172">     *    table with its real size, ignoring the TOC's size value.  Since</a>
+<a name="ln173">     *    the TOC size values are always rounded up to a multiple of 4, the</a>
+<a name="ln174">     *    difference can be up to three bytes for all tables except the</a>
+<a name="ln175">     *    accelerator table, for which the difference can be as large as 66</a>
+<a name="ln176">     *    bytes.</a>
+<a name="ln177">     *</a>
+<a name="ln178">     */</a>
+<a name="ln179"> </a>
+<a name="ln180">    tables = face-&gt;toc.tables;</a>
+<a name="ln181">    size   = stream-&gt;size;</a>
+<a name="ln182"> </a>
+<a name="ln183">    for ( n = 0; n &lt; toc-&gt;count - 1; n++ )</a>
+<a name="ln184">    {</a>
+<a name="ln185">      /* we need two checks to avoid overflow */</a>
+<a name="ln186">      if ( ( tables-&gt;size   &gt; size                ) ||</a>
+<a name="ln187">           ( tables-&gt;offset &gt; size - tables-&gt;size ) )</a>
+<a name="ln188">      {</a>
+<a name="ln189">        error = FT_THROW( Invalid_Table );</a>
+<a name="ln190">        goto Exit;</a>
+<a name="ln191">      }</a>
+<a name="ln192">      tables++;</a>
+<a name="ln193">    }</a>
+<a name="ln194"> </a>
+<a name="ln195">    /* only check `tables-&gt;offset' for last table element ... */</a>
+<a name="ln196">    if ( ( tables-&gt;offset &gt; size ) )</a>
+<a name="ln197">    {</a>
+<a name="ln198">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln199">      goto Exit;</a>
+<a name="ln200">    }</a>
+<a name="ln201">    /* ... and adjust `tables-&gt;size' to the real value if necessary */</a>
+<a name="ln202">    if ( tables-&gt;size &gt; size - tables-&gt;offset )</a>
+<a name="ln203">      tables-&gt;size = size - tables-&gt;offset;</a>
+<a name="ln204"> </a>
+<a name="ln205">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln206"> </a>
+<a name="ln207">    {</a>
+<a name="ln208">      FT_UInt      i, j;</a>
+<a name="ln209">      const char*  name = &quot;?&quot;;</a>
+<a name="ln210"> </a>
+<a name="ln211"> </a>
+<a name="ln212">      FT_TRACE4(( &quot;pcf_read_TOC:\n&quot; ));</a>
+<a name="ln213"> </a>
+<a name="ln214">      FT_TRACE4(( &quot;  number of tables: %ld\n&quot;, face-&gt;toc.count ));</a>
+<a name="ln215"> </a>
+<a name="ln216">      tables = face-&gt;toc.tables;</a>
+<a name="ln217">      for ( i = 0; i &lt; toc-&gt;count; i++ )</a>
+<a name="ln218">      {</a>
+<a name="ln219">        for ( j = 0; j &lt; sizeof ( tableNames ) / sizeof ( tableNames[0] );</a>
+<a name="ln220">              j++ )</a>
+<a name="ln221">          if ( tables[i].type == (FT_UInt)( 1 &lt;&lt; j ) )</a>
+<a name="ln222">            name = tableNames[j];</a>
+<a name="ln223"> </a>
+<a name="ln224">        FT_TRACE4(( &quot;  %d: type=%s, format=0x%X, &quot;</a>
+<a name="ln225">                    &quot;size=%ld (0x%lX), offset=%ld (0x%lX)\n&quot;,</a>
+<a name="ln226">                    i, name,</a>
+<a name="ln227">                    tables[i].format,</a>
+<a name="ln228">                    tables[i].size, tables[i].size,</a>
+<a name="ln229">                    tables[i].offset, tables[i].offset ));</a>
+<a name="ln230">      }</a>
+<a name="ln231">    }</a>
+<a name="ln232"> </a>
+<a name="ln233">#endif</a>
+<a name="ln234"> </a>
+<a name="ln235">    return FT_Err_Ok;</a>
+<a name="ln236"> </a>
+<a name="ln237">  Exit:</a>
+<a name="ln238">    FT_FREE( face-&gt;toc.tables );</a>
+<a name="ln239">    return error;</a>
+<a name="ln240">  }</a>
+<a name="ln241"> </a>
+<a name="ln242"> </a>
+<a name="ln243">#define PCF_METRIC_SIZE  12</a>
+<a name="ln244"> </a>
+<a name="ln245">  static</a>
+<a name="ln246">  const FT_Frame_Field  pcf_metric_header[] =</a>
+<a name="ln247">  {</a>
+<a name="ln248">#undef  FT_STRUCTURE</a>
+<a name="ln249">#define FT_STRUCTURE  PCF_MetricRec</a>
+<a name="ln250"> </a>
+<a name="ln251">    FT_FRAME_START( PCF_METRIC_SIZE ),</a>
+<a name="ln252">      FT_FRAME_SHORT_LE( leftSideBearing ),</a>
+<a name="ln253">      FT_FRAME_SHORT_LE( rightSideBearing ),</a>
+<a name="ln254">      FT_FRAME_SHORT_LE( characterWidth ),</a>
+<a name="ln255">      FT_FRAME_SHORT_LE( ascent ),</a>
+<a name="ln256">      FT_FRAME_SHORT_LE( descent ),</a>
+<a name="ln257">      FT_FRAME_SHORT_LE( attributes ),</a>
+<a name="ln258">    FT_FRAME_END</a>
+<a name="ln259">  };</a>
+<a name="ln260"> </a>
+<a name="ln261"> </a>
+<a name="ln262">  static</a>
+<a name="ln263">  const FT_Frame_Field  pcf_metric_msb_header[] =</a>
+<a name="ln264">  {</a>
+<a name="ln265">#undef  FT_STRUCTURE</a>
+<a name="ln266">#define FT_STRUCTURE  PCF_MetricRec</a>
+<a name="ln267"> </a>
+<a name="ln268">    FT_FRAME_START( PCF_METRIC_SIZE ),</a>
+<a name="ln269">      FT_FRAME_SHORT( leftSideBearing ),</a>
+<a name="ln270">      FT_FRAME_SHORT( rightSideBearing ),</a>
+<a name="ln271">      FT_FRAME_SHORT( characterWidth ),</a>
+<a name="ln272">      FT_FRAME_SHORT( ascent ),</a>
+<a name="ln273">      FT_FRAME_SHORT( descent ),</a>
+<a name="ln274">      FT_FRAME_SHORT( attributes ),</a>
+<a name="ln275">    FT_FRAME_END</a>
+<a name="ln276">  };</a>
+<a name="ln277"> </a>
+<a name="ln278"> </a>
+<a name="ln279">#define PCF_COMPRESSED_METRIC_SIZE  5</a>
+<a name="ln280"> </a>
+<a name="ln281">  static</a>
+<a name="ln282">  const FT_Frame_Field  pcf_compressed_metric_header[] =</a>
+<a name="ln283">  {</a>
+<a name="ln284">#undef  FT_STRUCTURE</a>
+<a name="ln285">#define FT_STRUCTURE  PCF_Compressed_MetricRec</a>
+<a name="ln286"> </a>
+<a name="ln287">    FT_FRAME_START( PCF_COMPRESSED_METRIC_SIZE ),</a>
+<a name="ln288">      FT_FRAME_BYTE( leftSideBearing ),</a>
+<a name="ln289">      FT_FRAME_BYTE( rightSideBearing ),</a>
+<a name="ln290">      FT_FRAME_BYTE( characterWidth ),</a>
+<a name="ln291">      FT_FRAME_BYTE( ascent ),</a>
+<a name="ln292">      FT_FRAME_BYTE( descent ),</a>
+<a name="ln293">    FT_FRAME_END</a>
+<a name="ln294">  };</a>
+<a name="ln295"> </a>
+<a name="ln296"> </a>
+<a name="ln297">  static FT_Error</a>
+<a name="ln298">  pcf_get_metric( FT_Stream   stream,</a>
+<a name="ln299">                  FT_ULong    format,</a>
+<a name="ln300">                  PCF_Metric  metric )</a>
+<a name="ln301">  {</a>
+<a name="ln302">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln303"> </a>
+<a name="ln304"> </a>
+<a name="ln305">    if ( PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT ) )</a>
+<a name="ln306">    {</a>
+<a name="ln307">      const FT_Frame_Field*  fields;</a>
+<a name="ln308"> </a>
+<a name="ln309"> </a>
+<a name="ln310">      /* parsing normal metrics */</a>
+<a name="ln311">      fields = PCF_BYTE_ORDER( format ) == MSBFirst</a>
+<a name="ln312">               ? pcf_metric_msb_header</a>
+<a name="ln313">               : pcf_metric_header;</a>
+<a name="ln314"> </a>
+<a name="ln315">      /* the following sets `error' but doesn't return in case of failure */</a>
+<a name="ln316">      (void)FT_STREAM_READ_FIELDS( fields, metric );</a>
+<a name="ln317">    }</a>
+<a name="ln318">    else</a>
+<a name="ln319">    {</a>
+<a name="ln320">      PCF_Compressed_MetricRec  compr;</a>
+<a name="ln321"> </a>
+<a name="ln322"> </a>
+<a name="ln323">      /* parsing compressed metrics */</a>
+<a name="ln324">      if ( FT_STREAM_READ_FIELDS( pcf_compressed_metric_header, &amp;compr ) )</a>
+<a name="ln325">        goto Exit;</a>
+<a name="ln326"> </a>
+<a name="ln327">      metric-&gt;leftSideBearing  = (FT_Short)( compr.leftSideBearing  - 0x80 );</a>
+<a name="ln328">      metric-&gt;rightSideBearing = (FT_Short)( compr.rightSideBearing - 0x80 );</a>
+<a name="ln329">      metric-&gt;characterWidth   = (FT_Short)( compr.characterWidth   - 0x80 );</a>
+<a name="ln330">      metric-&gt;ascent           = (FT_Short)( compr.ascent           - 0x80 );</a>
+<a name="ln331">      metric-&gt;descent          = (FT_Short)( compr.descent          - 0x80 );</a>
+<a name="ln332">      metric-&gt;attributes       = 0;</a>
+<a name="ln333">    }</a>
+<a name="ln334"> </a>
+<a name="ln335">  Exit:</a>
+<a name="ln336">    return error;</a>
+<a name="ln337">  }</a>
+<a name="ln338"> </a>
+<a name="ln339"> </a>
+<a name="ln340">  static FT_Error</a>
+<a name="ln341">  pcf_seek_to_table_type( FT_Stream  stream,</a>
+<a name="ln342">                          PCF_Table  tables,</a>
+<a name="ln343">                          FT_ULong   ntables, /* same as PCF_Toc-&gt;count */</a>
+<a name="ln344">                          FT_ULong   type,</a>
+<a name="ln345">                          FT_ULong  *aformat,</a>
+<a name="ln346">                          FT_ULong  *asize )</a>
+<a name="ln347">  {</a>
+<a name="ln348">    FT_Error  error = FT_ERR( Invalid_File_Format );</a>
+<a name="ln349">    FT_ULong  i;</a>
+<a name="ln350"> </a>
+<a name="ln351"> </a>
+<a name="ln352">    for ( i = 0; i &lt; ntables; i++ )</a>
+<a name="ln353">      if ( tables[i].type == type )</a>
+<a name="ln354">      {</a>
+<a name="ln355">        if ( stream-&gt;pos &gt; tables[i].offset )</a>
+<a name="ln356">        {</a>
+<a name="ln357">          error = FT_THROW( Invalid_Stream_Skip );</a>
+<a name="ln358">          goto Fail;</a>
+<a name="ln359">        }</a>
+<a name="ln360"> </a>
+<a name="ln361">        if ( FT_STREAM_SKIP( tables[i].offset - stream-&gt;pos ) )</a>
+<a name="ln362">        {</a>
+<a name="ln363">          error = FT_THROW( Invalid_Stream_Skip );</a>
+<a name="ln364">          goto Fail;</a>
+<a name="ln365">        }</a>
+<a name="ln366"> </a>
+<a name="ln367">        *asize   = tables[i].size;</a>
+<a name="ln368">        *aformat = tables[i].format;</a>
+<a name="ln369"> </a>
+<a name="ln370">        return FT_Err_Ok;</a>
+<a name="ln371">      }</a>
+<a name="ln372"> </a>
+<a name="ln373">  Fail:</a>
+<a name="ln374">    *asize = 0;</a>
+<a name="ln375">    return error;</a>
+<a name="ln376">  }</a>
+<a name="ln377"> </a>
+<a name="ln378"> </a>
+<a name="ln379">  static FT_Bool</a>
+<a name="ln380">  pcf_has_table_type( PCF_Table  tables,</a>
+<a name="ln381">                      FT_ULong   ntables, /* same as PCF_Toc-&gt;count */</a>
+<a name="ln382">                      FT_ULong   type )</a>
+<a name="ln383">  {</a>
+<a name="ln384">    FT_ULong  i;</a>
+<a name="ln385"> </a>
+<a name="ln386"> </a>
+<a name="ln387">    for ( i = 0; i &lt; ntables; i++ )</a>
+<a name="ln388">      if ( tables[i].type == type )</a>
+<a name="ln389">        return TRUE;</a>
+<a name="ln390"> </a>
+<a name="ln391">    return FALSE;</a>
+<a name="ln392">  }</a>
+<a name="ln393"> </a>
+<a name="ln394"> </a>
+<a name="ln395">#define PCF_PROPERTY_SIZE  9</a>
+<a name="ln396"> </a>
+<a name="ln397">  static</a>
+<a name="ln398">  const FT_Frame_Field  pcf_property_header[] =</a>
+<a name="ln399">  {</a>
+<a name="ln400">#undef  FT_STRUCTURE</a>
+<a name="ln401">#define FT_STRUCTURE  PCF_ParsePropertyRec</a>
+<a name="ln402"> </a>
+<a name="ln403">    FT_FRAME_START( PCF_PROPERTY_SIZE ),</a>
+<a name="ln404">      FT_FRAME_LONG_LE( name ),</a>
+<a name="ln405">      FT_FRAME_BYTE   ( isString ),</a>
+<a name="ln406">      FT_FRAME_LONG_LE( value ),</a>
+<a name="ln407">    FT_FRAME_END</a>
+<a name="ln408">  };</a>
+<a name="ln409"> </a>
+<a name="ln410"> </a>
+<a name="ln411">  static</a>
+<a name="ln412">  const FT_Frame_Field  pcf_property_msb_header[] =</a>
+<a name="ln413">  {</a>
+<a name="ln414">#undef  FT_STRUCTURE</a>
+<a name="ln415">#define FT_STRUCTURE  PCF_ParsePropertyRec</a>
+<a name="ln416"> </a>
+<a name="ln417">    FT_FRAME_START( PCF_PROPERTY_SIZE ),</a>
+<a name="ln418">      FT_FRAME_LONG( name ),</a>
+<a name="ln419">      FT_FRAME_BYTE( isString ),</a>
+<a name="ln420">      FT_FRAME_LONG( value ),</a>
+<a name="ln421">    FT_FRAME_END</a>
+<a name="ln422">  };</a>
+<a name="ln423"> </a>
+<a name="ln424"> </a>
+<a name="ln425">  FT_LOCAL_DEF( PCF_Property )</a>
+<a name="ln426">  pcf_find_property( PCF_Face          face,</a>
+<a name="ln427">                     const FT_String*  prop )</a>
+<a name="ln428">  {</a>
+<a name="ln429">    PCF_Property  properties = face-&gt;properties;</a>
+<a name="ln430">    FT_Bool       found      = 0;</a>
+<a name="ln431">    int           i;</a>
+<a name="ln432"> </a>
+<a name="ln433"> </a>
+<a name="ln434">    for ( i = 0 ; i &lt; face-&gt;nprops &amp;&amp; !found; i++ )</a>
+<a name="ln435">    {</a>
+<a name="ln436">      if ( !ft_strcmp( properties[i].name, prop ) )</a>
+<a name="ln437">        found = 1;</a>
+<a name="ln438">    }</a>
+<a name="ln439"> </a>
+<a name="ln440">    if ( found )</a>
+<a name="ln441">      return properties + i - 1;</a>
+<a name="ln442">    else</a>
+<a name="ln443">      return NULL;</a>
+<a name="ln444">  }</a>
+<a name="ln445"> </a>
+<a name="ln446"> </a>
+<a name="ln447">  static FT_Error</a>
+<a name="ln448">  pcf_get_properties( FT_Stream  stream,</a>
+<a name="ln449">                      PCF_Face   face )</a>
+<a name="ln450">  {</a>
+<a name="ln451">    PCF_ParseProperty  props      = NULL;</a>
+<a name="ln452">    PCF_Property       properties = NULL;</a>
+<a name="ln453">    FT_ULong           nprops, i;</a>
+<a name="ln454">    FT_ULong           format, size;</a>
+<a name="ln455">    FT_Error           error;</a>
+<a name="ln456">    FT_Memory          memory     = FT_FACE( face )-&gt;memory;</a>
+<a name="ln457">    FT_ULong           string_size;</a>
+<a name="ln458">    FT_String*         strings    = NULL;</a>
+<a name="ln459"> </a>
+<a name="ln460"> </a>
+<a name="ln461">    error = pcf_seek_to_table_type( stream,</a>
+<a name="ln462">                                    face-&gt;toc.tables,</a>
+<a name="ln463">                                    face-&gt;toc.count,</a>
+<a name="ln464">                                    PCF_PROPERTIES,</a>
+<a name="ln465">                                    &amp;format,</a>
+<a name="ln466">                                    &amp;size );</a>
+<a name="ln467">    if ( error )</a>
+<a name="ln468">      goto Bail;</a>
+<a name="ln469"> </a>
+<a name="ln470">    if ( FT_READ_ULONG_LE( format ) )</a>
+<a name="ln471">      goto Bail;</a>
+<a name="ln472"> </a>
+<a name="ln473">    FT_TRACE4(( &quot;pcf_get_properties:\n&quot; ));</a>
+<a name="ln474"> </a>
+<a name="ln475">    FT_TRACE4(( &quot;  format = %ld\n&quot;, format ));</a>
+<a name="ln476"> </a>
+<a name="ln477">    if ( !PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT ) )</a>
+<a name="ln478">      goto Bail;</a>
+<a name="ln479"> </a>
+<a name="ln480">    if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln481">      (void)FT_READ_ULONG( nprops );</a>
+<a name="ln482">    else</a>
+<a name="ln483">      (void)FT_READ_ULONG_LE( nprops );</a>
+<a name="ln484">    if ( error )</a>
+<a name="ln485">      goto Bail;</a>
+<a name="ln486"> </a>
+<a name="ln487">    FT_TRACE4(( &quot;  nprop = %d (truncate %d props)\n&quot;,</a>
+<a name="ln488">                (int)nprops, nprops - (FT_ULong)(int)nprops ));</a>
+<a name="ln489"> </a>
+<a name="ln490">    nprops = (FT_ULong)(int)nprops;</a>
+<a name="ln491"> </a>
+<a name="ln492">    /* rough estimate */</a>
+<a name="ln493">    if ( nprops &gt; size / PCF_PROPERTY_SIZE )</a>
+<a name="ln494">    {</a>
+<a name="ln495">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln496">      goto Bail;</a>
+<a name="ln497">    }</a>
+<a name="ln498"> </a>
+<a name="ln499">    face-&gt;nprops = (int)nprops;</a>
+<a name="ln500"> </a>
+<a name="ln501">    if ( FT_NEW_ARRAY( props, nprops ) )</a>
+<a name="ln502">      goto Bail;</a>
+<a name="ln503"> </a>
+<a name="ln504">    for ( i = 0; i &lt; nprops; i++ )</a>
+<a name="ln505">    {</a>
+<a name="ln506">      if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln507">      {</a>
+<a name="ln508">        if ( FT_STREAM_READ_FIELDS( pcf_property_msb_header, props + i ) )</a>
+<a name="ln509">          goto Bail;</a>
+<a name="ln510">      }</a>
+<a name="ln511">      else</a>
+<a name="ln512">      {</a>
+<a name="ln513">        if ( FT_STREAM_READ_FIELDS( pcf_property_header, props + i ) )</a>
+<a name="ln514">          goto Bail;</a>
+<a name="ln515">      }</a>
+<a name="ln516">    }</a>
+<a name="ln517"> </a>
+<a name="ln518">    /* pad the property array                                            */</a>
+<a name="ln519">    /*                                                                   */</a>
+<a name="ln520">    /* clever here - nprops is the same as the number of odd-units read, */</a>
+<a name="ln521">    /* as only isStringProp are odd length   (Keith Packard)             */</a>
+<a name="ln522">    /*                                                                   */</a>
+<a name="ln523">    if ( nprops &amp; 3 )</a>
+<a name="ln524">    {</a>
+<a name="ln525">      i = 4 - ( nprops &amp; 3 );</a>
+<a name="ln526">      if ( FT_STREAM_SKIP( i ) )</a>
+<a name="ln527">      {</a>
+<a name="ln528">        error = FT_THROW( Invalid_Stream_Skip );</a>
+<a name="ln529">        goto Bail;</a>
+<a name="ln530">      }</a>
+<a name="ln531">    }</a>
+<a name="ln532"> </a>
+<a name="ln533">    if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln534">      (void)FT_READ_ULONG( string_size );</a>
+<a name="ln535">    else</a>
+<a name="ln536">      (void)FT_READ_ULONG_LE( string_size );</a>
+<a name="ln537">    if ( error )</a>
+<a name="ln538">      goto Bail;</a>
+<a name="ln539"> </a>
+<a name="ln540">    FT_TRACE4(( &quot;  string_size = %ld\n&quot;, string_size ));</a>
+<a name="ln541"> </a>
+<a name="ln542">    /* rough estimate */</a>
+<a name="ln543">    if ( string_size &gt; size - nprops * PCF_PROPERTY_SIZE )</a>
+<a name="ln544">    {</a>
+<a name="ln545">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln546">      goto Bail;</a>
+<a name="ln547">    }</a>
+<a name="ln548"> </a>
+<a name="ln549">    /* allocate one more byte so that we have a final null byte */</a>
+<a name="ln550">    if ( FT_NEW_ARRAY( strings, string_size + 1 ) )</a>
+<a name="ln551">      goto Bail;</a>
+<a name="ln552"> </a>
+<a name="ln553">    error = FT_Stream_Read( stream, (FT_Byte*)strings, string_size );</a>
+<a name="ln554">    if ( error )</a>
+<a name="ln555">      goto Bail;</a>
+<a name="ln556"> </a>
+<a name="ln557">    if ( FT_NEW_ARRAY( properties, nprops ) )</a>
+<a name="ln558">      goto Bail;</a>
+<a name="ln559"> </a>
+<a name="ln560">    face-&gt;properties = properties;</a>
+<a name="ln561"> </a>
+<a name="ln562">    for ( i = 0; i &lt; nprops; i++ )</a>
+<a name="ln563">    {</a>
+<a name="ln564">      FT_Long  name_offset = props[i].name;</a>
+<a name="ln565"> </a>
+<a name="ln566"> </a>
+<a name="ln567">      if ( ( name_offset &lt; 0 )                     ||</a>
+<a name="ln568">           ( (FT_ULong)name_offset &gt; string_size ) )</a>
+<a name="ln569">      {</a>
+<a name="ln570">        error = FT_THROW( Invalid_Offset );</a>
+<a name="ln571">        goto Bail;</a>
+<a name="ln572">      }</a>
+<a name="ln573"> </a>
+<a name="ln574">      if ( FT_STRDUP( properties[i].name, strings + name_offset ) )</a>
+<a name="ln575">        goto Bail;</a>
+<a name="ln576"> </a>
+<a name="ln577">      FT_TRACE4(( &quot;  %s:&quot;, properties[i].name ));</a>
+<a name="ln578"> </a>
+<a name="ln579">      properties[i].isString = props[i].isString;</a>
+<a name="ln580"> </a>
+<a name="ln581">      if ( props[i].isString )</a>
+<a name="ln582">      {</a>
+<a name="ln583">        FT_Long  value_offset = props[i].value;</a>
+<a name="ln584"> </a>
+<a name="ln585"> </a>
+<a name="ln586">        if ( ( value_offset &lt; 0 )                     ||</a>
+<a name="ln587">             ( (FT_ULong)value_offset &gt; string_size ) )</a>
+<a name="ln588">        {</a>
+<a name="ln589">          error = FT_THROW( Invalid_Offset );</a>
+<a name="ln590">          goto Bail;</a>
+<a name="ln591">        }</a>
+<a name="ln592"> </a>
+<a name="ln593">        if ( FT_STRDUP( properties[i].value.atom, strings + value_offset ) )</a>
+<a name="ln594">          goto Bail;</a>
+<a name="ln595"> </a>
+<a name="ln596">        FT_TRACE4(( &quot; `%s'\n&quot;, properties[i].value.atom ));</a>
+<a name="ln597">      }</a>
+<a name="ln598">      else</a>
+<a name="ln599">      {</a>
+<a name="ln600">        properties[i].value.l = props[i].value;</a>
+<a name="ln601"> </a>
+<a name="ln602">        FT_TRACE4(( &quot; %d\n&quot;, properties[i].value.l ));</a>
+<a name="ln603">      }</a>
+<a name="ln604">    }</a>
+<a name="ln605"> </a>
+<a name="ln606">    error = FT_Err_Ok;</a>
+<a name="ln607"> </a>
+<a name="ln608">  Bail:</a>
+<a name="ln609">    FT_FREE( props );</a>
+<a name="ln610">    FT_FREE( strings );</a>
+<a name="ln611"> </a>
+<a name="ln612">    return error;</a>
+<a name="ln613">  }</a>
+<a name="ln614"> </a>
+<a name="ln615"> </a>
+<a name="ln616">  static FT_Error</a>
+<a name="ln617">  pcf_get_metrics( FT_Stream  stream,</a>
+<a name="ln618">                   PCF_Face   face )</a>
+<a name="ln619">  {</a>
+<a name="ln620">    FT_Error    error;</a>
+<a name="ln621">    FT_Memory   memory  = FT_FACE( face )-&gt;memory;</a>
+<a name="ln622">    FT_ULong    format, size;</a>
+<a name="ln623">    PCF_Metric  metrics = NULL;</a>
+<a name="ln624">    FT_ULong    nmetrics, i;</a>
+<a name="ln625"> </a>
+<a name="ln626"> </a>
+<a name="ln627">    error = pcf_seek_to_table_type( stream,</a>
+<a name="ln628">                                    face-&gt;toc.tables,</a>
+<a name="ln629">                                    face-&gt;toc.count,</a>
+<a name="ln630">                                    PCF_METRICS,</a>
+<a name="ln631">                                    &amp;format,</a>
+<a name="ln632">                                    &amp;size );</a>
+<a name="ln633">    if ( error )</a>
+<a name="ln634">      return error;</a>
+<a name="ln635"> </a>
+<a name="ln636">    if ( FT_READ_ULONG_LE( format ) )</a>
+<a name="ln637">      goto Bail;</a>
+<a name="ln638"> </a>
+<a name="ln639">    if ( !PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT )     &amp;&amp;</a>
+<a name="ln640">         !PCF_FORMAT_MATCH( format, PCF_COMPRESSED_METRICS ) )</a>
+<a name="ln641">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln642"> </a>
+<a name="ln643">    if ( PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT ) )</a>
+<a name="ln644">    {</a>
+<a name="ln645">      if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln646">        (void)FT_READ_ULONG( nmetrics );</a>
+<a name="ln647">      else</a>
+<a name="ln648">        (void)FT_READ_ULONG_LE( nmetrics );</a>
+<a name="ln649">    }</a>
+<a name="ln650">    else</a>
+<a name="ln651">    {</a>
+<a name="ln652">      if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln653">        (void)FT_READ_USHORT( nmetrics );</a>
+<a name="ln654">      else</a>
+<a name="ln655">        (void)FT_READ_USHORT_LE( nmetrics );</a>
+<a name="ln656">    }</a>
+<a name="ln657">    if ( error )</a>
+<a name="ln658">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln659"> </a>
+<a name="ln660">    face-&gt;nmetrics = nmetrics;</a>
+<a name="ln661"> </a>
+<a name="ln662">    if ( !nmetrics )</a>
+<a name="ln663">      return FT_THROW( Invalid_Table );</a>
+<a name="ln664"> </a>
+<a name="ln665">    FT_TRACE4(( &quot;pcf_get_metrics:\n&quot; ));</a>
+<a name="ln666"> </a>
+<a name="ln667">    FT_TRACE4(( &quot;  number of metrics: %d\n&quot;, nmetrics ));</a>
+<a name="ln668"> </a>
+<a name="ln669">    /* rough estimate */</a>
+<a name="ln670">    if ( PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT ) )</a>
+<a name="ln671">    {</a>
+<a name="ln672">      if ( nmetrics &gt; size / PCF_METRIC_SIZE )</a>
+<a name="ln673">        return FT_THROW( Invalid_Table );</a>
+<a name="ln674">    }</a>
+<a name="ln675">    else</a>
+<a name="ln676">    {</a>
+<a name="ln677">      if ( nmetrics &gt; size / PCF_COMPRESSED_METRIC_SIZE )</a>
+<a name="ln678">        return FT_THROW( Invalid_Table );</a>
+<a name="ln679">    }</a>
+<a name="ln680"> </a>
+<a name="ln681">    if ( FT_NEW_ARRAY( face-&gt;metrics, nmetrics ) )</a>
+<a name="ln682">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln683"> </a>
+<a name="ln684">    metrics = face-&gt;metrics;</a>
+<a name="ln685">    for ( i = 0; i &lt; nmetrics; i++, metrics++ )</a>
+<a name="ln686">    {</a>
+<a name="ln687">      error = pcf_get_metric( stream, format, metrics );</a>
+<a name="ln688"> </a>
+<a name="ln689">      metrics-&gt;bits = 0;</a>
+<a name="ln690"> </a>
+<a name="ln691">      FT_TRACE5(( &quot;  idx %d: width=%d, &quot;</a>
+<a name="ln692">                  &quot;lsb=%d, rsb=%d, ascent=%d, descent=%d, swidth=%d\n&quot;,</a>
+<a name="ln693">                  i,</a>
+<a name="ln694">                  metrics-&gt;characterWidth,</a>
+<a name="ln695">                  metrics-&gt;leftSideBearing,</a>
+<a name="ln696">                  metrics-&gt;rightSideBearing,</a>
+<a name="ln697">                  metrics-&gt;ascent,</a>
+<a name="ln698">                  metrics-&gt;descent,</a>
+<a name="ln699">                  metrics-&gt;attributes ));</a>
+<a name="ln700"> </a>
+<a name="ln701">      if ( error )</a>
+<a name="ln702">        break;</a>
+<a name="ln703"> </a>
+<a name="ln704">      /* sanity checks -- those values are used in `PCF_Glyph_Load' to     */</a>
+<a name="ln705">      /* compute a glyph's bitmap dimensions, thus setting them to zero in */</a>
+<a name="ln706">      /* case of an error disables this particular glyph only              */</a>
+<a name="ln707">      if ( metrics-&gt;rightSideBearing &lt; metrics-&gt;leftSideBearing ||</a>
+<a name="ln708">           metrics-&gt;ascent + metrics-&gt;descent &lt; 0               )</a>
+<a name="ln709">      {</a>
+<a name="ln710">        metrics-&gt;characterWidth   = 0;</a>
+<a name="ln711">        metrics-&gt;leftSideBearing  = 0;</a>
+<a name="ln712">        metrics-&gt;rightSideBearing = 0;</a>
+<a name="ln713">        metrics-&gt;ascent           = 0;</a>
+<a name="ln714">        metrics-&gt;descent          = 0;</a>
+<a name="ln715"> </a>
+<a name="ln716">        FT_TRACE0(( &quot;pcf_get_metrics:&quot;</a>
+<a name="ln717">                    &quot; invalid metrics for glyph %d\n&quot;, i ));</a>
+<a name="ln718">      }</a>
+<a name="ln719">    }</a>
+<a name="ln720"> </a>
+<a name="ln721">    if ( error )</a>
+<a name="ln722">      FT_FREE( face-&gt;metrics );</a>
+<a name="ln723"> </a>
+<a name="ln724">  Bail:</a>
+<a name="ln725">    return error;</a>
+<a name="ln726">  }</a>
+<a name="ln727"> </a>
+<a name="ln728"> </a>
+<a name="ln729">  static FT_Error</a>
+<a name="ln730">  pcf_get_bitmaps( FT_Stream  stream,</a>
+<a name="ln731">                   PCF_Face   face )</a>
+<a name="ln732">  {</a>
+<a name="ln733">    FT_Error   error;</a>
+<a name="ln734">    FT_Memory  memory  = FT_FACE( face )-&gt;memory;</a>
+<a name="ln735">    FT_Long*   offsets = NULL;</a>
+<a name="ln736">    FT_Long    bitmapSizes[GLYPHPADOPTIONS];</a>
+<a name="ln737">    FT_ULong   format, size;</a>
+<a name="ln738">    FT_ULong   nbitmaps, i, sizebitmaps = 0;</a>
+<a name="ln739"> </a>
+<a name="ln740"> </a>
+<a name="ln741">    error = pcf_seek_to_table_type( stream,</a>
+<a name="ln742">                                    face-&gt;toc.tables,</a>
+<a name="ln743">                                    face-&gt;toc.count,</a>
+<a name="ln744">                                    PCF_BITMAPS,</a>
+<a name="ln745">                                    &amp;format,</a>
+<a name="ln746">                                    &amp;size );</a>
+<a name="ln747">    if ( error )</a>
+<a name="ln748">      return error;</a>
+<a name="ln749"> </a>
+<a name="ln750">    error = FT_Stream_EnterFrame( stream, 8 );</a>
+<a name="ln751">    if ( error )</a>
+<a name="ln752">      return error;</a>
+<a name="ln753"> </a>
+<a name="ln754">    format = FT_GET_ULONG_LE();</a>
+<a name="ln755">    if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln756">      nbitmaps  = FT_GET_ULONG();</a>
+<a name="ln757">    else</a>
+<a name="ln758">      nbitmaps  = FT_GET_ULONG_LE();</a>
+<a name="ln759"> </a>
+<a name="ln760">    FT_Stream_ExitFrame( stream );</a>
+<a name="ln761"> </a>
+<a name="ln762">    if ( !PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT ) )</a>
+<a name="ln763">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln764"> </a>
+<a name="ln765">    FT_TRACE4(( &quot;pcf_get_bitmaps:\n&quot; ));</a>
+<a name="ln766"> </a>
+<a name="ln767">    FT_TRACE4(( &quot;  number of bitmaps: %d\n&quot;, nbitmaps ));</a>
+<a name="ln768"> </a>
+<a name="ln769">    if ( nbitmaps != face-&gt;nmetrics )</a>
+<a name="ln770">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln771"> </a>
+<a name="ln772">    if ( FT_NEW_ARRAY( offsets, nbitmaps ) )</a>
+<a name="ln773">      return error;</a>
+<a name="ln774"> </a>
+<a name="ln775">    for ( i = 0; i &lt; nbitmaps; i++ )</a>
+<a name="ln776">    {</a>
+<a name="ln777">      if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln778">        (void)FT_READ_LONG( offsets[i] );</a>
+<a name="ln779">      else</a>
+<a name="ln780">        (void)FT_READ_LONG_LE( offsets[i] );</a>
+<a name="ln781"> </a>
+<a name="ln782">      FT_TRACE5(( &quot;  bitmap %d: offset %ld (0x%lX)\n&quot;,</a>
+<a name="ln783">                  i, offsets[i], offsets[i] ));</a>
+<a name="ln784">    }</a>
+<a name="ln785">    if ( error )</a>
+<a name="ln786">      goto Bail;</a>
+<a name="ln787"> </a>
+<a name="ln788">    for ( i = 0; i &lt; GLYPHPADOPTIONS; i++ )</a>
+<a name="ln789">    {</a>
+<a name="ln790">      if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln791">        (void)FT_READ_LONG( bitmapSizes[i] );</a>
+<a name="ln792">      else</a>
+<a name="ln793">        (void)FT_READ_LONG_LE( bitmapSizes[i] );</a>
+<a name="ln794">      if ( error )</a>
+<a name="ln795">        goto Bail;</a>
+<a name="ln796"> </a>
+<a name="ln797">      sizebitmaps = (FT_ULong)bitmapSizes[PCF_GLYPH_PAD_INDEX( format )];</a>
+<a name="ln798"> </a>
+<a name="ln799">      FT_TRACE4(( &quot;  padding %d implies a size of %ld\n&quot;,</a>
+<a name="ln800">                  i, bitmapSizes[i] ));</a>
+<a name="ln801">    }</a>
+<a name="ln802"> </a>
+<a name="ln803">    FT_TRACE4(( &quot;  %d bitmaps, padding index %ld\n&quot;,</a>
+<a name="ln804">                nbitmaps,</a>
+<a name="ln805">                PCF_GLYPH_PAD_INDEX( format ) ));</a>
+<a name="ln806">    FT_TRACE4(( &quot;  bitmap size = %d\n&quot;, sizebitmaps ));</a>
+<a name="ln807"> </a>
+<a name="ln808">    FT_UNUSED( sizebitmaps );       /* only used for debugging */</a>
+<a name="ln809"> </a>
+<a name="ln810">    for ( i = 0; i &lt; nbitmaps; i++ )</a>
+<a name="ln811">    {</a>
+<a name="ln812">      /* rough estimate */</a>
+<a name="ln813">      if ( ( offsets[i] &lt; 0 )              ||</a>
+<a name="ln814">           ( (FT_ULong)offsets[i] &gt; size ) )</a>
+<a name="ln815">      {</a>
+<a name="ln816">        FT_TRACE0(( &quot;pcf_get_bitmaps:&quot;</a>
+<a name="ln817">                    &quot; invalid offset to bitmap data of glyph %d\n&quot;, i ));</a>
+<a name="ln818">      }</a>
+<a name="ln819">      else</a>
+<a name="ln820">        face-&gt;metrics[i].bits = stream-&gt;pos + (FT_ULong)offsets[i];</a>
+<a name="ln821">    }</a>
+<a name="ln822"> </a>
+<a name="ln823">    face-&gt;bitmapsFormat = format;</a>
+<a name="ln824"> </a>
+<a name="ln825">  Bail:</a>
+<a name="ln826">    FT_FREE( offsets );</a>
+<a name="ln827">    return error;</a>
+<a name="ln828">  }</a>
+<a name="ln829"> </a>
+<a name="ln830"> </a>
+<a name="ln831">  static FT_Error</a>
+<a name="ln832">  pcf_get_encodings( FT_Stream  stream,</a>
+<a name="ln833">                     PCF_Face   face )</a>
+<a name="ln834">  {</a>
+<a name="ln835">    FT_Error      error;</a>
+<a name="ln836">    FT_Memory     memory = FT_FACE( face )-&gt;memory;</a>
+<a name="ln837">    FT_ULong      format, size;</a>
+<a name="ln838">    int           firstCol, lastCol;</a>
+<a name="ln839">    int           firstRow, lastRow;</a>
+<a name="ln840">    FT_ULong      nencoding;</a>
+<a name="ln841">    int           encodingOffset;</a>
+<a name="ln842">    int           i, j;</a>
+<a name="ln843">    FT_ULong      k;</a>
+<a name="ln844">    PCF_Encoding  encoding = NULL;</a>
+<a name="ln845"> </a>
+<a name="ln846"> </a>
+<a name="ln847">    error = pcf_seek_to_table_type( stream,</a>
+<a name="ln848">                                    face-&gt;toc.tables,</a>
+<a name="ln849">                                    face-&gt;toc.count,</a>
+<a name="ln850">                                    PCF_BDF_ENCODINGS,</a>
+<a name="ln851">                                    &amp;format,</a>
+<a name="ln852">                                    &amp;size );</a>
+<a name="ln853">    if ( error )</a>
+<a name="ln854">      return error;</a>
+<a name="ln855"> </a>
+<a name="ln856">    error = FT_Stream_EnterFrame( stream, 14 );</a>
+<a name="ln857">    if ( error )</a>
+<a name="ln858">      return error;</a>
+<a name="ln859"> </a>
+<a name="ln860">    format = FT_GET_ULONG_LE();</a>
+<a name="ln861"> </a>
+<a name="ln862">    if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln863">    {</a>
+<a name="ln864">      firstCol          = FT_GET_SHORT();</a>
+<a name="ln865">      lastCol           = FT_GET_SHORT();</a>
+<a name="ln866">      firstRow          = FT_GET_SHORT();</a>
+<a name="ln867">      lastRow           = FT_GET_SHORT();</a>
+<a name="ln868">      face-&gt;defaultChar = FT_GET_SHORT();</a>
+<a name="ln869">    }</a>
+<a name="ln870">    else</a>
+<a name="ln871">    {</a>
+<a name="ln872">      firstCol          = FT_GET_SHORT_LE();</a>
+<a name="ln873">      lastCol           = FT_GET_SHORT_LE();</a>
+<a name="ln874">      firstRow          = FT_GET_SHORT_LE();</a>
+<a name="ln875">      lastRow           = FT_GET_SHORT_LE();</a>
+<a name="ln876">      face-&gt;defaultChar = FT_GET_SHORT_LE();</a>
+<a name="ln877">    }</a>
+<a name="ln878"> </a>
+<a name="ln879">    FT_Stream_ExitFrame( stream );</a>
+<a name="ln880"> </a>
+<a name="ln881">    if ( !PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT ) )</a>
+<a name="ln882">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln883"> </a>
+<a name="ln884">    /* sanity checks */</a>
+<a name="ln885">    if ( firstCol &lt; 0       ||</a>
+<a name="ln886">         firstCol &gt; lastCol ||</a>
+<a name="ln887">         lastCol  &gt; 0xFF    ||</a>
+<a name="ln888">         firstRow &lt; 0       ||</a>
+<a name="ln889">         firstRow &gt; lastRow ||</a>
+<a name="ln890">         lastRow  &gt; 0xFF    )</a>
+<a name="ln891">      return FT_THROW( Invalid_Table );</a>
+<a name="ln892"> </a>
+<a name="ln893">    FT_TRACE4(( &quot;pdf_get_encodings:\n&quot; ));</a>
+<a name="ln894"> </a>
+<a name="ln895">    FT_TRACE4(( &quot;  firstCol %d, lastCol %d, firstRow %d, lastRow %d\n&quot;,</a>
+<a name="ln896">                firstCol, lastCol, firstRow, lastRow ));</a>
+<a name="ln897"> </a>
+<a name="ln898">    nencoding = (FT_ULong)( lastCol - firstCol + 1 ) *</a>
+<a name="ln899">                (FT_ULong)( lastRow - firstRow + 1 );</a>
+<a name="ln900"> </a>
+<a name="ln901">    if ( FT_NEW_ARRAY( encoding, nencoding ) )</a>
+<a name="ln902">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln903"> </a>
+<a name="ln904">    error = FT_Stream_EnterFrame( stream, 2 * nencoding );</a>
+<a name="ln905">    if ( error )</a>
+<a name="ln906">      goto Bail;</a>
+<a name="ln907"> </a>
+<a name="ln908">    k = 0;</a>
+<a name="ln909">    for ( i = firstRow; i &lt;= lastRow; i++ )</a>
+<a name="ln910">    {</a>
+<a name="ln911">      for ( j = firstCol; j &lt;= lastCol; j++ )</a>
+<a name="ln912">      {</a>
+<a name="ln913">        if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln914">          encodingOffset = FT_GET_SHORT();</a>
+<a name="ln915">        else</a>
+<a name="ln916">          encodingOffset = FT_GET_SHORT_LE();</a>
+<a name="ln917"> </a>
+<a name="ln918">        if ( encodingOffset &gt; -1 )</a>
+<a name="ln919">        {</a>
+<a name="ln920">          encoding[k].enc   = i * 256 + j;</a>
+<a name="ln921">          encoding[k].glyph = (FT_UShort)encodingOffset;</a>
+<a name="ln922"> </a>
+<a name="ln923">          FT_TRACE5(( &quot;  code %d (0x%04X): idx %d\n&quot;,</a>
+<a name="ln924">                      encoding[k].enc, encoding[k].enc, encoding[k].glyph ));</a>
+<a name="ln925"> </a>
+<a name="ln926">          k++;</a>
+<a name="ln927">        }</a>
+<a name="ln928">      }</a>
+<a name="ln929">    }</a>
+<a name="ln930">    FT_Stream_ExitFrame( stream );</a>
+<a name="ln931"> </a>
+<a name="ln932">    if ( FT_RENEW_ARRAY( encoding, nencoding, k ) )</a>
+<a name="ln933">      goto Bail;</a>
+<a name="ln934"> </a>
+<a name="ln935">    face-&gt;nencodings = k;</a>
+<a name="ln936">    face-&gt;encodings  = encoding;</a>
+<a name="ln937"> </a>
+<a name="ln938">    return error;</a>
+<a name="ln939"> </a>
+<a name="ln940">  Bail:</a>
+<a name="ln941">    FT_FREE( encoding );</a>
+<a name="ln942">    return error;</a>
+<a name="ln943">  }</a>
+<a name="ln944"> </a>
+<a name="ln945"> </a>
+<a name="ln946">  static</a>
+<a name="ln947">  const FT_Frame_Field  pcf_accel_header[] =</a>
+<a name="ln948">  {</a>
+<a name="ln949">#undef  FT_STRUCTURE</a>
+<a name="ln950">#define FT_STRUCTURE  PCF_AccelRec</a>
+<a name="ln951"> </a>
+<a name="ln952">    FT_FRAME_START( 20 ),</a>
+<a name="ln953">      FT_FRAME_BYTE      ( noOverlap ),</a>
+<a name="ln954">      FT_FRAME_BYTE      ( constantMetrics ),</a>
+<a name="ln955">      FT_FRAME_BYTE      ( terminalFont ),</a>
+<a name="ln956">      FT_FRAME_BYTE      ( constantWidth ),</a>
+<a name="ln957">      FT_FRAME_BYTE      ( inkInside ),</a>
+<a name="ln958">      FT_FRAME_BYTE      ( inkMetrics ),</a>
+<a name="ln959">      FT_FRAME_BYTE      ( drawDirection ),</a>
+<a name="ln960">      FT_FRAME_SKIP_BYTES( 1 ),</a>
+<a name="ln961">      FT_FRAME_LONG_LE   ( fontAscent ),</a>
+<a name="ln962">      FT_FRAME_LONG_LE   ( fontDescent ),</a>
+<a name="ln963">      FT_FRAME_LONG_LE   ( maxOverlap ),</a>
+<a name="ln964">    FT_FRAME_END</a>
+<a name="ln965">  };</a>
+<a name="ln966"> </a>
+<a name="ln967"> </a>
+<a name="ln968">  static</a>
+<a name="ln969">  const FT_Frame_Field  pcf_accel_msb_header[] =</a>
+<a name="ln970">  {</a>
+<a name="ln971">#undef  FT_STRUCTURE</a>
+<a name="ln972">#define FT_STRUCTURE  PCF_AccelRec</a>
+<a name="ln973"> </a>
+<a name="ln974">    FT_FRAME_START( 20 ),</a>
+<a name="ln975">      FT_FRAME_BYTE      ( noOverlap ),</a>
+<a name="ln976">      FT_FRAME_BYTE      ( constantMetrics ),</a>
+<a name="ln977">      FT_FRAME_BYTE      ( terminalFont ),</a>
+<a name="ln978">      FT_FRAME_BYTE      ( constantWidth ),</a>
+<a name="ln979">      FT_FRAME_BYTE      ( inkInside ),</a>
+<a name="ln980">      FT_FRAME_BYTE      ( inkMetrics ),</a>
+<a name="ln981">      FT_FRAME_BYTE      ( drawDirection ),</a>
+<a name="ln982">      FT_FRAME_SKIP_BYTES( 1 ),</a>
+<a name="ln983">      FT_FRAME_LONG      ( fontAscent ),</a>
+<a name="ln984">      FT_FRAME_LONG      ( fontDescent ),</a>
+<a name="ln985">      FT_FRAME_LONG      ( maxOverlap ),</a>
+<a name="ln986">    FT_FRAME_END</a>
+<a name="ln987">  };</a>
+<a name="ln988"> </a>
+<a name="ln989"> </a>
+<a name="ln990">  static FT_Error</a>
+<a name="ln991">  pcf_get_accel( FT_Stream  stream,</a>
+<a name="ln992">                 PCF_Face   face,</a>
+<a name="ln993">                 FT_ULong   type )</a>
+<a name="ln994">  {</a>
+<a name="ln995">    FT_ULong   format, size;</a>
+<a name="ln996">    FT_Error   error;</a>
+<a name="ln997">    PCF_Accel  accel = &amp;face-&gt;accel;</a>
+<a name="ln998"> </a>
+<a name="ln999"> </a>
+<a name="ln1000">    error = pcf_seek_to_table_type( stream,</a>
+<a name="ln1001">                                    face-&gt;toc.tables,</a>
+<a name="ln1002">                                    face-&gt;toc.count,</a>
+<a name="ln1003">                                    type,</a>
+<a name="ln1004">                                    &amp;format,</a>
+<a name="ln1005">                                    &amp;size );</a>
+<a name="ln1006">    if ( error )</a>
+<a name="ln1007">      goto Bail;</a>
+<a name="ln1008"> </a>
+<a name="ln1009">    if ( FT_READ_ULONG_LE( format ) )</a>
+<a name="ln1010">      goto Bail;</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    if ( !PCF_FORMAT_MATCH( format, PCF_DEFAULT_FORMAT )    &amp;&amp;</a>
+<a name="ln1013">         !PCF_FORMAT_MATCH( format, PCF_ACCEL_W_INKBOUNDS ) )</a>
+<a name="ln1014">      goto Bail;</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    if ( PCF_BYTE_ORDER( format ) == MSBFirst )</a>
+<a name="ln1017">    {</a>
+<a name="ln1018">      if ( FT_STREAM_READ_FIELDS( pcf_accel_msb_header, accel ) )</a>
+<a name="ln1019">        goto Bail;</a>
+<a name="ln1020">    }</a>
+<a name="ln1021">    else</a>
+<a name="ln1022">    {</a>
+<a name="ln1023">      if ( FT_STREAM_READ_FIELDS( pcf_accel_header, accel ) )</a>
+<a name="ln1024">        goto Bail;</a>
+<a name="ln1025">    }</a>
+<a name="ln1026"> </a>
+<a name="ln1027">    error = pcf_get_metric( stream,</a>
+<a name="ln1028">                            format &amp; ( ~PCF_FORMAT_MASK ),</a>
+<a name="ln1029">                            &amp;(accel-&gt;minbounds) );</a>
+<a name="ln1030">    if ( error )</a>
+<a name="ln1031">      goto Bail;</a>
+<a name="ln1032"> </a>
+<a name="ln1033">    error = pcf_get_metric( stream,</a>
+<a name="ln1034">                            format &amp; ( ~PCF_FORMAT_MASK ),</a>
+<a name="ln1035">                            &amp;(accel-&gt;maxbounds) );</a>
+<a name="ln1036">    if ( error )</a>
+<a name="ln1037">      goto Bail;</a>
+<a name="ln1038"> </a>
+<a name="ln1039">    if ( PCF_FORMAT_MATCH( format, PCF_ACCEL_W_INKBOUNDS ) )</a>
+<a name="ln1040">    {</a>
+<a name="ln1041">      error = pcf_get_metric( stream,</a>
+<a name="ln1042">                              format &amp; ( ~PCF_FORMAT_MASK ),</a>
+<a name="ln1043">                              &amp;(accel-&gt;ink_minbounds) );</a>
+<a name="ln1044">      if ( error )</a>
+<a name="ln1045">        goto Bail;</a>
+<a name="ln1046"> </a>
+<a name="ln1047">      error = pcf_get_metric( stream,</a>
+<a name="ln1048">                              format &amp; ( ~PCF_FORMAT_MASK ),</a>
+<a name="ln1049">                              &amp;(accel-&gt;ink_maxbounds) );</a>
+<a name="ln1050">      if ( error )</a>
+<a name="ln1051">        goto Bail;</a>
+<a name="ln1052">    }</a>
+<a name="ln1053">    else</a>
+<a name="ln1054">    {</a>
+<a name="ln1055">      accel-&gt;ink_minbounds = accel-&gt;minbounds; /* I'm not sure about this */</a>
+<a name="ln1056">      accel-&gt;ink_maxbounds = accel-&gt;maxbounds;</a>
+<a name="ln1057">    }</a>
+<a name="ln1058"> </a>
+<a name="ln1059">  Bail:</a>
+<a name="ln1060">    return error;</a>
+<a name="ln1061">  }</a>
+<a name="ln1062"> </a>
+<a name="ln1063"> </a>
+<a name="ln1064">  static FT_Error</a>
+<a name="ln1065">  pcf_interpret_style( PCF_Face  pcf )</a>
+<a name="ln1066">  {</a>
+<a name="ln1067">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln1068">    FT_Face    face   = FT_FACE( pcf );</a>
+<a name="ln1069">    FT_Memory  memory = face-&gt;memory;</a>
+<a name="ln1070"> </a>
+<a name="ln1071">    PCF_Property  prop;</a>
+<a name="ln1072"> </a>
+<a name="ln1073">    size_t  nn, len;</a>
+<a name="ln1074">    char*   strings[4] = { NULL, NULL, NULL, NULL };</a>
+<a name="ln1075">    size_t  lengths[4];</a>
+<a name="ln1076"> </a>
+<a name="ln1077"> </a>
+<a name="ln1078">    face-&gt;style_flags = 0;</a>
+<a name="ln1079"> </a>
+<a name="ln1080">    prop = pcf_find_property( pcf, &quot;SLANT&quot; );</a>
+<a name="ln1081">    if ( prop &amp;&amp; prop-&gt;isString                                       &amp;&amp;</a>
+<a name="ln1082">         ( *(prop-&gt;value.atom) == 'O' || *(prop-&gt;value.atom) == 'o' ||</a>
+<a name="ln1083">           *(prop-&gt;value.atom) == 'I' || *(prop-&gt;value.atom) == 'i' ) )</a>
+<a name="ln1084">    {</a>
+<a name="ln1085">      face-&gt;style_flags |= FT_STYLE_FLAG_ITALIC;</a>
+<a name="ln1086">      strings[2] = ( *(prop-&gt;value.atom) == 'O' ||</a>
+<a name="ln1087">                     *(prop-&gt;value.atom) == 'o' ) ? (char *)&quot;Oblique&quot;</a>
+<a name="ln1088">                                                  : (char *)&quot;Italic&quot;;</a>
+<a name="ln1089">    }</a>
+<a name="ln1090"> </a>
+<a name="ln1091">    prop = pcf_find_property( pcf, &quot;WEIGHT_NAME&quot; );</a>
+<a name="ln1092">    if ( prop &amp;&amp; prop-&gt;isString                                       &amp;&amp;</a>
+<a name="ln1093">         ( *(prop-&gt;value.atom) == 'B' || *(prop-&gt;value.atom) == 'b' ) )</a>
+<a name="ln1094">    {</a>
+<a name="ln1095">      face-&gt;style_flags |= FT_STYLE_FLAG_BOLD;</a>
+<a name="ln1096">      strings[1] = (char*)&quot;Bold&quot;;</a>
+<a name="ln1097">    }</a>
+<a name="ln1098"> </a>
+<a name="ln1099">    prop = pcf_find_property( pcf, &quot;SETWIDTH_NAME&quot; );</a>
+<a name="ln1100">    if ( prop &amp;&amp; prop-&gt;isString                                        &amp;&amp;</a>
+<a name="ln1101">         *(prop-&gt;value.atom)                                           &amp;&amp;</a>
+<a name="ln1102">         !( *(prop-&gt;value.atom) == 'N' || *(prop-&gt;value.atom) == 'n' ) )</a>
+<a name="ln1103">      strings[3] = (char*)( prop-&gt;value.atom );</a>
+<a name="ln1104"> </a>
+<a name="ln1105">    prop = pcf_find_property( pcf, &quot;ADD_STYLE_NAME&quot; );</a>
+<a name="ln1106">    if ( prop &amp;&amp; prop-&gt;isString                                        &amp;&amp;</a>
+<a name="ln1107">         *(prop-&gt;value.atom)                                           &amp;&amp;</a>
+<a name="ln1108">         !( *(prop-&gt;value.atom) == 'N' || *(prop-&gt;value.atom) == 'n' ) )</a>
+<a name="ln1109">      strings[0] = (char*)( prop-&gt;value.atom );</a>
+<a name="ln1110"> </a>
+<a name="ln1111">    for ( len = 0, nn = 0; nn &lt; 4; nn++ )</a>
+<a name="ln1112">    {</a>
+<a name="ln1113">      lengths[nn] = 0;</a>
+<a name="ln1114">      if ( strings[nn] )</a>
+<a name="ln1115">      {</a>
+<a name="ln1116">        lengths[nn] = ft_strlen( strings[nn] );</a>
+<a name="ln1117">        len        += lengths[nn] + 1;</a>
+<a name="ln1118">      }</a>
+<a name="ln1119">    }</a>
+<a name="ln1120"> </a>
+<a name="ln1121">    if ( len == 0 )</a>
+<a name="ln1122">    {</a>
+<a name="ln1123">      strings[0] = (char*)&quot;Regular&quot;;</a>
+<a name="ln1124">      lengths[0] = ft_strlen( strings[0] );</a>
+<a name="ln1125">      len        = lengths[0] + 1;</a>
+<a name="ln1126">    }</a>
+<a name="ln1127"> </a>
+<a name="ln1128">    {</a>
+<a name="ln1129">      char*  s;</a>
+<a name="ln1130"> </a>
+<a name="ln1131"> </a>
+<a name="ln1132">      if ( FT_ALLOC( face-&gt;style_name, len ) )</a>
+<a name="ln1133">        return error;</a>
+<a name="ln1134"> </a>
+<a name="ln1135">      s = face-&gt;style_name;</a>
+<a name="ln1136"> </a>
+<a name="ln1137">      for ( nn = 0; nn &lt; 4; nn++ )</a>
+<a name="ln1138">      {</a>
+<a name="ln1139">        char*  src = strings[nn];</a>
+<a name="ln1140"> </a>
+<a name="ln1141"> </a>
+<a name="ln1142">        len = lengths[nn];</a>
+<a name="ln1143"> </a>
+<a name="ln1144">        if ( src == NULL )</a>
+<a name="ln1145">          continue;</a>
+<a name="ln1146"> </a>
+<a name="ln1147">        /* separate elements with a space */</a>
+<a name="ln1148">        if ( s != face-&gt;style_name )</a>
+<a name="ln1149">          *s++ = ' ';</a>
+<a name="ln1150"> </a>
+<a name="ln1151">        ft_memcpy( s, src, len );</a>
+<a name="ln1152"> </a>
+<a name="ln1153">        /* need to convert spaces to dashes for */</a>
+<a name="ln1154">        /* add_style_name and setwidth_name     */</a>
+<a name="ln1155">        if ( nn == 0 || nn == 3 )</a>
+<a name="ln1156">        {</a>
+<a name="ln1157">          size_t  mm;</a>
+<a name="ln1158"> </a>
+<a name="ln1159"> </a>
+<a name="ln1160">          for ( mm = 0; mm &lt; len; mm++ )</a>
+<a name="ln1161">            if ( s[mm] == ' ' )</a>
+<a name="ln1162">              s[mm] = '-';</a>
+<a name="ln1163">        }</a>
+<a name="ln1164"> </a>
+<a name="ln1165">        s += len;</a>
+<a name="ln1166">      }</a>
+<a name="ln1167">      *s = 0;</a>
+<a name="ln1168">    }</a>
+<a name="ln1169"> </a>
+<a name="ln1170">    return error;</a>
+<a name="ln1171">  }</a>
+<a name="ln1172"> </a>
+<a name="ln1173"> </a>
+<a name="ln1174">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1175">  pcf_load_font( FT_Stream  stream,</a>
+<a name="ln1176">                 PCF_Face   face )</a>
+<a name="ln1177">  {</a>
+<a name="ln1178">    FT_Error   error;</a>
+<a name="ln1179">    FT_Memory  memory = FT_FACE( face )-&gt;memory;</a>
+<a name="ln1180">    FT_Bool    hasBDFAccelerators;</a>
+<a name="ln1181"> </a>
+<a name="ln1182"> </a>
+<a name="ln1183">    error = pcf_read_TOC( stream, face );</a>
+<a name="ln1184">    if ( error )</a>
+<a name="ln1185">      goto Exit;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">    error = pcf_get_properties( stream, face );</a>
+<a name="ln1188">    if ( error )</a>
+<a name="ln1189">      goto Exit;</a>
+<a name="ln1190"> </a>
+<a name="ln1191">    /* Use the old accelerators if no BDF accelerators are in the file. */</a>
+<a name="ln1192">    hasBDFAccelerators = pcf_has_table_type( face-&gt;toc.tables,</a>
+<a name="ln1193">                                             face-&gt;toc.count,</a>
+<a name="ln1194">                                             PCF_BDF_ACCELERATORS );</a>
+<a name="ln1195">    if ( !hasBDFAccelerators )</a>
+<a name="ln1196">    {</a>
+<a name="ln1197">      error = pcf_get_accel( stream, face, PCF_ACCELERATORS );</a>
+<a name="ln1198">      if ( error )</a>
+<a name="ln1199">        goto Exit;</a>
+<a name="ln1200">    }</a>
+<a name="ln1201"> </a>
+<a name="ln1202">    /* metrics */</a>
+<a name="ln1203">    error = pcf_get_metrics( stream, face );</a>
+<a name="ln1204">    if ( error )</a>
+<a name="ln1205">      goto Exit;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">    /* bitmaps */</a>
+<a name="ln1208">    error = pcf_get_bitmaps( stream, face );</a>
+<a name="ln1209">    if ( error )</a>
+<a name="ln1210">      goto Exit;</a>
+<a name="ln1211"> </a>
+<a name="ln1212">    /* encodings */</a>
+<a name="ln1213">    error = pcf_get_encodings( stream, face );</a>
+<a name="ln1214">    if ( error )</a>
+<a name="ln1215">      goto Exit;</a>
+<a name="ln1216"> </a>
+<a name="ln1217">    /* BDF style accelerators (i.e. bounds based on encoded glyphs) */</a>
+<a name="ln1218">    if ( hasBDFAccelerators )</a>
+<a name="ln1219">    {</a>
+<a name="ln1220">      error = pcf_get_accel( stream, face, PCF_BDF_ACCELERATORS );</a>
+<a name="ln1221">      if ( error )</a>
+<a name="ln1222">        goto Exit;</a>
+<a name="ln1223">    }</a>
+<a name="ln1224"> </a>
+<a name="ln1225">    /* XXX: TO DO: inkmetrics and glyph_names are missing */</a>
+<a name="ln1226"> </a>
+<a name="ln1227">    /* now construct the face object */</a>
+<a name="ln1228">    {</a>
+<a name="ln1229">      FT_Face       root = FT_FACE( face );</a>
+<a name="ln1230">      PCF_Property  prop;</a>
+<a name="ln1231"> </a>
+<a name="ln1232"> </a>
+<a name="ln1233">      root-&gt;num_faces  = 1;</a>
+<a name="ln1234">      root-&gt;face_index = 0;</a>
+<a name="ln1235"> </a>
+<a name="ln1236">      root-&gt;face_flags |= FT_FACE_FLAG_FIXED_SIZES |</a>
+<a name="ln1237">                          FT_FACE_FLAG_HORIZONTAL  |</a>
+<a name="ln1238">                          FT_FACE_FLAG_FAST_GLYPHS;</a>
+<a name="ln1239"> </a>
+<a name="ln1240">      if ( face-&gt;accel.constantWidth )</a>
+<a name="ln1241">        root-&gt;face_flags |= FT_FACE_FLAG_FIXED_WIDTH;</a>
+<a name="ln1242"> </a>
+<a name="ln1243">      if ( ( error = pcf_interpret_style( face ) ) != 0 )</a>
+<a name="ln1244">         goto Exit;</a>
+<a name="ln1245"> </a>
+<a name="ln1246">      prop = pcf_find_property( face, &quot;FAMILY_NAME&quot; );</a>
+<a name="ln1247">      if ( prop &amp;&amp; prop-&gt;isString )</a>
+<a name="ln1248">      {</a>
+<a name="ln1249">        if ( FT_STRDUP( root-&gt;family_name, prop-&gt;value.atom ) )</a>
+<a name="ln1250">          goto Exit;</a>
+<a name="ln1251">      }</a>
+<a name="ln1252">      else</a>
+<a name="ln1253">        root-&gt;family_name = NULL;</a>
+<a name="ln1254"> </a>
+<a name="ln1255">      /*</a>
+<a name="ln1256">       * Note: We shift all glyph indices by +1 since we must</a>
+<a name="ln1257">       * respect the convention that glyph 0 always corresponds</a>
+<a name="ln1258">       * to the `missing glyph'.</a>
+<a name="ln1259">       *</a>
+<a name="ln1260">       * This implies bumping the number of `available' glyphs by 1.</a>
+<a name="ln1261">       */</a>
+<a name="ln1262">      root-&gt;num_glyphs = (FT_Long)( face-&gt;nmetrics + 1 );</a>
+<a name="ln1263"> </a>
+<a name="ln1264">      root-&gt;num_fixed_sizes = 1;</a>
+<a name="ln1265">      if ( FT_NEW_ARRAY( root-&gt;available_sizes, 1 ) )</a>
+<a name="ln1266">        goto Exit;</a>
+<a name="ln1267"> </a>
+<a name="ln1268">      {</a>
+<a name="ln1269">        FT_Bitmap_Size*  bsize = root-&gt;available_sizes;</a>
+<a name="ln1270">        FT_Short         resolution_x = 0, resolution_y = 0;</a>
+<a name="ln1271"> </a>
+<a name="ln1272"> </a>
+<a name="ln1273">        FT_MEM_ZERO( bsize, sizeof ( FT_Bitmap_Size ) );</a>
+<a name="ln1274"> </a>
+<a name="ln1275">        /* for simplicity, we take absolute values of integer properties */</a>
+<a name="ln1276"> </a>
+<a name="ln1277">#if 0</a>
+<a name="ln1278">        bsize-&gt;height = face-&gt;accel.maxbounds.ascent &lt;&lt; 6;</a>
+<a name="ln1279">#endif</a>
+<a name="ln1280"> </a>
+<a name="ln1281">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1282">        if ( face-&gt;accel.fontAscent + face-&gt;accel.fontDescent &lt; 0 )</a>
+<a name="ln1283">          FT_TRACE0(( &quot;pcf_load_font: negative height\n&quot; ));</a>
+<a name="ln1284">#endif</a>
+<a name="ln1285">        bsize-&gt;height = FT_ABS( (FT_Short)( face-&gt;accel.fontAscent +</a>
+<a name="ln1286">                                            face-&gt;accel.fontDescent ) );</a>
+<a name="ln1287"> </a>
+<a name="ln1288">        prop = pcf_find_property( face, &quot;AVERAGE_WIDTH&quot; );</a>
+<a name="ln1289">        if ( prop )</a>
+<a name="ln1290">        {</a>
+<a name="ln1291">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1292">          if ( prop-&gt;value.l &lt; 0 )</a>
+<a name="ln1293">            FT_TRACE0(( &quot;pcf_load_font: negative average width\n&quot; ));</a>
+<a name="ln1294">#endif</a>
+<a name="ln1295">          bsize-&gt;width = FT_ABS( (FT_Short)( ( prop-&gt;value.l ) + 5 ) / 10 );</a>
+<a name="ln1296">        }</a>
+<a name="ln1297">        else</a>
+<a name="ln1298">          bsize-&gt;width = (FT_Short)FT_MulDiv( bsize-&gt;height, 2, 3 );</a>
+<a name="ln1299"> </a>
+<a name="ln1300">        prop = pcf_find_property( face, &quot;POINT_SIZE&quot; );</a>
+<a name="ln1301">        if ( prop )</a>
+<a name="ln1302">        {</a>
+<a name="ln1303">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1304">          if ( prop-&gt;value.l &lt; 0 )</a>
+<a name="ln1305">            FT_TRACE0(( &quot;pcf_load_font: negative point size\n&quot; ));</a>
+<a name="ln1306">#endif</a>
+<a name="ln1307">          /* convert from 722.7 decipoints to 72 points per inch */</a>
+<a name="ln1308">          bsize-&gt;size = FT_MulDiv( FT_ABS( prop-&gt;value.l ),</a>
+<a name="ln1309">                                   64 * 7200,</a>
+<a name="ln1310">                                   72270L );</a>
+<a name="ln1311">        }</a>
+<a name="ln1312"> </a>
+<a name="ln1313">        prop = pcf_find_property( face, &quot;PIXEL_SIZE&quot; );</a>
+<a name="ln1314">        if ( prop )</a>
+<a name="ln1315">        {</a>
+<a name="ln1316">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1317">          if ( prop-&gt;value.l &lt; 0 )</a>
+<a name="ln1318">            FT_TRACE0(( &quot;pcf_load_font: negative pixel size\n&quot; ));</a>
+<a name="ln1319">#endif</a>
+<a name="ln1320">          bsize-&gt;y_ppem = FT_ABS( (FT_Short)prop-&gt;value.l ) &lt;&lt; 6;</a>
+<a name="ln1321">        }</a>
+<a name="ln1322"> </a>
+<a name="ln1323">        prop = pcf_find_property( face, &quot;RESOLUTION_X&quot; );</a>
+<a name="ln1324">        if ( prop )</a>
+<a name="ln1325">        {</a>
+<a name="ln1326">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1327">          if ( prop-&gt;value.l &lt; 0 )</a>
+<a name="ln1328">            FT_TRACE0(( &quot;pcf_load_font: negative X resolution\n&quot; ));</a>
+<a name="ln1329">#endif</a>
+<a name="ln1330">          resolution_x = FT_ABS( (FT_Short)prop-&gt;value.l );</a>
+<a name="ln1331">        }</a>
+<a name="ln1332"> </a>
+<a name="ln1333">        prop = pcf_find_property( face, &quot;RESOLUTION_Y&quot; );</a>
+<a name="ln1334">        if ( prop )</a>
+<a name="ln1335">        {</a>
+<a name="ln1336">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1337">          if ( prop-&gt;value.l &lt; 0 )</a>
+<a name="ln1338">            FT_TRACE0(( &quot;pcf_load_font: negative Y resolution\n&quot; ));</a>
+<a name="ln1339">#endif</a>
+<a name="ln1340">          resolution_y = FT_ABS( (FT_Short)prop-&gt;value.l );</a>
+<a name="ln1341">        }</a>
+<a name="ln1342"> </a>
+<a name="ln1343">        if ( bsize-&gt;y_ppem == 0 )</a>
+<a name="ln1344">        {</a>
+<a name="ln1345">          bsize-&gt;y_ppem = bsize-&gt;size;</a>
+<a name="ln1346">          if ( resolution_y )</a>
+<a name="ln1347">            bsize-&gt;y_ppem = FT_MulDiv( bsize-&gt;y_ppem, resolution_y, 72 );</a>
+<a name="ln1348">        }</a>
+<a name="ln1349">        if ( resolution_x &amp;&amp; resolution_y )</a>
+<a name="ln1350">          bsize-&gt;x_ppem = FT_MulDiv( bsize-&gt;y_ppem,</a>
+<a name="ln1351">                                     resolution_x,</a>
+<a name="ln1352">                                     resolution_y );</a>
+<a name="ln1353">        else</a>
+<a name="ln1354">          bsize-&gt;x_ppem = bsize-&gt;y_ppem;</a>
+<a name="ln1355">      }</a>
+<a name="ln1356"> </a>
+<a name="ln1357">      /* set up charset */</a>
+<a name="ln1358">      {</a>
+<a name="ln1359">        PCF_Property  charset_registry, charset_encoding;</a>
+<a name="ln1360"> </a>
+<a name="ln1361"> </a>
+<a name="ln1362">        charset_registry = pcf_find_property( face, &quot;CHARSET_REGISTRY&quot; );</a>
+<a name="ln1363">        charset_encoding = pcf_find_property( face, &quot;CHARSET_ENCODING&quot; );</a>
+<a name="ln1364"> </a>
+<a name="ln1365">        if ( charset_registry &amp;&amp; charset_registry-&gt;isString &amp;&amp;</a>
+<a name="ln1366">             charset_encoding &amp;&amp; charset_encoding-&gt;isString )</a>
+<a name="ln1367">        {</a>
+<a name="ln1368">          if ( FT_STRDUP( face-&gt;charset_encoding,</a>
+<a name="ln1369">                          charset_encoding-&gt;value.atom ) ||</a>
+<a name="ln1370">               FT_STRDUP( face-&gt;charset_registry,</a>
+<a name="ln1371">                          charset_registry-&gt;value.atom ) )</a>
+<a name="ln1372">            goto Exit;</a>
+<a name="ln1373">        }</a>
+<a name="ln1374">      }</a>
+<a name="ln1375">    }</a>
+<a name="ln1376"> </a>
+<a name="ln1377">  Exit:</a>
+<a name="ln1378">    if ( error )</a>
+<a name="ln1379">    {</a>
+<a name="ln1380">      /* This is done to respect the behaviour of the original */</a>
+<a name="ln1381">      /* PCF font driver.                                      */</a>
+<a name="ln1382">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln1383">    }</a>
+<a name="ln1384"> </a>
+<a name="ln1385">    return error;</a>
+<a name="ln1386">  }</a>
+<a name="ln1387"> </a>
+<a name="ln1388"> </a>
+<a name="ln1389">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="180"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'tables' variable was assigned the same value.</p></div>
+<div class="balloon" rel="1320"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v629/" target="_blank">V629</a> Consider inspecting the expression. Bit shifting of the 32-bit value with a subsequent expansion to the 64-bit type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

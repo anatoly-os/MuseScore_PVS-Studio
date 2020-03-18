@@ -1,0 +1,313 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>fingering.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2010-2018 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;fingering.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;staff.h&quot;</a>
+<a name="ln16">#include &quot;undo.h&quot;</a>
+<a name="ln17">#include &quot;xml.h&quot;</a>
+<a name="ln18">#include &quot;chord.h&quot;</a>
+<a name="ln19">#include &quot;part.h&quot;</a>
+<a name="ln20">#include &quot;measure.h&quot;</a>
+<a name="ln21">#include &quot;stem.h&quot;</a>
+<a name="ln22">#include &quot;skyline.h&quot;</a>
+<a name="ln23">#include &quot;system.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">namespace Ms {</a>
+<a name="ln26"> </a>
+<a name="ln27">//---------------------------------------------------------</a>
+<a name="ln28">//   fingeringStyle</a>
+<a name="ln29">//---------------------------------------------------------</a>
+<a name="ln30"> </a>
+<a name="ln31">static const ElementStyle fingeringStyle {</a>
+<a name="ln32">      { Sid::fingeringPlacement, Pid::PLACEMENT  },</a>
+<a name="ln33">      { Sid::fingeringMinDistance, Pid::MIN_DISTANCE },</a>
+<a name="ln34">      };</a>
+<a name="ln35"> </a>
+<a name="ln36">//---------------------------------------------------------</a>
+<a name="ln37">//   Fingering</a>
+<a name="ln38">//      Element(Score* = 0, ElementFlags = ElementFlag::NOTHING);</a>
+<a name="ln39">//---------------------------------------------------------</a>
+<a name="ln40"> </a>
+<a name="ln41">Fingering::Fingering(Score* s, Tid tid, ElementFlags ef)</a>
+<a name="ln42">   : TextBase(s, tid, ef)</a>
+<a name="ln43">      {</a>
+<a name="ln44">      setPlacement(Placement::ABOVE);</a>
+<a name="ln45">      initElementStyle(&amp;fingeringStyle);</a>
+<a name="ln46">      }</a>
+<a name="ln47"> </a>
+<a name="ln48">Fingering::Fingering(Score* s, ElementFlags ef)</a>
+<a name="ln49">  : Fingering(s, Tid::FINGERING, ef)</a>
+<a name="ln50">      {</a>
+<a name="ln51">      }</a>
+<a name="ln52"> </a>
+<a name="ln53">//---------------------------------------------------------</a>
+<a name="ln54">//   layoutType</a>
+<a name="ln55">//---------------------------------------------------------</a>
+<a name="ln56"> </a>
+<a name="ln57">ElementType Fingering::layoutType()</a>
+<a name="ln58">      {</a>
+<a name="ln59">      switch (tid()) {</a>
+<a name="ln60">            case Tid::FINGERING:</a>
+<a name="ln61">            case Tid::RH_GUITAR_FINGERING:</a>
+<a name="ln62">            case Tid::STRING_NUMBER:</a>
+<a name="ln63">                  return ElementType::CHORD;</a>
+<a name="ln64">            default:</a>
+<a name="ln65">                  return ElementType::NOTE;</a>
+<a name="ln66">            }</a>
+<a name="ln67">      }</a>
+<a name="ln68"> </a>
+<a name="ln69">//---------------------------------------------------------</a>
+<a name="ln70">//   calculatePlacement</a>
+<a name="ln71">//---------------------------------------------------------</a>
+<a name="ln72"> </a>
+<a name="ln73">Placement Fingering::calculatePlacement() const</a>
+<a name="ln74">      {</a>
+<a name="ln75">      Note* n = note();</a>
+<a name="ln76">      if (!n)</a>
+<a name="ln77">            return Placement::ABOVE;</a>
+<a name="ln78">      Chord* chord = n-&gt;chord();</a>
+<a name="ln79">      Staff* staff = chord-&gt;staff();</a>
+<a name="ln80">      Part* part   = staff-&gt;part();</a>
+<a name="ln81">      int nstaves  = part-&gt;nstaves();</a>
+<a name="ln82">      bool voices  = chord-&gt;measure()-&gt;hasVoices(staff-&gt;idx());</a>
+<a name="ln83">      bool below   = voices ? !chord-&gt;up() : (nstaves &gt; 1) &amp;&amp; (staff-&gt;rstaff() == nstaves - 1);</a>
+<a name="ln84">      return below ? Placement::BELOW : Placement::ABOVE;</a>
+<a name="ln85">      }</a>
+<a name="ln86"> </a>
+<a name="ln87">//---------------------------------------------------------</a>
+<a name="ln88">//   layout</a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90"> </a>
+<a name="ln91">void Fingering::layout()</a>
+<a name="ln92">      {</a>
+<a name="ln93">      if (parent()) {</a>
+<a name="ln94">            Fraction tick = parent()-&gt;tick();</a>
+<a name="ln95">            const Staff* st = staff();</a>
+<a name="ln96">            if (st &amp;&amp; st-&gt;isTabStaff(tick) &amp;&amp; !st-&gt;staffType(tick)-&gt;showTabFingering()) {</a>
+<a name="ln97">                  setbbox(QRectF());</a>
+<a name="ln98">                  return;</a>
+<a name="ln99">                  }</a>
+<a name="ln100">            }</a>
+<a name="ln101"> </a>
+<a name="ln102">      TextBase::layout();</a>
+<a name="ln103">      rypos() = 0.0;    // handle placement below</a>
+<a name="ln104"> </a>
+<a name="ln105">      if (autoplace() &amp;&amp; note()) {</a>
+<a name="ln106">            Note* n      = note();</a>
+<a name="ln107">            Chord* chord = n-&gt;chord();</a>
+<a name="ln108">            bool voices  = chord-&gt;measure()-&gt;hasVoices(chord-&gt;staffIdx());</a>
+<a name="ln109">            bool tight   = voices &amp;&amp; chord-&gt;notes().size() == 1 &amp;&amp; !chord-&gt;beam() &amp;&amp; tid() != Tid::STRING_NUMBER;</a>
+<a name="ln110"> </a>
+<a name="ln111">            qreal headWidth = n-&gt;bboxRightPos();</a>
+<a name="ln112"> </a>
+<a name="ln113">            // update offset after drag</a>
+<a name="ln114">            qreal rebase = 0.0;</a>
+<a name="ln115">            if (offsetChanged() != OffsetChange::NONE &amp;&amp; !tight)</a>
+<a name="ln116">                  rebase = rebaseOffset();</a>
+<a name="ln117"> </a>
+<a name="ln118">            // temporarily exclude self from chord shape</a>
+<a name="ln119">            setAutoplace(false);</a>
+<a name="ln120"> </a>
+<a name="ln121">            if (layoutType() == ElementType::CHORD) {</a>
+<a name="ln122">                  bool above = placeAbove();</a>
+<a name="ln123">                  Stem* stem = chord-&gt;stem();</a>
+<a name="ln124">                  Segment* s = chord-&gt;segment();</a>
+<a name="ln125">                  Measure* m = s-&gt;measure();</a>
+<a name="ln126">                  qreal sp = spatium();</a>
+<a name="ln127">                  qreal md = minDistance().val() * sp;</a>
+<a name="ln128">                  SysStaff* ss = m-&gt;system()-&gt;staff(chord-&gt;vStaffIdx());</a>
+<a name="ln129">                  Staff* vStaff = chord-&gt;staff();     // TODO: use current height at tick</a>
+<a name="ln130"> </a>
+<a name="ln131">                  if (n-&gt;mirror())</a>
+<a name="ln132">                        rxpos() -= n-&gt;ipos().x();</a>
+<a name="ln133">                  rxpos() += headWidth * .5;</a>
+<a name="ln134">                  if (above) {</a>
+<a name="ln135">                        if (tight) {</a>
+<a name="ln136">                              if (chord-&gt;stem())</a>
+<a name="ln137">                                    rxpos() -= 0.8 * sp;</a>
+<a name="ln138">                              rypos() -= 1.5 * sp;</a>
+<a name="ln139">                              }</a>
+<a name="ln140">                        else {</a>
+<a name="ln141">                              QRectF r = bbox().translated(m-&gt;pos() + s-&gt;pos() + chord-&gt;pos() + n-&gt;pos() + pos());</a>
+<a name="ln142">                              SkylineLine sk(false);</a>
+<a name="ln143">                              sk.add(r.x(), r.bottom(), r.width());</a>
+<a name="ln144">                              qreal d = sk.minDistance(ss-&gt;skyline().north());</a>
+<a name="ln145">                              qreal yd = 0.0;</a>
+<a name="ln146">                              if (d &gt; 0.0 &amp;&amp; isStyled(Pid::MIN_DISTANCE))</a>
+<a name="ln147">                                    yd -= d + height() * .25;</a>
+<a name="ln148">                              // force extra space above staff &amp; chord (but not other fingerings)</a>
+<a name="ln149">                              qreal top;</a>
+<a name="ln150">                              if (chord-&gt;up() &amp;&amp; chord-&gt;beam() &amp;&amp; stem) {</a>
+<a name="ln151">                                    top = stem-&gt;y() + stem-&gt;bbox().top();</a>
+<a name="ln152">                                    }</a>
+<a name="ln153">                              else {</a>
+<a name="ln154">                                    Note* un = chord-&gt;upNote();</a>
+<a name="ln155">                                    top = qMin(0.0, un-&gt;y() + un-&gt;bbox().top());</a>
+<a name="ln156">                                    }</a>
+<a name="ln157">                              top -= md;</a>
+<a name="ln158">                              qreal diff = (bbox().bottom() + ipos().y() + yd + n-&gt;y()) - top;</a>
+<a name="ln159">                              if (diff &gt; 0.0)</a>
+<a name="ln160">                                    yd -= diff;</a>
+<a name="ln161">                              if (offsetChanged() != OffsetChange::NONE) {</a>
+<a name="ln162">                                    // user moved element within the skyline</a>
+<a name="ln163">                                    // we may need to adjust minDistance, yd, and/or offset</a>
+<a name="ln164">                                    bool inStaff = above ? r.bottom() + rebase &gt; 0.0 : r.top() + rebase &lt; staff()-&gt;height();</a>
+<a name="ln165">                                    rebaseMinDistance(md, yd, sp, rebase, above, inStaff);</a>
+<a name="ln166">                                    }</a>
+<a name="ln167">                              rypos() += yd;</a>
+<a name="ln168">                              }</a>
+<a name="ln169">                        }</a>
+<a name="ln170">                  else {</a>
+<a name="ln171">                        if (tight) {</a>
+<a name="ln172">                              if (chord-&gt;stem())</a>
+<a name="ln173">                                    rxpos() += 0.8 * sp;</a>
+<a name="ln174">                              rypos() += 1.5 * sp;</a>
+<a name="ln175">                              }</a>
+<a name="ln176">                        else {</a>
+<a name="ln177">                              QRectF r = bbox().translated(m-&gt;pos() + s-&gt;pos() + chord-&gt;pos() + n-&gt;pos() + pos());</a>
+<a name="ln178">                              SkylineLine sk(true);</a>
+<a name="ln179">                              sk.add(r.x(), r.top(), r.width());</a>
+<a name="ln180">                              qreal d = ss-&gt;skyline().south().minDistance(sk);</a>
+<a name="ln181">                              qreal yd = 0.0;</a>
+<a name="ln182">                              if (d &gt; 0.0 &amp;&amp; isStyled(Pid::MIN_DISTANCE))</a>
+<a name="ln183">                                    yd += d + height() * .25;</a>
+<a name="ln184">                              // force extra space below staff &amp; chord (but not other fingerings)</a>
+<a name="ln185">                              qreal bottom;</a>
+<a name="ln186">                              if (!chord-&gt;up() &amp;&amp; chord-&gt;beam() &amp;&amp; stem) {</a>
+<a name="ln187">                                    bottom = stem-&gt;y() + stem-&gt;bbox().bottom();</a>
+<a name="ln188">                                    }</a>
+<a name="ln189">                              else {</a>
+<a name="ln190">                                    Note* dn = chord-&gt;downNote();</a>
+<a name="ln191">                                    bottom = qMax(vStaff-&gt;height(), dn-&gt;y() + dn-&gt;bbox().bottom());</a>
+<a name="ln192">                                    }</a>
+<a name="ln193">                              bottom += md;</a>
+<a name="ln194">                              qreal diff = bottom - (bbox().top() + ipos().y() + yd + n-&gt;y());</a>
+<a name="ln195">                              if (diff &gt; 0.0)</a>
+<a name="ln196">                                    yd += diff;</a>
+<a name="ln197">                              if (offsetChanged() != OffsetChange::NONE) {</a>
+<a name="ln198">                                    // user moved element within the skyline</a>
+<a name="ln199">                                    // we may need to adjust minDistance, yd, and/or offset</a>
+<a name="ln200">                                    bool inStaff = above ? r.bottom() + rebase &gt; 0.0 : r.top() + rebase &lt; staff()-&gt;height();</a>
+<a name="ln201">                                    rebaseMinDistance(md, yd, sp, rebase, above, inStaff);</a>
+<a name="ln202">                                    }</a>
+<a name="ln203">                              rypos() += yd;</a>
+<a name="ln204">                              }</a>
+<a name="ln205">                        }</a>
+<a name="ln206">                  }</a>
+<a name="ln207">            else if (tid() == Tid::LH_GUITAR_FINGERING) {</a>
+<a name="ln208">                  // place to left of note</a>
+<a name="ln209">                  qreal left = n-&gt;shape().left();</a>
+<a name="ln210">                  if (left - n-&gt;x() &gt; 0.0)</a>
+<a name="ln211">                        rxpos() -= left;</a>
+<a name="ln212">                  else</a>
+<a name="ln213">                        rxpos() -= n-&gt;x();</a>
+<a name="ln214">                  }</a>
+<a name="ln215">            // for other fingering styles, do not autoplace</a>
+<a name="ln216"> </a>
+<a name="ln217">            // restore autoplace</a>
+<a name="ln218">            setAutoplace(true);</a>
+<a name="ln219">            }</a>
+<a name="ln220">      else if (offsetChanged() != OffsetChange::NONE) {</a>
+<a name="ln221">            // rebase horizontally too, as autoplace may have adjusted it</a>
+<a name="ln222">            rebaseOffset(false);</a>
+<a name="ln223">            }</a>
+<a name="ln224">      setOffsetChanged(false);</a>
+<a name="ln225">      }</a>
+<a name="ln226"> </a>
+<a name="ln227">//---------------------------------------------------------</a>
+<a name="ln228">//   draw</a>
+<a name="ln229">//---------------------------------------------------------</a>
+<a name="ln230"> </a>
+<a name="ln231">void Fingering::draw(QPainter* painter) const</a>
+<a name="ln232">      {</a>
+<a name="ln233">      TextBase::draw(painter);</a>
+<a name="ln234">      }</a>
+<a name="ln235"> </a>
+<a name="ln236">//---------------------------------------------------------</a>
+<a name="ln237">//   accessibleInfo</a>
+<a name="ln238">//---------------------------------------------------------</a>
+<a name="ln239"> </a>
+<a name="ln240">QString Fingering::accessibleInfo() const</a>
+<a name="ln241">      {</a>
+<a name="ln242">      QString rez = Element::accessibleInfo();</a>
+<a name="ln243">      if (tid() == Tid::STRING_NUMBER)</a>
+<a name="ln244">            rez += &quot; &quot; + QObject::tr(&quot;String number&quot;);</a>
+<a name="ln245">      return QString(&quot;%1: %2&quot;).arg(rez).arg(plainText());</a>
+<a name="ln246">      }</a>
+<a name="ln247"> </a>
+<a name="ln248">//---------------------------------------------------------</a>
+<a name="ln249">//   propertyDefault</a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251"> </a>
+<a name="ln252">QVariant Fingering::propertyDefault(Pid id) const</a>
+<a name="ln253">      {</a>
+<a name="ln254">      switch (id) {</a>
+<a name="ln255">            case Pid::PLACEMENT:</a>
+<a name="ln256">                  return int(calculatePlacement());</a>
+<a name="ln257">            case Pid::SUB_STYLE:</a>
+<a name="ln258">                  return int(Tid::FINGERING);</a>
+<a name="ln259">            default:</a>
+<a name="ln260">                  return TextBase::propertyDefault(id);</a>
+<a name="ln261">            }</a>
+<a name="ln262">      }</a>
+<a name="ln263"> </a>
+<a name="ln264">}</a>
+<a name="ln265"> </a>
+
+</code></pre>
+<div class="balloon" rel="164"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'above' is always true.</p></div>
+<div class="balloon" rel="200"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'above' is always false.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

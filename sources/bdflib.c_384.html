@@ -1,0 +1,2732 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>bdflib.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2"> * Copyright 2000 Computing Research Labs, New Mexico State University</a>
+<a name="ln3"> * Copyright 2001-2014</a>
+<a name="ln4"> *   Francesco Zappa Nardelli</a>
+<a name="ln5"> *</a>
+<a name="ln6"> * Permission is hereby granted, free of charge, to any person obtaining a</a>
+<a name="ln7"> * copy of this software and associated documentation files (the &quot;Software&quot;),</a>
+<a name="ln8"> * to deal in the Software without restriction, including without limitation</a>
+<a name="ln9"> * the rights to use, copy, modify, merge, publish, distribute, sublicense,</a>
+<a name="ln10"> * and/or sell copies of the Software, and to permit persons to whom the</a>
+<a name="ln11"> * Software is furnished to do so, subject to the following conditions:</a>
+<a name="ln12"> *</a>
+<a name="ln13"> * The above copyright notice and this permission notice shall be included in</a>
+<a name="ln14"> * all copies or substantial portions of the Software.</a>
+<a name="ln15"> *</a>
+<a name="ln16"> * THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</a>
+<a name="ln17"> * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</a>
+<a name="ln18"> * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL</a>
+<a name="ln19"> * THE COMPUTING RESEARCH LAB OR NEW MEXICO STATE UNIVERSITY BE LIABLE FOR ANY</a>
+<a name="ln20"> * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT</a>
+<a name="ln21"> * OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR</a>
+<a name="ln22"> * THE USE OR OTHER DEALINGS IN THE SOFTWARE.</a>
+<a name="ln23"> */</a>
+<a name="ln24"> </a>
+<a name="ln25">  /*************************************************************************/</a>
+<a name="ln26">  /*                                                                       */</a>
+<a name="ln27">  /*  This file is based on bdf.c,v 1.22 2000/03/16 20:08:50               */</a>
+<a name="ln28">  /*                                                                       */</a>
+<a name="ln29">  /*  taken from Mark Leisher's xmbdfed package                            */</a>
+<a name="ln30">  /*                                                                       */</a>
+<a name="ln31">  /*************************************************************************/</a>
+<a name="ln32"> </a>
+<a name="ln33"> </a>
+<a name="ln34">#include &lt;ft2build.h&gt;</a>
+<a name="ln35"> </a>
+<a name="ln36">#include FT_FREETYPE_H</a>
+<a name="ln37">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln38">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln39">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln40"> </a>
+<a name="ln41">#include &quot;bdf.h&quot;</a>
+<a name="ln42">#include &quot;bdferror.h&quot;</a>
+<a name="ln43"> </a>
+<a name="ln44"> </a>
+<a name="ln45">  /*************************************************************************/</a>
+<a name="ln46">  /*                                                                       */</a>
+<a name="ln47">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln48">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln49">  /* messages during execution.                                            */</a>
+<a name="ln50">  /*                                                                       */</a>
+<a name="ln51">#undef  FT_COMPONENT</a>
+<a name="ln52">#define FT_COMPONENT  trace_bdflib</a>
+<a name="ln53"> </a>
+<a name="ln54"> </a>
+<a name="ln55">  /*************************************************************************/</a>
+<a name="ln56">  /*                                                                       */</a>
+<a name="ln57">  /* Default BDF font options.                                             */</a>
+<a name="ln58">  /*                                                                       */</a>
+<a name="ln59">  /*************************************************************************/</a>
+<a name="ln60"> </a>
+<a name="ln61"> </a>
+<a name="ln62">  static const bdf_options_t  _bdf_opts =</a>
+<a name="ln63">  {</a>
+<a name="ln64">    1,                /* Correct metrics.               */</a>
+<a name="ln65">    1,                /* Preserve unencoded glyphs.     */</a>
+<a name="ln66">    0,                /* Preserve comments.             */</a>
+<a name="ln67">    BDF_PROPORTIONAL  /* Default spacing.               */</a>
+<a name="ln68">  };</a>
+<a name="ln69"> </a>
+<a name="ln70"> </a>
+<a name="ln71">  /*************************************************************************/</a>
+<a name="ln72">  /*                                                                       */</a>
+<a name="ln73">  /* Builtin BDF font properties.                                          */</a>
+<a name="ln74">  /*                                                                       */</a>
+<a name="ln75">  /*************************************************************************/</a>
+<a name="ln76"> </a>
+<a name="ln77">  /* List of most properties that might appear in a font.  Doesn't include */</a>
+<a name="ln78">  /* the RAW_* and AXIS_* properties in X11R6 polymorphic fonts.           */</a>
+<a name="ln79"> </a>
+<a name="ln80">  static const bdf_property_t  _bdf_properties[] =</a>
+<a name="ln81">  {</a>
+<a name="ln82">    { (char *)&quot;ADD_STYLE_NAME&quot;,          BDF_ATOM,     1, { 0 } },</a>
+<a name="ln83">    { (char *)&quot;AVERAGE_WIDTH&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln84">    { (char *)&quot;AVG_CAPITAL_WIDTH&quot;,       BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln85">    { (char *)&quot;AVG_LOWERCASE_WIDTH&quot;,     BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln86">    { (char *)&quot;CAP_HEIGHT&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln87">    { (char *)&quot;CHARSET_COLLECTIONS&quot;,     BDF_ATOM,     1, { 0 } },</a>
+<a name="ln88">    { (char *)&quot;CHARSET_ENCODING&quot;,        BDF_ATOM,     1, { 0 } },</a>
+<a name="ln89">    { (char *)&quot;CHARSET_REGISTRY&quot;,        BDF_ATOM,     1, { 0 } },</a>
+<a name="ln90">    { (char *)&quot;COMMENT&quot;,                 BDF_ATOM,     1, { 0 } },</a>
+<a name="ln91">    { (char *)&quot;COPYRIGHT&quot;,               BDF_ATOM,     1, { 0 } },</a>
+<a name="ln92">    { (char *)&quot;DEFAULT_CHAR&quot;,            BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln93">    { (char *)&quot;DESTINATION&quot;,             BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln94">    { (char *)&quot;DEVICE_FONT_NAME&quot;,        BDF_ATOM,     1, { 0 } },</a>
+<a name="ln95">    { (char *)&quot;END_SPACE&quot;,               BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln96">    { (char *)&quot;FACE_NAME&quot;,               BDF_ATOM,     1, { 0 } },</a>
+<a name="ln97">    { (char *)&quot;FAMILY_NAME&quot;,             BDF_ATOM,     1, { 0 } },</a>
+<a name="ln98">    { (char *)&quot;FIGURE_WIDTH&quot;,            BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln99">    { (char *)&quot;FONT&quot;,                    BDF_ATOM,     1, { 0 } },</a>
+<a name="ln100">    { (char *)&quot;FONTNAME_REGISTRY&quot;,       BDF_ATOM,     1, { 0 } },</a>
+<a name="ln101">    { (char *)&quot;FONT_ASCENT&quot;,             BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln102">    { (char *)&quot;FONT_DESCENT&quot;,            BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln103">    { (char *)&quot;FOUNDRY&quot;,                 BDF_ATOM,     1, { 0 } },</a>
+<a name="ln104">    { (char *)&quot;FULL_NAME&quot;,               BDF_ATOM,     1, { 0 } },</a>
+<a name="ln105">    { (char *)&quot;ITALIC_ANGLE&quot;,            BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln106">    { (char *)&quot;MAX_SPACE&quot;,               BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln107">    { (char *)&quot;MIN_SPACE&quot;,               BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln108">    { (char *)&quot;NORM_SPACE&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln109">    { (char *)&quot;NOTICE&quot;,                  BDF_ATOM,     1, { 0 } },</a>
+<a name="ln110">    { (char *)&quot;PIXEL_SIZE&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln111">    { (char *)&quot;POINT_SIZE&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln112">    { (char *)&quot;QUAD_WIDTH&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln113">    { (char *)&quot;RAW_ASCENT&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln114">    { (char *)&quot;RAW_AVERAGE_WIDTH&quot;,       BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln115">    { (char *)&quot;RAW_AVG_CAPITAL_WIDTH&quot;,   BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln116">    { (char *)&quot;RAW_AVG_LOWERCASE_WIDTH&quot;, BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln117">    { (char *)&quot;RAW_CAP_HEIGHT&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln118">    { (char *)&quot;RAW_DESCENT&quot;,             BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln119">    { (char *)&quot;RAW_END_SPACE&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln120">    { (char *)&quot;RAW_FIGURE_WIDTH&quot;,        BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln121">    { (char *)&quot;RAW_MAX_SPACE&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln122">    { (char *)&quot;RAW_MIN_SPACE&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln123">    { (char *)&quot;RAW_NORM_SPACE&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln124">    { (char *)&quot;RAW_PIXEL_SIZE&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln125">    { (char *)&quot;RAW_POINT_SIZE&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln126">    { (char *)&quot;RAW_PIXELSIZE&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln127">    { (char *)&quot;RAW_POINTSIZE&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln128">    { (char *)&quot;RAW_QUAD_WIDTH&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln129">    { (char *)&quot;RAW_SMALL_CAP_SIZE&quot;,      BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln130">    { (char *)&quot;RAW_STRIKEOUT_ASCENT&quot;,    BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln131">    { (char *)&quot;RAW_STRIKEOUT_DESCENT&quot;,   BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln132">    { (char *)&quot;RAW_SUBSCRIPT_SIZE&quot;,      BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln133">    { (char *)&quot;RAW_SUBSCRIPT_X&quot;,         BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln134">    { (char *)&quot;RAW_SUBSCRIPT_Y&quot;,         BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln135">    { (char *)&quot;RAW_SUPERSCRIPT_SIZE&quot;,    BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln136">    { (char *)&quot;RAW_SUPERSCRIPT_X&quot;,       BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln137">    { (char *)&quot;RAW_SUPERSCRIPT_Y&quot;,       BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln138">    { (char *)&quot;RAW_UNDERLINE_POSITION&quot;,  BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln139">    { (char *)&quot;RAW_UNDERLINE_THICKNESS&quot;, BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln140">    { (char *)&quot;RAW_X_HEIGHT&quot;,            BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln141">    { (char *)&quot;RELATIVE_SETWIDTH&quot;,       BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln142">    { (char *)&quot;RELATIVE_WEIGHT&quot;,         BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln143">    { (char *)&quot;RESOLUTION&quot;,              BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln144">    { (char *)&quot;RESOLUTION_X&quot;,            BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln145">    { (char *)&quot;RESOLUTION_Y&quot;,            BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln146">    { (char *)&quot;SETWIDTH_NAME&quot;,           BDF_ATOM,     1, { 0 } },</a>
+<a name="ln147">    { (char *)&quot;SLANT&quot;,                   BDF_ATOM,     1, { 0 } },</a>
+<a name="ln148">    { (char *)&quot;SMALL_CAP_SIZE&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln149">    { (char *)&quot;SPACING&quot;,                 BDF_ATOM,     1, { 0 } },</a>
+<a name="ln150">    { (char *)&quot;STRIKEOUT_ASCENT&quot;,        BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln151">    { (char *)&quot;STRIKEOUT_DESCENT&quot;,       BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln152">    { (char *)&quot;SUBSCRIPT_SIZE&quot;,          BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln153">    { (char *)&quot;SUBSCRIPT_X&quot;,             BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln154">    { (char *)&quot;SUBSCRIPT_Y&quot;,             BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln155">    { (char *)&quot;SUPERSCRIPT_SIZE&quot;,        BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln156">    { (char *)&quot;SUPERSCRIPT_X&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln157">    { (char *)&quot;SUPERSCRIPT_Y&quot;,           BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln158">    { (char *)&quot;UNDERLINE_POSITION&quot;,      BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln159">    { (char *)&quot;UNDERLINE_THICKNESS&quot;,     BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln160">    { (char *)&quot;WEIGHT&quot;,                  BDF_CARDINAL, 1, { 0 } },</a>
+<a name="ln161">    { (char *)&quot;WEIGHT_NAME&quot;,             BDF_ATOM,     1, { 0 } },</a>
+<a name="ln162">    { (char *)&quot;X_HEIGHT&quot;,                BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln163">    { (char *)&quot;_MULE_BASELINE_OFFSET&quot;,   BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln164">    { (char *)&quot;_MULE_RELATIVE_COMPOSE&quot;,  BDF_INTEGER,  1, { 0 } },</a>
+<a name="ln165">  };</a>
+<a name="ln166"> </a>
+<a name="ln167">  static const unsigned long</a>
+<a name="ln168">  _num_bdf_properties = sizeof ( _bdf_properties ) /</a>
+<a name="ln169">                        sizeof ( _bdf_properties[0] );</a>
+<a name="ln170"> </a>
+<a name="ln171"> </a>
+<a name="ln172">  /* An auxiliary macro to parse properties, to be used in conditionals. */</a>
+<a name="ln173">  /* It behaves like `strncmp' but also tests the following character    */</a>
+<a name="ln174">  /* whether it is a whitespace or NULL.                                 */</a>
+<a name="ln175">  /* `property' is a constant string of length `n' to compare with.      */</a>
+<a name="ln176">#define _bdf_strncmp( name, property, n )      \</a>
+<a name="ln177">          ( ft_strncmp( name, property, n ) || \</a>
+<a name="ln178">            !( name[n] == ' '  ||              \</a>
+<a name="ln179">               name[n] == '\0' ||              \</a>
+<a name="ln180">               name[n] == '\n' ||              \</a>
+<a name="ln181">               name[n] == '\r' ||              \</a>
+<a name="ln182">               name[n] == '\t' )            )</a>
+<a name="ln183"> </a>
+<a name="ln184">  /* Auto correction messages. */</a>
+<a name="ln185">#define ACMSG1   &quot;FONT_ASCENT property missing.  &quot; \</a>
+<a name="ln186">                 &quot;Added `FONT_ASCENT %hd'.\n&quot;</a>
+<a name="ln187">#define ACMSG2   &quot;FONT_DESCENT property missing.  &quot; \</a>
+<a name="ln188">                 &quot;Added `FONT_DESCENT %hd'.\n&quot;</a>
+<a name="ln189">#define ACMSG3   &quot;Font width != actual width.  Old: %hd New: %hd.\n&quot;</a>
+<a name="ln190">#define ACMSG4   &quot;Font left bearing != actual left bearing.  &quot; \</a>
+<a name="ln191">                 &quot;Old: %hd New: %hd.\n&quot;</a>
+<a name="ln192">#define ACMSG5   &quot;Font ascent != actual ascent.  Old: %hd New: %hd.\n&quot;</a>
+<a name="ln193">#define ACMSG6   &quot;Font descent != actual descent.  Old: %hd New: %hd.\n&quot;</a>
+<a name="ln194">#define ACMSG7   &quot;Font height != actual height. Old: %hd New: %hd.\n&quot;</a>
+<a name="ln195">#define ACMSG8   &quot;Glyph scalable width (SWIDTH) adjustments made.\n&quot;</a>
+<a name="ln196">#define ACMSG9   &quot;SWIDTH field missing at line %ld.  Set automatically.\n&quot;</a>
+<a name="ln197">#define ACMSG10  &quot;DWIDTH field missing at line %ld.  Set to glyph width.\n&quot;</a>
+<a name="ln198">#define ACMSG11  &quot;SIZE bits per pixel field adjusted to %hd.\n&quot;</a>
+<a name="ln199">#define ACMSG12  &quot;Duplicate encoding %ld (%s) changed to unencoded.\n&quot;</a>
+<a name="ln200">#define ACMSG13  &quot;Glyph %ld extra rows removed.\n&quot;</a>
+<a name="ln201">#define ACMSG14  &quot;Glyph %ld extra columns removed.\n&quot;</a>
+<a name="ln202">#define ACMSG15  &quot;Incorrect glyph count: %ld indicated but %ld found.\n&quot;</a>
+<a name="ln203">#define ACMSG16  &quot;Glyph %ld missing columns padded with zero bits.\n&quot;</a>
+<a name="ln204"> </a>
+<a name="ln205">  /* Error messages. */</a>
+<a name="ln206">#define ERRMSG1  &quot;[line %ld] Missing `%s' line.\n&quot;</a>
+<a name="ln207">#define ERRMSG2  &quot;[line %ld] Font header corrupted or missing fields.\n&quot;</a>
+<a name="ln208">#define ERRMSG3  &quot;[line %ld] Font glyphs corrupted or missing fields.\n&quot;</a>
+<a name="ln209">#define ERRMSG4  &quot;[line %ld] BBX too big.\n&quot;</a>
+<a name="ln210">#define ERRMSG5  &quot;[line %ld] `%s' value too big.\n&quot;</a>
+<a name="ln211">#define ERRMSG6  &quot;[line %ld] Input line too long.\n&quot;</a>
+<a name="ln212">#define ERRMSG7  &quot;[line %ld] Font name too long.\n&quot;</a>
+<a name="ln213">#define ERRMSG8  &quot;[line %ld] Invalid `%s' value.\n&quot;</a>
+<a name="ln214">#define ERRMSG9  &quot;[line %ld] Invalid keyword.\n&quot;</a>
+<a name="ln215"> </a>
+<a name="ln216">  /* Debug messages. */</a>
+<a name="ln217">#define DBGMSG1  &quot;  [%6ld] %s&quot; /* no \n */</a>
+<a name="ln218">#define DBGMSG2  &quot; (0x%lX)\n&quot;</a>
+<a name="ln219"> </a>
+<a name="ln220"> </a>
+<a name="ln221">  /*************************************************************************/</a>
+<a name="ln222">  /*                                                                       */</a>
+<a name="ln223">  /* Hash table utilities for the properties.                              */</a>
+<a name="ln224">  /*                                                                       */</a>
+<a name="ln225">  /*************************************************************************/</a>
+<a name="ln226"> </a>
+<a name="ln227">  /* XXX: Replace this with FreeType's hash functions */</a>
+<a name="ln228"> </a>
+<a name="ln229"> </a>
+<a name="ln230">#define INITIAL_HT_SIZE  241</a>
+<a name="ln231"> </a>
+<a name="ln232">  typedef void</a>
+<a name="ln233">  (*hash_free_func)( hashnode  node );</a>
+<a name="ln234"> </a>
+<a name="ln235">  static hashnode*</a>
+<a name="ln236">  hash_bucket( const char*  key,</a>
+<a name="ln237">               hashtable*   ht )</a>
+<a name="ln238">  {</a>
+<a name="ln239">    const char*    kp  = key;</a>
+<a name="ln240">    unsigned long  res = 0;</a>
+<a name="ln241">    hashnode*      bp  = ht-&gt;table, *ndp;</a>
+<a name="ln242"> </a>
+<a name="ln243"> </a>
+<a name="ln244">    /* Mocklisp hash function. */</a>
+<a name="ln245">    while ( *kp )</a>
+<a name="ln246">      res = ( res &lt;&lt; 5 ) - res + (unsigned long)*kp++;</a>
+<a name="ln247"> </a>
+<a name="ln248">    ndp = bp + ( res % ht-&gt;size );</a>
+<a name="ln249">    while ( *ndp )</a>
+<a name="ln250">    {</a>
+<a name="ln251">      kp = (*ndp)-&gt;key;</a>
+<a name="ln252">      if ( kp[0] == key[0] &amp;&amp; ft_strcmp( kp, key ) == 0 )</a>
+<a name="ln253">        break;</a>
+<a name="ln254">      ndp--;</a>
+<a name="ln255">      if ( ndp &lt; bp )</a>
+<a name="ln256">        ndp = bp + ( ht-&gt;size - 1 );</a>
+<a name="ln257">    }</a>
+<a name="ln258"> </a>
+<a name="ln259">    return ndp;</a>
+<a name="ln260">  }</a>
+<a name="ln261"> </a>
+<a name="ln262"> </a>
+<a name="ln263">  static FT_Error</a>
+<a name="ln264">  hash_rehash( hashtable*  ht,</a>
+<a name="ln265">               FT_Memory   memory )</a>
+<a name="ln266">  {</a>
+<a name="ln267">    hashnode*     obp = ht-&gt;table, *bp, *nbp;</a>
+<a name="ln268">    unsigned int  i, sz = ht-&gt;size;</a>
+<a name="ln269">    FT_Error      error = FT_Err_Ok;</a>
+<a name="ln270"> </a>
+<a name="ln271"> </a>
+<a name="ln272">    ht-&gt;size &lt;&lt;= 1;</a>
+<a name="ln273">    ht-&gt;limit  = ht-&gt;size / 3;</a>
+<a name="ln274"> </a>
+<a name="ln275">    if ( FT_NEW_ARRAY( ht-&gt;table, ht-&gt;size ) )</a>
+<a name="ln276">      goto Exit;</a>
+<a name="ln277"> </a>
+<a name="ln278">    for ( i = 0, bp = obp; i &lt; sz; i++, bp++ )</a>
+<a name="ln279">    {</a>
+<a name="ln280">      if ( *bp )</a>
+<a name="ln281">      {</a>
+<a name="ln282">        nbp = hash_bucket( (*bp)-&gt;key, ht );</a>
+<a name="ln283">        *nbp = *bp;</a>
+<a name="ln284">      }</a>
+<a name="ln285">    }</a>
+<a name="ln286">    FT_FREE( obp );</a>
+<a name="ln287"> </a>
+<a name="ln288">  Exit:</a>
+<a name="ln289">    return error;</a>
+<a name="ln290">  }</a>
+<a name="ln291"> </a>
+<a name="ln292"> </a>
+<a name="ln293">  static FT_Error</a>
+<a name="ln294">  hash_init( hashtable*  ht,</a>
+<a name="ln295">             FT_Memory   memory )</a>
+<a name="ln296">  {</a>
+<a name="ln297">    unsigned int  sz    = INITIAL_HT_SIZE;</a>
+<a name="ln298">    FT_Error      error = FT_Err_Ok;</a>
+<a name="ln299"> </a>
+<a name="ln300"> </a>
+<a name="ln301">    ht-&gt;size  = sz;</a>
+<a name="ln302">    ht-&gt;limit = sz / 3;</a>
+<a name="ln303">    ht-&gt;used  = 0;</a>
+<a name="ln304"> </a>
+<a name="ln305">    if ( FT_NEW_ARRAY( ht-&gt;table, sz ) )</a>
+<a name="ln306">      goto Exit;</a>
+<a name="ln307"> </a>
+<a name="ln308">  Exit:</a>
+<a name="ln309">    return error;</a>
+<a name="ln310">  }</a>
+<a name="ln311"> </a>
+<a name="ln312"> </a>
+<a name="ln313">  static void</a>
+<a name="ln314">  hash_free( hashtable*  ht,</a>
+<a name="ln315">             FT_Memory   memory )</a>
+<a name="ln316">  {</a>
+<a name="ln317">    if ( ht != 0 )</a>
+<a name="ln318">    {</a>
+<a name="ln319">      unsigned int  i, sz = ht-&gt;size;</a>
+<a name="ln320">      hashnode*     bp = ht-&gt;table;</a>
+<a name="ln321"> </a>
+<a name="ln322"> </a>
+<a name="ln323">      for ( i = 0; i &lt; sz; i++, bp++ )</a>
+<a name="ln324">        FT_FREE( *bp );</a>
+<a name="ln325"> </a>
+<a name="ln326">      FT_FREE( ht-&gt;table );</a>
+<a name="ln327">    }</a>
+<a name="ln328">  }</a>
+<a name="ln329"> </a>
+<a name="ln330"> </a>
+<a name="ln331">  static FT_Error</a>
+<a name="ln332">  hash_insert( char*       key,</a>
+<a name="ln333">               size_t      data,</a>
+<a name="ln334">               hashtable*  ht,</a>
+<a name="ln335">               FT_Memory   memory )</a>
+<a name="ln336">  {</a>
+<a name="ln337">    hashnode   nn;</a>
+<a name="ln338">    hashnode*  bp      = hash_bucket( key, ht );</a>
+<a name="ln339">    FT_Error   error   = FT_Err_Ok;</a>
+<a name="ln340"> </a>
+<a name="ln341"> </a>
+<a name="ln342">    nn = *bp;</a>
+<a name="ln343">    if ( !nn )</a>
+<a name="ln344">    {</a>
+<a name="ln345">      if ( FT_NEW( nn ) )</a>
+<a name="ln346">        goto Exit;</a>
+<a name="ln347">      *bp = nn;</a>
+<a name="ln348"> </a>
+<a name="ln349">      nn-&gt;key  = key;</a>
+<a name="ln350">      nn-&gt;data = data;</a>
+<a name="ln351"> </a>
+<a name="ln352">      if ( ht-&gt;used &gt;= ht-&gt;limit )</a>
+<a name="ln353">      {</a>
+<a name="ln354">        error = hash_rehash( ht, memory );</a>
+<a name="ln355">        if ( error )</a>
+<a name="ln356">          goto Exit;</a>
+<a name="ln357">      }</a>
+<a name="ln358">      ht-&gt;used++;</a>
+<a name="ln359">    }</a>
+<a name="ln360">    else</a>
+<a name="ln361">      nn-&gt;data = data;</a>
+<a name="ln362"> </a>
+<a name="ln363">  Exit:</a>
+<a name="ln364">    return error;</a>
+<a name="ln365">  }</a>
+<a name="ln366"> </a>
+<a name="ln367"> </a>
+<a name="ln368">  static hashnode</a>
+<a name="ln369">  hash_lookup( const char* key,</a>
+<a name="ln370">               hashtable*  ht )</a>
+<a name="ln371">  {</a>
+<a name="ln372">    hashnode *np = hash_bucket( key, ht );</a>
+<a name="ln373"> </a>
+<a name="ln374"> </a>
+<a name="ln375">    return *np;</a>
+<a name="ln376">  }</a>
+<a name="ln377"> </a>
+<a name="ln378"> </a>
+<a name="ln379">  /*************************************************************************/</a>
+<a name="ln380">  /*                                                                       */</a>
+<a name="ln381">  /* Utility types and functions.                                          */</a>
+<a name="ln382">  /*                                                                       */</a>
+<a name="ln383">  /*************************************************************************/</a>
+<a name="ln384"> </a>
+<a name="ln385"> </a>
+<a name="ln386">  /* Function type for parsing lines of a BDF font. */</a>
+<a name="ln387"> </a>
+<a name="ln388">  typedef FT_Error</a>
+<a name="ln389">  (*_bdf_line_func_t)( char*          line,</a>
+<a name="ln390">                       unsigned long  linelen,</a>
+<a name="ln391">                       unsigned long  lineno,</a>
+<a name="ln392">                       void*          call_data,</a>
+<a name="ln393">                       void*          client_data );</a>
+<a name="ln394"> </a>
+<a name="ln395"> </a>
+<a name="ln396">  /* List structure for splitting lines into fields. */</a>
+<a name="ln397"> </a>
+<a name="ln398">  typedef struct  _bdf_list_t_</a>
+<a name="ln399">  {</a>
+<a name="ln400">    char**         field;</a>
+<a name="ln401">    unsigned long  size;</a>
+<a name="ln402">    unsigned long  used;</a>
+<a name="ln403">    FT_Memory      memory;</a>
+<a name="ln404"> </a>
+<a name="ln405">  } _bdf_list_t;</a>
+<a name="ln406"> </a>
+<a name="ln407"> </a>
+<a name="ln408">  /* Structure used while loading BDF fonts. */</a>
+<a name="ln409"> </a>
+<a name="ln410">  typedef struct  _bdf_parse_t_</a>
+<a name="ln411">  {</a>
+<a name="ln412">    unsigned long   flags;</a>
+<a name="ln413">    unsigned long   cnt;</a>
+<a name="ln414">    unsigned long   row;</a>
+<a name="ln415"> </a>
+<a name="ln416">    short           minlb;</a>
+<a name="ln417">    short           maxlb;</a>
+<a name="ln418">    short           maxrb;</a>
+<a name="ln419">    short           maxas;</a>
+<a name="ln420">    short           maxds;</a>
+<a name="ln421"> </a>
+<a name="ln422">    short           rbearing;</a>
+<a name="ln423"> </a>
+<a name="ln424">    char*           glyph_name;</a>
+<a name="ln425">    long            glyph_enc;</a>
+<a name="ln426"> </a>
+<a name="ln427">    bdf_font_t*     font;</a>
+<a name="ln428">    bdf_options_t*  opts;</a>
+<a name="ln429"> </a>
+<a name="ln430">    unsigned long   have[34816]; /* must be in sync with `nmod' and `umod' */</a>
+<a name="ln431">                                 /* arrays from `bdf_font_t' structure     */</a>
+<a name="ln432">    _bdf_list_t     list;</a>
+<a name="ln433"> </a>
+<a name="ln434">    FT_Memory       memory;</a>
+<a name="ln435"> </a>
+<a name="ln436">  } _bdf_parse_t;</a>
+<a name="ln437"> </a>
+<a name="ln438"> </a>
+<a name="ln439">#define setsbit( m, cc ) \</a>
+<a name="ln440">          ( m[(FT_Byte)(cc) &gt;&gt; 3] |= (FT_Byte)( 1 &lt;&lt; ( (cc) &amp; 7 ) ) )</a>
+<a name="ln441">#define sbitset( m, cc ) \</a>
+<a name="ln442">          ( m[(FT_Byte)(cc) &gt;&gt; 3]  &amp; ( 1 &lt;&lt; ( (cc) &amp; 7 ) ) )</a>
+<a name="ln443"> </a>
+<a name="ln444"> </a>
+<a name="ln445">  static void</a>
+<a name="ln446">  _bdf_list_init( _bdf_list_t*  list,</a>
+<a name="ln447">                  FT_Memory     memory )</a>
+<a name="ln448">  {</a>
+<a name="ln449">    FT_ZERO( list );</a>
+<a name="ln450">    list-&gt;memory = memory;</a>
+<a name="ln451">  }</a>
+<a name="ln452"> </a>
+<a name="ln453"> </a>
+<a name="ln454">  static void</a>
+<a name="ln455">  _bdf_list_done( _bdf_list_t*  list )</a>
+<a name="ln456">  {</a>
+<a name="ln457">    FT_Memory  memory = list-&gt;memory;</a>
+<a name="ln458"> </a>
+<a name="ln459"> </a>
+<a name="ln460">    if ( memory )</a>
+<a name="ln461">    {</a>
+<a name="ln462">      FT_FREE( list-&gt;field );</a>
+<a name="ln463">      FT_ZERO( list );</a>
+<a name="ln464">    }</a>
+<a name="ln465">  }</a>
+<a name="ln466"> </a>
+<a name="ln467"> </a>
+<a name="ln468">  static FT_Error</a>
+<a name="ln469">  _bdf_list_ensure( _bdf_list_t*   list,</a>
+<a name="ln470">                    unsigned long  num_items ) /* same as _bdf_list_t.used */</a>
+<a name="ln471">  {</a>
+<a name="ln472">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln473"> </a>
+<a name="ln474"> </a>
+<a name="ln475">    if ( num_items &gt; list-&gt;size )</a>
+<a name="ln476">    {</a>
+<a name="ln477">      unsigned long  oldsize = list-&gt;size; /* same as _bdf_list_t.size */</a>
+<a name="ln478">      unsigned long  newsize = oldsize + ( oldsize &gt;&gt; 1 ) + 5;</a>
+<a name="ln479">      unsigned long  bigsize = (unsigned long)( FT_INT_MAX / sizeof ( char* ) );</a>
+<a name="ln480">      FT_Memory      memory  = list-&gt;memory;</a>
+<a name="ln481"> </a>
+<a name="ln482"> </a>
+<a name="ln483">      if ( oldsize == bigsize )</a>
+<a name="ln484">      {</a>
+<a name="ln485">        error = FT_THROW( Out_Of_Memory );</a>
+<a name="ln486">        goto Exit;</a>
+<a name="ln487">      }</a>
+<a name="ln488">      else if ( newsize &lt; oldsize || newsize &gt; bigsize )</a>
+<a name="ln489">        newsize = bigsize;</a>
+<a name="ln490"> </a>
+<a name="ln491">      if ( FT_RENEW_ARRAY( list-&gt;field, oldsize, newsize ) )</a>
+<a name="ln492">        goto Exit;</a>
+<a name="ln493"> </a>
+<a name="ln494">      list-&gt;size = newsize;</a>
+<a name="ln495">    }</a>
+<a name="ln496"> </a>
+<a name="ln497">  Exit:</a>
+<a name="ln498">    return error;</a>
+<a name="ln499">  }</a>
+<a name="ln500"> </a>
+<a name="ln501"> </a>
+<a name="ln502">  static void</a>
+<a name="ln503">  _bdf_list_shift( _bdf_list_t*   list,</a>
+<a name="ln504">                   unsigned long  n )</a>
+<a name="ln505">  {</a>
+<a name="ln506">    unsigned long  i, u;</a>
+<a name="ln507"> </a>
+<a name="ln508"> </a>
+<a name="ln509">    if ( list == 0 || list-&gt;used == 0 || n == 0 )</a>
+<a name="ln510">      return;</a>
+<a name="ln511"> </a>
+<a name="ln512">    if ( n &gt;= list-&gt;used )</a>
+<a name="ln513">    {</a>
+<a name="ln514">      list-&gt;used = 0;</a>
+<a name="ln515">      return;</a>
+<a name="ln516">    }</a>
+<a name="ln517"> </a>
+<a name="ln518">    for ( u = n, i = 0; u &lt; list-&gt;used; i++, u++ )</a>
+<a name="ln519">      list-&gt;field[i] = list-&gt;field[u];</a>
+<a name="ln520">    list-&gt;used -= n;</a>
+<a name="ln521">  }</a>
+<a name="ln522"> </a>
+<a name="ln523"> </a>
+<a name="ln524">  /* An empty string for empty fields. */</a>
+<a name="ln525"> </a>
+<a name="ln526">  static const char  empty[1] = { 0 };      /* XXX eliminate this */</a>
+<a name="ln527"> </a>
+<a name="ln528"> </a>
+<a name="ln529">  static char *</a>
+<a name="ln530">  _bdf_list_join( _bdf_list_t*    list,</a>
+<a name="ln531">                  int             c,</a>
+<a name="ln532">                  unsigned long  *alen )</a>
+<a name="ln533">  {</a>
+<a name="ln534">    unsigned long  i, j;</a>
+<a name="ln535">    char*          dp;</a>
+<a name="ln536"> </a>
+<a name="ln537"> </a>
+<a name="ln538">    *alen = 0;</a>
+<a name="ln539"> </a>
+<a name="ln540">    if ( list == 0 || list-&gt;used == 0 )</a>
+<a name="ln541">      return 0;</a>
+<a name="ln542"> </a>
+<a name="ln543">    dp = list-&gt;field[0];</a>
+<a name="ln544">    for ( i = j = 0; i &lt; list-&gt;used; i++ )</a>
+<a name="ln545">    {</a>
+<a name="ln546">      char*  fp = list-&gt;field[i];</a>
+<a name="ln547"> </a>
+<a name="ln548"> </a>
+<a name="ln549">      while ( *fp )</a>
+<a name="ln550">        dp[j++] = *fp++;</a>
+<a name="ln551"> </a>
+<a name="ln552">      if ( i + 1 &lt; list-&gt;used )</a>
+<a name="ln553">        dp[j++] = (char)c;</a>
+<a name="ln554">    }</a>
+<a name="ln555">    if ( dp != empty )</a>
+<a name="ln556">      dp[j] = 0;</a>
+<a name="ln557"> </a>
+<a name="ln558">    *alen = j;</a>
+<a name="ln559">    return dp;</a>
+<a name="ln560">  }</a>
+<a name="ln561"> </a>
+<a name="ln562"> </a>
+<a name="ln563">  /* The code below ensures that we have at least 4 + 1 `field' */</a>
+<a name="ln564">  /* elements in `list' (which are possibly NULL) so that we    */</a>
+<a name="ln565">  /* don't have to check the number of fields in most cases.    */</a>
+<a name="ln566"> </a>
+<a name="ln567">  static FT_Error</a>
+<a name="ln568">  _bdf_list_split( _bdf_list_t*   list,</a>
+<a name="ln569">                   char*          separators,</a>
+<a name="ln570">                   char*          line,</a>
+<a name="ln571">                   unsigned long  linelen )</a>
+<a name="ln572">  {</a>
+<a name="ln573">    unsigned long  final_empty;</a>
+<a name="ln574">    int            mult;</a>
+<a name="ln575">    char           *sp, *ep, *end;</a>
+<a name="ln576">    char           seps[32];</a>
+<a name="ln577">    FT_Error       error = FT_Err_Ok;</a>
+<a name="ln578"> </a>
+<a name="ln579"> </a>
+<a name="ln580">    /* Initialize the list. */</a>
+<a name="ln581">    list-&gt;used = 0;</a>
+<a name="ln582">    if ( list-&gt;size )</a>
+<a name="ln583">    {</a>
+<a name="ln584">      list-&gt;field[0] = (char*)empty;</a>
+<a name="ln585">      list-&gt;field[1] = (char*)empty;</a>
+<a name="ln586">      list-&gt;field[2] = (char*)empty;</a>
+<a name="ln587">      list-&gt;field[3] = (char*)empty;</a>
+<a name="ln588">      list-&gt;field[4] = (char*)empty;</a>
+<a name="ln589">    }</a>
+<a name="ln590"> </a>
+<a name="ln591">    /* If the line is empty, then simply return. */</a>
+<a name="ln592">    if ( linelen == 0 || line[0] == 0 )</a>
+<a name="ln593">      goto Exit;</a>
+<a name="ln594"> </a>
+<a name="ln595">    /* In the original code, if the `separators' parameter is NULL or */</a>
+<a name="ln596">    /* empty, the list is split into individual bytes.  We don't need */</a>
+<a name="ln597">    /* this, so an error is signaled.                                 */</a>
+<a name="ln598">    if ( separators == 0 || *separators == 0 )</a>
+<a name="ln599">    {</a>
+<a name="ln600">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln601">      goto Exit;</a>
+<a name="ln602">    }</a>
+<a name="ln603"> </a>
+<a name="ln604">    /* Prepare the separator bitmap. */</a>
+<a name="ln605">    FT_MEM_ZERO( seps, 32 );</a>
+<a name="ln606"> </a>
+<a name="ln607">    /* If the very last character of the separator string is a plus, then */</a>
+<a name="ln608">    /* set the `mult' flag to indicate that multiple separators should be */</a>
+<a name="ln609">    /* collapsed into one.                                                */</a>
+<a name="ln610">    for ( mult = 0, sp = separators; sp &amp;&amp; *sp; sp++ )</a>
+<a name="ln611">    {</a>
+<a name="ln612">      if ( *sp == '+' &amp;&amp; *( sp + 1 ) == 0 )</a>
+<a name="ln613">        mult = 1;</a>
+<a name="ln614">      else</a>
+<a name="ln615">        setsbit( seps, *sp );</a>
+<a name="ln616">    }</a>
+<a name="ln617"> </a>
+<a name="ln618">    /* Break the line up into fields. */</a>
+<a name="ln619">    for ( final_empty = 0, sp = ep = line, end = sp + linelen;</a>
+<a name="ln620">          sp &lt; end &amp;&amp; *sp; )</a>
+<a name="ln621">    {</a>
+<a name="ln622">      /* Collect everything that is not a separator. */</a>
+<a name="ln623">      for ( ; *ep &amp;&amp; !sbitset( seps, *ep ); ep++ )</a>
+<a name="ln624">        ;</a>
+<a name="ln625"> </a>
+<a name="ln626">      /* Resize the list if necessary. */</a>
+<a name="ln627">      if ( list-&gt;used == list-&gt;size )</a>
+<a name="ln628">      {</a>
+<a name="ln629">        error = _bdf_list_ensure( list, list-&gt;used + 1 );</a>
+<a name="ln630">        if ( error )</a>
+<a name="ln631">          goto Exit;</a>
+<a name="ln632">      }</a>
+<a name="ln633"> </a>
+<a name="ln634">      /* Assign the field appropriately. */</a>
+<a name="ln635">      list-&gt;field[list-&gt;used++] = ( ep &gt; sp ) ? sp : (char*)empty;</a>
+<a name="ln636"> </a>
+<a name="ln637">      sp = ep;</a>
+<a name="ln638"> </a>
+<a name="ln639">      if ( mult )</a>
+<a name="ln640">      {</a>
+<a name="ln641">        /* If multiple separators should be collapsed, do it now by */</a>
+<a name="ln642">        /* setting all the separator characters to 0.               */</a>
+<a name="ln643">        for ( ; *ep &amp;&amp; sbitset( seps, *ep ); ep++ )</a>
+<a name="ln644">          *ep = 0;</a>
+<a name="ln645">      }</a>
+<a name="ln646">      else if ( *ep != 0 )</a>
+<a name="ln647">        /* Don't collapse multiple separators by making them 0, so just */</a>
+<a name="ln648">        /* make the one encountered 0.                                  */</a>
+<a name="ln649">        *ep++ = 0;</a>
+<a name="ln650"> </a>
+<a name="ln651">      final_empty = ( ep &gt; sp &amp;&amp; *ep == 0 );</a>
+<a name="ln652">      sp = ep;</a>
+<a name="ln653">    }</a>
+<a name="ln654"> </a>
+<a name="ln655">    /* Finally, NULL-terminate the list. */</a>
+<a name="ln656">    if ( list-&gt;used + final_empty &gt;= list-&gt;size )</a>
+<a name="ln657">    {</a>
+<a name="ln658">      error = _bdf_list_ensure( list, list-&gt;used + final_empty + 1 );</a>
+<a name="ln659">      if ( error )</a>
+<a name="ln660">        goto Exit;</a>
+<a name="ln661">    }</a>
+<a name="ln662"> </a>
+<a name="ln663">    if ( final_empty )</a>
+<a name="ln664">      list-&gt;field[list-&gt;used++] = (char*)empty;</a>
+<a name="ln665"> </a>
+<a name="ln666">    list-&gt;field[list-&gt;used] = 0;</a>
+<a name="ln667"> </a>
+<a name="ln668">  Exit:</a>
+<a name="ln669">    return error;</a>
+<a name="ln670">  }</a>
+<a name="ln671"> </a>
+<a name="ln672"> </a>
+<a name="ln673">#define NO_SKIP  256  /* this value cannot be stored in a 'char' */</a>
+<a name="ln674"> </a>
+<a name="ln675"> </a>
+<a name="ln676">  static FT_Error</a>
+<a name="ln677">  _bdf_readstream( FT_Stream         stream,</a>
+<a name="ln678">                   _bdf_line_func_t  callback,</a>
+<a name="ln679">                   void*             client_data,</a>
+<a name="ln680">                   unsigned long    *lno )</a>
+<a name="ln681">  {</a>
+<a name="ln682">    _bdf_line_func_t  cb;</a>
+<a name="ln683">    unsigned long     lineno, buf_size;</a>
+<a name="ln684">    int               refill, hold, to_skip;</a>
+<a name="ln685">    ptrdiff_t         bytes, start, end, cursor, avail;</a>
+<a name="ln686">    char*             buf    = NULL;</a>
+<a name="ln687">    FT_Memory         memory = stream-&gt;memory;</a>
+<a name="ln688">    FT_Error          error  = FT_Err_Ok;</a>
+<a name="ln689"> </a>
+<a name="ln690"> </a>
+<a name="ln691">    if ( callback == 0 )</a>
+<a name="ln692">    {</a>
+<a name="ln693">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln694">      goto Exit;</a>
+<a name="ln695">    }</a>
+<a name="ln696"> </a>
+<a name="ln697">    /* initial size and allocation of the input buffer */</a>
+<a name="ln698">    buf_size = 1024;</a>
+<a name="ln699"> </a>
+<a name="ln700">    if ( FT_NEW_ARRAY( buf, buf_size ) )</a>
+<a name="ln701">      goto Exit;</a>
+<a name="ln702"> </a>
+<a name="ln703">    cb      = callback;</a>
+<a name="ln704">    lineno  = 1;</a>
+<a name="ln705">    buf[0]  = 0;</a>
+<a name="ln706">    start   = 0;</a>
+<a name="ln707">    avail   = 0;</a>
+<a name="ln708">    cursor  = 0;</a>
+<a name="ln709">    refill  = 1;</a>
+<a name="ln710">    to_skip = NO_SKIP;</a>
+<a name="ln711">    bytes   = 0;        /* make compiler happy */</a>
+<a name="ln712"> </a>
+<a name="ln713">    for (;;)</a>
+<a name="ln714">    {</a>
+<a name="ln715">      if ( refill )</a>
+<a name="ln716">      {</a>
+<a name="ln717">        bytes  = (ptrdiff_t)FT_Stream_TryRead(</a>
+<a name="ln718">                   stream, (FT_Byte*)buf + cursor,</a>
+<a name="ln719">                   buf_size - (unsigned long)cursor );</a>
+<a name="ln720">        avail  = cursor + bytes;</a>
+<a name="ln721">        cursor = 0;</a>
+<a name="ln722">        refill = 0;</a>
+<a name="ln723">      }</a>
+<a name="ln724"> </a>
+<a name="ln725">      end = start;</a>
+<a name="ln726"> </a>
+<a name="ln727">      /* should we skip an optional character like \n or \r? */</a>
+<a name="ln728">      if ( start &lt; avail &amp;&amp; buf[start] == to_skip )</a>
+<a name="ln729">      {</a>
+<a name="ln730">        start  += 1;</a>
+<a name="ln731">        to_skip = NO_SKIP;</a>
+<a name="ln732">        continue;</a>
+<a name="ln733">      }</a>
+<a name="ln734"> </a>
+<a name="ln735">      /* try to find the end of the line */</a>
+<a name="ln736">      while ( end &lt; avail &amp;&amp; buf[end] != '\n' &amp;&amp; buf[end] != '\r' )</a>
+<a name="ln737">        end++;</a>
+<a name="ln738"> </a>
+<a name="ln739">      /* if we hit the end of the buffer, try shifting its content */</a>
+<a name="ln740">      /* or even resizing it                                       */</a>
+<a name="ln741">      if ( end &gt;= avail )</a>
+<a name="ln742">      {</a>
+<a name="ln743">        if ( bytes == 0 )  /* last line in file doesn't end in \r or \n */</a>
+<a name="ln744">          break;           /* ignore it then exit                       */</a>
+<a name="ln745"> </a>
+<a name="ln746">        if ( start == 0 )</a>
+<a name="ln747">        {</a>
+<a name="ln748">          /* this line is definitely too long; try resizing the input */</a>
+<a name="ln749">          /* buffer a bit to handle it.                               */</a>
+<a name="ln750">          FT_ULong  new_size;</a>
+<a name="ln751"> </a>
+<a name="ln752"> </a>
+<a name="ln753">          if ( buf_size &gt;= 65536UL )  /* limit ourselves to 64KByte */</a>
+<a name="ln754">          {</a>
+<a name="ln755">            FT_ERROR(( &quot;_bdf_readstream: &quot; ERRMSG6, lineno ));</a>
+<a name="ln756">            error = FT_THROW( Invalid_Argument );</a>
+<a name="ln757">            goto Exit;</a>
+<a name="ln758">          }</a>
+<a name="ln759"> </a>
+<a name="ln760">          new_size = buf_size * 2;</a>
+<a name="ln761">          if ( FT_RENEW_ARRAY( buf, buf_size, new_size ) )</a>
+<a name="ln762">            goto Exit;</a>
+<a name="ln763"> </a>
+<a name="ln764">          cursor   = (ptrdiff_t)buf_size;</a>
+<a name="ln765">          buf_size = new_size;</a>
+<a name="ln766">        }</a>
+<a name="ln767">        else</a>
+<a name="ln768">        {</a>
+<a name="ln769">          bytes = avail - start;</a>
+<a name="ln770"> </a>
+<a name="ln771">          FT_MEM_MOVE( buf, buf + start, bytes );</a>
+<a name="ln772"> </a>
+<a name="ln773">          cursor = bytes;</a>
+<a name="ln774">          avail -= bytes;</a>
+<a name="ln775">          start  = 0;</a>
+<a name="ln776">        }</a>
+<a name="ln777">        refill = 1;</a>
+<a name="ln778">        continue;</a>
+<a name="ln779">      }</a>
+<a name="ln780"> </a>
+<a name="ln781">      /* Temporarily NUL-terminate the line. */</a>
+<a name="ln782">      hold     = buf[end];</a>
+<a name="ln783">      buf[end] = 0;</a>
+<a name="ln784"> </a>
+<a name="ln785">      /* XXX: Use encoding independent value for 0x1A */</a>
+<a name="ln786">      if ( buf[start] != '#' &amp;&amp; buf[start] != 0x1A &amp;&amp; end &gt; start )</a>
+<a name="ln787">      {</a>
+<a name="ln788">        error = (*cb)( buf + start, (unsigned long)( end - start ), lineno,</a>
+<a name="ln789">                       (void*)&amp;cb, client_data );</a>
+<a name="ln790">        /* Redo if we have encountered CHARS without properties. */</a>
+<a name="ln791">        if ( error == -1 )</a>
+<a name="ln792">          error = (*cb)( buf + start, (unsigned long)( end - start ), lineno,</a>
+<a name="ln793">                         (void*)&amp;cb, client_data );</a>
+<a name="ln794">        if ( error )</a>
+<a name="ln795">          break;</a>
+<a name="ln796">      }</a>
+<a name="ln797"> </a>
+<a name="ln798">      lineno  += 1;</a>
+<a name="ln799">      buf[end] = (char)hold;</a>
+<a name="ln800">      start    = end + 1;</a>
+<a name="ln801"> </a>
+<a name="ln802">      if ( hold == '\n' )</a>
+<a name="ln803">        to_skip = '\r';</a>
+<a name="ln804">      else if ( hold == '\r' )</a>
+<a name="ln805">        to_skip = '\n';</a>
+<a name="ln806">      else</a>
+<a name="ln807">        to_skip = NO_SKIP;</a>
+<a name="ln808">    }</a>
+<a name="ln809"> </a>
+<a name="ln810">    *lno = lineno;</a>
+<a name="ln811"> </a>
+<a name="ln812">  Exit:</a>
+<a name="ln813">    FT_FREE( buf );</a>
+<a name="ln814">    return error;</a>
+<a name="ln815">  }</a>
+<a name="ln816"> </a>
+<a name="ln817"> </a>
+<a name="ln818">  /* XXX: make this work with EBCDIC also */</a>
+<a name="ln819"> </a>
+<a name="ln820">  static const unsigned char  a2i[128] =</a>
+<a name="ln821">  {</a>
+<a name="ln822">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln823">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln824">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln825">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln826">    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x00, 0x00,</a>
+<a name="ln827">    0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x00,</a>
+<a name="ln828">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln829">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln830">    0x00, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln831">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln832">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00</a>
+<a name="ln833">  };</a>
+<a name="ln834"> </a>
+<a name="ln835">  static const unsigned char  odigits[32] =</a>
+<a name="ln836">  {</a>
+<a name="ln837">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00,</a>
+<a name="ln838">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln839">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln840">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln841">  };</a>
+<a name="ln842"> </a>
+<a name="ln843">  static const unsigned char  ddigits[32] =</a>
+<a name="ln844">  {</a>
+<a name="ln845">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x03,</a>
+<a name="ln846">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln847">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln848">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln849">  };</a>
+<a name="ln850"> </a>
+<a name="ln851">  static const unsigned char  hdigits[32] =</a>
+<a name="ln852">  {</a>
+<a name="ln853">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x03,</a>
+<a name="ln854">    0x7E, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00,</a>
+<a name="ln855">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln856">    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,</a>
+<a name="ln857">  };</a>
+<a name="ln858"> </a>
+<a name="ln859"> </a>
+<a name="ln860">  /* Routine to convert an ASCII string into an unsigned long integer. */</a>
+<a name="ln861">  static unsigned long</a>
+<a name="ln862">  _bdf_atoul( char*         s,</a>
+<a name="ln863">              char**        end,</a>
+<a name="ln864">              unsigned int  base )</a>
+<a name="ln865">  {</a>
+<a name="ln866">    unsigned long         v;</a>
+<a name="ln867">    const unsigned char*  dmap;</a>
+<a name="ln868"> </a>
+<a name="ln869"> </a>
+<a name="ln870">    if ( s == 0 || *s == 0 )</a>
+<a name="ln871">      return 0;</a>
+<a name="ln872"> </a>
+<a name="ln873">    /* Make sure the radix is something recognizable.  Default to 10. */</a>
+<a name="ln874">    switch ( base )</a>
+<a name="ln875">    {</a>
+<a name="ln876">    case 8:</a>
+<a name="ln877">      dmap = odigits;</a>
+<a name="ln878">      break;</a>
+<a name="ln879">    case 16:</a>
+<a name="ln880">      dmap = hdigits;</a>
+<a name="ln881">      break;</a>
+<a name="ln882">    default:</a>
+<a name="ln883">      base = 10;</a>
+<a name="ln884">      dmap = ddigits;</a>
+<a name="ln885">      break;</a>
+<a name="ln886">    }</a>
+<a name="ln887"> </a>
+<a name="ln888">    /* Check for the special hex prefix. */</a>
+<a name="ln889">    if ( *s == '0'                                  &amp;&amp;</a>
+<a name="ln890">         ( *( s + 1 ) == 'x' || *( s + 1 ) == 'X' ) )</a>
+<a name="ln891">    {</a>
+<a name="ln892">      base = 16;</a>
+<a name="ln893">      dmap = hdigits;</a>
+<a name="ln894">      s   += 2;</a>
+<a name="ln895">    }</a>
+<a name="ln896"> </a>
+<a name="ln897">    for ( v = 0; sbitset( dmap, *s ); s++ )</a>
+<a name="ln898">      v = v * base + a2i[(int)*s];</a>
+<a name="ln899"> </a>
+<a name="ln900">    if ( end != 0 )</a>
+<a name="ln901">      *end = s;</a>
+<a name="ln902"> </a>
+<a name="ln903">    return v;</a>
+<a name="ln904">  }</a>
+<a name="ln905"> </a>
+<a name="ln906"> </a>
+<a name="ln907">  /* Routine to convert an ASCII string into a signed long integer. */</a>
+<a name="ln908">  static long</a>
+<a name="ln909">  _bdf_atol( char*   s,</a>
+<a name="ln910">             char**  end,</a>
+<a name="ln911">             int     base )</a>
+<a name="ln912">  {</a>
+<a name="ln913">    long                  v, neg;</a>
+<a name="ln914">    const unsigned char*  dmap;</a>
+<a name="ln915"> </a>
+<a name="ln916"> </a>
+<a name="ln917">    if ( s == 0 || *s == 0 )</a>
+<a name="ln918">      return 0;</a>
+<a name="ln919"> </a>
+<a name="ln920">    /* Make sure the radix is something recognizable.  Default to 10. */</a>
+<a name="ln921">    switch ( base )</a>
+<a name="ln922">    {</a>
+<a name="ln923">    case 8:</a>
+<a name="ln924">      dmap = odigits;</a>
+<a name="ln925">      break;</a>
+<a name="ln926">    case 16:</a>
+<a name="ln927">      dmap = hdigits;</a>
+<a name="ln928">      break;</a>
+<a name="ln929">    default:</a>
+<a name="ln930">      base = 10;</a>
+<a name="ln931">      dmap = ddigits;</a>
+<a name="ln932">      break;</a>
+<a name="ln933">    }</a>
+<a name="ln934"> </a>
+<a name="ln935">    /* Check for a minus sign. */</a>
+<a name="ln936">    neg = 0;</a>
+<a name="ln937">    if ( *s == '-' )</a>
+<a name="ln938">    {</a>
+<a name="ln939">      s++;</a>
+<a name="ln940">      neg = 1;</a>
+<a name="ln941">    }</a>
+<a name="ln942"> </a>
+<a name="ln943">    /* Check for the special hex prefix. */</a>
+<a name="ln944">    if ( *s == '0'                                  &amp;&amp;</a>
+<a name="ln945">         ( *( s + 1 ) == 'x' || *( s + 1 ) == 'X' ) )</a>
+<a name="ln946">    {</a>
+<a name="ln947">      base = 16;</a>
+<a name="ln948">      dmap = hdigits;</a>
+<a name="ln949">      s   += 2;</a>
+<a name="ln950">    }</a>
+<a name="ln951"> </a>
+<a name="ln952">    for ( v = 0; sbitset( dmap, *s ); s++ )</a>
+<a name="ln953">      v = v * base + a2i[(int)*s];</a>
+<a name="ln954"> </a>
+<a name="ln955">    if ( end != 0 )</a>
+<a name="ln956">      *end = s;</a>
+<a name="ln957"> </a>
+<a name="ln958">    return ( !neg ) ? v : -v;</a>
+<a name="ln959">  }</a>
+<a name="ln960"> </a>
+<a name="ln961"> </a>
+<a name="ln962">  /* Routine to convert an ASCII string into an unsigned short integer. */</a>
+<a name="ln963">  static unsigned short</a>
+<a name="ln964">  _bdf_atous( char*         s,</a>
+<a name="ln965">              char**        end,</a>
+<a name="ln966">              unsigned int  base )</a>
+<a name="ln967">  {</a>
+<a name="ln968">    unsigned short        v;</a>
+<a name="ln969">    const unsigned char*  dmap;</a>
+<a name="ln970"> </a>
+<a name="ln971"> </a>
+<a name="ln972">    if ( s == 0 || *s == 0 )</a>
+<a name="ln973">      return 0;</a>
+<a name="ln974"> </a>
+<a name="ln975">    /* Make sure the radix is something recognizable.  Default to 10. */</a>
+<a name="ln976">    switch ( base )</a>
+<a name="ln977">    {</a>
+<a name="ln978">    case 8:</a>
+<a name="ln979">      dmap = odigits;</a>
+<a name="ln980">      break;</a>
+<a name="ln981">    case 16:</a>
+<a name="ln982">      dmap = hdigits;</a>
+<a name="ln983">      break;</a>
+<a name="ln984">    default:</a>
+<a name="ln985">      base = 10;</a>
+<a name="ln986">      dmap = ddigits;</a>
+<a name="ln987">      break;</a>
+<a name="ln988">    }</a>
+<a name="ln989"> </a>
+<a name="ln990">    /* Check for the special hex prefix. */</a>
+<a name="ln991">    if ( *s == '0'                                  &amp;&amp;</a>
+<a name="ln992">         ( *( s + 1 ) == 'x' || *( s + 1 ) == 'X' ) )</a>
+<a name="ln993">    {</a>
+<a name="ln994">      base = 16;</a>
+<a name="ln995">      dmap = hdigits;</a>
+<a name="ln996">      s   += 2;</a>
+<a name="ln997">    }</a>
+<a name="ln998"> </a>
+<a name="ln999">    for ( v = 0; sbitset( dmap, *s ); s++ )</a>
+<a name="ln1000">      v = (unsigned short)( v * base + a2i[(int)*s] );</a>
+<a name="ln1001"> </a>
+<a name="ln1002">    if ( end != 0 )</a>
+<a name="ln1003">      *end = s;</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    return v;</a>
+<a name="ln1006">  }</a>
+<a name="ln1007"> </a>
+<a name="ln1008"> </a>
+<a name="ln1009">  /* Routine to convert an ASCII string into a signed short integer. */</a>
+<a name="ln1010">  static short</a>
+<a name="ln1011">  _bdf_atos( char*   s,</a>
+<a name="ln1012">             char**  end,</a>
+<a name="ln1013">             int     base )</a>
+<a name="ln1014">  {</a>
+<a name="ln1015">    short                 v, neg;</a>
+<a name="ln1016">    const unsigned char*  dmap;</a>
+<a name="ln1017"> </a>
+<a name="ln1018"> </a>
+<a name="ln1019">    if ( s == 0 || *s == 0 )</a>
+<a name="ln1020">      return 0;</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    /* Make sure the radix is something recognizable.  Default to 10. */</a>
+<a name="ln1023">    switch ( base )</a>
+<a name="ln1024">    {</a>
+<a name="ln1025">    case 8:</a>
+<a name="ln1026">      dmap = odigits;</a>
+<a name="ln1027">      break;</a>
+<a name="ln1028">    case 16:</a>
+<a name="ln1029">      dmap = hdigits;</a>
+<a name="ln1030">      break;</a>
+<a name="ln1031">    default:</a>
+<a name="ln1032">      base = 10;</a>
+<a name="ln1033">      dmap = ddigits;</a>
+<a name="ln1034">      break;</a>
+<a name="ln1035">    }</a>
+<a name="ln1036"> </a>
+<a name="ln1037">    /* Check for a minus. */</a>
+<a name="ln1038">    neg = 0;</a>
+<a name="ln1039">    if ( *s == '-' )</a>
+<a name="ln1040">    {</a>
+<a name="ln1041">      s++;</a>
+<a name="ln1042">      neg = 1;</a>
+<a name="ln1043">    }</a>
+<a name="ln1044"> </a>
+<a name="ln1045">    /* Check for the special hex prefix. */</a>
+<a name="ln1046">    if ( *s == '0'                                  &amp;&amp;</a>
+<a name="ln1047">         ( *( s + 1 ) == 'x' || *( s + 1 ) == 'X' ) )</a>
+<a name="ln1048">    {</a>
+<a name="ln1049">      base = 16;</a>
+<a name="ln1050">      dmap = hdigits;</a>
+<a name="ln1051">      s   += 2;</a>
+<a name="ln1052">    }</a>
+<a name="ln1053"> </a>
+<a name="ln1054">    for ( v = 0; sbitset( dmap, *s ); s++ )</a>
+<a name="ln1055">      v = (short)( v * base + a2i[(int)*s] );</a>
+<a name="ln1056"> </a>
+<a name="ln1057">    if ( end != 0 )</a>
+<a name="ln1058">      *end = s;</a>
+<a name="ln1059"> </a>
+<a name="ln1060">    return (short)( ( !neg ) ? v : -v );</a>
+<a name="ln1061">  }</a>
+<a name="ln1062"> </a>
+<a name="ln1063"> </a>
+<a name="ln1064">  /* Routine to compare two glyphs by encoding so they can be sorted. */</a>
+<a name="ln1065">  static int</a>
+<a name="ln1066">  by_encoding( const void*  a,</a>
+<a name="ln1067">               const void*  b )</a>
+<a name="ln1068">  {</a>
+<a name="ln1069">    bdf_glyph_t  *c1, *c2;</a>
+<a name="ln1070"> </a>
+<a name="ln1071"> </a>
+<a name="ln1072">    c1 = (bdf_glyph_t *)a;</a>
+<a name="ln1073">    c2 = (bdf_glyph_t *)b;</a>
+<a name="ln1074"> </a>
+<a name="ln1075">    if ( c1-&gt;encoding &lt; c2-&gt;encoding )</a>
+<a name="ln1076">      return -1;</a>
+<a name="ln1077"> </a>
+<a name="ln1078">    if ( c1-&gt;encoding &gt; c2-&gt;encoding )</a>
+<a name="ln1079">      return 1;</a>
+<a name="ln1080"> </a>
+<a name="ln1081">    return 0;</a>
+<a name="ln1082">  }</a>
+<a name="ln1083"> </a>
+<a name="ln1084"> </a>
+<a name="ln1085">  static FT_Error</a>
+<a name="ln1086">  bdf_create_property( char*        name,</a>
+<a name="ln1087">                       int          format,</a>
+<a name="ln1088">                       bdf_font_t*  font )</a>
+<a name="ln1089">  {</a>
+<a name="ln1090">    size_t           n;</a>
+<a name="ln1091">    bdf_property_t*  p;</a>
+<a name="ln1092">    FT_Memory        memory = font-&gt;memory;</a>
+<a name="ln1093">    FT_Error         error  = FT_Err_Ok;</a>
+<a name="ln1094"> </a>
+<a name="ln1095"> </a>
+<a name="ln1096">    /* First check whether the property has        */</a>
+<a name="ln1097">    /* already been added or not.  If it has, then */</a>
+<a name="ln1098">    /* simply ignore it.                           */</a>
+<a name="ln1099">    if ( hash_lookup( name, &amp;(font-&gt;proptbl) ) )</a>
+<a name="ln1100">      goto Exit;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">    if ( FT_RENEW_ARRAY( font-&gt;user_props,</a>
+<a name="ln1103">                         font-&gt;nuser_props,</a>
+<a name="ln1104">                         font-&gt;nuser_props + 1 ) )</a>
+<a name="ln1105">      goto Exit;</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    p = font-&gt;user_props + font-&gt;nuser_props;</a>
+<a name="ln1108">    FT_ZERO( p );</a>
+<a name="ln1109"> </a>
+<a name="ln1110">    n = ft_strlen( name ) + 1;</a>
+<a name="ln1111">    if ( n &gt; FT_ULONG_MAX )</a>
+<a name="ln1112">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1113"> </a>
+<a name="ln1114">    if ( FT_NEW_ARRAY( p-&gt;name, n ) )</a>
+<a name="ln1115">      goto Exit;</a>
+<a name="ln1116"> </a>
+<a name="ln1117">    FT_MEM_COPY( (char *)p-&gt;name, name, n );</a>
+<a name="ln1118"> </a>
+<a name="ln1119">    p-&gt;format  = format;</a>
+<a name="ln1120">    p-&gt;builtin = 0;</a>
+<a name="ln1121"> </a>
+<a name="ln1122">    n = _num_bdf_properties + font-&gt;nuser_props;</a>
+<a name="ln1123"> </a>
+<a name="ln1124">    error = hash_insert( p-&gt;name, n, &amp;(font-&gt;proptbl), memory );</a>
+<a name="ln1125">    if ( error )</a>
+<a name="ln1126">      goto Exit;</a>
+<a name="ln1127"> </a>
+<a name="ln1128">    font-&gt;nuser_props++;</a>
+<a name="ln1129"> </a>
+<a name="ln1130">  Exit:</a>
+<a name="ln1131">    return error;</a>
+<a name="ln1132">  }</a>
+<a name="ln1133"> </a>
+<a name="ln1134"> </a>
+<a name="ln1135">  FT_LOCAL_DEF( bdf_property_t * )</a>
+<a name="ln1136">  bdf_get_property( char*        name,</a>
+<a name="ln1137">                    bdf_font_t*  font )</a>
+<a name="ln1138">  {</a>
+<a name="ln1139">    hashnode  hn;</a>
+<a name="ln1140">    size_t    propid;</a>
+<a name="ln1141"> </a>
+<a name="ln1142"> </a>
+<a name="ln1143">    if ( name == 0 || *name == 0 )</a>
+<a name="ln1144">      return 0;</a>
+<a name="ln1145"> </a>
+<a name="ln1146">    if ( ( hn = hash_lookup( name, &amp;(font-&gt;proptbl) ) ) == 0 )</a>
+<a name="ln1147">      return 0;</a>
+<a name="ln1148"> </a>
+<a name="ln1149">    propid = hn-&gt;data;</a>
+<a name="ln1150">    if ( propid &gt;= _num_bdf_properties )</a>
+<a name="ln1151">      return font-&gt;user_props + ( propid - _num_bdf_properties );</a>
+<a name="ln1152"> </a>
+<a name="ln1153">    return (bdf_property_t*)_bdf_properties + propid;</a>
+<a name="ln1154">  }</a>
+<a name="ln1155"> </a>
+<a name="ln1156"> </a>
+<a name="ln1157">  /*************************************************************************/</a>
+<a name="ln1158">  /*                                                                       */</a>
+<a name="ln1159">  /* BDF font file parsing flags and functions.                            */</a>
+<a name="ln1160">  /*                                                                       */</a>
+<a name="ln1161">  /*************************************************************************/</a>
+<a name="ln1162"> </a>
+<a name="ln1163"> </a>
+<a name="ln1164">  /* Parse flags. */</a>
+<a name="ln1165"> </a>
+<a name="ln1166">#define _BDF_START      0x0001U</a>
+<a name="ln1167">#define _BDF_FONT_NAME  0x0002U</a>
+<a name="ln1168">#define _BDF_SIZE       0x0004U</a>
+<a name="ln1169">#define _BDF_FONT_BBX   0x0008U</a>
+<a name="ln1170">#define _BDF_PROPS      0x0010U</a>
+<a name="ln1171">#define _BDF_GLYPHS     0x0020U</a>
+<a name="ln1172">#define _BDF_GLYPH      0x0040U</a>
+<a name="ln1173">#define _BDF_ENCODING   0x0080U</a>
+<a name="ln1174">#define _BDF_SWIDTH     0x0100U</a>
+<a name="ln1175">#define _BDF_DWIDTH     0x0200U</a>
+<a name="ln1176">#define _BDF_BBX        0x0400U</a>
+<a name="ln1177">#define _BDF_BITMAP     0x0800U</a>
+<a name="ln1178"> </a>
+<a name="ln1179">#define _BDF_SWIDTH_ADJ  0x1000U</a>
+<a name="ln1180"> </a>
+<a name="ln1181">#define _BDF_GLYPH_BITS ( _BDF_GLYPH    | \</a>
+<a name="ln1182">                          _BDF_ENCODING | \</a>
+<a name="ln1183">                          _BDF_SWIDTH   | \</a>
+<a name="ln1184">                          _BDF_DWIDTH   | \</a>
+<a name="ln1185">                          _BDF_BBX      | \</a>
+<a name="ln1186">                          _BDF_BITMAP   )</a>
+<a name="ln1187"> </a>
+<a name="ln1188">#define _BDF_GLYPH_WIDTH_CHECK   0x40000000UL</a>
+<a name="ln1189">#define _BDF_GLYPH_HEIGHT_CHECK  0x80000000UL</a>
+<a name="ln1190"> </a>
+<a name="ln1191"> </a>
+<a name="ln1192">  static FT_Error</a>
+<a name="ln1193">  _bdf_add_comment( bdf_font_t*    font,</a>
+<a name="ln1194">                    char*          comment,</a>
+<a name="ln1195">                    unsigned long  len )</a>
+<a name="ln1196">  {</a>
+<a name="ln1197">    char*      cp;</a>
+<a name="ln1198">    FT_Memory  memory = font-&gt;memory;</a>
+<a name="ln1199">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln1200"> </a>
+<a name="ln1201"> </a>
+<a name="ln1202">    if ( FT_RENEW_ARRAY( font-&gt;comments,</a>
+<a name="ln1203">                         font-&gt;comments_len,</a>
+<a name="ln1204">                         font-&gt;comments_len + len + 1 ) )</a>
+<a name="ln1205">      goto Exit;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">    cp = font-&gt;comments + font-&gt;comments_len;</a>
+<a name="ln1208"> </a>
+<a name="ln1209">    FT_MEM_COPY( cp, comment, len );</a>
+<a name="ln1210">    cp[len] = '\n';</a>
+<a name="ln1211"> </a>
+<a name="ln1212">    font-&gt;comments_len += len + 1;</a>
+<a name="ln1213"> </a>
+<a name="ln1214">  Exit:</a>
+<a name="ln1215">    return error;</a>
+<a name="ln1216">  }</a>
+<a name="ln1217"> </a>
+<a name="ln1218"> </a>
+<a name="ln1219">  /* Set the spacing from the font name if it exists, or set it to the */</a>
+<a name="ln1220">  /* default specified in the options.                                 */</a>
+<a name="ln1221">  static FT_Error</a>
+<a name="ln1222">  _bdf_set_default_spacing( bdf_font_t*     font,</a>
+<a name="ln1223">                            bdf_options_t*  opts,</a>
+<a name="ln1224">                            unsigned long   lineno )</a>
+<a name="ln1225">  {</a>
+<a name="ln1226">    size_t       len;</a>
+<a name="ln1227">    char         name[256];</a>
+<a name="ln1228">    _bdf_list_t  list;</a>
+<a name="ln1229">    FT_Memory    memory;</a>
+<a name="ln1230">    FT_Error     error = FT_Err_Ok;</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    FT_UNUSED( lineno );        /* only used in debug mode */</a>
+<a name="ln1233"> </a>
+<a name="ln1234"> </a>
+<a name="ln1235">    if ( font == 0 || font-&gt;name == 0 || font-&gt;name[0] == 0 )</a>
+<a name="ln1236">    {</a>
+<a name="ln1237">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1238">      goto Exit;</a>
+<a name="ln1239">    }</a>
+<a name="ln1240"> </a>
+<a name="ln1241">    memory = font-&gt;memory;</a>
+<a name="ln1242"> </a>
+<a name="ln1243">    _bdf_list_init( &amp;list, memory );</a>
+<a name="ln1244"> </a>
+<a name="ln1245">    font-&gt;spacing = opts-&gt;font_spacing;</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    len = ft_strlen( font-&gt;name ) + 1;</a>
+<a name="ln1248">    /* Limit ourselves to 256 characters in the font name. */</a>
+<a name="ln1249">    if ( len &gt;= 256 )</a>
+<a name="ln1250">    {</a>
+<a name="ln1251">      FT_ERROR(( &quot;_bdf_set_default_spacing: &quot; ERRMSG7, lineno ));</a>
+<a name="ln1252">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1253">      goto Exit;</a>
+<a name="ln1254">    }</a>
+<a name="ln1255"> </a>
+<a name="ln1256">    FT_MEM_COPY( name, font-&gt;name, len );</a>
+<a name="ln1257"> </a>
+<a name="ln1258">    error = _bdf_list_split( &amp;list, (char *)&quot;-&quot;, name, (unsigned long)len );</a>
+<a name="ln1259">    if ( error )</a>
+<a name="ln1260">      goto Fail;</a>
+<a name="ln1261"> </a>
+<a name="ln1262">    if ( list.used == 15 )</a>
+<a name="ln1263">    {</a>
+<a name="ln1264">      switch ( list.field[11][0] )</a>
+<a name="ln1265">      {</a>
+<a name="ln1266">      case 'C':</a>
+<a name="ln1267">      case 'c':</a>
+<a name="ln1268">        font-&gt;spacing = BDF_CHARCELL;</a>
+<a name="ln1269">        break;</a>
+<a name="ln1270">      case 'M':</a>
+<a name="ln1271">      case 'm':</a>
+<a name="ln1272">        font-&gt;spacing = BDF_MONOWIDTH;</a>
+<a name="ln1273">        break;</a>
+<a name="ln1274">      case 'P':</a>
+<a name="ln1275">      case 'p':</a>
+<a name="ln1276">        font-&gt;spacing = BDF_PROPORTIONAL;</a>
+<a name="ln1277">        break;</a>
+<a name="ln1278">      }</a>
+<a name="ln1279">    }</a>
+<a name="ln1280"> </a>
+<a name="ln1281">  Fail:</a>
+<a name="ln1282">    _bdf_list_done( &amp;list );</a>
+<a name="ln1283"> </a>
+<a name="ln1284">  Exit:</a>
+<a name="ln1285">    return error;</a>
+<a name="ln1286">  }</a>
+<a name="ln1287"> </a>
+<a name="ln1288"> </a>
+<a name="ln1289">  /* Determine whether the property is an atom or not.  If it is, then */</a>
+<a name="ln1290">  /* clean it up so the double quotes are removed if they exist.       */</a>
+<a name="ln1291">  static int</a>
+<a name="ln1292">  _bdf_is_atom( char*          line,</a>
+<a name="ln1293">                unsigned long  linelen,</a>
+<a name="ln1294">                char**         name,</a>
+<a name="ln1295">                char**         value,</a>
+<a name="ln1296">                bdf_font_t*    font )</a>
+<a name="ln1297">  {</a>
+<a name="ln1298">    int              hold;</a>
+<a name="ln1299">    char             *sp, *ep;</a>
+<a name="ln1300">    bdf_property_t*  p;</a>
+<a name="ln1301"> </a>
+<a name="ln1302"> </a>
+<a name="ln1303">    *name = sp = ep = line;</a>
+<a name="ln1304"> </a>
+<a name="ln1305">    while ( *ep &amp;&amp; *ep != ' ' &amp;&amp; *ep != '\t' )</a>
+<a name="ln1306">      ep++;</a>
+<a name="ln1307"> </a>
+<a name="ln1308">    hold = -1;</a>
+<a name="ln1309">    if ( *ep )</a>
+<a name="ln1310">    {</a>
+<a name="ln1311">      hold = *ep;</a>
+<a name="ln1312">      *ep  = 0;</a>
+<a name="ln1313">    }</a>
+<a name="ln1314"> </a>
+<a name="ln1315">    p = bdf_get_property( sp, font );</a>
+<a name="ln1316"> </a>
+<a name="ln1317">    /* Restore the character that was saved before any return can happen. */</a>
+<a name="ln1318">    if ( hold != -1 )</a>
+<a name="ln1319">      *ep = (char)hold;</a>
+<a name="ln1320"> </a>
+<a name="ln1321">    /* If the property exists and is not an atom, just return here. */</a>
+<a name="ln1322">    if ( p &amp;&amp; p-&gt;format != BDF_ATOM )</a>
+<a name="ln1323">      return 0;</a>
+<a name="ln1324"> </a>
+<a name="ln1325">    /* The property is an atom.  Trim all leading and trailing whitespace */</a>
+<a name="ln1326">    /* and double quotes for the atom value.                              */</a>
+<a name="ln1327">    sp = ep;</a>
+<a name="ln1328">    ep = line + linelen;</a>
+<a name="ln1329"> </a>
+<a name="ln1330">    /* Trim the leading whitespace if it exists. */</a>
+<a name="ln1331">    if ( *sp )</a>
+<a name="ln1332">      *sp++ = 0;</a>
+<a name="ln1333">    while ( *sp                           &amp;&amp;</a>
+<a name="ln1334">            ( *sp == ' ' || *sp == '\t' ) )</a>
+<a name="ln1335">      sp++;</a>
+<a name="ln1336"> </a>
+<a name="ln1337">    /* Trim the leading double quote if it exists. */</a>
+<a name="ln1338">    if ( *sp == '&quot;' )</a>
+<a name="ln1339">      sp++;</a>
+<a name="ln1340">    *value = sp;</a>
+<a name="ln1341"> </a>
+<a name="ln1342">    /* Trim the trailing whitespace if it exists. */</a>
+<a name="ln1343">    while ( ep &gt; sp                                       &amp;&amp;</a>
+<a name="ln1344">            ( *( ep - 1 ) == ' ' || *( ep - 1 ) == '\t' ) )</a>
+<a name="ln1345">      *--ep = 0;</a>
+<a name="ln1346"> </a>
+<a name="ln1347">    /* Trim the trailing double quote if it exists. */</a>
+<a name="ln1348">    if ( ep &gt; sp &amp;&amp; *( ep - 1 ) == '&quot;' )</a>
+<a name="ln1349">      *--ep = 0;</a>
+<a name="ln1350"> </a>
+<a name="ln1351">    return 1;</a>
+<a name="ln1352">  }</a>
+<a name="ln1353"> </a>
+<a name="ln1354"> </a>
+<a name="ln1355">  static FT_Error</a>
+<a name="ln1356">  _bdf_add_property( bdf_font_t*    font,</a>
+<a name="ln1357">                     char*          name,</a>
+<a name="ln1358">                     char*          value,</a>
+<a name="ln1359">                     unsigned long  lineno )</a>
+<a name="ln1360">  {</a>
+<a name="ln1361">    size_t          propid;</a>
+<a name="ln1362">    hashnode        hn;</a>
+<a name="ln1363">    bdf_property_t  *prop, *fp;</a>
+<a name="ln1364">    FT_Memory       memory = font-&gt;memory;</a>
+<a name="ln1365">    FT_Error        error  = FT_Err_Ok;</a>
+<a name="ln1366"> </a>
+<a name="ln1367">    FT_UNUSED( lineno );        /* only used in debug mode */</a>
+<a name="ln1368"> </a>
+<a name="ln1369"> </a>
+<a name="ln1370">    /* First, check whether the property already exists in the font. */</a>
+<a name="ln1371">    if ( ( hn = hash_lookup( name, (hashtable *)font-&gt;internal ) ) != 0 )</a>
+<a name="ln1372">    {</a>
+<a name="ln1373">      /* The property already exists in the font, so simply replace */</a>
+<a name="ln1374">      /* the value of the property with the current value.          */</a>
+<a name="ln1375">      fp = font-&gt;props + hn-&gt;data;</a>
+<a name="ln1376"> </a>
+<a name="ln1377">      switch ( fp-&gt;format )</a>
+<a name="ln1378">      {</a>
+<a name="ln1379">      case BDF_ATOM:</a>
+<a name="ln1380">        /* Delete the current atom if it exists. */</a>
+<a name="ln1381">        FT_FREE( fp-&gt;value.atom );</a>
+<a name="ln1382"> </a>
+<a name="ln1383">        if ( value &amp;&amp; value[0] != 0 )</a>
+<a name="ln1384">        {</a>
+<a name="ln1385">          if ( FT_STRDUP( fp-&gt;value.atom, value ) )</a>
+<a name="ln1386">            goto Exit;</a>
+<a name="ln1387">        }</a>
+<a name="ln1388">        break;</a>
+<a name="ln1389"> </a>
+<a name="ln1390">      case BDF_INTEGER:</a>
+<a name="ln1391">        fp-&gt;value.l = _bdf_atol( value, 0, 10 );</a>
+<a name="ln1392">        break;</a>
+<a name="ln1393"> </a>
+<a name="ln1394">      case BDF_CARDINAL:</a>
+<a name="ln1395">        fp-&gt;value.ul = _bdf_atoul( value, 0, 10 );</a>
+<a name="ln1396">        break;</a>
+<a name="ln1397"> </a>
+<a name="ln1398">      default:</a>
+<a name="ln1399">        ;</a>
+<a name="ln1400">      }</a>
+<a name="ln1401"> </a>
+<a name="ln1402">      goto Exit;</a>
+<a name="ln1403">    }</a>
+<a name="ln1404"> </a>
+<a name="ln1405">    /* See whether this property type exists yet or not. */</a>
+<a name="ln1406">    /* If not, create it.                                */</a>
+<a name="ln1407">    hn = hash_lookup( name, &amp;(font-&gt;proptbl) );</a>
+<a name="ln1408">    if ( hn == 0 )</a>
+<a name="ln1409">    {</a>
+<a name="ln1410">      error = bdf_create_property( name, BDF_ATOM, font );</a>
+<a name="ln1411">      if ( error )</a>
+<a name="ln1412">        goto Exit;</a>
+<a name="ln1413">      hn = hash_lookup( name, &amp;(font-&gt;proptbl) );</a>
+<a name="ln1414">    }</a>
+<a name="ln1415"> </a>
+<a name="ln1416">    /* Allocate another property if this is overflow. */</a>
+<a name="ln1417">    if ( font-&gt;props_used == font-&gt;props_size )</a>
+<a name="ln1418">    {</a>
+<a name="ln1419">      if ( font-&gt;props_size == 0 )</a>
+<a name="ln1420">      {</a>
+<a name="ln1421">        if ( FT_NEW_ARRAY( font-&gt;props, 1 ) )</a>
+<a name="ln1422">          goto Exit;</a>
+<a name="ln1423">      }</a>
+<a name="ln1424">      else</a>
+<a name="ln1425">      {</a>
+<a name="ln1426">        if ( FT_RENEW_ARRAY( font-&gt;props,</a>
+<a name="ln1427">                             font-&gt;props_size,</a>
+<a name="ln1428">                             font-&gt;props_size + 1 ) )</a>
+<a name="ln1429">          goto Exit;</a>
+<a name="ln1430">      }</a>
+<a name="ln1431"> </a>
+<a name="ln1432">      fp = font-&gt;props + font-&gt;props_size;</a>
+<a name="ln1433">      FT_MEM_ZERO( fp, sizeof ( bdf_property_t ) );</a>
+<a name="ln1434">      font-&gt;props_size++;</a>
+<a name="ln1435">    }</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    propid = hn-&gt;data;</a>
+<a name="ln1438">    if ( propid &gt;= _num_bdf_properties )</a>
+<a name="ln1439">      prop = font-&gt;user_props + ( propid - _num_bdf_properties );</a>
+<a name="ln1440">    else</a>
+<a name="ln1441">      prop = (bdf_property_t*)_bdf_properties + propid;</a>
+<a name="ln1442"> </a>
+<a name="ln1443">    fp = font-&gt;props + font-&gt;props_used;</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    fp-&gt;name    = prop-&gt;name;</a>
+<a name="ln1446">    fp-&gt;format  = prop-&gt;format;</a>
+<a name="ln1447">    fp-&gt;builtin = prop-&gt;builtin;</a>
+<a name="ln1448"> </a>
+<a name="ln1449">    switch ( prop-&gt;format )</a>
+<a name="ln1450">    {</a>
+<a name="ln1451">    case BDF_ATOM:</a>
+<a name="ln1452">      fp-&gt;value.atom = 0;</a>
+<a name="ln1453">      if ( value != 0 &amp;&amp; value[0] )</a>
+<a name="ln1454">      {</a>
+<a name="ln1455">        if ( FT_STRDUP( fp-&gt;value.atom, value ) )</a>
+<a name="ln1456">          goto Exit;</a>
+<a name="ln1457">      }</a>
+<a name="ln1458">      break;</a>
+<a name="ln1459"> </a>
+<a name="ln1460">    case BDF_INTEGER:</a>
+<a name="ln1461">      fp-&gt;value.l = _bdf_atol( value, 0, 10 );</a>
+<a name="ln1462">      break;</a>
+<a name="ln1463"> </a>
+<a name="ln1464">    case BDF_CARDINAL:</a>
+<a name="ln1465">      fp-&gt;value.ul = _bdf_atoul( value, 0, 10 );</a>
+<a name="ln1466">      break;</a>
+<a name="ln1467">    }</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    /* If the property happens to be a comment, then it doesn't need */</a>
+<a name="ln1470">    /* to be added to the internal hash table.                       */</a>
+<a name="ln1471">    if ( _bdf_strncmp( name, &quot;COMMENT&quot;, 7 ) != 0 )</a>
+<a name="ln1472">    {</a>
+<a name="ln1473">      /* Add the property to the font property table. */</a>
+<a name="ln1474">      error = hash_insert( fp-&gt;name,</a>
+<a name="ln1475">                           font-&gt;props_used,</a>
+<a name="ln1476">                           (hashtable *)font-&gt;internal,</a>
+<a name="ln1477">                           memory );</a>
+<a name="ln1478">      if ( error )</a>
+<a name="ln1479">        goto Exit;</a>
+<a name="ln1480">    }</a>
+<a name="ln1481"> </a>
+<a name="ln1482">    font-&gt;props_used++;</a>
+<a name="ln1483"> </a>
+<a name="ln1484">    /* Some special cases need to be handled here.  The DEFAULT_CHAR       */</a>
+<a name="ln1485">    /* property needs to be located if it exists in the property list, the */</a>
+<a name="ln1486">    /* FONT_ASCENT and FONT_DESCENT need to be assigned if they are        */</a>
+<a name="ln1487">    /* present, and the SPACING property should override the default       */</a>
+<a name="ln1488">    /* spacing.                                                            */</a>
+<a name="ln1489">    if ( _bdf_strncmp( name, &quot;DEFAULT_CHAR&quot;, 12 ) == 0 )</a>
+<a name="ln1490">      font-&gt;default_char = fp-&gt;value.l;</a>
+<a name="ln1491">    else if ( _bdf_strncmp( name, &quot;FONT_ASCENT&quot;, 11 ) == 0 )</a>
+<a name="ln1492">      font-&gt;font_ascent = fp-&gt;value.l;</a>
+<a name="ln1493">    else if ( _bdf_strncmp( name, &quot;FONT_DESCENT&quot;, 12 ) == 0 )</a>
+<a name="ln1494">      font-&gt;font_descent = fp-&gt;value.l;</a>
+<a name="ln1495">    else if ( _bdf_strncmp( name, &quot;SPACING&quot;, 7 ) == 0 )</a>
+<a name="ln1496">    {</a>
+<a name="ln1497">      if ( !fp-&gt;value.atom )</a>
+<a name="ln1498">      {</a>
+<a name="ln1499">        FT_ERROR(( &quot;_bdf_add_property: &quot; ERRMSG8, lineno, &quot;SPACING&quot; ));</a>
+<a name="ln1500">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln1501">        goto Exit;</a>
+<a name="ln1502">      }</a>
+<a name="ln1503"> </a>
+<a name="ln1504">      if ( fp-&gt;value.atom[0] == 'p' || fp-&gt;value.atom[0] == 'P' )</a>
+<a name="ln1505">        font-&gt;spacing = BDF_PROPORTIONAL;</a>
+<a name="ln1506">      else if ( fp-&gt;value.atom[0] == 'm' || fp-&gt;value.atom[0] == 'M' )</a>
+<a name="ln1507">        font-&gt;spacing = BDF_MONOWIDTH;</a>
+<a name="ln1508">      else if ( fp-&gt;value.atom[0] == 'c' || fp-&gt;value.atom[0] == 'C' )</a>
+<a name="ln1509">        font-&gt;spacing = BDF_CHARCELL;</a>
+<a name="ln1510">    }</a>
+<a name="ln1511"> </a>
+<a name="ln1512">  Exit:</a>
+<a name="ln1513">    return error;</a>
+<a name="ln1514">  }</a>
+<a name="ln1515"> </a>
+<a name="ln1516"> </a>
+<a name="ln1517">  static const unsigned char nibble_mask[8] =</a>
+<a name="ln1518">  {</a>
+<a name="ln1519">    0xFF, 0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE</a>
+<a name="ln1520">  };</a>
+<a name="ln1521"> </a>
+<a name="ln1522"> </a>
+<a name="ln1523">  /* Actually parse the glyph info and bitmaps. */</a>
+<a name="ln1524">  static FT_Error</a>
+<a name="ln1525">  _bdf_parse_glyphs( char*          line,</a>
+<a name="ln1526">                     unsigned long  linelen,</a>
+<a name="ln1527">                     unsigned long  lineno,</a>
+<a name="ln1528">                     void*          call_data,</a>
+<a name="ln1529">                     void*          client_data )</a>
+<a name="ln1530">  {</a>
+<a name="ln1531">    int                c, mask_index;</a>
+<a name="ln1532">    char*              s;</a>
+<a name="ln1533">    unsigned char*     bp;</a>
+<a name="ln1534">    unsigned long      i, slen, nibbles;</a>
+<a name="ln1535"> </a>
+<a name="ln1536">    _bdf_parse_t*      p;</a>
+<a name="ln1537">    bdf_glyph_t*       glyph;</a>
+<a name="ln1538">    bdf_font_t*        font;</a>
+<a name="ln1539"> </a>
+<a name="ln1540">    FT_Memory          memory;</a>
+<a name="ln1541">    FT_Error           error = FT_Err_Ok;</a>
+<a name="ln1542"> </a>
+<a name="ln1543">    FT_UNUSED( call_data );</a>
+<a name="ln1544">    FT_UNUSED( lineno );        /* only used in debug mode */</a>
+<a name="ln1545"> </a>
+<a name="ln1546"> </a>
+<a name="ln1547">    p = (_bdf_parse_t *)client_data;</a>
+<a name="ln1548"> </a>
+<a name="ln1549">    font   = p-&gt;font;</a>
+<a name="ln1550">    memory = font-&gt;memory;</a>
+<a name="ln1551"> </a>
+<a name="ln1552">    /* Check for a comment. */</a>
+<a name="ln1553">    if ( _bdf_strncmp( line, &quot;COMMENT&quot;, 7 ) == 0 )</a>
+<a name="ln1554">    {</a>
+<a name="ln1555">      linelen -= 7;</a>
+<a name="ln1556"> </a>
+<a name="ln1557">      s = line + 7;</a>
+<a name="ln1558">      if ( *s != 0 )</a>
+<a name="ln1559">      {</a>
+<a name="ln1560">        s++;</a>
+<a name="ln1561">        linelen--;</a>
+<a name="ln1562">      }</a>
+<a name="ln1563">      error = _bdf_add_comment( p-&gt;font, s, linelen );</a>
+<a name="ln1564">      goto Exit;</a>
+<a name="ln1565">    }</a>
+<a name="ln1566"> </a>
+<a name="ln1567">    /* The very first thing expected is the number of glyphs. */</a>
+<a name="ln1568">    if ( !( p-&gt;flags &amp; _BDF_GLYPHS ) )</a>
+<a name="ln1569">    {</a>
+<a name="ln1570">      if ( _bdf_strncmp( line, &quot;CHARS&quot;, 5 ) != 0 )</a>
+<a name="ln1571">      {</a>
+<a name="ln1572">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG1, lineno, &quot;CHARS&quot; ));</a>
+<a name="ln1573">        error = FT_THROW( Missing_Chars_Field );</a>
+<a name="ln1574">        goto Exit;</a>
+<a name="ln1575">      }</a>
+<a name="ln1576"> </a>
+<a name="ln1577">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln1578">      if ( error )</a>
+<a name="ln1579">        goto Exit;</a>
+<a name="ln1580">      p-&gt;cnt = font-&gt;glyphs_size = _bdf_atoul( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln1581"> </a>
+<a name="ln1582">      /* Make sure the number of glyphs is non-zero. */</a>
+<a name="ln1583">      if ( p-&gt;cnt == 0 )</a>
+<a name="ln1584">        font-&gt;glyphs_size = 64;</a>
+<a name="ln1585"> </a>
+<a name="ln1586">      /* Limit ourselves to 1,114,112 glyphs in the font (this is the */</a>
+<a name="ln1587">      /* number of code points available in Unicode).                 */</a>
+<a name="ln1588">      if ( p-&gt;cnt &gt;= 0x110000UL )</a>
+<a name="ln1589">      {</a>
+<a name="ln1590">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG5, lineno, &quot;CHARS&quot; ));</a>
+<a name="ln1591">        error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1592">        goto Exit;</a>
+<a name="ln1593">      }</a>
+<a name="ln1594"> </a>
+<a name="ln1595">      if ( FT_NEW_ARRAY( font-&gt;glyphs, font-&gt;glyphs_size ) )</a>
+<a name="ln1596">        goto Exit;</a>
+<a name="ln1597"> </a>
+<a name="ln1598">      p-&gt;flags |= _BDF_GLYPHS;</a>
+<a name="ln1599"> </a>
+<a name="ln1600">      goto Exit;</a>
+<a name="ln1601">    }</a>
+<a name="ln1602"> </a>
+<a name="ln1603">    /* Check for the ENDFONT field. */</a>
+<a name="ln1604">    if ( _bdf_strncmp( line, &quot;ENDFONT&quot;, 7 ) == 0 )</a>
+<a name="ln1605">    {</a>
+<a name="ln1606">      if ( p-&gt;flags &amp; _BDF_GLYPH_BITS )</a>
+<a name="ln1607">      {</a>
+<a name="ln1608">        /* Missing ENDCHAR field. */</a>
+<a name="ln1609">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG1, lineno, &quot;ENDCHAR&quot; ));</a>
+<a name="ln1610">        error = FT_THROW( Corrupted_Font_Glyphs );</a>
+<a name="ln1611">        goto Exit;</a>
+<a name="ln1612">      }</a>
+<a name="ln1613"> </a>
+<a name="ln1614">      /* Sort the glyphs by encoding. */</a>
+<a name="ln1615">      ft_qsort( (char *)font-&gt;glyphs,</a>
+<a name="ln1616">                font-&gt;glyphs_used,</a>
+<a name="ln1617">                sizeof ( bdf_glyph_t ),</a>
+<a name="ln1618">                by_encoding );</a>
+<a name="ln1619"> </a>
+<a name="ln1620">      p-&gt;flags &amp;= ~_BDF_START;</a>
+<a name="ln1621"> </a>
+<a name="ln1622">      goto Exit;</a>
+<a name="ln1623">    }</a>
+<a name="ln1624"> </a>
+<a name="ln1625">    /* Check for the ENDCHAR field. */</a>
+<a name="ln1626">    if ( _bdf_strncmp( line, &quot;ENDCHAR&quot;, 7 ) == 0 )</a>
+<a name="ln1627">    {</a>
+<a name="ln1628">      p-&gt;glyph_enc = 0;</a>
+<a name="ln1629">      p-&gt;flags    &amp;= ~_BDF_GLYPH_BITS;</a>
+<a name="ln1630"> </a>
+<a name="ln1631">      goto Exit;</a>
+<a name="ln1632">    }</a>
+<a name="ln1633"> </a>
+<a name="ln1634">    /* Check whether a glyph is being scanned but should be */</a>
+<a name="ln1635">    /* ignored because it is an unencoded glyph.            */</a>
+<a name="ln1636">    if ( ( p-&gt;flags &amp; _BDF_GLYPH )     &amp;&amp;</a>
+<a name="ln1637">         p-&gt;glyph_enc            == -1 &amp;&amp;</a>
+<a name="ln1638">         p-&gt;opts-&gt;keep_unencoded == 0  )</a>
+<a name="ln1639">      goto Exit;</a>
+<a name="ln1640"> </a>
+<a name="ln1641">    /* Check for the STARTCHAR field. */</a>
+<a name="ln1642">    if ( _bdf_strncmp( line, &quot;STARTCHAR&quot;, 9 ) == 0 )</a>
+<a name="ln1643">    {</a>
+<a name="ln1644">      /* Set the character name in the parse info first until the */</a>
+<a name="ln1645">      /* encoding can be checked for an unencoded character.      */</a>
+<a name="ln1646">      FT_FREE( p-&gt;glyph_name );</a>
+<a name="ln1647"> </a>
+<a name="ln1648">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln1649">      if ( error )</a>
+<a name="ln1650">        goto Exit;</a>
+<a name="ln1651"> </a>
+<a name="ln1652">      _bdf_list_shift( &amp;p-&gt;list, 1 );</a>
+<a name="ln1653"> </a>
+<a name="ln1654">      s = _bdf_list_join( &amp;p-&gt;list, ' ', &amp;slen );</a>
+<a name="ln1655"> </a>
+<a name="ln1656">      if ( !s )</a>
+<a name="ln1657">      {</a>
+<a name="ln1658">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG8, lineno, &quot;STARTCHAR&quot; ));</a>
+<a name="ln1659">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln1660">        goto Exit;</a>
+<a name="ln1661">      }</a>
+<a name="ln1662"> </a>
+<a name="ln1663">      if ( FT_NEW_ARRAY( p-&gt;glyph_name, slen + 1 ) )</a>
+<a name="ln1664">        goto Exit;</a>
+<a name="ln1665"> </a>
+<a name="ln1666">      FT_MEM_COPY( p-&gt;glyph_name, s, slen + 1 );</a>
+<a name="ln1667"> </a>
+<a name="ln1668">      p-&gt;flags |= _BDF_GLYPH;</a>
+<a name="ln1669"> </a>
+<a name="ln1670">      FT_TRACE4(( DBGMSG1, lineno, s ));</a>
+<a name="ln1671"> </a>
+<a name="ln1672">      goto Exit;</a>
+<a name="ln1673">    }</a>
+<a name="ln1674"> </a>
+<a name="ln1675">    /* Check for the ENCODING field. */</a>
+<a name="ln1676">    if ( _bdf_strncmp( line, &quot;ENCODING&quot;, 8 ) == 0 )</a>
+<a name="ln1677">    {</a>
+<a name="ln1678">      if ( !( p-&gt;flags &amp; _BDF_GLYPH ) )</a>
+<a name="ln1679">      {</a>
+<a name="ln1680">        /* Missing STARTCHAR field. */</a>
+<a name="ln1681">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG1, lineno, &quot;STARTCHAR&quot; ));</a>
+<a name="ln1682">        error = FT_THROW( Missing_Startchar_Field );</a>
+<a name="ln1683">        goto Exit;</a>
+<a name="ln1684">      }</a>
+<a name="ln1685"> </a>
+<a name="ln1686">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln1687">      if ( error )</a>
+<a name="ln1688">        goto Exit;</a>
+<a name="ln1689"> </a>
+<a name="ln1690">      p-&gt;glyph_enc = _bdf_atol( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln1691"> </a>
+<a name="ln1692">      /* Normalize negative encoding values.  The specification only */</a>
+<a name="ln1693">      /* allows -1, but we can be more generous here.                */</a>
+<a name="ln1694">      if ( p-&gt;glyph_enc &lt; -1 )</a>
+<a name="ln1695">        p-&gt;glyph_enc = -1;</a>
+<a name="ln1696"> </a>
+<a name="ln1697">      /* Check for alternative encoding format. */</a>
+<a name="ln1698">      if ( p-&gt;glyph_enc == -1 &amp;&amp; p-&gt;list.used &gt; 2 )</a>
+<a name="ln1699">        p-&gt;glyph_enc = _bdf_atol( p-&gt;list.field[2], 0, 10 );</a>
+<a name="ln1700"> </a>
+<a name="ln1701">      if ( p-&gt;glyph_enc &lt; -1 )</a>
+<a name="ln1702">        p-&gt;glyph_enc = -1;</a>
+<a name="ln1703"> </a>
+<a name="ln1704">      FT_TRACE4(( DBGMSG2, p-&gt;glyph_enc ));</a>
+<a name="ln1705"> </a>
+<a name="ln1706">      /* Check that the encoding is in the Unicode range because  */</a>
+<a name="ln1707">      /* otherwise p-&gt;have (a bitmap with static size) overflows. */</a>
+<a name="ln1708">      if ( p-&gt;glyph_enc &gt; 0                                      &amp;&amp;</a>
+<a name="ln1709">           (size_t)p-&gt;glyph_enc &gt;= sizeof ( p-&gt;have ) /</a>
+<a name="ln1710">                                   sizeof ( unsigned long ) * 32 )</a>
+<a name="ln1711">      {</a>
+<a name="ln1712">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG5, lineno, &quot;ENCODING&quot; ));</a>
+<a name="ln1713">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln1714">        goto Exit;</a>
+<a name="ln1715">      }</a>
+<a name="ln1716"> </a>
+<a name="ln1717">      /* Check whether this encoding has already been encountered. */</a>
+<a name="ln1718">      /* If it has then change it to unencoded so it gets added if */</a>
+<a name="ln1719">      /* indicated.                                                */</a>
+<a name="ln1720">      if ( p-&gt;glyph_enc &gt;= 0 )</a>
+<a name="ln1721">      {</a>
+<a name="ln1722">        if ( _bdf_glyph_modified( p-&gt;have, p-&gt;glyph_enc ) )</a>
+<a name="ln1723">        {</a>
+<a name="ln1724">          /* Emit a message saying a glyph has been moved to the */</a>
+<a name="ln1725">          /* unencoded area.                                     */</a>
+<a name="ln1726">          FT_TRACE2(( &quot;_bdf_parse_glyphs: &quot; ACMSG12,</a>
+<a name="ln1727">                      p-&gt;glyph_enc, p-&gt;glyph_name ));</a>
+<a name="ln1728">          p-&gt;glyph_enc = -1;</a>
+<a name="ln1729">          font-&gt;modified = 1;</a>
+<a name="ln1730">        }</a>
+<a name="ln1731">        else</a>
+<a name="ln1732">          _bdf_set_glyph_modified( p-&gt;have, p-&gt;glyph_enc );</a>
+<a name="ln1733">      }</a>
+<a name="ln1734"> </a>
+<a name="ln1735">      if ( p-&gt;glyph_enc &gt;= 0 )</a>
+<a name="ln1736">      {</a>
+<a name="ln1737">        /* Make sure there are enough glyphs allocated in case the */</a>
+<a name="ln1738">        /* number of characters happen to be wrong.                */</a>
+<a name="ln1739">        if ( font-&gt;glyphs_used == font-&gt;glyphs_size )</a>
+<a name="ln1740">        {</a>
+<a name="ln1741">          if ( FT_RENEW_ARRAY( font-&gt;glyphs,</a>
+<a name="ln1742">                               font-&gt;glyphs_size,</a>
+<a name="ln1743">                               font-&gt;glyphs_size + 64 ) )</a>
+<a name="ln1744">            goto Exit;</a>
+<a name="ln1745"> </a>
+<a name="ln1746">          font-&gt;glyphs_size += 64;</a>
+<a name="ln1747">        }</a>
+<a name="ln1748"> </a>
+<a name="ln1749">        glyph           = font-&gt;glyphs + font-&gt;glyphs_used++;</a>
+<a name="ln1750">        glyph-&gt;name     = p-&gt;glyph_name;</a>
+<a name="ln1751">        glyph-&gt;encoding = p-&gt;glyph_enc;</a>
+<a name="ln1752"> </a>
+<a name="ln1753">        /* Reset the initial glyph info. */</a>
+<a name="ln1754">        p-&gt;glyph_name = NULL;</a>
+<a name="ln1755">      }</a>
+<a name="ln1756">      else</a>
+<a name="ln1757">      {</a>
+<a name="ln1758">        /* Unencoded glyph.  Check whether it should */</a>
+<a name="ln1759">        /* be added or not.                          */</a>
+<a name="ln1760">        if ( p-&gt;opts-&gt;keep_unencoded != 0 )</a>
+<a name="ln1761">        {</a>
+<a name="ln1762">          /* Allocate the next unencoded glyph. */</a>
+<a name="ln1763">          if ( font-&gt;unencoded_used == font-&gt;unencoded_size )</a>
+<a name="ln1764">          {</a>
+<a name="ln1765">            if ( FT_RENEW_ARRAY( font-&gt;unencoded ,</a>
+<a name="ln1766">                                 font-&gt;unencoded_size,</a>
+<a name="ln1767">                                 font-&gt;unencoded_size + 4 ) )</a>
+<a name="ln1768">              goto Exit;</a>
+<a name="ln1769"> </a>
+<a name="ln1770">            font-&gt;unencoded_size += 4;</a>
+<a name="ln1771">          }</a>
+<a name="ln1772"> </a>
+<a name="ln1773">          glyph           = font-&gt;unencoded + font-&gt;unencoded_used;</a>
+<a name="ln1774">          glyph-&gt;name     = p-&gt;glyph_name;</a>
+<a name="ln1775">          glyph-&gt;encoding = (long)font-&gt;unencoded_used++;</a>
+<a name="ln1776">        }</a>
+<a name="ln1777">        else</a>
+<a name="ln1778">          /* Free up the glyph name if the unencoded shouldn't be */</a>
+<a name="ln1779">          /* kept.                                                */</a>
+<a name="ln1780">          FT_FREE( p-&gt;glyph_name );</a>
+<a name="ln1781"> </a>
+<a name="ln1782">        p-&gt;glyph_name = NULL;</a>
+<a name="ln1783">      }</a>
+<a name="ln1784"> </a>
+<a name="ln1785">      /* Clear the flags that might be added when width and height are */</a>
+<a name="ln1786">      /* checked for consistency.                                      */</a>
+<a name="ln1787">      p-&gt;flags &amp;= ~( _BDF_GLYPH_WIDTH_CHECK | _BDF_GLYPH_HEIGHT_CHECK );</a>
+<a name="ln1788"> </a>
+<a name="ln1789">      p-&gt;flags |= _BDF_ENCODING;</a>
+<a name="ln1790"> </a>
+<a name="ln1791">      goto Exit;</a>
+<a name="ln1792">    }</a>
+<a name="ln1793"> </a>
+<a name="ln1794">    /* Point at the glyph being constructed. */</a>
+<a name="ln1795">    if ( p-&gt;glyph_enc == -1 )</a>
+<a name="ln1796">      glyph = font-&gt;unencoded + ( font-&gt;unencoded_used - 1 );</a>
+<a name="ln1797">    else</a>
+<a name="ln1798">      glyph = font-&gt;glyphs + ( font-&gt;glyphs_used - 1 );</a>
+<a name="ln1799"> </a>
+<a name="ln1800">    /* Check whether a bitmap is being constructed. */</a>
+<a name="ln1801">    if ( p-&gt;flags &amp; _BDF_BITMAP )</a>
+<a name="ln1802">    {</a>
+<a name="ln1803">      /* If there are more rows than are specified in the glyph metrics, */</a>
+<a name="ln1804">      /* ignore the remaining lines.                                     */</a>
+<a name="ln1805">      if ( p-&gt;row &gt;= (unsigned long)glyph-&gt;bbx.height )</a>
+<a name="ln1806">      {</a>
+<a name="ln1807">        if ( !( p-&gt;flags &amp; _BDF_GLYPH_HEIGHT_CHECK ) )</a>
+<a name="ln1808">        {</a>
+<a name="ln1809">          FT_TRACE2(( &quot;_bdf_parse_glyphs: &quot; ACMSG13, glyph-&gt;encoding ));</a>
+<a name="ln1810">          p-&gt;flags |= _BDF_GLYPH_HEIGHT_CHECK;</a>
+<a name="ln1811">          font-&gt;modified = 1;</a>
+<a name="ln1812">        }</a>
+<a name="ln1813"> </a>
+<a name="ln1814">        goto Exit;</a>
+<a name="ln1815">      }</a>
+<a name="ln1816"> </a>
+<a name="ln1817">      /* Only collect the number of nibbles indicated by the glyph     */</a>
+<a name="ln1818">      /* metrics.  If there are more columns, they are simply ignored. */</a>
+<a name="ln1819">      nibbles = glyph-&gt;bpr &lt;&lt; 1;</a>
+<a name="ln1820">      bp      = glyph-&gt;bitmap + p-&gt;row * glyph-&gt;bpr;</a>
+<a name="ln1821"> </a>
+<a name="ln1822">      for ( i = 0; i &lt; nibbles; i++ )</a>
+<a name="ln1823">      {</a>
+<a name="ln1824">        c = line[i];</a>
+<a name="ln1825">        if ( !sbitset( hdigits, c ) )</a>
+<a name="ln1826">          break;</a>
+<a name="ln1827">        *bp = (FT_Byte)( ( *bp &lt;&lt; 4 ) + a2i[c] );</a>
+<a name="ln1828">        if ( i + 1 &lt; nibbles &amp;&amp; ( i &amp; 1 ) )</a>
+<a name="ln1829">          *++bp = 0;</a>
+<a name="ln1830">      }</a>
+<a name="ln1831"> </a>
+<a name="ln1832">      /* If any line has not enough columns,            */</a>
+<a name="ln1833">      /* indicate they have been padded with zero bits. */</a>
+<a name="ln1834">      if ( i &lt; nibbles                            &amp;&amp;</a>
+<a name="ln1835">           !( p-&gt;flags &amp; _BDF_GLYPH_WIDTH_CHECK ) )</a>
+<a name="ln1836">      {</a>
+<a name="ln1837">        FT_TRACE2(( &quot;_bdf_parse_glyphs: &quot; ACMSG16, glyph-&gt;encoding ));</a>
+<a name="ln1838">        p-&gt;flags       |= _BDF_GLYPH_WIDTH_CHECK;</a>
+<a name="ln1839">        font-&gt;modified  = 1;</a>
+<a name="ln1840">      }</a>
+<a name="ln1841"> </a>
+<a name="ln1842">      /* Remove possible garbage at the right. */</a>
+<a name="ln1843">      mask_index = ( glyph-&gt;bbx.width * p-&gt;font-&gt;bpp ) &amp; 7;</a>
+<a name="ln1844">      if ( glyph-&gt;bbx.width )</a>
+<a name="ln1845">        *bp &amp;= nibble_mask[mask_index];</a>
+<a name="ln1846"> </a>
+<a name="ln1847">      /* If any line has extra columns, indicate they have been removed. */</a>
+<a name="ln1848">      if ( i == nibbles                           &amp;&amp;</a>
+<a name="ln1849">           sbitset( hdigits, line[nibbles] )      &amp;&amp;</a>
+<a name="ln1850">           !( p-&gt;flags &amp; _BDF_GLYPH_WIDTH_CHECK ) )</a>
+<a name="ln1851">      {</a>
+<a name="ln1852">        FT_TRACE2(( &quot;_bdf_parse_glyphs: &quot; ACMSG14, glyph-&gt;encoding ));</a>
+<a name="ln1853">        p-&gt;flags       |= _BDF_GLYPH_WIDTH_CHECK;</a>
+<a name="ln1854">        font-&gt;modified  = 1;</a>
+<a name="ln1855">      }</a>
+<a name="ln1856"> </a>
+<a name="ln1857">      p-&gt;row++;</a>
+<a name="ln1858">      goto Exit;</a>
+<a name="ln1859">    }</a>
+<a name="ln1860"> </a>
+<a name="ln1861">    /* Expect the SWIDTH (scalable width) field next. */</a>
+<a name="ln1862">    if ( _bdf_strncmp( line, &quot;SWIDTH&quot;, 6 ) == 0 )</a>
+<a name="ln1863">    {</a>
+<a name="ln1864">      if ( !( p-&gt;flags &amp; _BDF_ENCODING ) )</a>
+<a name="ln1865">        goto Missing_Encoding;</a>
+<a name="ln1866"> </a>
+<a name="ln1867">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln1868">      if ( error )</a>
+<a name="ln1869">        goto Exit;</a>
+<a name="ln1870"> </a>
+<a name="ln1871">      glyph-&gt;swidth = (unsigned short)_bdf_atoul( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln1872">      p-&gt;flags |= _BDF_SWIDTH;</a>
+<a name="ln1873"> </a>
+<a name="ln1874">      goto Exit;</a>
+<a name="ln1875">    }</a>
+<a name="ln1876"> </a>
+<a name="ln1877">    /* Expect the DWIDTH (scalable width) field next. */</a>
+<a name="ln1878">    if ( _bdf_strncmp( line, &quot;DWIDTH&quot;, 6 ) == 0 )</a>
+<a name="ln1879">    {</a>
+<a name="ln1880">      if ( !( p-&gt;flags &amp; _BDF_ENCODING ) )</a>
+<a name="ln1881">        goto Missing_Encoding;</a>
+<a name="ln1882"> </a>
+<a name="ln1883">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln1884">      if ( error )</a>
+<a name="ln1885">        goto Exit;</a>
+<a name="ln1886"> </a>
+<a name="ln1887">      glyph-&gt;dwidth = (unsigned short)_bdf_atoul( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln1888"> </a>
+<a name="ln1889">      if ( !( p-&gt;flags &amp; _BDF_SWIDTH ) )</a>
+<a name="ln1890">      {</a>
+<a name="ln1891">        /* Missing SWIDTH field.  Emit an auto correction message and set */</a>
+<a name="ln1892">        /* the scalable width from the device width.                      */</a>
+<a name="ln1893">        FT_TRACE2(( &quot;_bdf_parse_glyphs: &quot; ACMSG9, lineno ));</a>
+<a name="ln1894"> </a>
+<a name="ln1895">        glyph-&gt;swidth = (unsigned short)FT_MulDiv(</a>
+<a name="ln1896">                          glyph-&gt;dwidth, 72000L,</a>
+<a name="ln1897">                          (FT_Long)( font-&gt;point_size *</a>
+<a name="ln1898">                                     font-&gt;resolution_x ) );</a>
+<a name="ln1899">      }</a>
+<a name="ln1900"> </a>
+<a name="ln1901">      p-&gt;flags |= _BDF_DWIDTH;</a>
+<a name="ln1902">      goto Exit;</a>
+<a name="ln1903">    }</a>
+<a name="ln1904"> </a>
+<a name="ln1905">    /* Expect the BBX field next. */</a>
+<a name="ln1906">    if ( _bdf_strncmp( line, &quot;BBX&quot;, 3 ) == 0 )</a>
+<a name="ln1907">    {</a>
+<a name="ln1908">      if ( !( p-&gt;flags &amp; _BDF_ENCODING ) )</a>
+<a name="ln1909">        goto Missing_Encoding;</a>
+<a name="ln1910"> </a>
+<a name="ln1911">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln1912">      if ( error )</a>
+<a name="ln1913">        goto Exit;</a>
+<a name="ln1914"> </a>
+<a name="ln1915">      glyph-&gt;bbx.width    = _bdf_atous( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln1916">      glyph-&gt;bbx.height   = _bdf_atous( p-&gt;list.field[2], 0, 10 );</a>
+<a name="ln1917">      glyph-&gt;bbx.x_offset = _bdf_atos( p-&gt;list.field[3], 0, 10 );</a>
+<a name="ln1918">      glyph-&gt;bbx.y_offset = _bdf_atos( p-&gt;list.field[4], 0, 10 );</a>
+<a name="ln1919"> </a>
+<a name="ln1920">      /* Generate the ascent and descent of the character. */</a>
+<a name="ln1921">      glyph-&gt;bbx.ascent  = (short)( glyph-&gt;bbx.height + glyph-&gt;bbx.y_offset );</a>
+<a name="ln1922">      glyph-&gt;bbx.descent = (short)( -glyph-&gt;bbx.y_offset );</a>
+<a name="ln1923"> </a>
+<a name="ln1924">      /* Determine the overall font bounding box as the characters are */</a>
+<a name="ln1925">      /* loaded so corrections can be done later if indicated.         */</a>
+<a name="ln1926">      p-&gt;maxas    = (short)FT_MAX( glyph-&gt;bbx.ascent, p-&gt;maxas );</a>
+<a name="ln1927">      p-&gt;maxds    = (short)FT_MAX( glyph-&gt;bbx.descent, p-&gt;maxds );</a>
+<a name="ln1928"> </a>
+<a name="ln1929">      p-&gt;rbearing = (short)( glyph-&gt;bbx.width + glyph-&gt;bbx.x_offset );</a>
+<a name="ln1930"> </a>
+<a name="ln1931">      p-&gt;maxrb    = (short)FT_MAX( p-&gt;rbearing, p-&gt;maxrb );</a>
+<a name="ln1932">      p-&gt;minlb    = (short)FT_MIN( glyph-&gt;bbx.x_offset, p-&gt;minlb );</a>
+<a name="ln1933">      p-&gt;maxlb    = (short)FT_MAX( glyph-&gt;bbx.x_offset, p-&gt;maxlb );</a>
+<a name="ln1934"> </a>
+<a name="ln1935">      if ( !( p-&gt;flags &amp; _BDF_DWIDTH ) )</a>
+<a name="ln1936">      {</a>
+<a name="ln1937">        /* Missing DWIDTH field.  Emit an auto correction message and set */</a>
+<a name="ln1938">        /* the device width to the glyph width.                           */</a>
+<a name="ln1939">        FT_TRACE2(( &quot;_bdf_parse_glyphs: &quot; ACMSG10, lineno ));</a>
+<a name="ln1940">        glyph-&gt;dwidth = glyph-&gt;bbx.width;</a>
+<a name="ln1941">      }</a>
+<a name="ln1942"> </a>
+<a name="ln1943">      /* If the BDF_CORRECT_METRICS flag is set, then adjust the SWIDTH */</a>
+<a name="ln1944">      /* value if necessary.                                            */</a>
+<a name="ln1945">      if ( p-&gt;opts-&gt;correct_metrics != 0 )</a>
+<a name="ln1946">      {</a>
+<a name="ln1947">        /* Determine the point size of the glyph. */</a>
+<a name="ln1948">        unsigned short  sw = (unsigned short)FT_MulDiv(</a>
+<a name="ln1949">                               glyph-&gt;dwidth, 72000L,</a>
+<a name="ln1950">                               (FT_Long)( font-&gt;point_size *</a>
+<a name="ln1951">                                          font-&gt;resolution_x ) );</a>
+<a name="ln1952"> </a>
+<a name="ln1953"> </a>
+<a name="ln1954">        if ( sw != glyph-&gt;swidth )</a>
+<a name="ln1955">        {</a>
+<a name="ln1956">          glyph-&gt;swidth = sw;</a>
+<a name="ln1957"> </a>
+<a name="ln1958">          if ( p-&gt;glyph_enc == -1 )</a>
+<a name="ln1959">            _bdf_set_glyph_modified( font-&gt;umod,</a>
+<a name="ln1960">                                     font-&gt;unencoded_used - 1 );</a>
+<a name="ln1961">          else</a>
+<a name="ln1962">            _bdf_set_glyph_modified( font-&gt;nmod, glyph-&gt;encoding );</a>
+<a name="ln1963"> </a>
+<a name="ln1964">          p-&gt;flags       |= _BDF_SWIDTH_ADJ;</a>
+<a name="ln1965">          font-&gt;modified  = 1;</a>
+<a name="ln1966">        }</a>
+<a name="ln1967">      }</a>
+<a name="ln1968"> </a>
+<a name="ln1969">      p-&gt;flags |= _BDF_BBX;</a>
+<a name="ln1970">      goto Exit;</a>
+<a name="ln1971">    }</a>
+<a name="ln1972"> </a>
+<a name="ln1973">    /* And finally, gather up the bitmap. */</a>
+<a name="ln1974">    if ( _bdf_strncmp( line, &quot;BITMAP&quot;, 6 ) == 0 )</a>
+<a name="ln1975">    {</a>
+<a name="ln1976">      unsigned long  bitmap_size;</a>
+<a name="ln1977"> </a>
+<a name="ln1978"> </a>
+<a name="ln1979">      if ( !( p-&gt;flags &amp; _BDF_BBX ) )</a>
+<a name="ln1980">      {</a>
+<a name="ln1981">        /* Missing BBX field. */</a>
+<a name="ln1982">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG1, lineno, &quot;BBX&quot; ));</a>
+<a name="ln1983">        error = FT_THROW( Missing_Bbx_Field );</a>
+<a name="ln1984">        goto Exit;</a>
+<a name="ln1985">      }</a>
+<a name="ln1986"> </a>
+<a name="ln1987">      /* Allocate enough space for the bitmap. */</a>
+<a name="ln1988">      glyph-&gt;bpr = ( glyph-&gt;bbx.width * p-&gt;font-&gt;bpp + 7 ) &gt;&gt; 3;</a>
+<a name="ln1989"> </a>
+<a name="ln1990">      bitmap_size = glyph-&gt;bpr * glyph-&gt;bbx.height;</a>
+<a name="ln1991">      if ( glyph-&gt;bpr &gt; 0xFFFFU || bitmap_size &gt; 0xFFFFU )</a>
+<a name="ln1992">      {</a>
+<a name="ln1993">        FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG4, lineno ));</a>
+<a name="ln1994">        error = FT_THROW( Bbx_Too_Big );</a>
+<a name="ln1995">        goto Exit;</a>
+<a name="ln1996">      }</a>
+<a name="ln1997">      else</a>
+<a name="ln1998">        glyph-&gt;bytes = (unsigned short)bitmap_size;</a>
+<a name="ln1999"> </a>
+<a name="ln2000">      if ( FT_NEW_ARRAY( glyph-&gt;bitmap, glyph-&gt;bytes ) )</a>
+<a name="ln2001">        goto Exit;</a>
+<a name="ln2002"> </a>
+<a name="ln2003">      p-&gt;row    = 0;</a>
+<a name="ln2004">      p-&gt;flags |= _BDF_BITMAP;</a>
+<a name="ln2005"> </a>
+<a name="ln2006">      goto Exit;</a>
+<a name="ln2007">    }</a>
+<a name="ln2008"> </a>
+<a name="ln2009">    FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG9, lineno ));</a>
+<a name="ln2010">    error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln2011">    goto Exit;</a>
+<a name="ln2012"> </a>
+<a name="ln2013">  Missing_Encoding:</a>
+<a name="ln2014">    /* Missing ENCODING field. */</a>
+<a name="ln2015">    FT_ERROR(( &quot;_bdf_parse_glyphs: &quot; ERRMSG1, lineno, &quot;ENCODING&quot; ));</a>
+<a name="ln2016">    error = FT_THROW( Missing_Encoding_Field );</a>
+<a name="ln2017"> </a>
+<a name="ln2018">  Exit:</a>
+<a name="ln2019">    if ( error &amp;&amp; ( p-&gt;flags &amp; _BDF_GLYPH ) )</a>
+<a name="ln2020">      FT_FREE( p-&gt;glyph_name );</a>
+<a name="ln2021"> </a>
+<a name="ln2022">    return error;</a>
+<a name="ln2023">  }</a>
+<a name="ln2024"> </a>
+<a name="ln2025"> </a>
+<a name="ln2026">  /* Load the font properties. */</a>
+<a name="ln2027">  static FT_Error</a>
+<a name="ln2028">  _bdf_parse_properties( char*          line,</a>
+<a name="ln2029">                         unsigned long  linelen,</a>
+<a name="ln2030">                         unsigned long  lineno,</a>
+<a name="ln2031">                         void*          call_data,</a>
+<a name="ln2032">                         void*          client_data )</a>
+<a name="ln2033">  {</a>
+<a name="ln2034">    unsigned long      vlen;</a>
+<a name="ln2035">    _bdf_line_func_t*  next;</a>
+<a name="ln2036">    _bdf_parse_t*      p;</a>
+<a name="ln2037">    char*              name;</a>
+<a name="ln2038">    char*              value;</a>
+<a name="ln2039">    char               nbuf[128];</a>
+<a name="ln2040">    FT_Error           error = FT_Err_Ok;</a>
+<a name="ln2041"> </a>
+<a name="ln2042">    FT_UNUSED( lineno );</a>
+<a name="ln2043"> </a>
+<a name="ln2044"> </a>
+<a name="ln2045">    next = (_bdf_line_func_t *)call_data;</a>
+<a name="ln2046">    p    = (_bdf_parse_t *)    client_data;</a>
+<a name="ln2047"> </a>
+<a name="ln2048">    /* Check for the end of the properties. */</a>
+<a name="ln2049">    if ( _bdf_strncmp( line, &quot;ENDPROPERTIES&quot;, 13 ) == 0 )</a>
+<a name="ln2050">    {</a>
+<a name="ln2051">      /* If the FONT_ASCENT or FONT_DESCENT properties have not been      */</a>
+<a name="ln2052">      /* encountered yet, then make sure they are added as properties and */</a>
+<a name="ln2053">      /* make sure they are set from the font bounding box info.          */</a>
+<a name="ln2054">      /*                                                                  */</a>
+<a name="ln2055">      /* This is *always* done regardless of the options, because X11     */</a>
+<a name="ln2056">      /* requires these two fields to compile fonts.                      */</a>
+<a name="ln2057">      if ( bdf_get_font_property( p-&gt;font, &quot;FONT_ASCENT&quot; ) == 0 )</a>
+<a name="ln2058">      {</a>
+<a name="ln2059">        p-&gt;font-&gt;font_ascent = p-&gt;font-&gt;bbx.ascent;</a>
+<a name="ln2060">        ft_sprintf( nbuf, &quot;%hd&quot;, p-&gt;font-&gt;bbx.ascent );</a>
+<a name="ln2061">        error = _bdf_add_property( p-&gt;font, (char *)&quot;FONT_ASCENT&quot;,</a>
+<a name="ln2062">                                   nbuf, lineno );</a>
+<a name="ln2063">        if ( error )</a>
+<a name="ln2064">          goto Exit;</a>
+<a name="ln2065"> </a>
+<a name="ln2066">        FT_TRACE2(( &quot;_bdf_parse_properties: &quot; ACMSG1, p-&gt;font-&gt;bbx.ascent ));</a>
+<a name="ln2067">        p-&gt;font-&gt;modified = 1;</a>
+<a name="ln2068">      }</a>
+<a name="ln2069"> </a>
+<a name="ln2070">      if ( bdf_get_font_property( p-&gt;font, &quot;FONT_DESCENT&quot; ) == 0 )</a>
+<a name="ln2071">      {</a>
+<a name="ln2072">        p-&gt;font-&gt;font_descent = p-&gt;font-&gt;bbx.descent;</a>
+<a name="ln2073">        ft_sprintf( nbuf, &quot;%hd&quot;, p-&gt;font-&gt;bbx.descent );</a>
+<a name="ln2074">        error = _bdf_add_property( p-&gt;font, (char *)&quot;FONT_DESCENT&quot;,</a>
+<a name="ln2075">                                   nbuf, lineno );</a>
+<a name="ln2076">        if ( error )</a>
+<a name="ln2077">          goto Exit;</a>
+<a name="ln2078"> </a>
+<a name="ln2079">        FT_TRACE2(( &quot;_bdf_parse_properties: &quot; ACMSG2, p-&gt;font-&gt;bbx.descent ));</a>
+<a name="ln2080">        p-&gt;font-&gt;modified = 1;</a>
+<a name="ln2081">      }</a>
+<a name="ln2082"> </a>
+<a name="ln2083">      p-&gt;flags &amp;= ~_BDF_PROPS;</a>
+<a name="ln2084">      *next     = _bdf_parse_glyphs;</a>
+<a name="ln2085"> </a>
+<a name="ln2086">      goto Exit;</a>
+<a name="ln2087">    }</a>
+<a name="ln2088"> </a>
+<a name="ln2089">    /* Ignore the _XFREE86_GLYPH_RANGES properties. */</a>
+<a name="ln2090">    if ( _bdf_strncmp( line, &quot;_XFREE86_GLYPH_RANGES&quot;, 21 ) == 0 )</a>
+<a name="ln2091">      goto Exit;</a>
+<a name="ln2092"> </a>
+<a name="ln2093">    /* Handle COMMENT fields and properties in a special way to preserve */</a>
+<a name="ln2094">    /* the spacing.                                                      */</a>
+<a name="ln2095">    if ( _bdf_strncmp( line, &quot;COMMENT&quot;, 7 ) == 0 )</a>
+<a name="ln2096">    {</a>
+<a name="ln2097">      name = value = line;</a>
+<a name="ln2098">      value += 7;</a>
+<a name="ln2099">      if ( *value )</a>
+<a name="ln2100">        *value++ = 0;</a>
+<a name="ln2101">      error = _bdf_add_property( p-&gt;font, name, value, lineno );</a>
+<a name="ln2102">      if ( error )</a>
+<a name="ln2103">        goto Exit;</a>
+<a name="ln2104">    }</a>
+<a name="ln2105">    else if ( _bdf_is_atom( line, linelen, &amp;name, &amp;value, p-&gt;font ) )</a>
+<a name="ln2106">    {</a>
+<a name="ln2107">      error = _bdf_add_property( p-&gt;font, name, value, lineno );</a>
+<a name="ln2108">      if ( error )</a>
+<a name="ln2109">        goto Exit;</a>
+<a name="ln2110">    }</a>
+<a name="ln2111">    else</a>
+<a name="ln2112">    {</a>
+<a name="ln2113">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln2114">      if ( error )</a>
+<a name="ln2115">        goto Exit;</a>
+<a name="ln2116">      name = p-&gt;list.field[0];</a>
+<a name="ln2117"> </a>
+<a name="ln2118">      _bdf_list_shift( &amp;p-&gt;list, 1 );</a>
+<a name="ln2119">      value = _bdf_list_join( &amp;p-&gt;list, ' ', &amp;vlen );</a>
+<a name="ln2120"> </a>
+<a name="ln2121">      error = _bdf_add_property( p-&gt;font, name, value, lineno );</a>
+<a name="ln2122">      if ( error )</a>
+<a name="ln2123">        goto Exit;</a>
+<a name="ln2124">    }</a>
+<a name="ln2125"> </a>
+<a name="ln2126">  Exit:</a>
+<a name="ln2127">    return error;</a>
+<a name="ln2128">  }</a>
+<a name="ln2129"> </a>
+<a name="ln2130"> </a>
+<a name="ln2131">  /* Load the font header. */</a>
+<a name="ln2132">  static FT_Error</a>
+<a name="ln2133">  _bdf_parse_start( char*          line,</a>
+<a name="ln2134">                    unsigned long  linelen,</a>
+<a name="ln2135">                    unsigned long  lineno,</a>
+<a name="ln2136">                    void*          call_data,</a>
+<a name="ln2137">                    void*          client_data )</a>
+<a name="ln2138">  {</a>
+<a name="ln2139">    unsigned long      slen;</a>
+<a name="ln2140">    _bdf_line_func_t*  next;</a>
+<a name="ln2141">    _bdf_parse_t*      p;</a>
+<a name="ln2142">    bdf_font_t*        font;</a>
+<a name="ln2143">    char               *s;</a>
+<a name="ln2144"> </a>
+<a name="ln2145">    FT_Memory          memory = NULL;</a>
+<a name="ln2146">    FT_Error           error  = FT_Err_Ok;</a>
+<a name="ln2147"> </a>
+<a name="ln2148">    FT_UNUSED( lineno );            /* only used in debug mode */</a>
+<a name="ln2149"> </a>
+<a name="ln2150"> </a>
+<a name="ln2151">    next = (_bdf_line_func_t *)call_data;</a>
+<a name="ln2152">    p    = (_bdf_parse_t *)    client_data;</a>
+<a name="ln2153"> </a>
+<a name="ln2154">    if ( p-&gt;font )</a>
+<a name="ln2155">      memory = p-&gt;font-&gt;memory;</a>
+<a name="ln2156"> </a>
+<a name="ln2157">    /* Check for a comment.  This is done to handle those fonts that have */</a>
+<a name="ln2158">    /* comments before the STARTFONT line for some reason.                */</a>
+<a name="ln2159">    if ( _bdf_strncmp( line, &quot;COMMENT&quot;, 7 ) == 0 )</a>
+<a name="ln2160">    {</a>
+<a name="ln2161">      if ( p-&gt;opts-&gt;keep_comments != 0 &amp;&amp; p-&gt;font != 0 )</a>
+<a name="ln2162">      {</a>
+<a name="ln2163">        linelen -= 7;</a>
+<a name="ln2164"> </a>
+<a name="ln2165">        s = line + 7;</a>
+<a name="ln2166">        if ( *s != 0 )</a>
+<a name="ln2167">        {</a>
+<a name="ln2168">          s++;</a>
+<a name="ln2169">          linelen--;</a>
+<a name="ln2170">        }</a>
+<a name="ln2171"> </a>
+<a name="ln2172">        error = _bdf_add_comment( p-&gt;font, s, linelen );</a>
+<a name="ln2173">        if ( error )</a>
+<a name="ln2174">          goto Exit;</a>
+<a name="ln2175">        /* here font is not defined! */</a>
+<a name="ln2176">      }</a>
+<a name="ln2177"> </a>
+<a name="ln2178">      goto Exit;</a>
+<a name="ln2179">    }</a>
+<a name="ln2180"> </a>
+<a name="ln2181">    if ( !( p-&gt;flags &amp; _BDF_START ) )</a>
+<a name="ln2182">    {</a>
+<a name="ln2183">      memory = p-&gt;memory;</a>
+<a name="ln2184"> </a>
+<a name="ln2185">      if ( _bdf_strncmp( line, &quot;STARTFONT&quot;, 9 ) != 0 )</a>
+<a name="ln2186">      {</a>
+<a name="ln2187">        /* we don't emit an error message since this code gets */</a>
+<a name="ln2188">        /* explicitly caught one level higher                  */</a>
+<a name="ln2189">        error = FT_THROW( Missing_Startfont_Field );</a>
+<a name="ln2190">        goto Exit;</a>
+<a name="ln2191">      }</a>
+<a name="ln2192"> </a>
+<a name="ln2193">      p-&gt;flags = _BDF_START;</a>
+<a name="ln2194">      font = p-&gt;font = 0;</a>
+<a name="ln2195"> </a>
+<a name="ln2196">      if ( FT_NEW( font ) )</a>
+<a name="ln2197">        goto Exit;</a>
+<a name="ln2198">      p-&gt;font = font;</a>
+<a name="ln2199"> </a>
+<a name="ln2200">      font-&gt;memory = p-&gt;memory;</a>
+<a name="ln2201">      p-&gt;memory    = 0;</a>
+<a name="ln2202"> </a>
+<a name="ln2203">      { /* setup */</a>
+<a name="ln2204">        size_t           i;</a>
+<a name="ln2205">        bdf_property_t*  prop;</a>
+<a name="ln2206"> </a>
+<a name="ln2207"> </a>
+<a name="ln2208">        error = hash_init( &amp;(font-&gt;proptbl), memory );</a>
+<a name="ln2209">        if ( error )</a>
+<a name="ln2210">          goto Exit;</a>
+<a name="ln2211">        for ( i = 0, prop = (bdf_property_t*)_bdf_properties;</a>
+<a name="ln2212">              i &lt; _num_bdf_properties; i++, prop++ )</a>
+<a name="ln2213">        {</a>
+<a name="ln2214">          error = hash_insert( prop-&gt;name, i,</a>
+<a name="ln2215">                               &amp;(font-&gt;proptbl), memory );</a>
+<a name="ln2216">          if ( error )</a>
+<a name="ln2217">            goto Exit;</a>
+<a name="ln2218">        }</a>
+<a name="ln2219">      }</a>
+<a name="ln2220"> </a>
+<a name="ln2221">      if ( FT_ALLOC( p-&gt;font-&gt;internal, sizeof ( hashtable ) ) )</a>
+<a name="ln2222">        goto Exit;</a>
+<a name="ln2223">      error = hash_init( (hashtable *)p-&gt;font-&gt;internal,memory );</a>
+<a name="ln2224">      if ( error )</a>
+<a name="ln2225">        goto Exit;</a>
+<a name="ln2226">      p-&gt;font-&gt;spacing      = p-&gt;opts-&gt;font_spacing;</a>
+<a name="ln2227">      p-&gt;font-&gt;default_char = -1;</a>
+<a name="ln2228"> </a>
+<a name="ln2229">      goto Exit;</a>
+<a name="ln2230">    }</a>
+<a name="ln2231"> </a>
+<a name="ln2232">    /* Check for the start of the properties. */</a>
+<a name="ln2233">    if ( _bdf_strncmp( line, &quot;STARTPROPERTIES&quot;, 15 ) == 0 )</a>
+<a name="ln2234">    {</a>
+<a name="ln2235">      if ( !( p-&gt;flags &amp; _BDF_FONT_BBX ) )</a>
+<a name="ln2236">      {</a>
+<a name="ln2237">        /* Missing the FONTBOUNDINGBOX field. */</a>
+<a name="ln2238">        FT_ERROR(( &quot;_bdf_parse_start: &quot; ERRMSG1, lineno, &quot;FONTBOUNDINGBOX&quot; ));</a>
+<a name="ln2239">        error = FT_THROW( Missing_Fontboundingbox_Field );</a>
+<a name="ln2240">        goto Exit;</a>
+<a name="ln2241">      }</a>
+<a name="ln2242"> </a>
+<a name="ln2243">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln2244">      if ( error )</a>
+<a name="ln2245">        goto Exit;</a>
+<a name="ln2246">      /* at this point, `p-&gt;font' can't be NULL */</a>
+<a name="ln2247">      p-&gt;cnt = p-&gt;font-&gt;props_size = _bdf_atoul( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln2248"> </a>
+<a name="ln2249">      if ( FT_NEW_ARRAY( p-&gt;font-&gt;props, p-&gt;cnt ) )</a>
+<a name="ln2250">      {</a>
+<a name="ln2251">        p-&gt;font-&gt;props_size = 0;</a>
+<a name="ln2252">        goto Exit;</a>
+<a name="ln2253">      }</a>
+<a name="ln2254"> </a>
+<a name="ln2255">      p-&gt;flags |= _BDF_PROPS;</a>
+<a name="ln2256">      *next     = _bdf_parse_properties;</a>
+<a name="ln2257"> </a>
+<a name="ln2258">      goto Exit;</a>
+<a name="ln2259">    }</a>
+<a name="ln2260"> </a>
+<a name="ln2261">    /* Check for the FONTBOUNDINGBOX field. */</a>
+<a name="ln2262">    if ( _bdf_strncmp( line, &quot;FONTBOUNDINGBOX&quot;, 15 ) == 0 )</a>
+<a name="ln2263">    {</a>
+<a name="ln2264">      if ( !( p-&gt;flags &amp; _BDF_SIZE ) )</a>
+<a name="ln2265">      {</a>
+<a name="ln2266">        /* Missing the SIZE field. */</a>
+<a name="ln2267">        FT_ERROR(( &quot;_bdf_parse_start: &quot; ERRMSG1, lineno, &quot;SIZE&quot; ));</a>
+<a name="ln2268">        error = FT_THROW( Missing_Size_Field );</a>
+<a name="ln2269">        goto Exit;</a>
+<a name="ln2270">      }</a>
+<a name="ln2271"> </a>
+<a name="ln2272">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln2273">      if ( error )</a>
+<a name="ln2274">        goto Exit;</a>
+<a name="ln2275"> </a>
+<a name="ln2276">      p-&gt;font-&gt;bbx.width  = _bdf_atous( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln2277">      p-&gt;font-&gt;bbx.height = _bdf_atous( p-&gt;list.field[2], 0, 10 );</a>
+<a name="ln2278"> </a>
+<a name="ln2279">      p-&gt;font-&gt;bbx.x_offset = _bdf_atos( p-&gt;list.field[3], 0, 10 );</a>
+<a name="ln2280">      p-&gt;font-&gt;bbx.y_offset = _bdf_atos( p-&gt;list.field[4], 0, 10 );</a>
+<a name="ln2281"> </a>
+<a name="ln2282">      p-&gt;font-&gt;bbx.ascent  = (short)( p-&gt;font-&gt;bbx.height +</a>
+<a name="ln2283">                                      p-&gt;font-&gt;bbx.y_offset );</a>
+<a name="ln2284"> </a>
+<a name="ln2285">      p-&gt;font-&gt;bbx.descent = (short)( -p-&gt;font-&gt;bbx.y_offset );</a>
+<a name="ln2286"> </a>
+<a name="ln2287">      p-&gt;flags |= _BDF_FONT_BBX;</a>
+<a name="ln2288"> </a>
+<a name="ln2289">      goto Exit;</a>
+<a name="ln2290">    }</a>
+<a name="ln2291"> </a>
+<a name="ln2292">    /* The next thing to check for is the FONT field. */</a>
+<a name="ln2293">    if ( _bdf_strncmp( line, &quot;FONT&quot;, 4 ) == 0 )</a>
+<a name="ln2294">    {</a>
+<a name="ln2295">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln2296">      if ( error )</a>
+<a name="ln2297">        goto Exit;</a>
+<a name="ln2298">      _bdf_list_shift( &amp;p-&gt;list, 1 );</a>
+<a name="ln2299"> </a>
+<a name="ln2300">      s = _bdf_list_join( &amp;p-&gt;list, ' ', &amp;slen );</a>
+<a name="ln2301"> </a>
+<a name="ln2302">      if ( !s )</a>
+<a name="ln2303">      {</a>
+<a name="ln2304">        FT_ERROR(( &quot;_bdf_parse_start: &quot; ERRMSG8, lineno, &quot;FONT&quot; ));</a>
+<a name="ln2305">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln2306">        goto Exit;</a>
+<a name="ln2307">      }</a>
+<a name="ln2308"> </a>
+<a name="ln2309">      /* Allowing multiple `FONT' lines (which is invalid) doesn't hurt... */</a>
+<a name="ln2310">      FT_FREE( p-&gt;font-&gt;name );</a>
+<a name="ln2311"> </a>
+<a name="ln2312">      if ( FT_NEW_ARRAY( p-&gt;font-&gt;name, slen + 1 ) )</a>
+<a name="ln2313">        goto Exit;</a>
+<a name="ln2314">      FT_MEM_COPY( p-&gt;font-&gt;name, s, slen + 1 );</a>
+<a name="ln2315"> </a>
+<a name="ln2316">      /* If the font name is an XLFD name, set the spacing to the one in  */</a>
+<a name="ln2317">      /* the font name.  If there is no spacing fall back on the default. */</a>
+<a name="ln2318">      error = _bdf_set_default_spacing( p-&gt;font, p-&gt;opts, lineno );</a>
+<a name="ln2319">      if ( error )</a>
+<a name="ln2320">        goto Exit;</a>
+<a name="ln2321"> </a>
+<a name="ln2322">      p-&gt;flags |= _BDF_FONT_NAME;</a>
+<a name="ln2323"> </a>
+<a name="ln2324">      goto Exit;</a>
+<a name="ln2325">    }</a>
+<a name="ln2326"> </a>
+<a name="ln2327">    /* Check for the SIZE field. */</a>
+<a name="ln2328">    if ( _bdf_strncmp( line, &quot;SIZE&quot;, 4 ) == 0 )</a>
+<a name="ln2329">    {</a>
+<a name="ln2330">      if ( !( p-&gt;flags &amp; _BDF_FONT_NAME ) )</a>
+<a name="ln2331">      {</a>
+<a name="ln2332">        /* Missing the FONT field. */</a>
+<a name="ln2333">        FT_ERROR(( &quot;_bdf_parse_start: &quot; ERRMSG1, lineno, &quot;FONT&quot; ));</a>
+<a name="ln2334">        error = FT_THROW( Missing_Font_Field );</a>
+<a name="ln2335">        goto Exit;</a>
+<a name="ln2336">      }</a>
+<a name="ln2337"> </a>
+<a name="ln2338">      error = _bdf_list_split( &amp;p-&gt;list, (char *)&quot; +&quot;, line, linelen );</a>
+<a name="ln2339">      if ( error )</a>
+<a name="ln2340">        goto Exit;</a>
+<a name="ln2341"> </a>
+<a name="ln2342">      p-&gt;font-&gt;point_size   = _bdf_atoul( p-&gt;list.field[1], 0, 10 );</a>
+<a name="ln2343">      p-&gt;font-&gt;resolution_x = _bdf_atoul( p-&gt;list.field[2], 0, 10 );</a>
+<a name="ln2344">      p-&gt;font-&gt;resolution_y = _bdf_atoul( p-&gt;list.field[3], 0, 10 );</a>
+<a name="ln2345"> </a>
+<a name="ln2346">      /* Check for the bits per pixel field. */</a>
+<a name="ln2347">      if ( p-&gt;list.used == 5 )</a>
+<a name="ln2348">      {</a>
+<a name="ln2349">        unsigned short bpp;</a>
+<a name="ln2350"> </a>
+<a name="ln2351"> </a>
+<a name="ln2352">        bpp = (unsigned short)_bdf_atos( p-&gt;list.field[4], 0, 10 );</a>
+<a name="ln2353"> </a>
+<a name="ln2354">        /* Only values 1, 2, 4, 8 are allowed for greymap fonts. */</a>
+<a name="ln2355">        if ( bpp &gt; 4 )</a>
+<a name="ln2356">          p-&gt;font-&gt;bpp = 8;</a>
+<a name="ln2357">        else if ( bpp &gt; 2 )</a>
+<a name="ln2358">          p-&gt;font-&gt;bpp = 4;</a>
+<a name="ln2359">        else if ( bpp &gt; 1 )</a>
+<a name="ln2360">          p-&gt;font-&gt;bpp = 2;</a>
+<a name="ln2361">        else</a>
+<a name="ln2362">          p-&gt;font-&gt;bpp = 1;</a>
+<a name="ln2363"> </a>
+<a name="ln2364">        if ( p-&gt;font-&gt;bpp != bpp )</a>
+<a name="ln2365">          FT_TRACE2(( &quot;_bdf_parse_start: &quot; ACMSG11, p-&gt;font-&gt;bpp ));</a>
+<a name="ln2366">      }</a>
+<a name="ln2367">      else</a>
+<a name="ln2368">        p-&gt;font-&gt;bpp = 1;</a>
+<a name="ln2369"> </a>
+<a name="ln2370">      p-&gt;flags |= _BDF_SIZE;</a>
+<a name="ln2371"> </a>
+<a name="ln2372">      goto Exit;</a>
+<a name="ln2373">    }</a>
+<a name="ln2374"> </a>
+<a name="ln2375">    /* Check for the CHARS field -- font properties are optional */</a>
+<a name="ln2376">    if ( _bdf_strncmp( line, &quot;CHARS&quot;, 5 ) == 0 )</a>
+<a name="ln2377">    {</a>
+<a name="ln2378">      char  nbuf[128];</a>
+<a name="ln2379"> </a>
+<a name="ln2380"> </a>
+<a name="ln2381">      if ( !( p-&gt;flags &amp; _BDF_FONT_BBX ) )</a>
+<a name="ln2382">      {</a>
+<a name="ln2383">        /* Missing the FONTBOUNDINGBOX field. */</a>
+<a name="ln2384">        FT_ERROR(( &quot;_bdf_parse_start: &quot; ERRMSG1, lineno, &quot;FONTBOUNDINGBOX&quot; ));</a>
+<a name="ln2385">        error = FT_THROW( Missing_Fontboundingbox_Field );</a>
+<a name="ln2386">        goto Exit;</a>
+<a name="ln2387">      }</a>
+<a name="ln2388"> </a>
+<a name="ln2389">      /* Add the two standard X11 properties which are required */</a>
+<a name="ln2390">      /* for compiling fonts.                                   */</a>
+<a name="ln2391">      p-&gt;font-&gt;font_ascent = p-&gt;font-&gt;bbx.ascent;</a>
+<a name="ln2392">      ft_sprintf( nbuf, &quot;%hd&quot;, p-&gt;font-&gt;bbx.ascent );</a>
+<a name="ln2393">      error = _bdf_add_property( p-&gt;font, (char *)&quot;FONT_ASCENT&quot;,</a>
+<a name="ln2394">                                 nbuf, lineno );</a>
+<a name="ln2395">      if ( error )</a>
+<a name="ln2396">        goto Exit;</a>
+<a name="ln2397">      FT_TRACE2(( &quot;_bdf_parse_properties: &quot; ACMSG1, p-&gt;font-&gt;bbx.ascent ));</a>
+<a name="ln2398"> </a>
+<a name="ln2399">      p-&gt;font-&gt;font_descent = p-&gt;font-&gt;bbx.descent;</a>
+<a name="ln2400">      ft_sprintf( nbuf, &quot;%hd&quot;, p-&gt;font-&gt;bbx.descent );</a>
+<a name="ln2401">      error = _bdf_add_property( p-&gt;font, (char *)&quot;FONT_DESCENT&quot;,</a>
+<a name="ln2402">                                 nbuf, lineno );</a>
+<a name="ln2403">      if ( error )</a>
+<a name="ln2404">        goto Exit;</a>
+<a name="ln2405">      FT_TRACE2(( &quot;_bdf_parse_properties: &quot; ACMSG2, p-&gt;font-&gt;bbx.descent ));</a>
+<a name="ln2406"> </a>
+<a name="ln2407">      p-&gt;font-&gt;modified = 1;</a>
+<a name="ln2408"> </a>
+<a name="ln2409">      *next = _bdf_parse_glyphs;</a>
+<a name="ln2410"> </a>
+<a name="ln2411">      /* A special return value. */</a>
+<a name="ln2412">      error = -1;</a>
+<a name="ln2413">      goto Exit;</a>
+<a name="ln2414">    }</a>
+<a name="ln2415"> </a>
+<a name="ln2416">    FT_ERROR(( &quot;_bdf_parse_start: &quot; ERRMSG9, lineno ));</a>
+<a name="ln2417">    error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln2418"> </a>
+<a name="ln2419">  Exit:</a>
+<a name="ln2420">    return error;</a>
+<a name="ln2421">  }</a>
+<a name="ln2422"> </a>
+<a name="ln2423"> </a>
+<a name="ln2424">  /*************************************************************************/</a>
+<a name="ln2425">  /*                                                                       */</a>
+<a name="ln2426">  /* API.                                                                  */</a>
+<a name="ln2427">  /*                                                                       */</a>
+<a name="ln2428">  /*************************************************************************/</a>
+<a name="ln2429"> </a>
+<a name="ln2430"> </a>
+<a name="ln2431">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln2432">  bdf_load_font( FT_Stream       stream,</a>
+<a name="ln2433">                 FT_Memory       extmemory,</a>
+<a name="ln2434">                 bdf_options_t*  opts,</a>
+<a name="ln2435">                 bdf_font_t*    *font )</a>
+<a name="ln2436">  {</a>
+<a name="ln2437">    unsigned long  lineno = 0; /* make compiler happy */</a>
+<a name="ln2438">    _bdf_parse_t   *p     = NULL;</a>
+<a name="ln2439"> </a>
+<a name="ln2440">    FT_Memory  memory = extmemory; /* needed for FT_NEW */</a>
+<a name="ln2441">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln2442"> </a>
+<a name="ln2443"> </a>
+<a name="ln2444">    if ( FT_NEW( p ) )</a>
+<a name="ln2445">      goto Exit;</a>
+<a name="ln2446"> </a>
+<a name="ln2447">    memory    = NULL;</a>
+<a name="ln2448">    p-&gt;opts   = (bdf_options_t*)( ( opts != 0 ) ? opts : &amp;_bdf_opts );</a>
+<a name="ln2449">    p-&gt;minlb  = 32767;</a>
+<a name="ln2450">    p-&gt;memory = extmemory;  /* only during font creation */</a>
+<a name="ln2451"> </a>
+<a name="ln2452">    _bdf_list_init( &amp;p-&gt;list, extmemory );</a>
+<a name="ln2453"> </a>
+<a name="ln2454">    error = _bdf_readstream( stream, _bdf_parse_start,</a>
+<a name="ln2455">                             (void *)p, &amp;lineno );</a>
+<a name="ln2456">    if ( error )</a>
+<a name="ln2457">      goto Fail;</a>
+<a name="ln2458"> </a>
+<a name="ln2459">    if ( p-&gt;font != 0 )</a>
+<a name="ln2460">    {</a>
+<a name="ln2461">      /* If the font is not proportional, set the font's monowidth */</a>
+<a name="ln2462">      /* field to the width of the font bounding box.              */</a>
+<a name="ln2463"> </a>
+<a name="ln2464">      if ( p-&gt;font-&gt;spacing != BDF_PROPORTIONAL )</a>
+<a name="ln2465">        p-&gt;font-&gt;monowidth = p-&gt;font-&gt;bbx.width;</a>
+<a name="ln2466"> </a>
+<a name="ln2467">      /* If the number of glyphs loaded is not that of the original count, */</a>
+<a name="ln2468">      /* indicate the difference.                                          */</a>
+<a name="ln2469">      if ( p-&gt;cnt != p-&gt;font-&gt;glyphs_used + p-&gt;font-&gt;unencoded_used )</a>
+<a name="ln2470">      {</a>
+<a name="ln2471">        FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG15, p-&gt;cnt,</a>
+<a name="ln2472">                    p-&gt;font-&gt;glyphs_used + p-&gt;font-&gt;unencoded_used ));</a>
+<a name="ln2473">        p-&gt;font-&gt;modified = 1;</a>
+<a name="ln2474">      }</a>
+<a name="ln2475"> </a>
+<a name="ln2476">      /* Once the font has been loaded, adjust the overall font metrics if */</a>
+<a name="ln2477">      /* necessary.                                                        */</a>
+<a name="ln2478">      if ( p-&gt;opts-&gt;correct_metrics != 0 &amp;&amp;</a>
+<a name="ln2479">           ( p-&gt;font-&gt;glyphs_used &gt; 0 || p-&gt;font-&gt;unencoded_used &gt; 0 ) )</a>
+<a name="ln2480">      {</a>
+<a name="ln2481">        if ( p-&gt;maxrb - p-&gt;minlb != p-&gt;font-&gt;bbx.width )</a>
+<a name="ln2482">        {</a>
+<a name="ln2483">          FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG3,</a>
+<a name="ln2484">                      p-&gt;font-&gt;bbx.width, p-&gt;maxrb - p-&gt;minlb ));</a>
+<a name="ln2485">          p-&gt;font-&gt;bbx.width = (unsigned short)( p-&gt;maxrb - p-&gt;minlb );</a>
+<a name="ln2486">          p-&gt;font-&gt;modified  = 1;</a>
+<a name="ln2487">        }</a>
+<a name="ln2488"> </a>
+<a name="ln2489">        if ( p-&gt;font-&gt;bbx.x_offset != p-&gt;minlb )</a>
+<a name="ln2490">        {</a>
+<a name="ln2491">          FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG4,</a>
+<a name="ln2492">                      p-&gt;font-&gt;bbx.x_offset, p-&gt;minlb ));</a>
+<a name="ln2493">          p-&gt;font-&gt;bbx.x_offset = p-&gt;minlb;</a>
+<a name="ln2494">          p-&gt;font-&gt;modified     = 1;</a>
+<a name="ln2495">        }</a>
+<a name="ln2496"> </a>
+<a name="ln2497">        if ( p-&gt;font-&gt;bbx.ascent != p-&gt;maxas )</a>
+<a name="ln2498">        {</a>
+<a name="ln2499">          FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG5,</a>
+<a name="ln2500">                      p-&gt;font-&gt;bbx.ascent, p-&gt;maxas ));</a>
+<a name="ln2501">          p-&gt;font-&gt;bbx.ascent = p-&gt;maxas;</a>
+<a name="ln2502">          p-&gt;font-&gt;modified   = 1;</a>
+<a name="ln2503">        }</a>
+<a name="ln2504"> </a>
+<a name="ln2505">        if ( p-&gt;font-&gt;bbx.descent != p-&gt;maxds )</a>
+<a name="ln2506">        {</a>
+<a name="ln2507">          FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG6,</a>
+<a name="ln2508">                      p-&gt;font-&gt;bbx.descent, p-&gt;maxds ));</a>
+<a name="ln2509">          p-&gt;font-&gt;bbx.descent  = p-&gt;maxds;</a>
+<a name="ln2510">          p-&gt;font-&gt;bbx.y_offset = (short)( -p-&gt;maxds );</a>
+<a name="ln2511">          p-&gt;font-&gt;modified     = 1;</a>
+<a name="ln2512">        }</a>
+<a name="ln2513"> </a>
+<a name="ln2514">        if ( p-&gt;maxas + p-&gt;maxds != p-&gt;font-&gt;bbx.height )</a>
+<a name="ln2515">        {</a>
+<a name="ln2516">          FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG7,</a>
+<a name="ln2517">                      p-&gt;font-&gt;bbx.height, p-&gt;maxas + p-&gt;maxds ));</a>
+<a name="ln2518">          p-&gt;font-&gt;bbx.height = (unsigned short)( p-&gt;maxas + p-&gt;maxds );</a>
+<a name="ln2519">        }</a>
+<a name="ln2520"> </a>
+<a name="ln2521">        if ( p-&gt;flags &amp; _BDF_SWIDTH_ADJ )</a>
+<a name="ln2522">          FT_TRACE2(( &quot;bdf_load_font: &quot; ACMSG8 ));</a>
+<a name="ln2523">      }</a>
+<a name="ln2524">    }</a>
+<a name="ln2525"> </a>
+<a name="ln2526">    if ( p-&gt;flags &amp; _BDF_START )</a>
+<a name="ln2527">    {</a>
+<a name="ln2528">      /* The ENDFONT field was never reached or did not exist. */</a>
+<a name="ln2529">      if ( !( p-&gt;flags &amp; _BDF_GLYPHS ) )</a>
+<a name="ln2530">      {</a>
+<a name="ln2531">        /* Error happened while parsing header. */</a>
+<a name="ln2532">        FT_ERROR(( &quot;bdf_load_font: &quot; ERRMSG2, lineno ));</a>
+<a name="ln2533">        error = FT_THROW( Corrupted_Font_Header );</a>
+<a name="ln2534">        goto Exit;</a>
+<a name="ln2535">      }</a>
+<a name="ln2536">      else</a>
+<a name="ln2537">      {</a>
+<a name="ln2538">        /* Error happened when parsing glyphs. */</a>
+<a name="ln2539">        FT_ERROR(( &quot;bdf_load_font: &quot; ERRMSG3, lineno ));</a>
+<a name="ln2540">        error = FT_THROW( Corrupted_Font_Glyphs );</a>
+<a name="ln2541">        goto Exit;</a>
+<a name="ln2542">      }</a>
+<a name="ln2543">    }</a>
+<a name="ln2544"> </a>
+<a name="ln2545">    if ( p-&gt;font != 0 )</a>
+<a name="ln2546">    {</a>
+<a name="ln2547">      /* Make sure the comments are NULL terminated if they exist. */</a>
+<a name="ln2548">      memory = p-&gt;font-&gt;memory;</a>
+<a name="ln2549"> </a>
+<a name="ln2550">      if ( p-&gt;font-&gt;comments_len &gt; 0 )</a>
+<a name="ln2551">      {</a>
+<a name="ln2552">        if ( FT_RENEW_ARRAY( p-&gt;font-&gt;comments,</a>
+<a name="ln2553">                             p-&gt;font-&gt;comments_len,</a>
+<a name="ln2554">                             p-&gt;font-&gt;comments_len + 1 ) )</a>
+<a name="ln2555">          goto Fail;</a>
+<a name="ln2556"> </a>
+<a name="ln2557">        p-&gt;font-&gt;comments[p-&gt;font-&gt;comments_len] = 0;</a>
+<a name="ln2558">      }</a>
+<a name="ln2559">    }</a>
+<a name="ln2560">    else if ( error == FT_Err_Ok )</a>
+<a name="ln2561">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln2562"> </a>
+<a name="ln2563">    *font = p-&gt;font;</a>
+<a name="ln2564"> </a>
+<a name="ln2565">  Exit:</a>
+<a name="ln2566">    if ( p )</a>
+<a name="ln2567">    {</a>
+<a name="ln2568">      _bdf_list_done( &amp;p-&gt;list );</a>
+<a name="ln2569"> </a>
+<a name="ln2570">      memory = extmemory;</a>
+<a name="ln2571"> </a>
+<a name="ln2572">      FT_FREE( p );</a>
+<a name="ln2573">    }</a>
+<a name="ln2574"> </a>
+<a name="ln2575">    return error;</a>
+<a name="ln2576"> </a>
+<a name="ln2577">  Fail:</a>
+<a name="ln2578">    bdf_free_font( p-&gt;font );</a>
+<a name="ln2579"> </a>
+<a name="ln2580">    memory = extmemory;</a>
+<a name="ln2581"> </a>
+<a name="ln2582">    FT_FREE( p-&gt;font );</a>
+<a name="ln2583"> </a>
+<a name="ln2584">    goto Exit;</a>
+<a name="ln2585">  }</a>
+<a name="ln2586"> </a>
+<a name="ln2587"> </a>
+<a name="ln2588">  FT_LOCAL_DEF( void )</a>
+<a name="ln2589">  bdf_free_font( bdf_font_t*  font )</a>
+<a name="ln2590">  {</a>
+<a name="ln2591">    bdf_property_t*  prop;</a>
+<a name="ln2592">    unsigned long    i;</a>
+<a name="ln2593">    bdf_glyph_t*     glyphs;</a>
+<a name="ln2594">    FT_Memory        memory;</a>
+<a name="ln2595"> </a>
+<a name="ln2596"> </a>
+<a name="ln2597">    if ( font == 0 )</a>
+<a name="ln2598">      return;</a>
+<a name="ln2599"> </a>
+<a name="ln2600">    memory = font-&gt;memory;</a>
+<a name="ln2601"> </a>
+<a name="ln2602">    FT_FREE( font-&gt;name );</a>
+<a name="ln2603"> </a>
+<a name="ln2604">    /* Free up the internal hash table of property names. */</a>
+<a name="ln2605">    if ( font-&gt;internal )</a>
+<a name="ln2606">    {</a>
+<a name="ln2607">      hash_free( (hashtable *)font-&gt;internal, memory );</a>
+<a name="ln2608">      FT_FREE( font-&gt;internal );</a>
+<a name="ln2609">    }</a>
+<a name="ln2610"> </a>
+<a name="ln2611">    /* Free up the comment info. */</a>
+<a name="ln2612">    FT_FREE( font-&gt;comments );</a>
+<a name="ln2613"> </a>
+<a name="ln2614">    /* Free up the properties. */</a>
+<a name="ln2615">    for ( i = 0; i &lt; font-&gt;props_size; i++ )</a>
+<a name="ln2616">    {</a>
+<a name="ln2617">      if ( font-&gt;props[i].format == BDF_ATOM )</a>
+<a name="ln2618">        FT_FREE( font-&gt;props[i].value.atom );</a>
+<a name="ln2619">    }</a>
+<a name="ln2620"> </a>
+<a name="ln2621">    FT_FREE( font-&gt;props );</a>
+<a name="ln2622"> </a>
+<a name="ln2623">    /* Free up the character info. */</a>
+<a name="ln2624">    for ( i = 0, glyphs = font-&gt;glyphs;</a>
+<a name="ln2625">          i &lt; font-&gt;glyphs_used; i++, glyphs++ )</a>
+<a name="ln2626">    {</a>
+<a name="ln2627">      FT_FREE( glyphs-&gt;name );</a>
+<a name="ln2628">      FT_FREE( glyphs-&gt;bitmap );</a>
+<a name="ln2629">    }</a>
+<a name="ln2630"> </a>
+<a name="ln2631">    for ( i = 0, glyphs = font-&gt;unencoded; i &lt; font-&gt;unencoded_used;</a>
+<a name="ln2632">          i++, glyphs++ )</a>
+<a name="ln2633">    {</a>
+<a name="ln2634">      FT_FREE( glyphs-&gt;name );</a>
+<a name="ln2635">      FT_FREE( glyphs-&gt;bitmap );</a>
+<a name="ln2636">    }</a>
+<a name="ln2637"> </a>
+<a name="ln2638">    FT_FREE( font-&gt;glyphs );</a>
+<a name="ln2639">    FT_FREE( font-&gt;unencoded );</a>
+<a name="ln2640"> </a>
+<a name="ln2641">    /* Free up the overflow storage if it was used. */</a>
+<a name="ln2642">    for ( i = 0, glyphs = font-&gt;overflow.glyphs;</a>
+<a name="ln2643">          i &lt; font-&gt;overflow.glyphs_used; i++, glyphs++ )</a>
+<a name="ln2644">    {</a>
+<a name="ln2645">      FT_FREE( glyphs-&gt;name );</a>
+<a name="ln2646">      FT_FREE( glyphs-&gt;bitmap );</a>
+<a name="ln2647">    }</a>
+<a name="ln2648"> </a>
+<a name="ln2649">    FT_FREE( font-&gt;overflow.glyphs );</a>
+<a name="ln2650"> </a>
+<a name="ln2651">    /* bdf_cleanup */</a>
+<a name="ln2652">    hash_free( &amp;(font-&gt;proptbl), memory );</a>
+<a name="ln2653"> </a>
+<a name="ln2654">    /* Free up the user defined properties. */</a>
+<a name="ln2655">    for ( prop = font-&gt;user_props, i = 0;</a>
+<a name="ln2656">          i &lt; font-&gt;nuser_props; i++, prop++ )</a>
+<a name="ln2657">    {</a>
+<a name="ln2658">      FT_FREE( prop-&gt;name );</a>
+<a name="ln2659">      if ( prop-&gt;format == BDF_ATOM )</a>
+<a name="ln2660">        FT_FREE( prop-&gt;value.atom );</a>
+<a name="ln2661">    }</a>
+<a name="ln2662"> </a>
+<a name="ln2663">    FT_FREE( font-&gt;user_props );</a>
+<a name="ln2664"> </a>
+<a name="ln2665">    /* FREE( font ); */ /* XXX Fixme */</a>
+<a name="ln2666">  }</a>
+<a name="ln2667"> </a>
+<a name="ln2668"> </a>
+<a name="ln2669">  FT_LOCAL_DEF( bdf_property_t * )</a>
+<a name="ln2670">  bdf_get_font_property( bdf_font_t*  font,</a>
+<a name="ln2671">                         const char*  name )</a>
+<a name="ln2672">  {</a>
+<a name="ln2673">    hashnode  hn;</a>
+<a name="ln2674"> </a>
+<a name="ln2675"> </a>
+<a name="ln2676">    if ( font == 0 || font-&gt;props_size == 0 || name == 0 || *name == 0 )</a>
+<a name="ln2677">      return 0;</a>
+<a name="ln2678"> </a>
+<a name="ln2679">    hn = hash_lookup( name, (hashtable *)font-&gt;internal );</a>
+<a name="ln2680"> </a>
+<a name="ln2681">    return hn ? ( font-&gt;props + hn-&gt;data ) : 0;</a>
+<a name="ln2682">  }</a>
+<a name="ln2683"> </a>
+<a name="ln2684"> </a>
+<a name="ln2685">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="786"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v781/" target="_blank">V781</a> The value of the 'start' index is checked after it was used. Perhaps there is a mistake in program logic.</p></div>
+<div class="balloon" rel="1111"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'n > (9223372036854775807L * 2UL + 1UL)' is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

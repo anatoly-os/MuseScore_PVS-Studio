@@ -1,0 +1,1520 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ttsbit.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ttsbit.c                                                               */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    TrueType and OpenType embedded bitmap support (body).                */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2005-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  Copyright 2013 by Google, Inc.                                         */</a>
+<a name="ln11">/*  Google Author(s): Behdad Esfahbod.                                     */</a>
+<a name="ln12">/*                                                                         */</a>
+<a name="ln13">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln14">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln15">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln16">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln17">/*  understand and accept it fully.                                        */</a>
+<a name="ln18">/*                                                                         */</a>
+<a name="ln19">/***************************************************************************/</a>
+<a name="ln20"> </a>
+<a name="ln21"> </a>
+<a name="ln22">#include &lt;ft2build.h&gt;</a>
+<a name="ln23">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln24">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln25">#include FT_TRUETYPE_TAGS_H</a>
+<a name="ln26">#include FT_BITMAP_H</a>
+<a name="ln27">#include &quot;ttsbit.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">#include &quot;sferrors.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">#include &quot;ttmtx.h&quot;</a>
+<a name="ln32">#include &quot;pngshim.h&quot;</a>
+<a name="ln33"> </a>
+<a name="ln34"> </a>
+<a name="ln35">  /*************************************************************************/</a>
+<a name="ln36">  /*                                                                       */</a>
+<a name="ln37">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln38">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln39">  /* messages during execution.                                            */</a>
+<a name="ln40">  /*                                                                       */</a>
+<a name="ln41">#undef  FT_COMPONENT</a>
+<a name="ln42">#define FT_COMPONENT  trace_ttsbit</a>
+<a name="ln43"> </a>
+<a name="ln44"> </a>
+<a name="ln45">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln46">  tt_face_load_sbit( TT_Face    face,</a>
+<a name="ln47">                     FT_Stream  stream )</a>
+<a name="ln48">  {</a>
+<a name="ln49">    FT_Error  error;</a>
+<a name="ln50">    FT_ULong  table_size;</a>
+<a name="ln51"> </a>
+<a name="ln52"> </a>
+<a name="ln53">    face-&gt;sbit_table       = NULL;</a>
+<a name="ln54">    face-&gt;sbit_table_size  = 0;</a>
+<a name="ln55">    face-&gt;sbit_table_type  = TT_SBIT_TABLE_TYPE_NONE;</a>
+<a name="ln56">    face-&gt;sbit_num_strikes = 0;</a>
+<a name="ln57"> </a>
+<a name="ln58">    error = face-&gt;goto_table( face, TTAG_CBLC, stream, &amp;table_size );</a>
+<a name="ln59">    if ( !error )</a>
+<a name="ln60">      face-&gt;sbit_table_type = TT_SBIT_TABLE_TYPE_CBLC;</a>
+<a name="ln61">    else</a>
+<a name="ln62">    {</a>
+<a name="ln63">      error = face-&gt;goto_table( face, TTAG_EBLC, stream, &amp;table_size );</a>
+<a name="ln64">      if ( error )</a>
+<a name="ln65">        error = face-&gt;goto_table( face, TTAG_bloc, stream, &amp;table_size );</a>
+<a name="ln66">      if ( !error )</a>
+<a name="ln67">        face-&gt;sbit_table_type = TT_SBIT_TABLE_TYPE_EBLC;</a>
+<a name="ln68">    }</a>
+<a name="ln69"> </a>
+<a name="ln70">    if ( error )</a>
+<a name="ln71">    {</a>
+<a name="ln72">      error = face-&gt;goto_table( face, TTAG_sbix, stream, &amp;table_size );</a>
+<a name="ln73">      if ( !error )</a>
+<a name="ln74">        face-&gt;sbit_table_type = TT_SBIT_TABLE_TYPE_SBIX;</a>
+<a name="ln75">    }</a>
+<a name="ln76">    if ( error )</a>
+<a name="ln77">      goto Exit;</a>
+<a name="ln78"> </a>
+<a name="ln79">    if ( table_size &lt; 8 )</a>
+<a name="ln80">    {</a>
+<a name="ln81">      FT_ERROR(( &quot;tt_face_load_sbit_strikes: table too short\n&quot; ));</a>
+<a name="ln82">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln83">      goto Exit;</a>
+<a name="ln84">    }</a>
+<a name="ln85"> </a>
+<a name="ln86">    switch ( (FT_UInt)face-&gt;sbit_table_type )</a>
+<a name="ln87">    {</a>
+<a name="ln88">    case TT_SBIT_TABLE_TYPE_EBLC:</a>
+<a name="ln89">    case TT_SBIT_TABLE_TYPE_CBLC:</a>
+<a name="ln90">      {</a>
+<a name="ln91">        FT_Byte*  p;</a>
+<a name="ln92">        FT_Fixed  version;</a>
+<a name="ln93">        FT_ULong  num_strikes;</a>
+<a name="ln94">        FT_UInt   count;</a>
+<a name="ln95"> </a>
+<a name="ln96"> </a>
+<a name="ln97">        if ( FT_FRAME_EXTRACT( table_size, face-&gt;sbit_table ) )</a>
+<a name="ln98">          goto Exit;</a>
+<a name="ln99"> </a>
+<a name="ln100">        face-&gt;sbit_table_size = table_size;</a>
+<a name="ln101"> </a>
+<a name="ln102">        p = face-&gt;sbit_table;</a>
+<a name="ln103"> </a>
+<a name="ln104">        version     = FT_NEXT_LONG( p );</a>
+<a name="ln105">        num_strikes = FT_NEXT_ULONG( p );</a>
+<a name="ln106"> </a>
+<a name="ln107">        if ( ( (FT_ULong)version &amp; 0xFFFF0000UL ) != 0x00020000UL )</a>
+<a name="ln108">        {</a>
+<a name="ln109">          error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln110">          goto Exit;</a>
+<a name="ln111">        }</a>
+<a name="ln112"> </a>
+<a name="ln113">        if ( num_strikes &gt;= 0x10000UL )</a>
+<a name="ln114">        {</a>
+<a name="ln115">          error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln116">          goto Exit;</a>
+<a name="ln117">        }</a>
+<a name="ln118"> </a>
+<a name="ln119">        /*</a>
+<a name="ln120">         *  Count the number of strikes available in the table.  We are a bit</a>
+<a name="ln121">         *  paranoid there and don't trust the data.</a>
+<a name="ln122">         */</a>
+<a name="ln123">        count = (FT_UInt)num_strikes;</a>
+<a name="ln124">        if ( 8 + 48UL * count &gt; table_size )</a>
+<a name="ln125">          count = (FT_UInt)( ( table_size - 8 ) / 48 );</a>
+<a name="ln126"> </a>
+<a name="ln127">        face-&gt;sbit_num_strikes = count;</a>
+<a name="ln128">      }</a>
+<a name="ln129">      break;</a>
+<a name="ln130"> </a>
+<a name="ln131">    case TT_SBIT_TABLE_TYPE_SBIX:</a>
+<a name="ln132">      {</a>
+<a name="ln133">        FT_UShort  version;</a>
+<a name="ln134">        FT_UShort  flags;</a>
+<a name="ln135">        FT_ULong   num_strikes;</a>
+<a name="ln136">        FT_UInt    count;</a>
+<a name="ln137"> </a>
+<a name="ln138"> </a>
+<a name="ln139">        if ( FT_FRAME_ENTER( 8 ) )</a>
+<a name="ln140">          goto Exit;</a>
+<a name="ln141"> </a>
+<a name="ln142">        version     = FT_GET_USHORT();</a>
+<a name="ln143">        flags       = FT_GET_USHORT();</a>
+<a name="ln144">        num_strikes = FT_GET_ULONG();</a>
+<a name="ln145"> </a>
+<a name="ln146">        FT_FRAME_EXIT();</a>
+<a name="ln147"> </a>
+<a name="ln148">        if ( version &lt; 1 )</a>
+<a name="ln149">        {</a>
+<a name="ln150">          error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln151">          goto Exit;</a>
+<a name="ln152">        }</a>
+<a name="ln153"> </a>
+<a name="ln154">        /* Bit 0 must always be `1'.                            */</a>
+<a name="ln155">        /* Bit 1 controls the overlay of bitmaps with outlines. */</a>
+<a name="ln156">        /* All other bits should be zero.                       */</a>
+<a name="ln157">        if ( !( flags == 1 || flags == 3 ) ||</a>
+<a name="ln158">             num_strikes &gt;= 0x10000UL      )</a>
+<a name="ln159">        {</a>
+<a name="ln160">          error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln161">          goto Exit;</a>
+<a name="ln162">        }</a>
+<a name="ln163"> </a>
+<a name="ln164">        /* we currently don't support bit 1; however, it is better to */</a>
+<a name="ln165">        /* draw at least something...                                 */</a>
+<a name="ln166">        if ( flags == 3 )</a>
+<a name="ln167">          FT_TRACE1(( &quot;tt_face_load_sbit_strikes:&quot;</a>
+<a name="ln168">                      &quot; sbix overlay not supported yet\n&quot;</a>
+<a name="ln169">                      &quot;                          &quot;</a>
+<a name="ln170">                      &quot; expect bad rendering results\n&quot; ));</a>
+<a name="ln171"> </a>
+<a name="ln172">        /*</a>
+<a name="ln173">         *  Count the number of strikes available in the table.  We are a bit</a>
+<a name="ln174">         *  paranoid there and don't trust the data.</a>
+<a name="ln175">         */</a>
+<a name="ln176">        count = (FT_UInt)num_strikes;</a>
+<a name="ln177">        if ( 8 + 4UL * count &gt; table_size )</a>
+<a name="ln178">          count = (FT_UInt)( ( table_size - 8 ) / 4 );</a>
+<a name="ln179"> </a>
+<a name="ln180">        if ( FT_STREAM_SEEK( FT_STREAM_POS() - 8 ) )</a>
+<a name="ln181">          goto Exit;</a>
+<a name="ln182"> </a>
+<a name="ln183">        face-&gt;sbit_table_size = 8 + count * 4;</a>
+<a name="ln184">        if ( FT_FRAME_EXTRACT( face-&gt;sbit_table_size, face-&gt;sbit_table ) )</a>
+<a name="ln185">          goto Exit;</a>
+<a name="ln186"> </a>
+<a name="ln187">        face-&gt;sbit_num_strikes = count;</a>
+<a name="ln188">      }</a>
+<a name="ln189">      break;</a>
+<a name="ln190"> </a>
+<a name="ln191">    default:</a>
+<a name="ln192">      error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln193">      break;</a>
+<a name="ln194">    }</a>
+<a name="ln195"> </a>
+<a name="ln196">    if ( !error )</a>
+<a name="ln197">      FT_TRACE3(( &quot;sbit_num_strikes: %u\n&quot;, face-&gt;sbit_num_strikes ));</a>
+<a name="ln198"> </a>
+<a name="ln199">    return FT_Err_Ok;</a>
+<a name="ln200"> </a>
+<a name="ln201">  Exit:</a>
+<a name="ln202">    if ( error )</a>
+<a name="ln203">    {</a>
+<a name="ln204">      if ( face-&gt;sbit_table )</a>
+<a name="ln205">        FT_FRAME_RELEASE( face-&gt;sbit_table );</a>
+<a name="ln206">      face-&gt;sbit_table_size = 0;</a>
+<a name="ln207">      face-&gt;sbit_table_type = TT_SBIT_TABLE_TYPE_NONE;</a>
+<a name="ln208">    }</a>
+<a name="ln209"> </a>
+<a name="ln210">    return error;</a>
+<a name="ln211">  }</a>
+<a name="ln212"> </a>
+<a name="ln213"> </a>
+<a name="ln214">  FT_LOCAL_DEF( void )</a>
+<a name="ln215">  tt_face_free_sbit( TT_Face  face )</a>
+<a name="ln216">  {</a>
+<a name="ln217">    FT_Stream  stream = face-&gt;root.stream;</a>
+<a name="ln218"> </a>
+<a name="ln219"> </a>
+<a name="ln220">    FT_FRAME_RELEASE( face-&gt;sbit_table );</a>
+<a name="ln221">    face-&gt;sbit_table_size  = 0;</a>
+<a name="ln222">    face-&gt;sbit_table_type  = TT_SBIT_TABLE_TYPE_NONE;</a>
+<a name="ln223">    face-&gt;sbit_num_strikes = 0;</a>
+<a name="ln224">  }</a>
+<a name="ln225"> </a>
+<a name="ln226"> </a>
+<a name="ln227">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln228">  tt_face_set_sbit_strike( TT_Face          face,</a>
+<a name="ln229">                           FT_Size_Request  req,</a>
+<a name="ln230">                           FT_ULong*        astrike_index )</a>
+<a name="ln231">  {</a>
+<a name="ln232">    return FT_Match_Size( (FT_Face)face, req, 0, astrike_index );</a>
+<a name="ln233">  }</a>
+<a name="ln234"> </a>
+<a name="ln235"> </a>
+<a name="ln236">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln237">  tt_face_load_strike_metrics( TT_Face           face,</a>
+<a name="ln238">                               FT_ULong          strike_index,</a>
+<a name="ln239">                               FT_Size_Metrics*  metrics )</a>
+<a name="ln240">  {</a>
+<a name="ln241">    if ( strike_index &gt;= (FT_ULong)face-&gt;sbit_num_strikes )</a>
+<a name="ln242">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln243"> </a>
+<a name="ln244">    switch ( (FT_UInt)face-&gt;sbit_table_type )</a>
+<a name="ln245">    {</a>
+<a name="ln246">    case TT_SBIT_TABLE_TYPE_EBLC:</a>
+<a name="ln247">    case TT_SBIT_TABLE_TYPE_CBLC:</a>
+<a name="ln248">      {</a>
+<a name="ln249">        FT_Byte*  strike;</a>
+<a name="ln250"> </a>
+<a name="ln251"> </a>
+<a name="ln252">        strike = face-&gt;sbit_table + 8 + strike_index * 48;</a>
+<a name="ln253"> </a>
+<a name="ln254">        metrics-&gt;x_ppem = (FT_UShort)strike[44];</a>
+<a name="ln255">        metrics-&gt;y_ppem = (FT_UShort)strike[45];</a>
+<a name="ln256"> </a>
+<a name="ln257">        metrics-&gt;ascender  = (FT_Char)strike[16] * 64;  /* hori.ascender  */</a>
+<a name="ln258">        metrics-&gt;descender = (FT_Char)strike[17] * 64;  /* hori.descender */</a>
+<a name="ln259">        metrics-&gt;height    = metrics-&gt;ascender - metrics-&gt;descender;</a>
+<a name="ln260"> </a>
+<a name="ln261">        /* Is this correct? */</a>
+<a name="ln262">        metrics-&gt;max_advance = ( (FT_Char)strike[22] + /* min_origin_SB  */</a>
+<a name="ln263">                                          strike[18] + /* max_width      */</a>
+<a name="ln264">                                 (FT_Char)strike[23]   /* min_advance_SB */</a>
+<a name="ln265">                                                     ) * 64;</a>
+<a name="ln266">        return FT_Err_Ok;</a>
+<a name="ln267">      }</a>
+<a name="ln268"> </a>
+<a name="ln269">    case TT_SBIT_TABLE_TYPE_SBIX:</a>
+<a name="ln270">      {</a>
+<a name="ln271">        FT_Stream       stream = face-&gt;root.stream;</a>
+<a name="ln272">        FT_UInt         offset, upem;</a>
+<a name="ln273">        FT_UShort       ppem, resolution;</a>
+<a name="ln274">        TT_HoriHeader  *hori;</a>
+<a name="ln275">        FT_ULong        table_size;</a>
+<a name="ln276">        FT_Pos          ppem_, upem_; /* to reduce casts */</a>
+<a name="ln277"> </a>
+<a name="ln278">        FT_Error  error;</a>
+<a name="ln279">        FT_Byte*  p;</a>
+<a name="ln280"> </a>
+<a name="ln281"> </a>
+<a name="ln282">        p      = face-&gt;sbit_table + 8 + 4 * strike_index;</a>
+<a name="ln283">        offset = FT_NEXT_ULONG( p );</a>
+<a name="ln284"> </a>
+<a name="ln285">        error = face-&gt;goto_table( face, TTAG_sbix, stream, &amp;table_size );</a>
+<a name="ln286">        if ( error )</a>
+<a name="ln287">          return error;</a>
+<a name="ln288"> </a>
+<a name="ln289">        if ( offset + 4  &gt; table_size )</a>
+<a name="ln290">          return FT_THROW( Invalid_File_Format );</a>
+<a name="ln291"> </a>
+<a name="ln292">        if ( FT_STREAM_SEEK( FT_STREAM_POS() + offset ) ||</a>
+<a name="ln293">             FT_FRAME_ENTER( 4 )                        )</a>
+<a name="ln294">          return error;</a>
+<a name="ln295"> </a>
+<a name="ln296">        ppem       = FT_GET_USHORT();</a>
+<a name="ln297">        resolution = FT_GET_USHORT();</a>
+<a name="ln298"> </a>
+<a name="ln299">        FT_UNUSED( resolution ); /* What to do with this? */</a>
+<a name="ln300"> </a>
+<a name="ln301">        FT_FRAME_EXIT();</a>
+<a name="ln302"> </a>
+<a name="ln303">        upem = face-&gt;header.Units_Per_EM;</a>
+<a name="ln304">        hori = &amp;face-&gt;horizontal;</a>
+<a name="ln305"> </a>
+<a name="ln306">        metrics-&gt;x_ppem = ppem;</a>
+<a name="ln307">        metrics-&gt;y_ppem = ppem;</a>
+<a name="ln308"> </a>
+<a name="ln309">        ppem_ = (FT_Pos)ppem;</a>
+<a name="ln310">        upem_ = (FT_Pos)upem;</a>
+<a name="ln311"> </a>
+<a name="ln312">        metrics-&gt;ascender    = ppem_ * hori-&gt;Ascender * 64 / upem_;</a>
+<a name="ln313">        metrics-&gt;descender   = ppem_ * hori-&gt;Descender * 64 / upem_;</a>
+<a name="ln314">        metrics-&gt;height      = ppem_ * ( hori-&gt;Ascender -</a>
+<a name="ln315">                                         hori-&gt;Descender +</a>
+<a name="ln316">                                         hori-&gt;Line_Gap ) * 64 / upem_;</a>
+<a name="ln317">        metrics-&gt;max_advance = ppem_ * hori-&gt;advance_Width_Max * 64 / upem_;</a>
+<a name="ln318"> </a>
+<a name="ln319">        return error;</a>
+<a name="ln320">      }</a>
+<a name="ln321"> </a>
+<a name="ln322">    default:</a>
+<a name="ln323">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln324">    }</a>
+<a name="ln325">  }</a>
+<a name="ln326"> </a>
+<a name="ln327"> </a>
+<a name="ln328">  typedef struct  TT_SBitDecoderRec_</a>
+<a name="ln329">  {</a>
+<a name="ln330">    TT_Face          face;</a>
+<a name="ln331">    FT_Stream        stream;</a>
+<a name="ln332">    FT_Bitmap*       bitmap;</a>
+<a name="ln333">    TT_SBit_Metrics  metrics;</a>
+<a name="ln334">    FT_Bool          metrics_loaded;</a>
+<a name="ln335">    FT_Bool          bitmap_allocated;</a>
+<a name="ln336">    FT_Byte          bit_depth;</a>
+<a name="ln337"> </a>
+<a name="ln338">    FT_ULong         ebdt_start;</a>
+<a name="ln339">    FT_ULong         ebdt_size;</a>
+<a name="ln340"> </a>
+<a name="ln341">    FT_ULong         strike_index_array;</a>
+<a name="ln342">    FT_ULong         strike_index_count;</a>
+<a name="ln343">    FT_Byte*         eblc_base;</a>
+<a name="ln344">    FT_Byte*         eblc_limit;</a>
+<a name="ln345"> </a>
+<a name="ln346">  } TT_SBitDecoderRec, *TT_SBitDecoder;</a>
+<a name="ln347"> </a>
+<a name="ln348"> </a>
+<a name="ln349">  static FT_Error</a>
+<a name="ln350">  tt_sbit_decoder_init( TT_SBitDecoder       decoder,</a>
+<a name="ln351">                        TT_Face              face,</a>
+<a name="ln352">                        FT_ULong             strike_index,</a>
+<a name="ln353">                        TT_SBit_MetricsRec*  metrics )</a>
+<a name="ln354">  {</a>
+<a name="ln355">    FT_Error   error;</a>
+<a name="ln356">    FT_Stream  stream = face-&gt;root.stream;</a>
+<a name="ln357">    FT_ULong   ebdt_size;</a>
+<a name="ln358"> </a>
+<a name="ln359"> </a>
+<a name="ln360">    error = face-&gt;goto_table( face, TTAG_CBDT, stream, &amp;ebdt_size );</a>
+<a name="ln361">    if ( error )</a>
+<a name="ln362">      error = face-&gt;goto_table( face, TTAG_EBDT, stream, &amp;ebdt_size );</a>
+<a name="ln363">    if ( error )</a>
+<a name="ln364">      error = face-&gt;goto_table( face, TTAG_bdat, stream, &amp;ebdt_size );</a>
+<a name="ln365">    if ( error )</a>
+<a name="ln366">      goto Exit;</a>
+<a name="ln367"> </a>
+<a name="ln368">    decoder-&gt;face    = face;</a>
+<a name="ln369">    decoder-&gt;stream  = stream;</a>
+<a name="ln370">    decoder-&gt;bitmap  = &amp;face-&gt;root.glyph-&gt;bitmap;</a>
+<a name="ln371">    decoder-&gt;metrics = metrics;</a>
+<a name="ln372"> </a>
+<a name="ln373">    decoder-&gt;metrics_loaded   = 0;</a>
+<a name="ln374">    decoder-&gt;bitmap_allocated = 0;</a>
+<a name="ln375"> </a>
+<a name="ln376">    decoder-&gt;ebdt_start = FT_STREAM_POS();</a>
+<a name="ln377">    decoder-&gt;ebdt_size  = ebdt_size;</a>
+<a name="ln378"> </a>
+<a name="ln379">    decoder-&gt;eblc_base  = face-&gt;sbit_table;</a>
+<a name="ln380">    decoder-&gt;eblc_limit = face-&gt;sbit_table + face-&gt;sbit_table_size;</a>
+<a name="ln381"> </a>
+<a name="ln382">    /* now find the strike corresponding to the index */</a>
+<a name="ln383">    {</a>
+<a name="ln384">      FT_Byte*  p;</a>
+<a name="ln385"> </a>
+<a name="ln386"> </a>
+<a name="ln387">      if ( 8 + 48 * strike_index + 3 * 4 + 34 + 1 &gt; face-&gt;sbit_table_size )</a>
+<a name="ln388">      {</a>
+<a name="ln389">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln390">        goto Exit;</a>
+<a name="ln391">      }</a>
+<a name="ln392"> </a>
+<a name="ln393">      p = decoder-&gt;eblc_base + 8 + 48 * strike_index;</a>
+<a name="ln394"> </a>
+<a name="ln395">      decoder-&gt;strike_index_array = FT_NEXT_ULONG( p );</a>
+<a name="ln396">      p                          += 4;</a>
+<a name="ln397">      decoder-&gt;strike_index_count = FT_NEXT_ULONG( p );</a>
+<a name="ln398">      p                          += 34;</a>
+<a name="ln399">      decoder-&gt;bit_depth          = *p;</a>
+<a name="ln400"> </a>
+<a name="ln401">      /* decoder-&gt;strike_index_array +                               */</a>
+<a name="ln402">      /*   8 * decoder-&gt;strike_index_count &gt; face-&gt;sbit_table_size ? */</a>
+<a name="ln403">      if ( decoder-&gt;strike_index_array &gt; face-&gt;sbit_table_size           ||</a>
+<a name="ln404">           decoder-&gt;strike_index_count &gt;</a>
+<a name="ln405">             ( face-&gt;sbit_table_size - decoder-&gt;strike_index_array ) / 8 )</a>
+<a name="ln406">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln407">    }</a>
+<a name="ln408"> </a>
+<a name="ln409">  Exit:</a>
+<a name="ln410">    return error;</a>
+<a name="ln411">  }</a>
+<a name="ln412"> </a>
+<a name="ln413"> </a>
+<a name="ln414">  static void</a>
+<a name="ln415">  tt_sbit_decoder_done( TT_SBitDecoder  decoder )</a>
+<a name="ln416">  {</a>
+<a name="ln417">    FT_UNUSED( decoder );</a>
+<a name="ln418">  }</a>
+<a name="ln419"> </a>
+<a name="ln420"> </a>
+<a name="ln421">  static FT_Error</a>
+<a name="ln422">  tt_sbit_decoder_alloc_bitmap( TT_SBitDecoder  decoder )</a>
+<a name="ln423">  {</a>
+<a name="ln424">    FT_Error    error = FT_Err_Ok;</a>
+<a name="ln425">    FT_UInt     width, height;</a>
+<a name="ln426">    FT_Bitmap*  map = decoder-&gt;bitmap;</a>
+<a name="ln427">    FT_ULong    size;</a>
+<a name="ln428"> </a>
+<a name="ln429"> </a>
+<a name="ln430">    if ( !decoder-&gt;metrics_loaded )</a>
+<a name="ln431">    {</a>
+<a name="ln432">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln433">      goto Exit;</a>
+<a name="ln434">    }</a>
+<a name="ln435"> </a>
+<a name="ln436">    width  = decoder-&gt;metrics-&gt;width;</a>
+<a name="ln437">    height = decoder-&gt;metrics-&gt;height;</a>
+<a name="ln438"> </a>
+<a name="ln439">    map-&gt;width = width;</a>
+<a name="ln440">    map-&gt;rows  = height;</a>
+<a name="ln441"> </a>
+<a name="ln442">    switch ( decoder-&gt;bit_depth )</a>
+<a name="ln443">    {</a>
+<a name="ln444">    case 1:</a>
+<a name="ln445">      map-&gt;pixel_mode = FT_PIXEL_MODE_MONO;</a>
+<a name="ln446">      map-&gt;pitch      = (int)( ( map-&gt;width + 7 ) &gt;&gt; 3 );</a>
+<a name="ln447">      map-&gt;num_grays  = 2;</a>
+<a name="ln448">      break;</a>
+<a name="ln449"> </a>
+<a name="ln450">    case 2:</a>
+<a name="ln451">      map-&gt;pixel_mode = FT_PIXEL_MODE_GRAY2;</a>
+<a name="ln452">      map-&gt;pitch      = (int)( ( map-&gt;width + 3 ) &gt;&gt; 2 );</a>
+<a name="ln453">      map-&gt;num_grays  = 4;</a>
+<a name="ln454">      break;</a>
+<a name="ln455"> </a>
+<a name="ln456">    case 4:</a>
+<a name="ln457">      map-&gt;pixel_mode = FT_PIXEL_MODE_GRAY4;</a>
+<a name="ln458">      map-&gt;pitch      = (int)( ( map-&gt;width + 1 ) &gt;&gt; 1 );</a>
+<a name="ln459">      map-&gt;num_grays  = 16;</a>
+<a name="ln460">      break;</a>
+<a name="ln461"> </a>
+<a name="ln462">    case 8:</a>
+<a name="ln463">      map-&gt;pixel_mode = FT_PIXEL_MODE_GRAY;</a>
+<a name="ln464">      map-&gt;pitch      = (int)( map-&gt;width );</a>
+<a name="ln465">      map-&gt;num_grays  = 256;</a>
+<a name="ln466">      break;</a>
+<a name="ln467"> </a>
+<a name="ln468">    case 32:</a>
+<a name="ln469">      map-&gt;pixel_mode = FT_PIXEL_MODE_BGRA;</a>
+<a name="ln470">      map-&gt;pitch      = (int)( map-&gt;width * 4 );</a>
+<a name="ln471">      map-&gt;num_grays  = 256;</a>
+<a name="ln472">      break;</a>
+<a name="ln473"> </a>
+<a name="ln474">    default:</a>
+<a name="ln475">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln476">      goto Exit;</a>
+<a name="ln477">    }</a>
+<a name="ln478"> </a>
+<a name="ln479">    size = map-&gt;rows * (FT_ULong)map-&gt;pitch;</a>
+<a name="ln480"> </a>
+<a name="ln481">    /* check that there is no empty image */</a>
+<a name="ln482">    if ( size == 0 )</a>
+<a name="ln483">      goto Exit;     /* exit successfully! */</a>
+<a name="ln484"> </a>
+<a name="ln485">    error = ft_glyphslot_alloc_bitmap( decoder-&gt;face-&gt;root.glyph, size );</a>
+<a name="ln486">    if ( error )</a>
+<a name="ln487">      goto Exit;</a>
+<a name="ln488"> </a>
+<a name="ln489">    decoder-&gt;bitmap_allocated = 1;</a>
+<a name="ln490"> </a>
+<a name="ln491">  Exit:</a>
+<a name="ln492">    return error;</a>
+<a name="ln493">  }</a>
+<a name="ln494"> </a>
+<a name="ln495"> </a>
+<a name="ln496">  static FT_Error</a>
+<a name="ln497">  tt_sbit_decoder_load_metrics( TT_SBitDecoder  decoder,</a>
+<a name="ln498">                                FT_Byte*       *pp,</a>
+<a name="ln499">                                FT_Byte*        limit,</a>
+<a name="ln500">                                FT_Bool         big )</a>
+<a name="ln501">  {</a>
+<a name="ln502">    FT_Byte*         p       = *pp;</a>
+<a name="ln503">    TT_SBit_Metrics  metrics = decoder-&gt;metrics;</a>
+<a name="ln504"> </a>
+<a name="ln505"> </a>
+<a name="ln506">    if ( p + 5 &gt; limit )</a>
+<a name="ln507">      goto Fail;</a>
+<a name="ln508"> </a>
+<a name="ln509">    metrics-&gt;height       = p[0];</a>
+<a name="ln510">    metrics-&gt;width        = p[1];</a>
+<a name="ln511">    metrics-&gt;horiBearingX = (FT_Char)p[2];</a>
+<a name="ln512">    metrics-&gt;horiBearingY = (FT_Char)p[3];</a>
+<a name="ln513">    metrics-&gt;horiAdvance  = p[4];</a>
+<a name="ln514"> </a>
+<a name="ln515">    p += 5;</a>
+<a name="ln516">    if ( big )</a>
+<a name="ln517">    {</a>
+<a name="ln518">      if ( p + 3 &gt; limit )</a>
+<a name="ln519">        goto Fail;</a>
+<a name="ln520"> </a>
+<a name="ln521">      metrics-&gt;vertBearingX = (FT_Char)p[0];</a>
+<a name="ln522">      metrics-&gt;vertBearingY = (FT_Char)p[1];</a>
+<a name="ln523">      metrics-&gt;vertAdvance  = p[2];</a>
+<a name="ln524"> </a>
+<a name="ln525">      p += 3;</a>
+<a name="ln526">    }</a>
+<a name="ln527">    else</a>
+<a name="ln528">    {</a>
+<a name="ln529">      /* avoid uninitialized data in case there is no vertical info -- */</a>
+<a name="ln530">      metrics-&gt;vertBearingX = 0;</a>
+<a name="ln531">      metrics-&gt;vertBearingY = 0;</a>
+<a name="ln532">      metrics-&gt;vertAdvance  = 0;</a>
+<a name="ln533">    }</a>
+<a name="ln534"> </a>
+<a name="ln535">    decoder-&gt;metrics_loaded = 1;</a>
+<a name="ln536">    *pp = p;</a>
+<a name="ln537">    return FT_Err_Ok;</a>
+<a name="ln538"> </a>
+<a name="ln539">  Fail:</a>
+<a name="ln540">    FT_TRACE1(( &quot;tt_sbit_decoder_load_metrics: broken table\n&quot; ));</a>
+<a name="ln541">    return FT_THROW( Invalid_Argument );</a>
+<a name="ln542">  }</a>
+<a name="ln543"> </a>
+<a name="ln544"> </a>
+<a name="ln545">  /* forward declaration */</a>
+<a name="ln546">  static FT_Error</a>
+<a name="ln547">  tt_sbit_decoder_load_image( TT_SBitDecoder  decoder,</a>
+<a name="ln548">                              FT_UInt         glyph_index,</a>
+<a name="ln549">                              FT_Int          x_pos,</a>
+<a name="ln550">                              FT_Int          y_pos );</a>
+<a name="ln551"> </a>
+<a name="ln552">  typedef FT_Error  (*TT_SBitDecoder_LoadFunc)( TT_SBitDecoder  decoder,</a>
+<a name="ln553">                                                FT_Byte*        p,</a>
+<a name="ln554">                                                FT_Byte*        plimit,</a>
+<a name="ln555">                                                FT_Int          x_pos,</a>
+<a name="ln556">                                                FT_Int          y_pos );</a>
+<a name="ln557"> </a>
+<a name="ln558"> </a>
+<a name="ln559">  static FT_Error</a>
+<a name="ln560">  tt_sbit_decoder_load_byte_aligned( TT_SBitDecoder  decoder,</a>
+<a name="ln561">                                     FT_Byte*        p,</a>
+<a name="ln562">                                     FT_Byte*        limit,</a>
+<a name="ln563">                                     FT_Int          x_pos,</a>
+<a name="ln564">                                     FT_Int          y_pos )</a>
+<a name="ln565">  {</a>
+<a name="ln566">    FT_Error    error = FT_Err_Ok;</a>
+<a name="ln567">    FT_Byte*    line;</a>
+<a name="ln568">    FT_Int      pitch, width, height, line_bits, h;</a>
+<a name="ln569">    FT_UInt     bit_height, bit_width;</a>
+<a name="ln570">    FT_Bitmap*  bitmap;</a>
+<a name="ln571"> </a>
+<a name="ln572"> </a>
+<a name="ln573">    /* check that we can write the glyph into the bitmap */</a>
+<a name="ln574">    bitmap     = decoder-&gt;bitmap;</a>
+<a name="ln575">    bit_width  = bitmap-&gt;width;</a>
+<a name="ln576">    bit_height = bitmap-&gt;rows;</a>
+<a name="ln577">    pitch      = bitmap-&gt;pitch;</a>
+<a name="ln578">    line       = bitmap-&gt;buffer;</a>
+<a name="ln579"> </a>
+<a name="ln580">    width  = decoder-&gt;metrics-&gt;width;</a>
+<a name="ln581">    height = decoder-&gt;metrics-&gt;height;</a>
+<a name="ln582"> </a>
+<a name="ln583">    line_bits = width * decoder-&gt;bit_depth;</a>
+<a name="ln584"> </a>
+<a name="ln585">    if ( x_pos &lt; 0 || (FT_UInt)( x_pos + width ) &gt; bit_width   ||</a>
+<a name="ln586">         y_pos &lt; 0 || (FT_UInt)( y_pos + height ) &gt; bit_height )</a>
+<a name="ln587">    {</a>
+<a name="ln588">      FT_TRACE1(( &quot;tt_sbit_decoder_load_byte_aligned:&quot;</a>
+<a name="ln589">                  &quot; invalid bitmap dimensions\n&quot; ));</a>
+<a name="ln590">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln591">      goto Exit;</a>
+<a name="ln592">    }</a>
+<a name="ln593"> </a>
+<a name="ln594">    if ( p + ( ( line_bits + 7 ) &gt;&gt; 3 ) * height &gt; limit )</a>
+<a name="ln595">    {</a>
+<a name="ln596">      FT_TRACE1(( &quot;tt_sbit_decoder_load_byte_aligned: broken bitmap\n&quot; ));</a>
+<a name="ln597">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln598">      goto Exit;</a>
+<a name="ln599">    }</a>
+<a name="ln600"> </a>
+<a name="ln601">    /* now do the blit */</a>
+<a name="ln602">    line  += y_pos * pitch + ( x_pos &gt;&gt; 3 );</a>
+<a name="ln603">    x_pos &amp;= 7;</a>
+<a name="ln604"> </a>
+<a name="ln605">    if ( x_pos == 0 )  /* the easy one */</a>
+<a name="ln606">    {</a>
+<a name="ln607">      for ( h = height; h &gt; 0; h--, line += pitch )</a>
+<a name="ln608">      {</a>
+<a name="ln609">        FT_Byte*  pwrite = line;</a>
+<a name="ln610">        FT_Int    w;</a>
+<a name="ln611"> </a>
+<a name="ln612"> </a>
+<a name="ln613">        for ( w = line_bits; w &gt;= 8; w -= 8 )</a>
+<a name="ln614">        {</a>
+<a name="ln615">          pwrite[0] = (FT_Byte)( pwrite[0] | *p++ );</a>
+<a name="ln616">          pwrite   += 1;</a>
+<a name="ln617">        }</a>
+<a name="ln618"> </a>
+<a name="ln619">        if ( w &gt; 0 )</a>
+<a name="ln620">          pwrite[0] = (FT_Byte)( pwrite[0] | ( *p++ &amp; ( 0xFF00U &gt;&gt; w ) ) );</a>
+<a name="ln621">      }</a>
+<a name="ln622">    }</a>
+<a name="ln623">    else  /* x_pos &gt; 0 */</a>
+<a name="ln624">    {</a>
+<a name="ln625">      for ( h = height; h &gt; 0; h--, line += pitch )</a>
+<a name="ln626">      {</a>
+<a name="ln627">        FT_Byte*  pwrite = line;</a>
+<a name="ln628">        FT_Int    w;</a>
+<a name="ln629">        FT_UInt   wval = 0;</a>
+<a name="ln630"> </a>
+<a name="ln631"> </a>
+<a name="ln632">        for ( w = line_bits; w &gt;= 8; w -= 8 )</a>
+<a name="ln633">        {</a>
+<a name="ln634">          wval       = (FT_UInt)( wval | *p++ );</a>
+<a name="ln635">          pwrite[0]  = (FT_Byte)( pwrite[0] | ( wval &gt;&gt; x_pos ) );</a>
+<a name="ln636">          pwrite    += 1;</a>
+<a name="ln637">          wval     &lt;&lt;= 8;</a>
+<a name="ln638">        }</a>
+<a name="ln639"> </a>
+<a name="ln640">        if ( w &gt; 0 )</a>
+<a name="ln641">          wval = (FT_UInt)( wval | ( *p++ &amp; ( 0xFF00U &gt;&gt; w ) ) );</a>
+<a name="ln642"> </a>
+<a name="ln643">        /* all bits read and there are `x_pos + w' bits to be written */</a>
+<a name="ln644"> </a>
+<a name="ln645">        pwrite[0] = (FT_Byte)( pwrite[0] | ( wval &gt;&gt; x_pos ) );</a>
+<a name="ln646"> </a>
+<a name="ln647">        if ( x_pos + w &gt; 8 )</a>
+<a name="ln648">        {</a>
+<a name="ln649">          pwrite++;</a>
+<a name="ln650">          wval     &lt;&lt;= 8;</a>
+<a name="ln651">          pwrite[0]  = (FT_Byte)( pwrite[0] | ( wval &gt;&gt; x_pos ) );</a>
+<a name="ln652">        }</a>
+<a name="ln653">      }</a>
+<a name="ln654">    }</a>
+<a name="ln655"> </a>
+<a name="ln656">  Exit:</a>
+<a name="ln657">    if ( !error )</a>
+<a name="ln658">      FT_TRACE3(( &quot;tt_sbit_decoder_load_byte_aligned: loaded\n&quot; ));</a>
+<a name="ln659">    return error;</a>
+<a name="ln660">  }</a>
+<a name="ln661"> </a>
+<a name="ln662"> </a>
+<a name="ln663">  /*</a>
+<a name="ln664">   * Load a bit-aligned bitmap (with pointer `p') into a line-aligned bitmap</a>
+<a name="ln665">   * (with pointer `pwrite').  In the example below, the width is 3 pixel,</a>
+<a name="ln666">   * and `x_pos' is 1 pixel.</a>
+<a name="ln667">   *</a>
+<a name="ln668">   *       p                               p+1</a>
+<a name="ln669">   *     |                               |                               |</a>
+<a name="ln670">   *     | 7   6   5   4   3   2   1   0 | 7   6   5   4   3   2   1   0 |...</a>
+<a name="ln671">   *     |                               |                               |</a>
+<a name="ln672">   *       +-------+   +-------+   +-------+ ...</a>
+<a name="ln673">   *           .           .           .</a>
+<a name="ln674">   *           .           .           .</a>
+<a name="ln675">   *           v           .           .</a>
+<a name="ln676">   *       +-------+       .           .</a>
+<a name="ln677">   * |                               | .</a>
+<a name="ln678">   * | 7   6   5   4   3   2   1   0 | .</a>
+<a name="ln679">   * |                               | .</a>
+<a name="ln680">   *   pwrite              .           .</a>
+<a name="ln681">   *                       .           .</a>
+<a name="ln682">   *                       v           .</a>
+<a name="ln683">   *                   +-------+       .</a>
+<a name="ln684">   *             |                               |</a>
+<a name="ln685">   *             | 7   6   5   4   3   2   1   0 |</a>
+<a name="ln686">   *             |                               |</a>
+<a name="ln687">   *               pwrite+1            .</a>
+<a name="ln688">   *                                   .</a>
+<a name="ln689">   *                                   v</a>
+<a name="ln690">   *                               +-------+</a>
+<a name="ln691">   *                         |                               |</a>
+<a name="ln692">   *                         | 7   6   5   4   3   2   1   0 |</a>
+<a name="ln693">   *                         |                               |</a>
+<a name="ln694">   *                           pwrite+2</a>
+<a name="ln695">   *</a>
+<a name="ln696">   */</a>
+<a name="ln697"> </a>
+<a name="ln698">  static FT_Error</a>
+<a name="ln699">  tt_sbit_decoder_load_bit_aligned( TT_SBitDecoder  decoder,</a>
+<a name="ln700">                                    FT_Byte*        p,</a>
+<a name="ln701">                                    FT_Byte*        limit,</a>
+<a name="ln702">                                    FT_Int          x_pos,</a>
+<a name="ln703">                                    FT_Int          y_pos )</a>
+<a name="ln704">  {</a>
+<a name="ln705">    FT_Error    error = FT_Err_Ok;</a>
+<a name="ln706">    FT_Byte*    line;</a>
+<a name="ln707">    FT_Int      pitch, width, height, line_bits, h, nbits;</a>
+<a name="ln708">    FT_UInt     bit_height, bit_width;</a>
+<a name="ln709">    FT_Bitmap*  bitmap;</a>
+<a name="ln710">    FT_UShort   rval;</a>
+<a name="ln711"> </a>
+<a name="ln712"> </a>
+<a name="ln713">    /* check that we can write the glyph into the bitmap */</a>
+<a name="ln714">    bitmap     = decoder-&gt;bitmap;</a>
+<a name="ln715">    bit_width  = bitmap-&gt;width;</a>
+<a name="ln716">    bit_height = bitmap-&gt;rows;</a>
+<a name="ln717">    pitch      = bitmap-&gt;pitch;</a>
+<a name="ln718">    line       = bitmap-&gt;buffer;</a>
+<a name="ln719"> </a>
+<a name="ln720">    width  = decoder-&gt;metrics-&gt;width;</a>
+<a name="ln721">    height = decoder-&gt;metrics-&gt;height;</a>
+<a name="ln722"> </a>
+<a name="ln723">    line_bits = width * decoder-&gt;bit_depth;</a>
+<a name="ln724"> </a>
+<a name="ln725">    if ( x_pos &lt; 0 || (FT_UInt)( x_pos + width ) &gt; bit_width   ||</a>
+<a name="ln726">         y_pos &lt; 0 || (FT_UInt)( y_pos + height ) &gt; bit_height )</a>
+<a name="ln727">    {</a>
+<a name="ln728">      FT_TRACE1(( &quot;tt_sbit_decoder_load_bit_aligned:&quot;</a>
+<a name="ln729">                  &quot; invalid bitmap dimensions\n&quot; ));</a>
+<a name="ln730">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln731">      goto Exit;</a>
+<a name="ln732">    }</a>
+<a name="ln733"> </a>
+<a name="ln734">    if ( p + ( ( line_bits * height + 7 ) &gt;&gt; 3 ) &gt; limit )</a>
+<a name="ln735">    {</a>
+<a name="ln736">      FT_TRACE1(( &quot;tt_sbit_decoder_load_bit_aligned: broken bitmap\n&quot; ));</a>
+<a name="ln737">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln738">      goto Exit;</a>
+<a name="ln739">    }</a>
+<a name="ln740"> </a>
+<a name="ln741">    /* now do the blit */</a>
+<a name="ln742"> </a>
+<a name="ln743">    /* adjust `line' to point to the first byte of the bitmap */</a>
+<a name="ln744">    line  += y_pos * pitch + ( x_pos &gt;&gt; 3 );</a>
+<a name="ln745">    x_pos &amp;= 7;</a>
+<a name="ln746"> </a>
+<a name="ln747">    /* the higher byte of `rval' is used as a buffer */</a>
+<a name="ln748">    rval  = 0;</a>
+<a name="ln749">    nbits = 0;</a>
+<a name="ln750"> </a>
+<a name="ln751">    for ( h = height; h &gt; 0; h--, line += pitch )</a>
+<a name="ln752">    {</a>
+<a name="ln753">      FT_Byte*  pwrite = line;</a>
+<a name="ln754">      FT_Int    w      = line_bits;</a>
+<a name="ln755"> </a>
+<a name="ln756"> </a>
+<a name="ln757">      /* handle initial byte (in target bitmap) specially if necessary */</a>
+<a name="ln758">      if ( x_pos )</a>
+<a name="ln759">      {</a>
+<a name="ln760">        w = ( line_bits &lt; 8 - x_pos ) ? line_bits : 8 - x_pos;</a>
+<a name="ln761"> </a>
+<a name="ln762">        if ( h == height )</a>
+<a name="ln763">        {</a>
+<a name="ln764">          rval  = *p++;</a>
+<a name="ln765">          nbits = x_pos;</a>
+<a name="ln766">        }</a>
+<a name="ln767">        else if ( nbits &lt; w )</a>
+<a name="ln768">        {</a>
+<a name="ln769">          if ( p &lt; limit )</a>
+<a name="ln770">            rval |= *p++;</a>
+<a name="ln771">          nbits += 8 - w;</a>
+<a name="ln772">        }</a>
+<a name="ln773">        else</a>
+<a name="ln774">        {</a>
+<a name="ln775">          rval  &gt;&gt;= 8;</a>
+<a name="ln776">          nbits  -= w;</a>
+<a name="ln777">        }</a>
+<a name="ln778"> </a>
+<a name="ln779">        *pwrite++ |= ( ( rval &gt;&gt; nbits ) &amp; 0xFF ) &amp;</a>
+<a name="ln780">                     ( ~( 0xFF &lt;&lt; w ) &lt;&lt; ( 8 - w - x_pos ) );</a>
+<a name="ln781">        rval     &lt;&lt;= 8;</a>
+<a name="ln782"> </a>
+<a name="ln783">        w = line_bits - w;</a>
+<a name="ln784">      }</a>
+<a name="ln785"> </a>
+<a name="ln786">      /* handle medial bytes */</a>
+<a name="ln787">      for ( ; w &gt;= 8; w -= 8 )</a>
+<a name="ln788">      {</a>
+<a name="ln789">        rval      |= *p++;</a>
+<a name="ln790">        *pwrite++ |= ( rval &gt;&gt; nbits ) &amp; 0xFF;</a>
+<a name="ln791"> </a>
+<a name="ln792">        rval &lt;&lt;= 8;</a>
+<a name="ln793">      }</a>
+<a name="ln794"> </a>
+<a name="ln795">      /* handle final byte if necessary */</a>
+<a name="ln796">      if ( w &gt; 0 )</a>
+<a name="ln797">      {</a>
+<a name="ln798">        if ( nbits &lt; w )</a>
+<a name="ln799">        {</a>
+<a name="ln800">          if ( p &lt; limit )</a>
+<a name="ln801">            rval |= *p++;</a>
+<a name="ln802">          *pwrite |= ( ( rval &gt;&gt; nbits ) &amp; 0xFF ) &amp; ( 0xFF00U &gt;&gt; w );</a>
+<a name="ln803">          nbits   += 8 - w;</a>
+<a name="ln804"> </a>
+<a name="ln805">          rval &lt;&lt;= 8;</a>
+<a name="ln806">        }</a>
+<a name="ln807">        else</a>
+<a name="ln808">        {</a>
+<a name="ln809">          *pwrite |= ( ( rval &gt;&gt; nbits ) &amp; 0xFF ) &amp; ( 0xFF00U &gt;&gt; w );</a>
+<a name="ln810">          nbits   -= w;</a>
+<a name="ln811">        }</a>
+<a name="ln812">      }</a>
+<a name="ln813">    }</a>
+<a name="ln814"> </a>
+<a name="ln815">  Exit:</a>
+<a name="ln816">    if ( !error )</a>
+<a name="ln817">      FT_TRACE3(( &quot;tt_sbit_decoder_load_bit_aligned: loaded\n&quot; ));</a>
+<a name="ln818">    return error;</a>
+<a name="ln819">  }</a>
+<a name="ln820"> </a>
+<a name="ln821"> </a>
+<a name="ln822">  static FT_Error</a>
+<a name="ln823">  tt_sbit_decoder_load_compound( TT_SBitDecoder  decoder,</a>
+<a name="ln824">                                 FT_Byte*        p,</a>
+<a name="ln825">                                 FT_Byte*        limit,</a>
+<a name="ln826">                                 FT_Int          x_pos,</a>
+<a name="ln827">                                 FT_Int          y_pos )</a>
+<a name="ln828">  {</a>
+<a name="ln829">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln830">    FT_UInt   num_components, nn;</a>
+<a name="ln831"> </a>
+<a name="ln832">    FT_Char  horiBearingX = (FT_Char)decoder-&gt;metrics-&gt;horiBearingX;</a>
+<a name="ln833">    FT_Char  horiBearingY = (FT_Char)decoder-&gt;metrics-&gt;horiBearingY;</a>
+<a name="ln834">    FT_Byte  horiAdvance  = (FT_Byte)decoder-&gt;metrics-&gt;horiAdvance;</a>
+<a name="ln835">    FT_Char  vertBearingX = (FT_Char)decoder-&gt;metrics-&gt;vertBearingX;</a>
+<a name="ln836">    FT_Char  vertBearingY = (FT_Char)decoder-&gt;metrics-&gt;vertBearingY;</a>
+<a name="ln837">    FT_Byte  vertAdvance  = (FT_Byte)decoder-&gt;metrics-&gt;vertAdvance;</a>
+<a name="ln838"> </a>
+<a name="ln839"> </a>
+<a name="ln840">    if ( p + 2 &gt; limit )</a>
+<a name="ln841">      goto Fail;</a>
+<a name="ln842"> </a>
+<a name="ln843">    num_components = FT_NEXT_USHORT( p );</a>
+<a name="ln844">    if ( p + 4 * num_components &gt; limit )</a>
+<a name="ln845">    {</a>
+<a name="ln846">      FT_TRACE1(( &quot;tt_sbit_decoder_load_compound: broken table\n&quot; ));</a>
+<a name="ln847">      goto Fail;</a>
+<a name="ln848">    }</a>
+<a name="ln849"> </a>
+<a name="ln850">    FT_TRACE3(( &quot;tt_sbit_decoder_load_compound: loading %d components\n&quot;,</a>
+<a name="ln851">                num_components ));</a>
+<a name="ln852"> </a>
+<a name="ln853">    for ( nn = 0; nn &lt; num_components; nn++ )</a>
+<a name="ln854">    {</a>
+<a name="ln855">      FT_UInt  gindex = FT_NEXT_USHORT( p );</a>
+<a name="ln856">      FT_Byte  dx     = FT_NEXT_BYTE( p );</a>
+<a name="ln857">      FT_Byte  dy     = FT_NEXT_BYTE( p );</a>
+<a name="ln858"> </a>
+<a name="ln859"> </a>
+<a name="ln860">      /* NB: a recursive call */</a>
+<a name="ln861">      error = tt_sbit_decoder_load_image( decoder, gindex,</a>
+<a name="ln862">                                          x_pos + dx, y_pos + dy );</a>
+<a name="ln863">      if ( error )</a>
+<a name="ln864">        break;</a>
+<a name="ln865">    }</a>
+<a name="ln866"> </a>
+<a name="ln867">    FT_TRACE3(( &quot;tt_sbit_decoder_load_compound: done\n&quot; ));</a>
+<a name="ln868"> </a>
+<a name="ln869">    decoder-&gt;metrics-&gt;horiBearingX = horiBearingX;</a>
+<a name="ln870">    decoder-&gt;metrics-&gt;horiBearingY = horiBearingY;</a>
+<a name="ln871">    decoder-&gt;metrics-&gt;horiAdvance  = horiAdvance;</a>
+<a name="ln872">    decoder-&gt;metrics-&gt;vertBearingX = vertBearingX;</a>
+<a name="ln873">    decoder-&gt;metrics-&gt;vertBearingY = vertBearingY;</a>
+<a name="ln874">    decoder-&gt;metrics-&gt;vertAdvance  = vertAdvance;</a>
+<a name="ln875">    decoder-&gt;metrics-&gt;width        = (FT_Byte)decoder-&gt;bitmap-&gt;width;</a>
+<a name="ln876">    decoder-&gt;metrics-&gt;height       = (FT_Byte)decoder-&gt;bitmap-&gt;rows;</a>
+<a name="ln877"> </a>
+<a name="ln878">  Exit:</a>
+<a name="ln879">    return error;</a>
+<a name="ln880"> </a>
+<a name="ln881">  Fail:</a>
+<a name="ln882">    error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln883">    goto Exit;</a>
+<a name="ln884">  }</a>
+<a name="ln885"> </a>
+<a name="ln886"> </a>
+<a name="ln887">#ifdef FT_CONFIG_OPTION_USE_PNG</a>
+<a name="ln888"> </a>
+<a name="ln889">  static FT_Error</a>
+<a name="ln890">  tt_sbit_decoder_load_png( TT_SBitDecoder  decoder,</a>
+<a name="ln891">                            FT_Byte*        p,</a>
+<a name="ln892">                            FT_Byte*        limit,</a>
+<a name="ln893">                            FT_Int          x_pos,</a>
+<a name="ln894">                            FT_Int          y_pos )</a>
+<a name="ln895">  {</a>
+<a name="ln896">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln897">    FT_ULong  png_len;</a>
+<a name="ln898"> </a>
+<a name="ln899"> </a>
+<a name="ln900">    if ( limit - p &lt; 4 )</a>
+<a name="ln901">    {</a>
+<a name="ln902">      FT_TRACE1(( &quot;tt_sbit_decoder_load_png: broken bitmap\n&quot; ));</a>
+<a name="ln903">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln904">      goto Exit;</a>
+<a name="ln905">    }</a>
+<a name="ln906"> </a>
+<a name="ln907">    png_len = FT_NEXT_ULONG( p );</a>
+<a name="ln908">    if ( (FT_ULong)( limit - p ) &lt; png_len )</a>
+<a name="ln909">    {</a>
+<a name="ln910">      FT_TRACE1(( &quot;tt_sbit_decoder_load_png: broken bitmap\n&quot; ));</a>
+<a name="ln911">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln912">      goto Exit;</a>
+<a name="ln913">    }</a>
+<a name="ln914"> </a>
+<a name="ln915">    error = Load_SBit_Png( decoder-&gt;face-&gt;root.glyph,</a>
+<a name="ln916">                           x_pos,</a>
+<a name="ln917">                           y_pos,</a>
+<a name="ln918">                           decoder-&gt;bit_depth,</a>
+<a name="ln919">                           decoder-&gt;metrics,</a>
+<a name="ln920">                           decoder-&gt;stream-&gt;memory,</a>
+<a name="ln921">                           p,</a>
+<a name="ln922">                           png_len,</a>
+<a name="ln923">                           FALSE );</a>
+<a name="ln924"> </a>
+<a name="ln925">  Exit:</a>
+<a name="ln926">    if ( !error )</a>
+<a name="ln927">      FT_TRACE3(( &quot;tt_sbit_decoder_load_png: loaded\n&quot; ));</a>
+<a name="ln928">    return error;</a>
+<a name="ln929">  }</a>
+<a name="ln930"> </a>
+<a name="ln931">#endif /* FT_CONFIG_OPTION_USE_PNG */</a>
+<a name="ln932"> </a>
+<a name="ln933"> </a>
+<a name="ln934">  static FT_Error</a>
+<a name="ln935">  tt_sbit_decoder_load_bitmap( TT_SBitDecoder  decoder,</a>
+<a name="ln936">                               FT_UInt         glyph_format,</a>
+<a name="ln937">                               FT_ULong        glyph_start,</a>
+<a name="ln938">                               FT_ULong        glyph_size,</a>
+<a name="ln939">                               FT_Int          x_pos,</a>
+<a name="ln940">                               FT_Int          y_pos )</a>
+<a name="ln941">  {</a>
+<a name="ln942">    FT_Error   error;</a>
+<a name="ln943">    FT_Stream  stream = decoder-&gt;stream;</a>
+<a name="ln944">    FT_Byte*   p;</a>
+<a name="ln945">    FT_Byte*   p_limit;</a>
+<a name="ln946">    FT_Byte*   data;</a>
+<a name="ln947"> </a>
+<a name="ln948"> </a>
+<a name="ln949">    /* seek into the EBDT table now */</a>
+<a name="ln950">    if ( glyph_start + glyph_size &gt; decoder-&gt;ebdt_size )</a>
+<a name="ln951">    {</a>
+<a name="ln952">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln953">      goto Exit;</a>
+<a name="ln954">    }</a>
+<a name="ln955"> </a>
+<a name="ln956">    if ( FT_STREAM_SEEK( decoder-&gt;ebdt_start + glyph_start ) ||</a>
+<a name="ln957">         FT_FRAME_EXTRACT( glyph_size, data )                )</a>
+<a name="ln958">      goto Exit;</a>
+<a name="ln959"> </a>
+<a name="ln960">    p       = data;</a>
+<a name="ln961">    p_limit = p + glyph_size;</a>
+<a name="ln962"> </a>
+<a name="ln963">    /* read the data, depending on the glyph format */</a>
+<a name="ln964">    switch ( glyph_format )</a>
+<a name="ln965">    {</a>
+<a name="ln966">    case 1:</a>
+<a name="ln967">    case 2:</a>
+<a name="ln968">    case 8:</a>
+<a name="ln969">    case 17:</a>
+<a name="ln970">      error = tt_sbit_decoder_load_metrics( decoder, &amp;p, p_limit, 0 );</a>
+<a name="ln971">      break;</a>
+<a name="ln972"> </a>
+<a name="ln973">    case 6:</a>
+<a name="ln974">    case 7:</a>
+<a name="ln975">    case 9:</a>
+<a name="ln976">    case 18:</a>
+<a name="ln977">      error = tt_sbit_decoder_load_metrics( decoder, &amp;p, p_limit, 1 );</a>
+<a name="ln978">      break;</a>
+<a name="ln979"> </a>
+<a name="ln980">    default:</a>
+<a name="ln981">      error = FT_Err_Ok;</a>
+<a name="ln982">    }</a>
+<a name="ln983"> </a>
+<a name="ln984">    if ( error )</a>
+<a name="ln985">      goto Fail;</a>
+<a name="ln986"> </a>
+<a name="ln987">    {</a>
+<a name="ln988">      TT_SBitDecoder_LoadFunc  loader;</a>
+<a name="ln989"> </a>
+<a name="ln990"> </a>
+<a name="ln991">      switch ( glyph_format )</a>
+<a name="ln992">      {</a>
+<a name="ln993">      case 1:</a>
+<a name="ln994">      case 6:</a>
+<a name="ln995">        loader = tt_sbit_decoder_load_byte_aligned;</a>
+<a name="ln996">        break;</a>
+<a name="ln997"> </a>
+<a name="ln998">      case 2:</a>
+<a name="ln999">      case 7:</a>
+<a name="ln1000">        {</a>
+<a name="ln1001">          /* Don't trust `glyph_format'.  For example, Apple's main Korean */</a>
+<a name="ln1002">          /* system font, `AppleMyungJo.ttf' (version 7.0d2e6), uses glyph */</a>
+<a name="ln1003">          /* format 7, but the data is format 6.  We check whether we have */</a>
+<a name="ln1004">          /* an excessive number of bytes in the image: If it is equal to  */</a>
+<a name="ln1005">          /* the value for a byte-aligned glyph, use the other loading     */</a>
+<a name="ln1006">          /* routine.                                                      */</a>
+<a name="ln1007">          /*                                                               */</a>
+<a name="ln1008">          /* Note that for some (width,height) combinations, where the     */</a>
+<a name="ln1009">          /* width is not a multiple of 8, the sizes for bit- and          */</a>
+<a name="ln1010">          /* byte-aligned data are equal, for example (7,7) or (15,6).  We */</a>
+<a name="ln1011">          /* then prefer what `glyph_format' specifies.                    */</a>
+<a name="ln1012"> </a>
+<a name="ln1013">          FT_UInt  width  = decoder-&gt;metrics-&gt;width;</a>
+<a name="ln1014">          FT_UInt  height = decoder-&gt;metrics-&gt;height;</a>
+<a name="ln1015"> </a>
+<a name="ln1016">          FT_UInt  bit_size  = ( width * height + 7 ) &gt;&gt; 3;</a>
+<a name="ln1017">          FT_UInt  byte_size = height * ( ( width + 7 ) &gt;&gt; 3 );</a>
+<a name="ln1018"> </a>
+<a name="ln1019"> </a>
+<a name="ln1020">          if ( bit_size &lt; byte_size                  &amp;&amp;</a>
+<a name="ln1021">               byte_size == (FT_UInt)( p_limit - p ) )</a>
+<a name="ln1022">            loader = tt_sbit_decoder_load_byte_aligned;</a>
+<a name="ln1023">          else</a>
+<a name="ln1024">            loader = tt_sbit_decoder_load_bit_aligned;</a>
+<a name="ln1025">        }</a>
+<a name="ln1026">        break;</a>
+<a name="ln1027"> </a>
+<a name="ln1028">      case 5:</a>
+<a name="ln1029">        loader = tt_sbit_decoder_load_bit_aligned;</a>
+<a name="ln1030">        break;</a>
+<a name="ln1031"> </a>
+<a name="ln1032">      case 8:</a>
+<a name="ln1033">        if ( p + 1 &gt; p_limit )</a>
+<a name="ln1034">          goto Fail;</a>
+<a name="ln1035"> </a>
+<a name="ln1036">        p += 1;  /* skip padding */</a>
+<a name="ln1037">        /* fall-through */</a>
+<a name="ln1038"> </a>
+<a name="ln1039">      case 9:</a>
+<a name="ln1040">        loader = tt_sbit_decoder_load_compound;</a>
+<a name="ln1041">        break;</a>
+<a name="ln1042"> </a>
+<a name="ln1043">      case 17: /* small metrics, PNG image data   */</a>
+<a name="ln1044">      case 18: /* big metrics, PNG image data     */</a>
+<a name="ln1045">      case 19: /* metrics in EBLC, PNG image data */</a>
+<a name="ln1046">#ifdef FT_CONFIG_OPTION_USE_PNG</a>
+<a name="ln1047">        loader = tt_sbit_decoder_load_png;</a>
+<a name="ln1048">        break;</a>
+<a name="ln1049">#else</a>
+<a name="ln1050">        error = FT_THROW( Unimplemented_Feature );</a>
+<a name="ln1051">        goto Fail;</a>
+<a name="ln1052">#endif /* FT_CONFIG_OPTION_USE_PNG */</a>
+<a name="ln1053"> </a>
+<a name="ln1054">      default:</a>
+<a name="ln1055">        error = FT_THROW( Invalid_Table );</a>
+<a name="ln1056">        goto Fail;</a>
+<a name="ln1057">      }</a>
+<a name="ln1058"> </a>
+<a name="ln1059">      if ( !decoder-&gt;bitmap_allocated )</a>
+<a name="ln1060">      {</a>
+<a name="ln1061">        error = tt_sbit_decoder_alloc_bitmap( decoder );</a>
+<a name="ln1062">        if ( error )</a>
+<a name="ln1063">          goto Fail;</a>
+<a name="ln1064">      }</a>
+<a name="ln1065"> </a>
+<a name="ln1066">      error = loader( decoder, p, p_limit, x_pos, y_pos );</a>
+<a name="ln1067">    }</a>
+<a name="ln1068"> </a>
+<a name="ln1069">  Fail:</a>
+<a name="ln1070">    FT_FRAME_RELEASE( data );</a>
+<a name="ln1071"> </a>
+<a name="ln1072">  Exit:</a>
+<a name="ln1073">    return error;</a>
+<a name="ln1074">  }</a>
+<a name="ln1075"> </a>
+<a name="ln1076"> </a>
+<a name="ln1077">  static FT_Error</a>
+<a name="ln1078">  tt_sbit_decoder_load_image( TT_SBitDecoder  decoder,</a>
+<a name="ln1079">                              FT_UInt         glyph_index,</a>
+<a name="ln1080">                              FT_Int          x_pos,</a>
+<a name="ln1081">                              FT_Int          y_pos )</a>
+<a name="ln1082">  {</a>
+<a name="ln1083">    /*</a>
+<a name="ln1084">     *  First, we find the correct strike range that applies to this</a>
+<a name="ln1085">     *  glyph index.</a>
+<a name="ln1086">     */</a>
+<a name="ln1087"> </a>
+<a name="ln1088">    FT_Byte*  p          = decoder-&gt;eblc_base + decoder-&gt;strike_index_array;</a>
+<a name="ln1089">    FT_Byte*  p_limit    = decoder-&gt;eblc_limit;</a>
+<a name="ln1090">    FT_ULong  num_ranges = decoder-&gt;strike_index_count;</a>
+<a name="ln1091">    FT_UInt   start, end, index_format, image_format;</a>
+<a name="ln1092">    FT_ULong  image_start = 0, image_end = 0, image_offset;</a>
+<a name="ln1093"> </a>
+<a name="ln1094"> </a>
+<a name="ln1095">    for ( ; num_ranges &gt; 0; num_ranges-- )</a>
+<a name="ln1096">    {</a>
+<a name="ln1097">      start = FT_NEXT_USHORT( p );</a>
+<a name="ln1098">      end   = FT_NEXT_USHORT( p );</a>
+<a name="ln1099"> </a>
+<a name="ln1100">      if ( glyph_index &gt;= start &amp;&amp; glyph_index &lt;= end )</a>
+<a name="ln1101">        goto FoundRange;</a>
+<a name="ln1102"> </a>
+<a name="ln1103">      p += 4;  /* ignore index offset */</a>
+<a name="ln1104">    }</a>
+<a name="ln1105">    goto NoBitmap;</a>
+<a name="ln1106"> </a>
+<a name="ln1107">  FoundRange:</a>
+<a name="ln1108">    image_offset = FT_NEXT_ULONG( p );</a>
+<a name="ln1109"> </a>
+<a name="ln1110">    /* overflow check */</a>
+<a name="ln1111">    p = decoder-&gt;eblc_base + decoder-&gt;strike_index_array;</a>
+<a name="ln1112">    if ( image_offset &gt; (FT_ULong)( p_limit - p ) )</a>
+<a name="ln1113">      goto Failure;</a>
+<a name="ln1114"> </a>
+<a name="ln1115">    p += image_offset;</a>
+<a name="ln1116">    if ( p + 8 &gt; p_limit )</a>
+<a name="ln1117">      goto NoBitmap;</a>
+<a name="ln1118"> </a>
+<a name="ln1119">    /* now find the glyph's location and extend within the ebdt table */</a>
+<a name="ln1120">    index_format = FT_NEXT_USHORT( p );</a>
+<a name="ln1121">    image_format = FT_NEXT_USHORT( p );</a>
+<a name="ln1122">    image_offset = FT_NEXT_ULONG ( p );</a>
+<a name="ln1123"> </a>
+<a name="ln1124">    switch ( index_format )</a>
+<a name="ln1125">    {</a>
+<a name="ln1126">    case 1: /* 4-byte offsets relative to `image_offset' */</a>
+<a name="ln1127">      p += 4 * ( glyph_index - start );</a>
+<a name="ln1128">      if ( p + 8 &gt; p_limit )</a>
+<a name="ln1129">        goto NoBitmap;</a>
+<a name="ln1130"> </a>
+<a name="ln1131">      image_start = FT_NEXT_ULONG( p );</a>
+<a name="ln1132">      image_end   = FT_NEXT_ULONG( p );</a>
+<a name="ln1133"> </a>
+<a name="ln1134">      if ( image_start == image_end )  /* missing glyph */</a>
+<a name="ln1135">        goto NoBitmap;</a>
+<a name="ln1136">      break;</a>
+<a name="ln1137"> </a>
+<a name="ln1138">    case 2: /* big metrics, constant image size */</a>
+<a name="ln1139">      {</a>
+<a name="ln1140">        FT_ULong  image_size;</a>
+<a name="ln1141"> </a>
+<a name="ln1142"> </a>
+<a name="ln1143">        if ( p + 12 &gt; p_limit )</a>
+<a name="ln1144">          goto NoBitmap;</a>
+<a name="ln1145"> </a>
+<a name="ln1146">        image_size = FT_NEXT_ULONG( p );</a>
+<a name="ln1147"> </a>
+<a name="ln1148">        if ( tt_sbit_decoder_load_metrics( decoder, &amp;p, p_limit, 1 ) )</a>
+<a name="ln1149">          goto NoBitmap;</a>
+<a name="ln1150"> </a>
+<a name="ln1151">        image_start = image_size * ( glyph_index - start );</a>
+<a name="ln1152">        image_end   = image_start + image_size;</a>
+<a name="ln1153">      }</a>
+<a name="ln1154">      break;</a>
+<a name="ln1155"> </a>
+<a name="ln1156">    case 3: /* 2-byte offsets relative to 'image_offset' */</a>
+<a name="ln1157">      p += 2 * ( glyph_index - start );</a>
+<a name="ln1158">      if ( p + 4 &gt; p_limit )</a>
+<a name="ln1159">        goto NoBitmap;</a>
+<a name="ln1160"> </a>
+<a name="ln1161">      image_start = FT_NEXT_USHORT( p );</a>
+<a name="ln1162">      image_end   = FT_NEXT_USHORT( p );</a>
+<a name="ln1163"> </a>
+<a name="ln1164">      if ( image_start == image_end )  /* missing glyph */</a>
+<a name="ln1165">        goto NoBitmap;</a>
+<a name="ln1166">      break;</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    case 4: /* sparse glyph array with (glyph,offset) pairs */</a>
+<a name="ln1169">      {</a>
+<a name="ln1170">        FT_ULong  mm, num_glyphs;</a>
+<a name="ln1171"> </a>
+<a name="ln1172"> </a>
+<a name="ln1173">        if ( p + 4 &gt; p_limit )</a>
+<a name="ln1174">          goto NoBitmap;</a>
+<a name="ln1175"> </a>
+<a name="ln1176">        num_glyphs = FT_NEXT_ULONG( p );</a>
+<a name="ln1177"> </a>
+<a name="ln1178">        /* overflow check for p + ( num_glyphs + 1 ) * 4 */</a>
+<a name="ln1179">        if ( p + 4 &gt; p_limit                                         ||</a>
+<a name="ln1180">             num_glyphs &gt; (FT_ULong)( ( ( p_limit - p ) &gt;&gt; 2 ) - 1 ) )</a>
+<a name="ln1181">          goto NoBitmap;</a>
+<a name="ln1182"> </a>
+<a name="ln1183">        for ( mm = 0; mm &lt; num_glyphs; mm++ )</a>
+<a name="ln1184">        {</a>
+<a name="ln1185">          FT_UInt  gindex = FT_NEXT_USHORT( p );</a>
+<a name="ln1186"> </a>
+<a name="ln1187"> </a>
+<a name="ln1188">          if ( gindex == glyph_index )</a>
+<a name="ln1189">          {</a>
+<a name="ln1190">            image_start = FT_NEXT_USHORT( p );</a>
+<a name="ln1191">            p          += 2;</a>
+<a name="ln1192">            image_end   = FT_PEEK_USHORT( p );</a>
+<a name="ln1193">            break;</a>
+<a name="ln1194">          }</a>
+<a name="ln1195">          p += 2;</a>
+<a name="ln1196">        }</a>
+<a name="ln1197"> </a>
+<a name="ln1198">        if ( mm &gt;= num_glyphs )</a>
+<a name="ln1199">          goto NoBitmap;</a>
+<a name="ln1200">      }</a>
+<a name="ln1201">      break;</a>
+<a name="ln1202"> </a>
+<a name="ln1203">    case 5: /* constant metrics with sparse glyph codes */</a>
+<a name="ln1204">    case 19:</a>
+<a name="ln1205">      {</a>
+<a name="ln1206">        FT_ULong  image_size, mm, num_glyphs;</a>
+<a name="ln1207"> </a>
+<a name="ln1208"> </a>
+<a name="ln1209">        if ( p + 16 &gt; p_limit )</a>
+<a name="ln1210">          goto NoBitmap;</a>
+<a name="ln1211"> </a>
+<a name="ln1212">        image_size = FT_NEXT_ULONG( p );</a>
+<a name="ln1213"> </a>
+<a name="ln1214">        if ( tt_sbit_decoder_load_metrics( decoder, &amp;p, p_limit, 1 ) )</a>
+<a name="ln1215">          goto NoBitmap;</a>
+<a name="ln1216"> </a>
+<a name="ln1217">        num_glyphs = FT_NEXT_ULONG( p );</a>
+<a name="ln1218"> </a>
+<a name="ln1219">        /* overflow check for p + 2 * num_glyphs */</a>
+<a name="ln1220">        if ( num_glyphs &gt; (FT_ULong)( ( p_limit - p ) &gt;&gt; 1 ) )</a>
+<a name="ln1221">          goto NoBitmap;</a>
+<a name="ln1222"> </a>
+<a name="ln1223">        for ( mm = 0; mm &lt; num_glyphs; mm++ )</a>
+<a name="ln1224">        {</a>
+<a name="ln1225">          FT_UInt  gindex = FT_NEXT_USHORT( p );</a>
+<a name="ln1226"> </a>
+<a name="ln1227"> </a>
+<a name="ln1228">          if ( gindex == glyph_index )</a>
+<a name="ln1229">            break;</a>
+<a name="ln1230">        }</a>
+<a name="ln1231"> </a>
+<a name="ln1232">        if ( mm &gt;= num_glyphs )</a>
+<a name="ln1233">          goto NoBitmap;</a>
+<a name="ln1234"> </a>
+<a name="ln1235">        image_start = image_size * mm;</a>
+<a name="ln1236">        image_end   = image_start + image_size;</a>
+<a name="ln1237">      }</a>
+<a name="ln1238">      break;</a>
+<a name="ln1239"> </a>
+<a name="ln1240">    default:</a>
+<a name="ln1241">      goto NoBitmap;</a>
+<a name="ln1242">    }</a>
+<a name="ln1243"> </a>
+<a name="ln1244">    if ( image_start &gt; image_end )</a>
+<a name="ln1245">      goto NoBitmap;</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    image_end  -= image_start;</a>
+<a name="ln1248">    image_start = image_offset + image_start;</a>
+<a name="ln1249"> </a>
+<a name="ln1250">    FT_TRACE3(( &quot;tt_sbit_decoder_load_image:&quot;</a>
+<a name="ln1251">                &quot; found sbit (format %d) for glyph index %d\n&quot;,</a>
+<a name="ln1252">                image_format, glyph_index ));</a>
+<a name="ln1253"> </a>
+<a name="ln1254">    return tt_sbit_decoder_load_bitmap( decoder,</a>
+<a name="ln1255">                                        image_format,</a>
+<a name="ln1256">                                        image_start,</a>
+<a name="ln1257">                                        image_end,</a>
+<a name="ln1258">                                        x_pos,</a>
+<a name="ln1259">                                        y_pos );</a>
+<a name="ln1260"> </a>
+<a name="ln1261">  Failure:</a>
+<a name="ln1262">    return FT_THROW( Invalid_Table );</a>
+<a name="ln1263"> </a>
+<a name="ln1264">  NoBitmap:</a>
+<a name="ln1265">    FT_TRACE4(( &quot;tt_sbit_decoder_load_image:&quot;</a>
+<a name="ln1266">                &quot; no sbit found for glyph index %d\n&quot;, glyph_index ));</a>
+<a name="ln1267"> </a>
+<a name="ln1268">    return FT_THROW( Invalid_Argument );</a>
+<a name="ln1269">  }</a>
+<a name="ln1270"> </a>
+<a name="ln1271"> </a>
+<a name="ln1272">  static FT_Error</a>
+<a name="ln1273">  tt_face_load_sbix_image( TT_Face              face,</a>
+<a name="ln1274">                           FT_ULong             strike_index,</a>
+<a name="ln1275">                           FT_UInt              glyph_index,</a>
+<a name="ln1276">                           FT_Stream            stream,</a>
+<a name="ln1277">                           FT_Bitmap           *map,</a>
+<a name="ln1278">                           TT_SBit_MetricsRec  *metrics )</a>
+<a name="ln1279">  {</a>
+<a name="ln1280">    FT_UInt   sbix_pos, strike_offset, glyph_start, glyph_end;</a>
+<a name="ln1281">    FT_ULong  table_size;</a>
+<a name="ln1282">    FT_Int    originOffsetX, originOffsetY;</a>
+<a name="ln1283">    FT_Tag    graphicType;</a>
+<a name="ln1284">    FT_Int    recurse_depth = 0;</a>
+<a name="ln1285"> </a>
+<a name="ln1286">    FT_Error  error;</a>
+<a name="ln1287">    FT_Byte*  p;</a>
+<a name="ln1288"> </a>
+<a name="ln1289">    FT_UNUSED( map );</a>
+<a name="ln1290"> </a>
+<a name="ln1291"> </a>
+<a name="ln1292">    metrics-&gt;width  = 0;</a>
+<a name="ln1293">    metrics-&gt;height = 0;</a>
+<a name="ln1294"> </a>
+<a name="ln1295">    p = face-&gt;sbit_table + 8 + 4 * strike_index;</a>
+<a name="ln1296">    strike_offset = FT_NEXT_ULONG( p );</a>
+<a name="ln1297"> </a>
+<a name="ln1298">    error = face-&gt;goto_table( face, TTAG_sbix, stream, &amp;table_size );</a>
+<a name="ln1299">    if ( error )</a>
+<a name="ln1300">      return error;</a>
+<a name="ln1301">    sbix_pos = FT_STREAM_POS();</a>
+<a name="ln1302"> </a>
+<a name="ln1303">  retry:</a>
+<a name="ln1304">    if ( glyph_index &gt; (FT_UInt)face-&gt;root.num_glyphs )</a>
+<a name="ln1305">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1306"> </a>
+<a name="ln1307">    if ( strike_offset &gt;= table_size                          ||</a>
+<a name="ln1308">         table_size - strike_offset &lt; 4 + glyph_index * 4 + 8 )</a>
+<a name="ln1309">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln1310"> </a>
+<a name="ln1311">    if ( FT_STREAM_SEEK( sbix_pos + strike_offset + 4 + glyph_index * 4 ) ||</a>
+<a name="ln1312">         FT_FRAME_ENTER( 8 )                                              )</a>
+<a name="ln1313">      return error;</a>
+<a name="ln1314"> </a>
+<a name="ln1315">    glyph_start = FT_GET_ULONG();</a>
+<a name="ln1316">    glyph_end   = FT_GET_ULONG();</a>
+<a name="ln1317"> </a>
+<a name="ln1318">    FT_FRAME_EXIT();</a>
+<a name="ln1319"> </a>
+<a name="ln1320">    if ( glyph_start == glyph_end )</a>
+<a name="ln1321">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1322">    if ( glyph_start &gt; glyph_end                ||</a>
+<a name="ln1323">         glyph_end - glyph_start &lt; 8            ||</a>
+<a name="ln1324">         table_size - strike_offset &lt; glyph_end )</a>
+<a name="ln1325">      return FT_THROW( Invalid_File_Format );</a>
+<a name="ln1326"> </a>
+<a name="ln1327">    if ( FT_STREAM_SEEK( sbix_pos + strike_offset + glyph_start ) ||</a>
+<a name="ln1328">         FT_FRAME_ENTER( glyph_end - glyph_start )                )</a>
+<a name="ln1329">      return error;</a>
+<a name="ln1330"> </a>
+<a name="ln1331">    originOffsetX = FT_GET_SHORT();</a>
+<a name="ln1332">    originOffsetY = FT_GET_SHORT();</a>
+<a name="ln1333"> </a>
+<a name="ln1334">    graphicType = FT_GET_TAG4();</a>
+<a name="ln1335"> </a>
+<a name="ln1336">    switch ( graphicType )</a>
+<a name="ln1337">    {</a>
+<a name="ln1338">    case FT_MAKE_TAG( 'd', 'u', 'p', 'e' ):</a>
+<a name="ln1339">      if ( recurse_depth &lt; 4 )</a>
+<a name="ln1340">      {</a>
+<a name="ln1341">        glyph_index = FT_GET_USHORT();</a>
+<a name="ln1342">        FT_FRAME_EXIT();</a>
+<a name="ln1343">        recurse_depth++;</a>
+<a name="ln1344">        goto retry;</a>
+<a name="ln1345">      }</a>
+<a name="ln1346">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln1347">      break;</a>
+<a name="ln1348"> </a>
+<a name="ln1349">    case FT_MAKE_TAG( 'p', 'n', 'g', ' ' ):</a>
+<a name="ln1350">#ifdef FT_CONFIG_OPTION_USE_PNG</a>
+<a name="ln1351">      error = Load_SBit_Png( face-&gt;root.glyph,</a>
+<a name="ln1352">                             0,</a>
+<a name="ln1353">                             0,</a>
+<a name="ln1354">                             32,</a>
+<a name="ln1355">                             metrics,</a>
+<a name="ln1356">                             stream-&gt;memory,</a>
+<a name="ln1357">                             stream-&gt;cursor,</a>
+<a name="ln1358">                             glyph_end - glyph_start - 8,</a>
+<a name="ln1359">                             TRUE );</a>
+<a name="ln1360">#else</a>
+<a name="ln1361">      error = FT_THROW( Unimplemented_Feature );</a>
+<a name="ln1362">#endif</a>
+<a name="ln1363">      break;</a>
+<a name="ln1364"> </a>
+<a name="ln1365">    case FT_MAKE_TAG( 'j', 'p', 'g', ' ' ):</a>
+<a name="ln1366">    case FT_MAKE_TAG( 't', 'i', 'f', 'f' ):</a>
+<a name="ln1367">    case FT_MAKE_TAG( 'r', 'g', 'b', 'l' ): /* used on iOS 7.1 */</a>
+<a name="ln1368">      error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln1369">      break;</a>
+<a name="ln1370"> </a>
+<a name="ln1371">    default:</a>
+<a name="ln1372">      error = FT_THROW( Unimplemented_Feature );</a>
+<a name="ln1373">      break;</a>
+<a name="ln1374">    }</a>
+<a name="ln1375"> </a>
+<a name="ln1376">    FT_FRAME_EXIT();</a>
+<a name="ln1377"> </a>
+<a name="ln1378">    if ( !error )</a>
+<a name="ln1379">    {</a>
+<a name="ln1380">      FT_Short   abearing;</a>
+<a name="ln1381">      FT_UShort  aadvance;</a>
+<a name="ln1382"> </a>
+<a name="ln1383"> </a>
+<a name="ln1384">      tt_face_get_metrics( face, FALSE, glyph_index, &amp;abearing, &amp;aadvance );</a>
+<a name="ln1385"> </a>
+<a name="ln1386">      metrics-&gt;horiBearingX = (FT_Short)originOffsetX;</a>
+<a name="ln1387">      metrics-&gt;horiBearingY = (FT_Short)( -originOffsetY + metrics-&gt;height );</a>
+<a name="ln1388">      metrics-&gt;horiAdvance  = (FT_UShort)( aadvance *</a>
+<a name="ln1389">                                           face-&gt;root.size-&gt;metrics.x_ppem /</a>
+<a name="ln1390">                                           face-&gt;header.Units_Per_EM );</a>
+<a name="ln1391">    }</a>
+<a name="ln1392"> </a>
+<a name="ln1393">    return error;</a>
+<a name="ln1394">  }</a>
+<a name="ln1395"> </a>
+<a name="ln1396">  FT_LOCAL( FT_Error )</a>
+<a name="ln1397">  tt_face_load_sbit_image( TT_Face              face,</a>
+<a name="ln1398">                           FT_ULong             strike_index,</a>
+<a name="ln1399">                           FT_UInt              glyph_index,</a>
+<a name="ln1400">                           FT_UInt              load_flags,</a>
+<a name="ln1401">                           FT_Stream            stream,</a>
+<a name="ln1402">                           FT_Bitmap           *map,</a>
+<a name="ln1403">                           TT_SBit_MetricsRec  *metrics )</a>
+<a name="ln1404">  {</a>
+<a name="ln1405">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln1406"> </a>
+<a name="ln1407"> </a>
+<a name="ln1408">    switch ( (FT_UInt)face-&gt;sbit_table_type )</a>
+<a name="ln1409">    {</a>
+<a name="ln1410">    case TT_SBIT_TABLE_TYPE_EBLC:</a>
+<a name="ln1411">    case TT_SBIT_TABLE_TYPE_CBLC:</a>
+<a name="ln1412">      {</a>
+<a name="ln1413">        TT_SBitDecoderRec  decoder[1];</a>
+<a name="ln1414"> </a>
+<a name="ln1415"> </a>
+<a name="ln1416">        error = tt_sbit_decoder_init( decoder, face, strike_index, metrics );</a>
+<a name="ln1417">        if ( !error )</a>
+<a name="ln1418">        {</a>
+<a name="ln1419">          error = tt_sbit_decoder_load_image( decoder,</a>
+<a name="ln1420">                                              glyph_index,</a>
+<a name="ln1421">                                              0,</a>
+<a name="ln1422">                                              0 );</a>
+<a name="ln1423">          tt_sbit_decoder_done( decoder );</a>
+<a name="ln1424">        }</a>
+<a name="ln1425">      }</a>
+<a name="ln1426">      break;</a>
+<a name="ln1427"> </a>
+<a name="ln1428">    case TT_SBIT_TABLE_TYPE_SBIX:</a>
+<a name="ln1429">      error = tt_face_load_sbix_image( face,</a>
+<a name="ln1430">                                       strike_index,</a>
+<a name="ln1431">                                       glyph_index,</a>
+<a name="ln1432">                                       stream,</a>
+<a name="ln1433">                                       map,</a>
+<a name="ln1434">                                       metrics );</a>
+<a name="ln1435">      break;</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    default:</a>
+<a name="ln1438">      error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln1439">      break;</a>
+<a name="ln1440">    }</a>
+<a name="ln1441"> </a>
+<a name="ln1442">    /* Flatten color bitmaps if color was not requested. */</a>
+<a name="ln1443">    if ( !error                                &amp;&amp;</a>
+<a name="ln1444">         !( load_flags &amp; FT_LOAD_COLOR )       &amp;&amp;</a>
+<a name="ln1445">         map-&gt;pixel_mode == FT_PIXEL_MODE_BGRA )</a>
+<a name="ln1446">    {</a>
+<a name="ln1447">      FT_Bitmap   new_map;</a>
+<a name="ln1448">      FT_Library  library = face-&gt;root.glyph-&gt;library;</a>
+<a name="ln1449"> </a>
+<a name="ln1450"> </a>
+<a name="ln1451">      FT_Bitmap_Init( &amp;new_map );</a>
+<a name="ln1452"> </a>
+<a name="ln1453">      /* Convert to 8bit grayscale. */</a>
+<a name="ln1454">      error = FT_Bitmap_Convert( library, map, &amp;new_map, 1 );</a>
+<a name="ln1455">      if ( error )</a>
+<a name="ln1456">        FT_Bitmap_Done( library, &amp;new_map );</a>
+<a name="ln1457">      else</a>
+<a name="ln1458">      {</a>
+<a name="ln1459">        map-&gt;pixel_mode = new_map.pixel_mode;</a>
+<a name="ln1460">        map-&gt;pitch      = new_map.pitch;</a>
+<a name="ln1461">        map-&gt;num_grays  = new_map.num_grays;</a>
+<a name="ln1462"> </a>
+<a name="ln1463">        ft_glyphslot_set_bitmap( face-&gt;root.glyph, new_map.buffer );</a>
+<a name="ln1464">        face-&gt;root.glyph-&gt;internal-&gt;flags |= FT_GLYPH_OWN_BITMAP;</a>
+<a name="ln1465">      }</a>
+<a name="ln1466">    }</a>
+<a name="ln1467"> </a>
+<a name="ln1468">    return error;</a>
+<a name="ln1469">  }</a>
+<a name="ln1470"> </a>
+<a name="ln1471"> </a>
+<a name="ln1472">/* EOF */</a>
+
+</code></pre>
+<div class="balloon" rel="202"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'error' is always true.</p></div>
+<div class="balloon" rel="981"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+<div class="balloon" rel="1378"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!error' is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

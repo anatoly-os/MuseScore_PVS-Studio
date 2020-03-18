@@ -1,0 +1,669 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>importmidi_chord.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;importmidi_chord.h&quot;</a>
+<a name="ln2">#include &quot;importmidi_inner.h&quot;</a>
+<a name="ln3">#include &quot;importmidi_chord.h&quot;</a>
+<a name="ln4">#include &quot;importmidi_clef.h&quot;</a>
+<a name="ln5">#include &quot;importmidi_operations.h&quot;</a>
+<a name="ln6">#include &quot;importmidi_quant.h&quot;</a>
+<a name="ln7">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln8">#include &quot;libmscore/sig.h&quot;</a>
+<a name="ln9">#include &quot;mscore/preferences.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;set&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13"> </a>
+<a name="ln14">namespace Ms {</a>
+<a name="ln15">namespace MChord {</a>
+<a name="ln16"> </a>
+<a name="ln17">bool isGrandStaffProgram(int program)</a>
+<a name="ln18">      {</a>
+<a name="ln19">      const static std::set&lt;int&gt; grandStaffPrograms = {</a>
+<a name="ln20">                  // Piano</a>
+<a name="ln21">              0, 1, 2, 3, 4, 5, 6, 7</a>
+<a name="ln22">                  // Chromatic Percussion</a>
+<a name="ln23">            , 8, 10, 11, 12, 13, 15</a>
+<a name="ln24">                  // Organ</a>
+<a name="ln25">            , 16, 17, 18, 19, 20, 21, 23</a>
+<a name="ln26">                  // Strings</a>
+<a name="ln27">            , 46</a>
+<a name="ln28">                  // Ensemble</a>
+<a name="ln29">            , 50, 51, 54</a>
+<a name="ln30">                  // Brass</a>
+<a name="ln31">            , 62, 63</a>
+<a name="ln32">                  // Synth Lead</a>
+<a name="ln33">            , 80, 81, 82, 83, 84, 85, 86, 87</a>
+<a name="ln34">                  // Synth Pad</a>
+<a name="ln35">            , 88, 89, 90, 91, 92, 93, 94, 95</a>
+<a name="ln36">                  // Synth Effects</a>
+<a name="ln37">            , 96, 97, 98, 99, 100, 101, 102, 103</a>
+<a name="ln38">            };</a>
+<a name="ln39"> </a>
+<a name="ln40">      return grandStaffPrograms.find(program) != grandStaffPrograms.end();</a>
+<a name="ln41">      }</a>
+<a name="ln42"> </a>
+<a name="ln43">std::multimap&lt;ReducedFraction, MidiChord&gt;::iterator</a>
+<a name="ln44">findFirstChordInRange(std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln45">                      const ReducedFraction &amp;startRangeTick,</a>
+<a name="ln46">                      const ReducedFraction &amp;endRangeTick)</a>
+<a name="ln47">      {</a>
+<a name="ln48">      auto iter = chords.lower_bound(startRangeTick);</a>
+<a name="ln49">      if (iter != chords.end() &amp;&amp; iter-&gt;first &gt;= endRangeTick)</a>
+<a name="ln50">            iter = chords.end();</a>
+<a name="ln51">      return iter;</a>
+<a name="ln52">      }</a>
+<a name="ln53"> </a>
+<a name="ln54">std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator</a>
+<a name="ln55">findFirstChordInRange(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln56">                      const ReducedFraction &amp;startRangeTick,</a>
+<a name="ln57">                      const ReducedFraction &amp;endRangeTick)</a>
+<a name="ln58">      {</a>
+<a name="ln59">      auto iter = chords.lower_bound(startRangeTick);</a>
+<a name="ln60">      if (iter != chords.end() &amp;&amp; iter-&gt;first &gt;= endRangeTick)</a>
+<a name="ln61">            iter = chords.end();</a>
+<a name="ln62">      return iter;</a>
+<a name="ln63">      }</a>
+<a name="ln64"> </a>
+<a name="ln65">const ReducedFraction&amp; minAllowedDuration()</a>
+<a name="ln66">      {</a>
+<a name="ln67">      const static auto minDuration = ReducedFraction::fromTicks(MScore::division) / 32;</a>
+<a name="ln68">      return minDuration;</a>
+<a name="ln69">      }</a>
+<a name="ln70"> </a>
+<a name="ln71">ReducedFraction minNoteOffTime(const QList&lt;MidiNote&gt; &amp;notes)</a>
+<a name="ln72">      {</a>
+<a name="ln73">      if (notes.isEmpty())</a>
+<a name="ln74">            return {0, 1};</a>
+<a name="ln75">      auto it = notes.begin();</a>
+<a name="ln76">      ReducedFraction minOffTime = it-&gt;offTime;</a>
+<a name="ln77">      for (++it; it != notes.end(); ++it) {</a>
+<a name="ln78">            if (it-&gt;offTime &lt; minOffTime)</a>
+<a name="ln79">                  minOffTime = it-&gt;offTime;</a>
+<a name="ln80">            }</a>
+<a name="ln81">      return minOffTime;</a>
+<a name="ln82">      }</a>
+<a name="ln83"> </a>
+<a name="ln84">ReducedFraction maxNoteOffTime(const QList&lt;MidiNote&gt; &amp;notes)</a>
+<a name="ln85">      {</a>
+<a name="ln86">      ReducedFraction maxOffTime(0, 1);</a>
+<a name="ln87">      for (const auto &amp;note: notes) {</a>
+<a name="ln88">            if (note.offTime &gt; maxOffTime)</a>
+<a name="ln89">                  maxOffTime = note.offTime;</a>
+<a name="ln90">            }</a>
+<a name="ln91">      return maxOffTime;</a>
+<a name="ln92">      }</a>
+<a name="ln93"> </a>
+<a name="ln94">ReducedFraction minNoteLen(const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord)</a>
+<a name="ln95">      {</a>
+<a name="ln96">      const auto minOffTime = minNoteOffTime(chord.second.notes);</a>
+<a name="ln97">      return minOffTime - chord.first;</a>
+<a name="ln98">      }</a>
+<a name="ln99"> </a>
+<a name="ln100">ReducedFraction maxNoteLen(const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord)</a>
+<a name="ln101">      {</a>
+<a name="ln102">      const auto maxOffTime = maxNoteOffTime(chord.second.notes);</a>
+<a name="ln103">      return maxOffTime - chord.first;</a>
+<a name="ln104">      }</a>
+<a name="ln105"> </a>
+<a name="ln106">void removeOverlappingNotes(QList&lt;MidiNote&gt; &amp;notes)</a>
+<a name="ln107">      {</a>
+<a name="ln108">      QLinkedList&lt;MidiNote&gt; tempNotes;</a>
+<a name="ln109">      for (const auto &amp;note: notes)</a>
+<a name="ln110">            tempNotes.append(note);</a>
+<a name="ln111"> </a>
+<a name="ln112">      for (auto noteIt1 = tempNotes.begin(); noteIt1 != tempNotes.end(); ++noteIt1) {</a>
+<a name="ln113">            for (auto noteIt2 = std::next(noteIt1); noteIt2 != tempNotes.end(); ) {</a>
+<a name="ln114">                  if (noteIt2-&gt;pitch == noteIt1-&gt;pitch) {</a>
+<a name="ln115">                                    // overlapping notes found</a>
+<a name="ln116">                        if (noteIt2-&gt;offTime &gt; noteIt1-&gt;offTime)      // set max len before erase</a>
+<a name="ln117">                              noteIt1-&gt;offTime = noteIt2-&gt;offTime;</a>
+<a name="ln118">                        noteIt2 = tempNotes.erase(noteIt2);</a>
+<a name="ln119">                        qDebug(&quot;Midi import: removeOverlappingNotes: note was removed&quot;);</a>
+<a name="ln120">                        continue;</a>
+<a name="ln121">                        }</a>
+<a name="ln122">                  ++noteIt2;</a>
+<a name="ln123">                  }</a>
+<a name="ln124">            }</a>
+<a name="ln125">      notes.clear();</a>
+<a name="ln126">      for (const auto &amp;note: tempNotes)</a>
+<a name="ln127">            notes.append(note);</a>
+<a name="ln128">      }</a>
+<a name="ln129"> </a>
+<a name="ln130">// remove overlapping notes with the same pitch</a>
+<a name="ln131"> </a>
+<a name="ln132">void removeOverlappingNotes(std::multimap&lt;int, MTrack&gt; &amp;tracks)</a>
+<a name="ln133">      {</a>
+<a name="ln134">      for (auto &amp;track: tracks) {</a>
+<a name="ln135">            auto &amp;chords = track.second.chords;</a>
+<a name="ln136">            if (chords.empty())</a>
+<a name="ln137">                  continue;</a>
+<a name="ln138"> </a>
+<a name="ln139">            Q_ASSERT_X(MidiTuplet::areTupletRangesOk(chords, track.second.tuplets),</a>
+<a name="ln140">                       &quot;MChord::removeOverlappingNotes&quot;, &quot;Tuplet chord/note is outside tuplet &quot;</a>
+<a name="ln141">                        &quot;or non-tuplet chord/note is inside tuplet before overlaps remove&quot;);</a>
+<a name="ln142"> </a>
+<a name="ln143">            for (auto i1 = chords.begin(); i1 != chords.end(); ) {</a>
+<a name="ln144">                  const auto &amp;onTime1 = i1-&gt;first;</a>
+<a name="ln145">                  auto &amp;chord1 = i1-&gt;second;</a>
+<a name="ln146">                  removeOverlappingNotes(chord1.notes);</a>
+<a name="ln147"> </a>
+<a name="ln148">                  for (auto note1It = chord1.notes.begin(); note1It != chord1.notes.end(); ) {</a>
+<a name="ln149">                        auto &amp;note1 = *note1It;</a>
+<a name="ln150"> </a>
+<a name="ln151">                        for (auto i2 = std::next(i1); i2 != chords.end(); ++i2) {</a>
+<a name="ln152">                              const auto &amp;onTime2 = i2-&gt;first;</a>
+<a name="ln153">                              if (onTime2 &gt;= note1.offTime)</a>
+<a name="ln154">                                    break;</a>
+<a name="ln155">                              auto &amp;chord2 = i2-&gt;second;</a>
+<a name="ln156">                              if (chord1.voice != chord2.voice)</a>
+<a name="ln157">                                    continue;</a>
+<a name="ln158">                              for (auto &amp;note2: chord2.notes) {</a>
+<a name="ln159">                                    if (note2.pitch != note1.pitch)</a>
+<a name="ln160">                                          continue;</a>
+<a name="ln161">                                                // overlapping notes found</a>
+<a name="ln162">                                    note1.offTime = onTime2;</a>
+<a name="ln163">                                    if (!note1.isInTuplet &amp;&amp; chord2.isInTuplet) {</a>
+<a name="ln164">                                          if (note1.offTime &gt; chord2.tuplet-&gt;second.onTime) {</a>
+<a name="ln165">                                                note1.isInTuplet = true;</a>
+<a name="ln166">                                                note1.tuplet = chord2.tuplet;</a>
+<a name="ln167">                                                }</a>
+<a name="ln168">                                          }</a>
+<a name="ln169">                                    else if (note1.isInTuplet &amp;&amp; !chord2.isInTuplet) {</a>
+<a name="ln170">                                          note1.isInTuplet = false;</a>
+<a name="ln171">                                          }</a>
+<a name="ln172"> </a>
+<a name="ln173">                                    i2 = std::prev(chords.end());</a>
+<a name="ln174">                                    break;</a>
+<a name="ln175">                                    }</a>
+<a name="ln176">                              }</a>
+<a name="ln177">                        if (note1.offTime - onTime1 &lt; MChord::minAllowedDuration()) {</a>
+<a name="ln178">                              note1It = chord1.notes.erase(note1It);</a>
+<a name="ln179">                              qDebug(&quot;Midi import: removeOverlappingNotes: note was removed&quot;);</a>
+<a name="ln180">                              continue;</a>
+<a name="ln181">                              }</a>
+<a name="ln182">                        ++note1It;</a>
+<a name="ln183">                        }</a>
+<a name="ln184">                  if (chord1.notes.isEmpty()) {</a>
+<a name="ln185">                        i1 = chords.erase(i1);</a>
+<a name="ln186">                        continue;</a>
+<a name="ln187">                        }</a>
+<a name="ln188">                  ++i1;</a>
+<a name="ln189">                  }</a>
+<a name="ln190"> </a>
+<a name="ln191">            MidiTuplet::removeEmptyTuplets(track.second);</a>
+<a name="ln192"> </a>
+<a name="ln193">            Q_ASSERT_X(MidiTuplet::areTupletRangesOk(chords, track.second.tuplets),</a>
+<a name="ln194">                       &quot;MChord::removeOverlappingNotes&quot;, &quot;Tuplet chord/note is outside tuplet &quot;</a>
+<a name="ln195">                        &quot;or non-tuplet chord/note is inside tuplet after overlaps remove&quot;);</a>
+<a name="ln196">            }</a>
+<a name="ln197">      }</a>
+<a name="ln198"> </a>
+<a name="ln199"> </a>
+<a name="ln200">#ifdef QT_DEBUG</a>
+<a name="ln201"> </a>
+<a name="ln202">// check for equal on time values with the same voice that is invalid</a>
+<a name="ln203">bool areOnTimeValuesDifferent(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln204">      {</a>
+<a name="ln205">      std::map&lt;ReducedFraction, int&gt; onTimeVoices;</a>
+<a name="ln206">      for (const auto &amp;chordEvent: chords) {</a>
+<a name="ln207">            const auto it = onTimeVoices.find(chordEvent.first);</a>
+<a name="ln208">            if (it == onTimeVoices.end())</a>
+<a name="ln209">                  onTimeVoices.insert({chordEvent.first, chordEvent.second.voice});</a>
+<a name="ln210">            else if (chordEvent.second.voice == it-&gt;second)</a>
+<a name="ln211">                  return false;</a>
+<a name="ln212">            }</a>
+<a name="ln213">      return true;</a>
+<a name="ln214">      }</a>
+<a name="ln215"> </a>
+<a name="ln216">bool areNotesLongEnough(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln217">      {</a>
+<a name="ln218">      for (const auto &amp;chord: chords) {</a>
+<a name="ln219">            if (minNoteLen(chord) &lt; minAllowedDuration())</a>
+<a name="ln220">                  return false;</a>
+<a name="ln221">            }</a>
+<a name="ln222">      return true;</a>
+<a name="ln223">      }</a>
+<a name="ln224"> </a>
+<a name="ln225">bool areBarIndexesSuccessive(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln226">      {</a>
+<a name="ln227">      int barIndex = 0;</a>
+<a name="ln228">      for (const auto &amp;chord: chords) {</a>
+<a name="ln229">            const MidiChord &amp;c = chord.second;</a>
+<a name="ln230">            if (c.barIndex &lt; 0)</a>
+<a name="ln231">                  return false;</a>
+<a name="ln232">            if (c.barIndex &lt; barIndex)</a>
+<a name="ln233">                  return false;</a>
+<a name="ln234">            barIndex = c.barIndex;</a>
+<a name="ln235">            }</a>
+<a name="ln236">      return true;</a>
+<a name="ln237">      }</a>
+<a name="ln238"> </a>
+<a name="ln239">bool isLastTickValid(const ReducedFraction &amp;lastTick,</a>
+<a name="ln240">                     const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln241">      {</a>
+<a name="ln242">      for (const auto &amp;chord: chords) {</a>
+<a name="ln243">            if (maxNoteOffTime(chord.second.notes) &gt; lastTick)</a>
+<a name="ln244">                  return false;</a>
+<a name="ln245">            }</a>
+<a name="ln246">      return true;</a>
+<a name="ln247">      }</a>
+<a name="ln248"> </a>
+<a name="ln249">bool isLastTickValid(const ReducedFraction &amp;lastTick,</a>
+<a name="ln250">                     const std::multimap&lt;int, MTrack&gt; &amp;tracks)</a>
+<a name="ln251">      {</a>
+<a name="ln252">      for (const auto &amp;track: tracks) {</a>
+<a name="ln253">            if (!(isLastTickValid(lastTick, track.second.chords)))</a>
+<a name="ln254">                  return false;</a>
+<a name="ln255">            }</a>
+<a name="ln256">      return true;</a>
+<a name="ln257">      }</a>
+<a name="ln258"> </a>
+<a name="ln259">bool areBarIndexesSet(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln260">      {</a>
+<a name="ln261">      for (const auto &amp;chord: chords) {</a>
+<a name="ln262">            if (chord.second.barIndex == -1)</a>
+<a name="ln263">                  return false;</a>
+<a name="ln264">            }</a>
+<a name="ln265">      return true;</a>
+<a name="ln266">      }</a>
+<a name="ln267"> </a>
+<a name="ln268">#endif</a>
+<a name="ln269"> </a>
+<a name="ln270">void setToNegative(ReducedFraction &amp;v1, ReducedFraction &amp;v2, ReducedFraction &amp;v3)</a>
+<a name="ln271">      {</a>
+<a name="ln272">      v1 = ReducedFraction(-1, 1);</a>
+<a name="ln273">      v2 = ReducedFraction(-1, 1);</a>
+<a name="ln274">      v3 = ReducedFraction(-1, 1);</a>
+<a name="ln275">      }</a>
+<a name="ln276"> </a>
+<a name="ln277">bool hasNotesWithEqualPitch(const MidiChord &amp;chord1, const MidiChord &amp;chord2)</a>
+<a name="ln278">      {</a>
+<a name="ln279">      std::set&lt;int&gt; notes1;</a>
+<a name="ln280">      for (const auto &amp;note: chord1.notes)</a>
+<a name="ln281">            notes1.insert(note.pitch);</a>
+<a name="ln282">      for (const auto &amp;note: chord2.notes) {</a>
+<a name="ln283">            if (notes1.find(note.pitch) != notes1.end())</a>
+<a name="ln284">                  return true;</a>
+<a name="ln285">            }</a>
+<a name="ln286">      return false;</a>
+<a name="ln287">      }</a>
+<a name="ln288"> </a>
+<a name="ln289">void collectChords(</a>
+<a name="ln290">            std::multimap&lt;int, MTrack&gt; &amp;tracks,</a>
+<a name="ln291">            const ReducedFraction &amp;humanTolCoeff,</a>
+<a name="ln292">            const ReducedFraction &amp;nonHumanTolCoeff)</a>
+<a name="ln293">      {</a>
+<a name="ln294">      for (auto &amp;track: tracks)</a>
+<a name="ln295">            collectChords(track.second, humanTolCoeff, nonHumanTolCoeff);</a>
+<a name="ln296">      }</a>
+<a name="ln297"> </a>
+<a name="ln298">// based on quickthresh algorithm</a>
+<a name="ln299">//</a>
+<a name="ln300">// http://www.cycling74.com/docs/max5/refpages/max-ref/quickthresh.html</a>
+<a name="ln301">// (link date 9 July 2013)</a>
+<a name="ln302">//</a>
+<a name="ln303">// here are default values for audio, in milliseconds</a>
+<a name="ln304">// for midi there will be another values, in ticks</a>
+<a name="ln305"> </a>
+<a name="ln306">// all notes received in the left inlet within this time period are collected into a chord</a>
+<a name="ln307">// threshTime = 40 ms</a>
+<a name="ln308"> </a>
+<a name="ln309">// if there are any incoming values within this amount of time</a>
+<a name="ln310">// at the end of the base thresh time,</a>
+<a name="ln311">// the threshold is extended to allow more notes to be added to the chord</a>
+<a name="ln312">// fudgeTime = 10 ms</a>
+<a name="ln313"> </a>
+<a name="ln314">// this is an extension value of the base thresh time, which is used if notes arrive</a>
+<a name="ln315">// in the object's inlet in the &quot;fudge&quot; time zone</a>
+<a name="ln316">// threshExtTime = 20 ms</a>
+<a name="ln317"> </a>
+<a name="ln318">//     chord                             |&lt;--fudge time--&gt;|</a>
+<a name="ln319">// ------x-------------------------------|----------------|---------------------|------</a>
+<a name="ln320">//       |&lt;-----------------thresh time------------------&gt;|&lt;--thresh ext time--&gt;|</a>
+<a name="ln321">//</a>
+<a name="ln322">void collectChords(</a>
+<a name="ln323">            MTrack &amp;track,</a>
+<a name="ln324">            const ReducedFraction &amp;humanTolCoeff,</a>
+<a name="ln325">            const ReducedFraction &amp;nonHumanTolCoeff)</a>
+<a name="ln326">      {</a>
+<a name="ln327">      auto &amp;chords = track.chords;</a>
+<a name="ln328">      if (chords.empty())</a>
+<a name="ln329">            return;</a>
+<a name="ln330"> </a>
+<a name="ln331">      Q_ASSERT_X(areNotesLongEnough(chords),</a>
+<a name="ln332">                 &quot;MChord::collectChords&quot;, &quot;There are too short notes&quot;);</a>
+<a name="ln333"> </a>
+<a name="ln334">      const auto &amp;opers = midiImportOperations.data()-&gt;trackOpers;</a>
+<a name="ln335">      const auto minAllowedDur = minAllowedDuration();</a>
+<a name="ln336"> </a>
+<a name="ln337">      const auto threshTime = (opers.isHumanPerformance.value())</a>
+<a name="ln338">                                    ? minAllowedDur * humanTolCoeff</a>
+<a name="ln339">                                    : minAllowedDur * nonHumanTolCoeff;</a>
+<a name="ln340">      const auto fudgeTime = threshTime / 4;</a>
+<a name="ln341">      const auto threshExtTime = threshTime / 2;</a>
+<a name="ln342"> </a>
+<a name="ln343">      ReducedFraction currentChordStart;</a>
+<a name="ln344">      ReducedFraction curThreshTime;</a>
+<a name="ln345">                  // if note onTime goes after max chord offTime</a>
+<a name="ln346">                  // then this is not a chord but arpeggio</a>
+<a name="ln347">      ReducedFraction maxOffTime;</a>
+<a name="ln348"> </a>
+<a name="ln349">      setToNegative(currentChordStart, curThreshTime, maxOffTime); // invalidate</a>
+<a name="ln350"> </a>
+<a name="ln351">      for (auto it = chords.begin(); it != chords.end(); ) {</a>
+<a name="ln352">            if (it-&gt;second.isInTuplet) {</a>
+<a name="ln353">                  setToNegative(currentChordStart, curThreshTime, maxOffTime);</a>
+<a name="ln354">                  ++it;</a>
+<a name="ln355">                  continue;</a>
+<a name="ln356">                  }</a>
+<a name="ln357"> </a>
+<a name="ln358">            const auto maxNoteOffTime = MChord::maxNoteOffTime(it-&gt;second.notes);</a>
+<a name="ln359">            if (it-&gt;first &lt; currentChordStart + curThreshTime) {</a>
+<a name="ln360"> </a>
+<a name="ln361">                  // this branch should not be executed when it == chords.begin()</a>
+<a name="ln362">                  Q_ASSERT_X(it != chords.begin(),</a>
+<a name="ln363">                             &quot;MChord: collectChords&quot;, &quot;it == chords.begin()&quot;);</a>
+<a name="ln364"> </a>
+<a name="ln365">                  if (it-&gt;first &lt;= maxOffTime - minAllowedDur) {</a>
+<a name="ln366">                                    // add current note to the previous chord</a>
+<a name="ln367">                        auto chordAddTo = std::prev(it);</a>
+<a name="ln368">                        if (it-&gt;second.voice != chordAddTo-&gt;second.voice) {</a>
+<a name="ln369">                              setToNegative(currentChordStart, curThreshTime, maxOffTime);</a>
+<a name="ln370">                              ++it;</a>
+<a name="ln371">                              continue;</a>
+<a name="ln372">                              }</a>
+<a name="ln373"> </a>
+<a name="ln374">                        if (!hasNotesWithEqualPitch(chordAddTo-&gt;second, it-&gt;second)) {</a>
+<a name="ln375">                              for (const auto &amp;note: it-&gt;second.notes)</a>
+<a name="ln376">                                    chordAddTo-&gt;second.notes.push_back(note);</a>
+<a name="ln377">                              if (maxNoteOffTime &gt; maxOffTime)</a>
+<a name="ln378">                                    maxOffTime = maxNoteOffTime;</a>
+<a name="ln379">                              }</a>
+<a name="ln380">                        if (it-&gt;first &gt;= currentChordStart + curThreshTime - fudgeTime</a>
+<a name="ln381">                                    &amp;&amp; curThreshTime == threshTime) {</a>
+<a name="ln382">                              curThreshTime += threshExtTime;</a>
+<a name="ln383">                              }</a>
+<a name="ln384"> </a>
+<a name="ln385">                        it = chords.erase(it);</a>
+<a name="ln386">                        continue;</a>
+<a name="ln387">                        }</a>
+<a name="ln388">                  }</a>
+<a name="ln389"> </a>
+<a name="ln390">            currentChordStart = it-&gt;first;</a>
+<a name="ln391">            maxOffTime = maxNoteOffTime;</a>
+<a name="ln392">            curThreshTime = threshTime;</a>
+<a name="ln393">            ++it;</a>
+<a name="ln394">            }</a>
+<a name="ln395"> </a>
+<a name="ln396">      Q_ASSERT_X(areOnTimeValuesDifferent(chords),</a>
+<a name="ln397">                 &quot;MChord: collectChords&quot;,</a>
+<a name="ln398">                 &quot;onTime values of chords are equal but should be different&quot;);</a>
+<a name="ln399">      }</a>
+<a name="ln400"> </a>
+<a name="ln401">void sortNotesByPitch(std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln402">      {</a>
+<a name="ln403">      struct {</a>
+<a name="ln404">            bool operator()(const MidiNote &amp;note1, const MidiNote &amp;note2)</a>
+<a name="ln405">                  {</a>
+<a name="ln406">                  return note1.pitch &lt; note2.pitch;</a>
+<a name="ln407">                  }</a>
+<a name="ln408">            } pitchSort;</a>
+<a name="ln409"> </a>
+<a name="ln410">      for (auto &amp;chordEvent: chords) {</a>
+<a name="ln411">                        // in each chord sort notes by pitches</a>
+<a name="ln412">            auto &amp;notes = chordEvent.second.notes;</a>
+<a name="ln413">            qSort(notes.begin(), notes.end(), pitchSort);</a>
+<a name="ln414">            }</a>
+<a name="ln415">      }</a>
+<a name="ln416"> </a>
+<a name="ln417">void sortNotesByLength(std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln418">      {</a>
+<a name="ln419">      struct {</a>
+<a name="ln420">            bool operator()(const MidiNote &amp;note1, const MidiNote &amp;note2)</a>
+<a name="ln421">                  {</a>
+<a name="ln422">                  return note1.offTime &lt; note2.offTime;</a>
+<a name="ln423">                  }</a>
+<a name="ln424">            } lenSort;</a>
+<a name="ln425"> </a>
+<a name="ln426">      for (auto &amp;chordEvent: chords) {</a>
+<a name="ln427">                        // in each chord sort notes by lengths</a>
+<a name="ln428">            auto &amp;notes = chordEvent.second.notes;</a>
+<a name="ln429">            qSort(notes.begin(), notes.end(), lenSort);</a>
+<a name="ln430">            }</a>
+<a name="ln431">      }</a>
+<a name="ln432"> </a>
+<a name="ln433">// find notes of each chord that have different durations</a>
+<a name="ln434">// and separate them into different chords</a>
+<a name="ln435">// so all notes inside every chord will have equal lengths</a>
+<a name="ln436"> </a>
+<a name="ln437">void splitUnequalChords(std::multimap&lt;int, MTrack&gt; &amp;tracks)</a>
+<a name="ln438">      {</a>
+<a name="ln439">      for (auto &amp;track: tracks) {</a>
+<a name="ln440">            std::vector&lt;std::pair&lt;ReducedFraction, MidiChord&gt;&gt; newChordEvents;</a>
+<a name="ln441">            auto &amp;chords = track.second.chords;</a>
+<a name="ln442">            if (chords.empty())</a>
+<a name="ln443">                  continue;</a>
+<a name="ln444">            sortNotesByLength(chords);</a>
+<a name="ln445">            for (auto &amp;chordEvent: chords) {</a>
+<a name="ln446">                  auto &amp;chord = chordEvent.second;</a>
+<a name="ln447">                  auto &amp;notes = chord.notes;</a>
+<a name="ln448">                  ReducedFraction offTime;</a>
+<a name="ln449">                  for (auto it = notes.begin(); it != notes.end(); ) {</a>
+<a name="ln450">                        if (it == notes.begin())</a>
+<a name="ln451">                              offTime = it-&gt;offTime;</a>
+<a name="ln452">                        else {</a>
+<a name="ln453">                              ReducedFraction newOffTime = it-&gt;offTime;</a>
+<a name="ln454">                              if (newOffTime != offTime) {</a>
+<a name="ln455">                                    MidiChord newChord(chord);</a>
+<a name="ln456">                                    newChord.notes.clear();</a>
+<a name="ln457">                                    for (int j = it - notes.begin(); j &gt; 0; --j)</a>
+<a name="ln458">                                          newChord.notes.push_back(notes[j - 1]);</a>
+<a name="ln459">                                    newChordEvents.push_back({chordEvent.first, newChord});</a>
+<a name="ln460">                                    it = notes.erase(notes.begin(), it);</a>
+<a name="ln461">                                    continue;</a>
+<a name="ln462">                                    }</a>
+<a name="ln463">                              }</a>
+<a name="ln464">                        ++it;</a>
+<a name="ln465">                        }</a>
+<a name="ln466">                  }</a>
+<a name="ln467">            for (const auto &amp;event: newChordEvents)</a>
+<a name="ln468">                  chords.insert(event);</a>
+<a name="ln469">            }</a>
+<a name="ln470">      }</a>
+<a name="ln471"> </a>
+<a name="ln472">ReducedFraction findMinDuration(const ReducedFraction &amp;onTime,</a>
+<a name="ln473">                                const QList&lt;MidiChord&gt; &amp;midiChords,</a>
+<a name="ln474">                                const ReducedFraction &amp;length)</a>
+<a name="ln475">      {</a>
+<a name="ln476">      ReducedFraction len = length;</a>
+<a name="ln477">      for (const auto &amp;chord: midiChords) {</a>
+<a name="ln478">            for (const auto &amp;note: chord.notes) {</a>
+<a name="ln479">                  if ((note.offTime - onTime &lt; len)</a>
+<a name="ln480">                              &amp;&amp; (note.offTime - onTime != ReducedFraction(0, 1)))</a>
+<a name="ln481">                        len = note.offTime - onTime;</a>
+<a name="ln482">                  }</a>
+<a name="ln483">            }</a>
+<a name="ln484">      return len;</a>
+<a name="ln485">      }</a>
+<a name="ln486"> </a>
+<a name="ln487">void mergeChordsWithEqualOnTimeAndVoice(std::multimap&lt;int, MTrack&gt; &amp;tracks)</a>
+<a name="ln488">      {</a>
+<a name="ln489">      for (auto &amp;track: tracks) {</a>
+<a name="ln490">            auto &amp;chords = track.second.chords;</a>
+<a name="ln491">            if (chords.empty())</a>
+<a name="ln492">                  continue;</a>
+<a name="ln493">                        // the key is pair&lt;onTime, voice&gt;</a>
+<a name="ln494">            std::map&lt;std::pair&lt;ReducedFraction, int&gt;,</a>
+<a name="ln495">                     std::multimap&lt;ReducedFraction, MidiChord&gt;::iterator&gt; onTimes;</a>
+<a name="ln496"> </a>
+<a name="ln497">            for (auto it = chords.begin(); it != chords.end(); ) {</a>
+<a name="ln498">                  const auto &amp;onTime = it-&gt;first;</a>
+<a name="ln499">                  const int voice = it-&gt;second.voice;</a>
+<a name="ln500">                  auto fit = onTimes.find({onTime, voice});</a>
+<a name="ln501">                  if (fit == onTimes.end()) {</a>
+<a name="ln502">                        onTimes.insert({{onTime, voice}, it});</a>
+<a name="ln503">                        }</a>
+<a name="ln504">                  else {</a>
+<a name="ln505">                        auto &amp;oldNotes = fit-&gt;second-&gt;second.notes;</a>
+<a name="ln506">                        auto &amp;newNotes = it-&gt;second.notes;</a>
+<a name="ln507">                        oldNotes.append(newNotes);</a>
+<a name="ln508">                        it = chords.erase(it);</a>
+<a name="ln509">                        continue;</a>
+<a name="ln510">                        }</a>
+<a name="ln511">                  ++it;</a>
+<a name="ln512">                  }</a>
+<a name="ln513">            }</a>
+<a name="ln514">      }</a>
+<a name="ln515"> </a>
+<a name="ln516">int chordAveragePitch(const QList&lt;MidiNote&gt; &amp;notes, int beg, int end)</a>
+<a name="ln517">      {</a>
+<a name="ln518">      Q_ASSERT_X(!notes.isEmpty(), &quot;MChord::chordAveragePitch&quot;, &quot;Empty notes&quot;);</a>
+<a name="ln519">      Q_ASSERT_X(end &gt; 0 &amp;&amp; beg &gt;= 0 &amp;&amp; end &gt; beg,</a>
+<a name="ln520">                 &quot;MChord::chordAveragePitch&quot;, &quot;Invalid note indexes&quot;);</a>
+<a name="ln521"> </a>
+<a name="ln522">      int sum = 0;</a>
+<a name="ln523">      for (int i = beg; i != end; ++i)</a>
+<a name="ln524">            sum += notes[i].pitch;</a>
+<a name="ln525">      return qRound(sum * 1.0 / (end - beg));</a>
+<a name="ln526">      }</a>
+<a name="ln527"> </a>
+<a name="ln528">int chordAveragePitch(const QList&lt;MidiNote&gt; &amp;notes)</a>
+<a name="ln529">      {</a>
+<a name="ln530">      Q_ASSERT_X(!notes.isEmpty(), &quot;MChord::chordAveragePitch&quot;, &quot;Empty notes&quot;);</a>
+<a name="ln531"> </a>
+<a name="ln532">      return chordAveragePitch(notes, 0, notes.size());</a>
+<a name="ln533">      }</a>
+<a name="ln534"> </a>
+<a name="ln535">// it's an optimization function: we can don't check chords</a>
+<a name="ln536">// with (on time + max chord len) &lt; given time moment</a>
+<a name="ln537">// because chord cannot be longer than found max length</a>
+<a name="ln538"> </a>
+<a name="ln539">ReducedFraction findMaxChordLength(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln540">      {</a>
+<a name="ln541">      ReducedFraction maxChordLength;</a>
+<a name="ln542"> </a>
+<a name="ln543">      for (const auto &amp;chord: chords) {</a>
+<a name="ln544">            const auto offTime = maxNoteOffTime(chord.second.notes);</a>
+<a name="ln545">            if (offTime - chord.first &gt; maxChordLength)</a>
+<a name="ln546">                  maxChordLength = offTime - chord.first;</a>
+<a name="ln547">            }</a>
+<a name="ln548">      return maxChordLength;</a>
+<a name="ln549">      }</a>
+<a name="ln550"> </a>
+<a name="ln551">std::vector&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt;</a>
+<a name="ln552">findChordsForTimeRange(</a>
+<a name="ln553">            int voice,</a>
+<a name="ln554">            const ReducedFraction &amp;onTime,</a>
+<a name="ln555">            const ReducedFraction &amp;offTime,</a>
+<a name="ln556">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln557">            const ReducedFraction &amp;maxChordLength)</a>
+<a name="ln558">      {</a>
+<a name="ln559">      std::vector&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; result;</a>
+<a name="ln560"> </a>
+<a name="ln561">      if (chords.empty())</a>
+<a name="ln562">            return result;</a>
+<a name="ln563"> </a>
+<a name="ln564">      auto it = chords.lower_bound(offTime);</a>
+<a name="ln565">      if (it == chords.begin())</a>
+<a name="ln566">            return result;</a>
+<a name="ln567">      --it;</a>
+<a name="ln568"> </a>
+<a name="ln569">      while (it-&gt;first + maxChordLength &gt; onTime) {</a>
+<a name="ln570">            const MidiChord &amp;chord = it-&gt;second;</a>
+<a name="ln571">            if (chord.voice == voice) {</a>
+<a name="ln572">                  const auto chordInterval = std::make_pair(it-&gt;first, maxNoteOffTime(chord.notes));</a>
+<a name="ln573">                  const auto durationInterval = std::make_pair(onTime, offTime);</a>
+<a name="ln574"> </a>
+<a name="ln575">                  if (MidiTuplet::haveIntersection(chordInterval, durationInterval))</a>
+<a name="ln576">                        result.push_back(it);</a>
+<a name="ln577">                  }</a>
+<a name="ln578">            if (it == chords.begin())</a>
+<a name="ln579">                  break;</a>
+<a name="ln580">            --it;</a>
+<a name="ln581">            }</a>
+<a name="ln582"> </a>
+<a name="ln583">      return result;</a>
+<a name="ln584">      }</a>
+<a name="ln585"> </a>
+<a name="ln586">void setBarIndexes(</a>
+<a name="ln587">            std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln588">            const ReducedFraction &amp;basicQuant,</a>
+<a name="ln589">            const ReducedFraction &amp;lastTick,</a>
+<a name="ln590">            const TimeSigMap *sigmap)</a>
+<a name="ln591">      {</a>
+<a name="ln592">      if (chords.empty())</a>
+<a name="ln593">            return;</a>
+<a name="ln594">      auto it = chords.begin();</a>
+<a name="ln595">      for (int barIndex = 0;; ++barIndex) {       // iterate over all measures by indexes</a>
+<a name="ln596">            const auto endBarTick = ReducedFraction::fromTicks(sigmap-&gt;bar2tick(barIndex + 1, 0));</a>
+<a name="ln597">            if (endBarTick &lt;= it-&gt;first)</a>
+<a name="ln598">                  continue;</a>
+<a name="ln599">            for (; it != chords.end(); ++it) {</a>
+<a name="ln600">                  const auto onTime = Quantize::findQuantizedChordOnTime(*it, basicQuant);</a>
+<a name="ln601">#ifdef QT_DEBUG</a>
+<a name="ln602">                  const auto barStart = ReducedFraction::fromTicks(sigmap-&gt;bar2tick(barIndex, 0));</a>
+<a name="ln603">                  Q_ASSERT_X(!(it-&gt;first &gt;= barStart &amp;&amp; onTime &lt; barStart),</a>
+<a name="ln604">                             &quot;MChord::setBarIndexes&quot;, &quot;quantized on time cannot be in previous bar&quot;);</a>
+<a name="ln605">#endif</a>
+<a name="ln606">                  if (onTime &lt; endBarTick) {</a>
+<a name="ln607">                        it-&gt;second.barIndex = barIndex;</a>
+<a name="ln608">                        continue;</a>
+<a name="ln609">                        }</a>
+<a name="ln610">                  break;</a>
+<a name="ln611">                  }</a>
+<a name="ln612">            if (it == chords.end() || endBarTick &gt; lastTick)</a>
+<a name="ln613">                  break;</a>
+<a name="ln614">            }</a>
+<a name="ln615"> </a>
+<a name="ln616">      Q_ASSERT_X(areBarIndexesSet(chords),</a>
+<a name="ln617">                 &quot;MChord::setBarIndexes&quot;, &quot;Not all bar indexes were set&quot;);</a>
+<a name="ln618">      Q_ASSERT_X(areBarIndexesSuccessive(chords),</a>
+<a name="ln619">                 &quot;MChord::setBarIndexes&quot;, &quot;Bar indexes are not successive&quot;);</a>
+<a name="ln620">      }</a>
+<a name="ln621"> </a>
+<a name="ln622">} // namespace MChord</a>
+<a name="ln623">} // namespace Ms</a>
+
+</code></pre>
+<div class="balloon" rel="359"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'maxNoteOffTime' should be checked here.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

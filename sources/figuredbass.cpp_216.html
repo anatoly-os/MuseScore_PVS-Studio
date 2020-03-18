@@ -1,0 +1,1847 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>figuredbass.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;figuredbass.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;note.h&quot;</a>
+<a name="ln16">#include &quot;measure.h&quot;</a>
+<a name="ln17">#include &quot;system.h&quot;</a>
+<a name="ln18">#include &quot;segment.h&quot;</a>
+<a name="ln19">#include &quot;chord.h&quot;</a>
+<a name="ln20">#include &quot;rest.h&quot;</a>
+<a name="ln21">#include &quot;score.h&quot;</a>
+<a name="ln22">#include &quot;sym.h&quot;</a>
+<a name="ln23">#include &quot;xml.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">// trying to do without it</a>
+<a name="ln26">//#include &lt;QQmlEngine&gt;</a>
+<a name="ln27"> </a>
+<a name="ln28">namespace Ms {</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   figuredBassStyle</a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">static const ElementStyle figuredBassStyle {</a>
+<a name="ln35">      { Sid::figuredBassMinDistance,             Pid::MIN_DISTANCE           },</a>
+<a name="ln36">      };</a>
+<a name="ln37"> </a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39">//   figuredBassTextStyle</a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41"> </a>
+<a name="ln42">static const ElementStyle figuredBassTextStyle {</a>
+<a name="ln43">      { Sid::figuredBassFontFace,                Pid::FONT_FACE              },</a>
+<a name="ln44">      { Sid::figuredBassFontSize,                Pid::FONT_SIZE              },</a>
+<a name="ln45">      { Sid::figuredBassFontStyle,               Pid::FONT_STYLE             },</a>
+<a name="ln46">      };</a>
+<a name="ln47"> </a>
+<a name="ln48">static constexpr qreal  FB_CONTLINE_HEIGHT            = 0.875;    // the % of font EM to raise the cont. line at</a>
+<a name="ln49">                                                                  // (0 = top of font; 1 = bottom of font)</a>
+<a name="ln50">static constexpr qreal  FB_CONTLINE_LEFT_PADDING      = 0.1875;   // (3/16sp) the blank space at the left of a cont. line (in sp)</a>
+<a name="ln51">static constexpr qreal  FB_CONTLINE_OVERLAP           = 0.125;    // (1/8sp)  the overlap of an extended cont. line (in sp)</a>
+<a name="ln52">static constexpr qreal  FB_CONTLINE_THICKNESS         = 0.09375;  // (3/32sp) the thickness of a cont. line (in sp)</a>
+<a name="ln53"> </a>
+<a name="ln54">// the array of configured fonts</a>
+<a name="ln55">static QList&lt;FiguredBassFont&gt; g_FBFonts;</a>
+<a name="ln56"> </a>
+<a name="ln57">//---------------------------------------------------------</a>
+<a name="ln58">//   F I G U R E D   B A S S   I T E M</a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60"> </a>
+<a name="ln61">// used for indexed access to parenthesis chars</a>
+<a name="ln62">// (these is no normAccidToChar[], as accidentals may use mult. chars in normalized display):</a>
+<a name="ln63">const QChar FiguredBassItem::normParenthToChar[int(FiguredBassItem::Parenthesis::NUMOF)] =</a>
+<a name="ln64">{ 0, '(', ')', '[', ']'};</a>
+<a name="ln65"> </a>
+<a name="ln66"> </a>
+<a name="ln67">FiguredBassItem::FiguredBassItem(Score* s, int l)</a>
+<a name="ln68">      : Element(s), ord(l)</a>
+<a name="ln69">      {</a>
+<a name="ln70">      _prefix     = _suffix = Modifier::NONE;</a>
+<a name="ln71">      _digit      = FBIDigitNone;</a>
+<a name="ln72">      parenth[0]  = parenth[1] = parenth[2] = parenth[3] = parenth[4] = Parenthesis::NONE;</a>
+<a name="ln73">      _contLine   = ContLine::NONE;</a>
+<a name="ln74">      }</a>
+<a name="ln75"> </a>
+<a name="ln76">FiguredBassItem::FiguredBassItem(const FiguredBassItem&amp; item)</a>
+<a name="ln77">      : Element(item)</a>
+<a name="ln78">      {</a>
+<a name="ln79">      ord         = item.ord;</a>
+<a name="ln80">      _prefix     = item._prefix;</a>
+<a name="ln81">      _digit      = item._digit;</a>
+<a name="ln82">      _suffix     = item._suffix;</a>
+<a name="ln83">      parenth[0]  = item.parenth[0];</a>
+<a name="ln84">      parenth[1]  = item.parenth[1];</a>
+<a name="ln85">      parenth[2]  = item.parenth[2];</a>
+<a name="ln86">      parenth[3]  = item.parenth[3];</a>
+<a name="ln87">      parenth[4]  = item.parenth[4];</a>
+<a name="ln88">      _contLine   = item._contLine;</a>
+<a name="ln89">      textWidth   = item.textWidth;</a>
+<a name="ln90">      _displayText= item._displayText;</a>
+<a name="ln91">      }</a>
+<a name="ln92"> </a>
+<a name="ln93">FiguredBassItem::~FiguredBassItem()</a>
+<a name="ln94">      {</a>
+<a name="ln95">      }</a>
+<a name="ln96"> </a>
+<a name="ln97">//---------------------------------------------------------</a>
+<a name="ln98">//   FiguredBassItem parse()</a>
+<a name="ln99">//</a>
+<a name="ln100">// converts a string into a property-based representation, if possible;</a>
+<a name="ln101">// return true on success | false if the string is non-conformant</a>
+<a name="ln102">//---------------------------------------------------------</a>
+<a name="ln103"> </a>
+<a name="ln104">bool FiguredBassItem::parse(QString&amp; str)</a>
+<a name="ln105">      {</a>
+<a name="ln106">      int retVal;</a>
+<a name="ln107"> </a>
+<a name="ln108">      parseParenthesis(str, 0);</a>
+<a name="ln109">      retVal = parsePrefixSuffix(str, true);          // prefix</a>
+<a name="ln110">      if(retVal == -1)</a>
+<a name="ln111">            return false;</a>
+<a name="ln112">      parseParenthesis(str, 1);</a>
+<a name="ln113">      retVal = parseDigit(str);                       // digit</a>
+<a name="ln114">      if(retVal == -1)</a>
+<a name="ln115">            return false;</a>
+<a name="ln116">      parseParenthesis(str, 2);</a>
+<a name="ln117">      retVal = parsePrefixSuffix(str, false);         // suffix</a>
+<a name="ln118">      if(retVal == -1)</a>
+<a name="ln119">            return false;</a>
+<a name="ln120">      parseParenthesis(str, 3);</a>
+<a name="ln121">      // check for a possible cont. line symbol(s)</a>
+<a name="ln122">      _contLine = ContLine::NONE;                       // contLine</a>
+<a name="ln123">      if(str[0] == '-' || str[0] == '_') {            // 1 symbol: simple continuation</a>
+<a name="ln124">            _contLine = ContLine::SIMPLE;</a>
+<a name="ln125">            str.remove(0, 1);</a>
+<a name="ln126">      }</a>
+<a name="ln127">      while(str[0] == '-' || str[0] == '_') {         // more than 1 symbol: extended continuation</a>
+<a name="ln128">            _contLine = ContLine::EXTENDED;</a>
+<a name="ln129">            str.remove(0, 1);</a>
+<a name="ln130">      }</a>
+<a name="ln131">      parseParenthesis(str, 4);</a>
+<a name="ln132"> </a>
+<a name="ln133">      // remove useless parentheses, moving external parentheses toward central digit element</a>
+<a name="ln134">      if(_prefix == Modifier::NONE &amp;&amp; parenth[1] == Parenthesis::NONE) {</a>
+<a name="ln135">            parenth[1] = parenth[0];</a>
+<a name="ln136">            parenth[0] = Parenthesis::NONE;</a>
+<a name="ln137">            }</a>
+<a name="ln138">      if(_digit == FBIDigitNone &amp;&amp; parenth[2] == Parenthesis::NONE) {</a>
+<a name="ln139">            parenth[2] = parenth[1];</a>
+<a name="ln140">            parenth[1] = Parenthesis::NONE;</a>
+<a name="ln141">            }</a>
+<a name="ln142">      if(_contLine == ContLine::NONE &amp;&amp; parenth[3] == Parenthesis::NONE) {</a>
+<a name="ln143">            parenth[3] = parenth[4];</a>
+<a name="ln144">            parenth[4] = Parenthesis::NONE;</a>
+<a name="ln145">            }</a>
+<a name="ln146">      if(_suffix == Modifier::NONE &amp;&amp; parenth[2] == Parenthesis::NONE) {</a>
+<a name="ln147">            parenth[2] = parenth[3];</a>
+<a name="ln148">            parenth[3] = Parenthesis::NONE;</a>
+<a name="ln149">            }</a>
+<a name="ln150"> </a>
+<a name="ln151">      // some checks:</a>
+<a name="ln152">      // if some extra input, str is not conformant</a>
+<a name="ln153">      if(str.size())</a>
+<a name="ln154">            return false;</a>
+<a name="ln155">      // can't have BOTH prefix and suffix</a>
+<a name="ln156">      // prefix, digit, suffix and cont.line cannot be ALL empty</a>
+<a name="ln157">      // suffix cannot combine with empty digit</a>
+<a name="ln158">      if( (_prefix != Modifier::NONE &amp;&amp; _suffix != Modifier::NONE)</a>
+<a name="ln159">            || (_prefix == Modifier::NONE &amp;&amp; _digit == FBIDigitNone &amp;&amp; _suffix == Modifier::NONE &amp;&amp; _contLine == ContLine::NONE)</a>
+<a name="ln160">            || ( (_suffix == Modifier::CROSS || _suffix == Modifier::BACKSLASH || _suffix == Modifier::SLASH)</a>
+<a name="ln161">                  &amp;&amp; _digit == FBIDigitNone) )</a>
+<a name="ln162">            return false;</a>
+<a name="ln163">      return true;</a>
+<a name="ln164">}</a>
+<a name="ln165"> </a>
+<a name="ln166">//---------------------------------------------------------</a>
+<a name="ln167">//   FiguredBassItem parsePrefixSuffix()</a>
+<a name="ln168">//</a>
+<a name="ln169">//    scans str to extract prefix or suffix properties. Stops at the first char which cannot fit.</a>
+<a name="ln170">//    Fitting chars are removed from str. DOES NOT generate any display text</a>
+<a name="ln171">//</a>
+<a name="ln172">// returns the number of QChar's read from str or -1 if prefix / suffix has an illegal format</a>
+<a name="ln173">// (no prefix / suffix at all IS legal)</a>
+<a name="ln174">//---------------------------------------------------------</a>
+<a name="ln175"> </a>
+<a name="ln176">int FiguredBassItem::parsePrefixSuffix(QString&amp; str, bool bPrefix)</a>
+<a name="ln177">      {</a>
+<a name="ln178">      Modifier *  dest  = bPrefix ? &amp;_prefix : &amp;_suffix;</a>
+<a name="ln179">      bool        done  = false;</a>
+<a name="ln180">      int         size  = str.size();</a>
+<a name="ln181">      str = str.trimmed();</a>
+<a name="ln182"> </a>
+<a name="ln183">      *dest       = Modifier::NONE;</a>
+<a name="ln184"> </a>
+<a name="ln185">      while(str.size()) {</a>
+<a name="ln186">            switch(str.at(0).unicode())</a>
+<a name="ln187">            {</a>
+<a name="ln188">            case 'b':</a>
+<a name="ln189">                  if(*dest != Modifier::NONE) {</a>
+<a name="ln190">                        if(*dest == Modifier::FLAT)     // FLAT may double a previous FLAT</a>
+<a name="ln191">                              *dest = Modifier::DOUBLEFLAT;</a>
+<a name="ln192">                        else</a>
+<a name="ln193">                              return -1;              // but no other combination is acceptable</a>
+<a name="ln194">                        }</a>
+<a name="ln195">                  else</a>
+<a name="ln196">                        *dest = Modifier::FLAT;</a>
+<a name="ln197">                  break;</a>
+<a name="ln198">            case 'h':</a>
+<a name="ln199">                  if(*dest != Modifier::NONE)           // cannot combine with any other accidental</a>
+<a name="ln200">                        return -1;</a>
+<a name="ln201">                  *dest = Modifier::NATURAL;</a>
+<a name="ln202">                  break;</a>
+<a name="ln203">            case '#':</a>
+<a name="ln204">                  if(*dest != Modifier::NONE) {</a>
+<a name="ln205">                        if(*dest == Modifier::SHARP)    // SHARP may double a previous SHARP</a>
+<a name="ln206">                              *dest = Modifier::DOUBLESHARP;</a>
+<a name="ln207">                        else</a>
+<a name="ln208">                              return -1;              // but no other combination is acceptable</a>
+<a name="ln209">                        }</a>
+<a name="ln210">                  else</a>
+<a name="ln211">                        *dest = Modifier::SHARP;</a>
+<a name="ln212">                  break;</a>
+<a name="ln213">            case '+':</a>
+<a name="ln214">                  // accept '+' as both a prefix and a suffix for harmony notation</a>
+<a name="ln215">                  if(*dest != Modifier::NONE)           // cannot combine with any other accidental</a>
+<a name="ln216">                        return -1;</a>
+<a name="ln217">                  *dest = Modifier::CROSS;</a>
+<a name="ln218">                  break;</a>
+<a name="ln219">            // '\\' and '/' go into the suffix</a>
+<a name="ln220">            case '\\':</a>
+<a name="ln221">                  if(_suffix != Modifier::NONE)         // cannot combine with any other accidental</a>
+<a name="ln222">                        return -1;</a>
+<a name="ln223">                  _suffix = Modifier::BACKSLASH;</a>
+<a name="ln224">                  break;</a>
+<a name="ln225">            case '/':</a>
+<a name="ln226">                  if(_suffix != Modifier::NONE)         // cannot combine with any other accidental</a>
+<a name="ln227">                        return -1;</a>
+<a name="ln228">                  _suffix = Modifier::SLASH;</a>
+<a name="ln229">                  break;</a>
+<a name="ln230">            default:                                 // any other char: no longer in prefix/suffix</a>
+<a name="ln231">                  done = true;</a>
+<a name="ln232">                  break;</a>
+<a name="ln233">            }</a>
+<a name="ln234">            if(done)</a>
+<a name="ln235">                  break;</a>
+<a name="ln236">            str.remove(0,1);                         // 'eat' the char and continue</a>
+<a name="ln237">            }</a>
+<a name="ln238"> </a>
+<a name="ln239">      return size - str.size();                      // return how many chars we had read into prefix/suffix</a>
+<a name="ln240">      }</a>
+<a name="ln241"> </a>
+<a name="ln242">//---------------------------------------------------------</a>
+<a name="ln243">//   FiguredBassItem parseDigit()</a>
+<a name="ln244">//</a>
+<a name="ln245">//    scans str to extract digit properties. Stops at the first char which cannot belong to digit part.</a>
+<a name="ln246">//    Fitting chars are removed from str. DOES NOT generate any display text</a>
+<a name="ln247">//</a>
+<a name="ln248">// returns the number of QChar's read from str or -1 if no legal digit can be constructed</a>
+<a name="ln249">// (no digit at all IS legal)</a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251"> </a>
+<a name="ln252">int FiguredBassItem::parseDigit(QString&amp; str)</a>
+<a name="ln253">      {</a>
+<a name="ln254">      int  size   = str.size();</a>
+<a name="ln255">      str         = str.trimmed();</a>
+<a name="ln256"> </a>
+<a name="ln257">      _digit = FBIDigitNone;</a>
+<a name="ln258"> </a>
+<a name="ln259">      while(str.size()) {</a>
+<a name="ln260">            // any digit acceptable</a>
+<a name="ln261">            if(str[0] &gt;= '0' &amp;&amp; str[0] &lt;= '9') {</a>
+<a name="ln262">                  if (_digit == FBIDigitNone)</a>
+<a name="ln263">                        _digit = 0;</a>
+<a name="ln264">                  _digit = _digit*10 + (str[0].unicode() - '0');</a>
+<a name="ln265">                  str.remove(0, 1);</a>
+<a name="ln266">                  }</a>
+<a name="ln267">            // anything else: no longer in digit part</a>
+<a name="ln268">            else</a>
+<a name="ln269">                  break;</a>
+<a name="ln270">            }</a>
+<a name="ln271"> </a>
+<a name="ln272">      return size  - str.size();</a>
+<a name="ln273">      }</a>
+<a name="ln274"> </a>
+<a name="ln275">//---------------------------------------------------------</a>
+<a name="ln276">//   FiguredBassItem parseParenthesis()</a>
+<a name="ln277">//</a>
+<a name="ln278">//    scans str to extract a (possible) parenthesis, stores its code into parenth[parenthIdx]</a>
+<a name="ln279">//    and removes it from str. Only looks at first str char.</a>
+<a name="ln280">//</a>
+<a name="ln281">// returns the number of QChar's read from str (actually 0 or 1).</a>
+<a name="ln282">//---------------------------------------------------------</a>
+<a name="ln283"> </a>
+<a name="ln284">int FiguredBassItem::parseParenthesis(QString&amp; str, int parenthIdx)</a>
+<a name="ln285">      {</a>
+<a name="ln286">      int c = str[0].unicode();</a>
+<a name="ln287">      Parenthesis code = Parenthesis::NONE;</a>
+<a name="ln288">      switch(c)</a>
+<a name="ln289">      {</a>
+<a name="ln290">      case '(':</a>
+<a name="ln291">            code = Parenthesis::ROUNDOPEN;</a>
+<a name="ln292">            break;</a>
+<a name="ln293">      case ')':</a>
+<a name="ln294">            code = Parenthesis::ROUNDCLOSED;</a>
+<a name="ln295">            break;</a>
+<a name="ln296">      case '[':</a>
+<a name="ln297">            code =Parenthesis::SQUAREDOPEN;</a>
+<a name="ln298">            break;</a>
+<a name="ln299">      case ']':</a>
+<a name="ln300">            code = Parenthesis::SQUAREDCLOSED;</a>
+<a name="ln301">            break;</a>
+<a name="ln302">      default:</a>
+<a name="ln303">            break;</a>
+<a name="ln304">            }</a>
+<a name="ln305">      parenth[parenthIdx] = code;</a>
+<a name="ln306">      if(code != Parenthesis::NONE) {</a>
+<a name="ln307">            str.remove(0, 1);</a>
+<a name="ln308">            return 1;</a>
+<a name="ln309">            }</a>
+<a name="ln310">      return 0;</a>
+<a name="ln311">      }</a>
+<a name="ln312"> </a>
+<a name="ln313">//---------------------------------------------------------</a>
+<a name="ln314">//   FiguredBassItem normalizedText()</a>
+<a name="ln315">//</a>
+<a name="ln316">// returns a string with the normalized text, i.e. the text displayed while editing;</a>
+<a name="ln317">// this is a standard textual representation of the item properties</a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319"> </a>
+<a name="ln320">QString FiguredBassItem::normalizedText() const</a>
+<a name="ln321">      {</a>
+<a name="ln322">      QString str = QString();</a>
+<a name="ln323">      if(parenth[0] != Parenthesis::NONE)</a>
+<a name="ln324">            str.append(normParenthToChar[int(parenth[0])]);</a>
+<a name="ln325"> </a>
+<a name="ln326">      if(_prefix != Modifier::NONE) {</a>
+<a name="ln327">            switch(_prefix)</a>
+<a name="ln328">            {</a>
+<a name="ln329">            case Modifier::FLAT:</a>
+<a name="ln330">                  str.append('b');</a>
+<a name="ln331">                  break;</a>
+<a name="ln332">            case Modifier::NATURAL:</a>
+<a name="ln333">                  str.append('h');</a>
+<a name="ln334">                  break;</a>
+<a name="ln335">            case Modifier::SHARP:</a>
+<a name="ln336">                  str.append('#');</a>
+<a name="ln337">                  break;</a>
+<a name="ln338">            case Modifier::CROSS:</a>
+<a name="ln339">                  str.append('+');</a>
+<a name="ln340">                  break;</a>
+<a name="ln341">            case Modifier::DOUBLEFLAT:</a>
+<a name="ln342">                  str.append(&quot;bb&quot;);</a>
+<a name="ln343">                  break;</a>
+<a name="ln344">            case Modifier::DOUBLESHARP:</a>
+<a name="ln345">                  str.append(&quot;##&quot;);</a>
+<a name="ln346">                  break;</a>
+<a name="ln347">            default:</a>
+<a name="ln348">                  break;</a>
+<a name="ln349">            }</a>
+<a name="ln350">            }</a>
+<a name="ln351"> </a>
+<a name="ln352">      if(parenth[1] != Parenthesis::NONE)</a>
+<a name="ln353">            str.append(normParenthToChar[int(parenth[1])]);</a>
+<a name="ln354"> </a>
+<a name="ln355">      // digit</a>
+<a name="ln356">      if(_digit != FBIDigitNone)</a>
+<a name="ln357">            str.append(QString::number(_digit));</a>
+<a name="ln358"> </a>
+<a name="ln359">      if(parenth[2] != Parenthesis::NONE)</a>
+<a name="ln360">            str.append(normParenthToChar[int(parenth[2])]);</a>
+<a name="ln361"> </a>
+<a name="ln362">      // suffix</a>
+<a name="ln363">      if(_suffix != Modifier::NONE) {</a>
+<a name="ln364">            switch(_suffix)</a>
+<a name="ln365">            {</a>
+<a name="ln366">            case Modifier::FLAT:</a>
+<a name="ln367">                  str.append('b');</a>
+<a name="ln368">                  break;</a>
+<a name="ln369">            case Modifier::NATURAL:</a>
+<a name="ln370">                  str.append('h');</a>
+<a name="ln371">                  break;</a>
+<a name="ln372">            case Modifier::SHARP:</a>
+<a name="ln373">                  str.append('#');</a>
+<a name="ln374">                  break;</a>
+<a name="ln375">            case Modifier::CROSS:</a>
+<a name="ln376">                  str.append('+');</a>
+<a name="ln377">                  break;</a>
+<a name="ln378">            case Modifier::BACKSLASH:</a>
+<a name="ln379">                  str.append('\\');</a>
+<a name="ln380">                  break;</a>
+<a name="ln381">            case Modifier::SLASH:</a>
+<a name="ln382">                  str.append('/');</a>
+<a name="ln383">                  break;</a>
+<a name="ln384">            case Modifier::DOUBLEFLAT:</a>
+<a name="ln385">                  str.append(&quot;bb&quot;);</a>
+<a name="ln386">                  break;</a>
+<a name="ln387">            case Modifier::DOUBLESHARP:</a>
+<a name="ln388">                  str.append(&quot;##&quot;);</a>
+<a name="ln389">                  break;</a>
+<a name="ln390">            default:</a>
+<a name="ln391">                  break;</a>
+<a name="ln392">            }</a>
+<a name="ln393">            }</a>
+<a name="ln394"> </a>
+<a name="ln395">      if(parenth[3] != Parenthesis::NONE)</a>
+<a name="ln396">            str.append(normParenthToChar[int(parenth[3])]);</a>
+<a name="ln397">      if(_contLine &gt; ContLine::NONE) {</a>
+<a name="ln398">            str.append('_');</a>
+<a name="ln399">            if (_contLine &gt; ContLine::SIMPLE)</a>
+<a name="ln400">                  str.append('_');</a>
+<a name="ln401">            }</a>
+<a name="ln402">      if(parenth[4] != Parenthesis::NONE)</a>
+<a name="ln403">            str.append(normParenthToChar[int(parenth[4])]);</a>
+<a name="ln404"> </a>
+<a name="ln405">      return str;</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">//---------------------------------------------------------</a>
+<a name="ln409">//   FiguredBassItem write()</a>
+<a name="ln410">//---------------------------------------------------------</a>
+<a name="ln411"> </a>
+<a name="ln412">void FiguredBassItem::write(XmlWriter&amp; xml) const</a>
+<a name="ln413">      {</a>
+<a name="ln414">      xml.stag(&quot;FiguredBassItem&quot;, this);</a>
+<a name="ln415">      xml.tagE(QString(&quot;brackets b0=\&quot;%1\&quot; b1=\&quot;%2\&quot; b2=\&quot;%3\&quot; b3=\&quot;%4\&quot; b4=\&quot;%5\&quot;&quot;)</a>
+<a name="ln416">                    .arg(int(parenth[0])) .arg(int(parenth[1])) .arg(int(parenth[2])) .arg(int(parenth[3])) .arg(int(parenth[4])) );</a>
+<a name="ln417">      if (_prefix != Modifier::NONE)</a>
+<a name="ln418">            xml.tag(QString(&quot;prefix&quot;), int(_prefix));</a>
+<a name="ln419">      if (_digit != FBIDigitNone)</a>
+<a name="ln420">            xml.tag(QString(&quot;digit&quot;), _digit);</a>
+<a name="ln421">      if (_suffix != Modifier::NONE)</a>
+<a name="ln422">            xml.tag(QString(&quot;suffix&quot;), int(_suffix));</a>
+<a name="ln423">      if (_contLine != ContLine::NONE)</a>
+<a name="ln424">            xml.tag(&quot;continuationLine&quot;, int(_contLine));</a>
+<a name="ln425">      xml.etag();</a>
+<a name="ln426">      }</a>
+<a name="ln427"> </a>
+<a name="ln428">//---------------------------------------------------------</a>
+<a name="ln429">//   FiguredBassItem read()</a>
+<a name="ln430">//---------------------------------------------------------</a>
+<a name="ln431"> </a>
+<a name="ln432">void FiguredBassItem::read(XmlReader&amp; e)</a>
+<a name="ln433">      {</a>
+<a name="ln434">      while (e.readNextStartElement()) {</a>
+<a name="ln435">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln436"> </a>
+<a name="ln437">            if (tag == &quot;brackets&quot;) {</a>
+<a name="ln438">                  parenth[0] = (Parenthesis)e.intAttribute(&quot;b0&quot;);</a>
+<a name="ln439">                  parenth[1] = (Parenthesis)e.intAttribute(&quot;b1&quot;);</a>
+<a name="ln440">                  parenth[2] = (Parenthesis)e.intAttribute(&quot;b2&quot;);</a>
+<a name="ln441">                  parenth[3] = (Parenthesis)e.intAttribute(&quot;b3&quot;);</a>
+<a name="ln442">                  parenth[4] = (Parenthesis)e.intAttribute(&quot;b4&quot;);</a>
+<a name="ln443">                  e.readNext();</a>
+<a name="ln444">                  }</a>
+<a name="ln445">            else if (tag == &quot;prefix&quot;)</a>
+<a name="ln446">                  _prefix = (Modifier)(e.readInt());</a>
+<a name="ln447">            else if (tag == &quot;digit&quot;)</a>
+<a name="ln448">                  _digit = e.readInt();</a>
+<a name="ln449">            else if (tag == &quot;suffix&quot;)</a>
+<a name="ln450">                  _suffix = (Modifier)(e.readInt());</a>
+<a name="ln451">            else if(tag == &quot;continuationLine&quot;)</a>
+<a name="ln452">                  _contLine = (ContLine)(e.readInt());</a>
+<a name="ln453">            else if (!Element::readProperties(e))</a>
+<a name="ln454">                  e.unknown();</a>
+<a name="ln455">            }</a>
+<a name="ln456">      }</a>
+<a name="ln457"> </a>
+<a name="ln458">//---------------------------------------------------------</a>
+<a name="ln459">//   FiguredBassItem layout()</a>
+<a name="ln460">//    creates the display text (set as element text) and computes</a>
+<a name="ln461">//    the horiz. offset needed to align the right part as well as the vert. offset</a>
+<a name="ln462">//---------------------------------------------------------</a>
+<a name="ln463"> </a>
+<a name="ln464">void FiguredBassItem::layout()</a>
+<a name="ln465">      {</a>
+<a name="ln466">      qreal             h, w, x, x1, x2, y;</a>
+<a name="ln467"> </a>
+<a name="ln468">      // construct font metrics</a>
+<a name="ln469">      int   fontIdx = 0;</a>
+<a name="ln470">      QFont f(g_FBFonts.at(fontIdx).family);</a>
+<a name="ln471"> </a>
+<a name="ln472">      // font size in pixels, scaled according to spatium()</a>
+<a name="ln473">      // (use the same font selection as used in draw() below)</a>
+<a name="ln474">      qreal m = score()-&gt;styleD(Sid::figuredBassFontSize) * spatium() / SPATIUM20;</a>
+<a name="ln475">      f.setPointSizeF(m);</a>
+<a name="ln476">      QFontMetricsF fm(f, MScore::paintDevice());</a>
+<a name="ln477"> </a>
+<a name="ln478">      QString str;</a>
+<a name="ln479">      x  = symWidth(SymId::noteheadBlack) * .5;</a>
+<a name="ln480">      x1 = x2 = 0.0;</a>
+<a name="ln481"> </a>
+<a name="ln482">      // create display text</a>
+<a name="ln483">      int font = 0;</a>
+<a name="ln484">      int style = score()-&gt;styleI(Sid::figuredBassStyle);</a>
+<a name="ln485"> </a>
+<a name="ln486">      if (parenth[0] != Parenthesis::NONE)</a>
+<a name="ln487">            str.append(g_FBFonts.at(font).displayParenthesis[int(parenth[0])]);</a>
+<a name="ln488"> </a>
+<a name="ln489">      // prefix</a>
+<a name="ln490">      if (_prefix != Modifier::NONE) {</a>
+<a name="ln491">            // if no digit, the string created so far 'hangs' to the left of the note</a>
+<a name="ln492">            if(_digit == FBIDigitNone)</a>
+<a name="ln493">                  x1 = fm.width(str);</a>
+<a name="ln494">            str.append(g_FBFonts.at(font).displayAccidental[int(_prefix)]);</a>
+<a name="ln495">            // if no digit, the string from here onward 'hangs' to the right of the note</a>
+<a name="ln496">            if(_digit == FBIDigitNone)</a>
+<a name="ln497">                  x2 = fm.width(str);</a>
+<a name="ln498">            }</a>
+<a name="ln499"> </a>
+<a name="ln500">      if(parenth[1] != Parenthesis::NONE)</a>
+<a name="ln501">            str.append(g_FBFonts.at(font).displayParenthesis[int(parenth[1])]);</a>
+<a name="ln502"> </a>
+<a name="ln503">      // digit</a>
+<a name="ln504">      if(_digit != FBIDigitNone) {</a>
+<a name="ln505">            // if some digit, the string created so far 'hangs' to the left of the note</a>
+<a name="ln506">            x1 = fm.width(str);</a>
+<a name="ln507">            // if suffix is a combining shape, combine it with digit (multi-digit numbers cannot be combined)</a>
+<a name="ln508">            // unless there is a parenthesis in between</a>
+<a name="ln509">            if( (_digit &lt; 10)</a>
+<a name="ln510">                        &amp;&amp; (_suffix == Modifier::CROSS || _suffix == Modifier::BACKSLASH || _suffix == Modifier::SLASH)</a>
+<a name="ln511">                        &amp;&amp; parenth[2] == Parenthesis::NONE)</a>
+<a name="ln512">                  str.append(g_FBFonts.at(font).displayDigit[style][_digit][int(_suffix)-(int(Modifier::CROSS)-1)]);</a>
+<a name="ln513">            // if several digits or no shape combination, convert _digit to font styled chars</a>
+<a name="ln514">            else {</a>
+<a name="ln515">                  QString digits    = QString();</a>
+<a name="ln516">                  int digit         = _digit;</a>
+<a name="ln517">                  while (true) {</a>
+<a name="ln518">                        digits.prepend(g_FBFonts.at(font).displayDigit[style][(digit % 10)][0]);</a>
+<a name="ln519">                        digit /= 10;</a>
+<a name="ln520">                        if (digit == 0)</a>
+<a name="ln521">                              break;</a>
+<a name="ln522">                        }</a>
+<a name="ln523">                  str.append(digits);</a>
+<a name="ln524">                  }</a>
+<a name="ln525">            // if some digit, the string from here onward 'hangs' to the right of the note</a>
+<a name="ln526">            x2 = fm.width(str);</a>
+<a name="ln527">            }</a>
+<a name="ln528"> </a>
+<a name="ln529">      if(parenth[2] != Parenthesis::NONE)</a>
+<a name="ln530">            str.append(g_FBFonts.at(font).displayParenthesis[int(parenth[2])]);</a>
+<a name="ln531"> </a>
+<a name="ln532">      // suffix</a>
+<a name="ln533">      // append only if non-combining shape or cannot combine (no digit or parenthesis in between)</a>
+<a name="ln534">      if( _suffix != Modifier::NONE</a>
+<a name="ln535">                  &amp;&amp; ( (_suffix != Modifier::CROSS &amp;&amp; _suffix != Modifier::BACKSLASH &amp;&amp; _suffix != Modifier::SLASH)</a>
+<a name="ln536">                        || _digit == FBIDigitNone</a>
+<a name="ln537">                        || parenth[2] != Parenthesis::NONE) )</a>
+<a name="ln538">            str.append(g_FBFonts.at(font).displayAccidental[int(_suffix)]);</a>
+<a name="ln539"> </a>
+<a name="ln540">      if(parenth[3] != Parenthesis::NONE)</a>
+<a name="ln541">            str.append(g_FBFonts.at(font).displayParenthesis[int(parenth[3])]);</a>
+<a name="ln542"> </a>
+<a name="ln543">      setDisplayText(str);                // this text will be displayed</a>
+<a name="ln544"> </a>
+<a name="ln545">      if (str.size())                     // if some text</a>
+<a name="ln546">            x = x - (x1+x2) * 0.5;        // position the text so that [x1&lt;--&gt;x2] is centered below the note</a>
+<a name="ln547">      else                                // if no text (but possibly a line)</a>
+<a name="ln548">            x = 0;                        // start at note left margin</a>
+<a name="ln549">      // vertical position</a>
+<a name="ln550">      h = fm.lineSpacing();</a>
+<a name="ln551">      h *= score()-&gt;styleD(Sid::figuredBassLineHeight);</a>
+<a name="ln552">      if (score()-&gt;styleI(Sid::figuredBassAlignment) == 0)          // top alignment: stack down from first item</a>
+<a name="ln553">            y = h * ord;</a>
+<a name="ln554">      else                                                        // bottom alignment: stack up from last item</a>
+<a name="ln555">            y = -h * (figuredBass()-&gt;numOfItems() - ord);</a>
+<a name="ln556">      setPos(x, y);</a>
+<a name="ln557">      // determine bbox from text width</a>
+<a name="ln558">//      w = fm.width(str);</a>
+<a name="ln559">      w = fm.boundingRect(str).width();</a>
+<a name="ln560">      textWidth = w;</a>
+<a name="ln561">      // if there is a cont.line, extend width to cover the whole FB element duration line</a>
+<a name="ln562">      int lineLen;</a>
+<a name="ln563">      if(_contLine != ContLine::NONE &amp;&amp; (lineLen=figuredBass()-&gt;lineLength(0)) &gt; w)</a>
+<a name="ln564">            w = lineLen;</a>
+<a name="ln565">      bbox().setRect(0, 0, w, h);</a>
+<a name="ln566">      }</a>
+<a name="ln567"> </a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569">//   FiguredBassItem draw()</a>
+<a name="ln570">//---------------------------------------------------------</a>
+<a name="ln571"> </a>
+<a name="ln572">void FiguredBassItem::draw(QPainter* painter) const</a>
+<a name="ln573">      {</a>
+<a name="ln574">      int   font = 0;</a>
+<a name="ln575">      qreal _spatium = spatium();</a>
+<a name="ln576">      // set font from general style</a>
+<a name="ln577">      QFont f(g_FBFonts.at(font).family);</a>
+<a name="ln578">#ifdef USE_GLYPHS</a>
+<a name="ln579">      f.setHintingPreference(QFont::PreferVerticalHinting);</a>
+<a name="ln580">#endif</a>
+<a name="ln581">      // (use the same font selection as used in layout() above)</a>
+<a name="ln582">      qreal m = score()-&gt;styleD(Sid::figuredBassFontSize) * spatium() / SPATIUM20;</a>
+<a name="ln583">      f.setPointSizeF(m * MScore::pixelRatio);</a>
+<a name="ln584"> </a>
+<a name="ln585">      painter-&gt;setFont(f);</a>
+<a name="ln586">      painter-&gt;setBrush(Qt::NoBrush);</a>
+<a name="ln587">      QPen pen(figuredBass()-&gt;curColor(), FB_CONTLINE_THICKNESS * _spatium, Qt::SolidLine, Qt::RoundCap);</a>
+<a name="ln588">      painter-&gt;setPen(pen);</a>
+<a name="ln589">      painter-&gt;drawText(bbox(), Qt::TextDontClip | Qt::AlignLeft | Qt::AlignTop, displayText());</a>
+<a name="ln590"> </a>
+<a name="ln591">      // continuation line</a>
+<a name="ln592">      qreal lineEndX = 0.0;</a>
+<a name="ln593">      if (_contLine != ContLine::NONE) {</a>
+<a name="ln594">            qreal lineStartX  = textWidth;                       // by default, line starts right after text</a>
+<a name="ln595">            if (lineStartX &gt; 0.0)</a>
+<a name="ln596">                  lineStartX += _spatium * FB_CONTLINE_LEFT_PADDING;    // if some text, give some room after it</a>
+<a name="ln597">            lineEndX = figuredBass()-&gt;printedLineLength();        // by default, line ends with item duration</a>
+<a name="ln598">            if (lineEndX - lineStartX &lt; 1.0)                       // if line length &lt; 1 sp, ignore it</a>
+<a name="ln599">                  lineEndX = 0.0;</a>
+<a name="ln600"> </a>
+<a name="ln601">            // if extended cont.line and no closing parenthesis: look at next FB element</a>
+<a name="ln602">            if (_contLine &gt; ContLine::SIMPLE &amp;&amp; parenth[4] == Parenthesis::NONE) {</a>
+<a name="ln603">                  FiguredBass * nextFB;</a>
+<a name="ln604">                  // if there is a contiguous FB element</a>
+<a name="ln605">                  if ( (nextFB=figuredBass()-&gt;nextFiguredBass()) != 0) {</a>
+<a name="ln606">                        // retrieve the X position (in page coords) of a possible cont. line of nextFB</a>
+<a name="ln607">                        // on the same line of 'this'</a>
+<a name="ln608">                        QPointF pgPos = pagePos();</a>
+<a name="ln609">                        qreal nextContPageX = nextFB-&gt;additionalContLineX(pgPos.y());</a>
+<a name="ln610">                        // if an additional cont. line has been found, extend up to its initial X coord</a>
+<a name="ln611">                        if (nextContPageX &gt; 0)</a>
+<a name="ln612">                              lineEndX = nextContPageX - pgPos.x() + _spatium*FB_CONTLINE_OVERLAP;</a>
+<a name="ln613">                                                                              // with a little bit of overlap</a>
+<a name="ln614">                        else</a>
+<a name="ln615">                              lineEndX = figuredBass()-&gt;lineLength(0);        // if none found, draw to the duration end</a>
+<a name="ln616">                        }</a>
+<a name="ln617">                  }</a>
+<a name="ln618">            // if some line, draw it</a>
+<a name="ln619">            if (lineEndX &gt; 0.0) {</a>
+<a name="ln620">                  qreal h = bbox().height() * FB_CONTLINE_HEIGHT;</a>
+<a name="ln621">                  painter-&gt;drawLine(lineStartX, h, lineEndX - ipos().x(), h);</a>
+<a name="ln622">                  }</a>
+<a name="ln623">            }</a>
+<a name="ln624"> </a>
+<a name="ln625">      // closing cont.line parenthesis</a>
+<a name="ln626">      if (parenth[4] != Parenthesis::NONE) {</a>
+<a name="ln627">            int x = lineEndX &gt; 0.0 ? lineEndX : textWidth;</a>
+<a name="ln628">            painter-&gt;drawText(QRectF(x, 0, bbox().width(), bbox().height()), Qt::AlignLeft | Qt::AlignTop,</a>
+<a name="ln629">                  g_FBFonts.at(font).displayParenthesis[int(parenth[4])]);</a>
+<a name="ln630">            }</a>
+<a name="ln631">      }</a>
+<a name="ln632"> </a>
+<a name="ln633">//---------------------------------------------------------</a>
+<a name="ln634">//   PROPERTY METHODS</a>
+<a name="ln635">//---------------------------------------------------------</a>
+<a name="ln636"> </a>
+<a name="ln637">QVariant FiguredBassItem::getProperty(Pid propertyId) const</a>
+<a name="ln638">      {</a>
+<a name="ln639">      switch(propertyId) {</a>
+<a name="ln640">            case Pid::FBPREFIX:</a>
+<a name="ln641">                  return int(_prefix);</a>
+<a name="ln642">            case Pid::FBDIGIT:</a>
+<a name="ln643">                  return _digit;</a>
+<a name="ln644">            case Pid::FBSUFFIX:</a>
+<a name="ln645">                  return int(_suffix);</a>
+<a name="ln646">            case Pid::FBCONTINUATIONLINE:</a>
+<a name="ln647">                  return int(_contLine);</a>
+<a name="ln648">            case Pid::FBPARENTHESIS1:</a>
+<a name="ln649">                  return int(parenth[0]);</a>
+<a name="ln650">            case Pid::FBPARENTHESIS2:</a>
+<a name="ln651">                  return int(parenth[1]);</a>
+<a name="ln652">            case Pid::FBPARENTHESIS3:</a>
+<a name="ln653">                  return int(parenth[2]);</a>
+<a name="ln654">            case Pid::FBPARENTHESIS4:</a>
+<a name="ln655">                  return int(parenth[3]);</a>
+<a name="ln656">            case Pid::FBPARENTHESIS5:</a>
+<a name="ln657">                  return int(parenth[4]);</a>
+<a name="ln658">            default:</a>
+<a name="ln659">                  return Element::getProperty(propertyId);</a>
+<a name="ln660">            }</a>
+<a name="ln661">      }</a>
+<a name="ln662"> </a>
+<a name="ln663">bool FiguredBassItem::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln664">      {</a>
+<a name="ln665">      score()-&gt;addRefresh(canvasBoundingRect());</a>
+<a name="ln666">      int   val = v.toInt();</a>
+<a name="ln667">      switch(propertyId) {</a>
+<a name="ln668">            case Pid::FBPREFIX:</a>
+<a name="ln669">                  if(val &lt; int(Modifier::NONE) || val &gt;= int(Modifier::NUMOF))</a>
+<a name="ln670">                        return false;</a>
+<a name="ln671">                  _prefix = (Modifier)val;</a>
+<a name="ln672">                  break;</a>
+<a name="ln673">            case Pid::FBDIGIT:</a>
+<a name="ln674">                  if(val &lt; 1 || val &gt; 9)</a>
+<a name="ln675">                        return false;</a>
+<a name="ln676">                  _digit = val;</a>
+<a name="ln677">                  break;</a>
+<a name="ln678">            case Pid::FBSUFFIX:</a>
+<a name="ln679">                  if(val &lt; int(Modifier::NONE) || val &gt;= int(Modifier::NUMOF))</a>
+<a name="ln680">                        return false;</a>
+<a name="ln681">                  _suffix = (Modifier)val;</a>
+<a name="ln682">                  break;</a>
+<a name="ln683">            case Pid::FBCONTINUATIONLINE:</a>
+<a name="ln684">                  _contLine = (ContLine)val;</a>
+<a name="ln685">                  break;</a>
+<a name="ln686">            case Pid::FBPARENTHESIS1:</a>
+<a name="ln687">                  if(val &lt; int(Parenthesis::NONE) || val &gt;= int(Parenthesis::NUMOF))</a>
+<a name="ln688">                        return false;</a>
+<a name="ln689">                  parenth[0] = (Parenthesis)val;</a>
+<a name="ln690">                  break;</a>
+<a name="ln691">            case Pid::FBPARENTHESIS2:</a>
+<a name="ln692">                  if(val &lt; int(Parenthesis::NONE) || val &gt;= int(Parenthesis::NUMOF))</a>
+<a name="ln693">                        return false;</a>
+<a name="ln694">                  parenth[1] = (Parenthesis)val;</a>
+<a name="ln695">                  break;</a>
+<a name="ln696">            case Pid::FBPARENTHESIS3:</a>
+<a name="ln697">                  if(val &lt; int(Parenthesis::NONE) || val &gt;= int(Parenthesis::NUMOF))</a>
+<a name="ln698">                        return false;</a>
+<a name="ln699">                  parenth[2] = (Parenthesis)val;</a>
+<a name="ln700">                  break;</a>
+<a name="ln701">            case Pid::FBPARENTHESIS4:</a>
+<a name="ln702">                  if(val &lt; int(Parenthesis::NONE) || val &gt;= int(Parenthesis::NUMOF))</a>
+<a name="ln703">                        return false;</a>
+<a name="ln704">                  parenth[3] = (Parenthesis)val;</a>
+<a name="ln705">                  break;</a>
+<a name="ln706">            case Pid::FBPARENTHESIS5:</a>
+<a name="ln707">                  if(val &lt; int(Parenthesis::NONE) || val &gt;= int(Parenthesis::NUMOF))</a>
+<a name="ln708">                        return false;</a>
+<a name="ln709">                  parenth[4] = (Parenthesis)val;</a>
+<a name="ln710">                  break;</a>
+<a name="ln711">            default:</a>
+<a name="ln712">                  return Element::setProperty(propertyId, v);</a>
+<a name="ln713">            }</a>
+<a name="ln714">      triggerLayoutAll();</a>
+<a name="ln715">      return true;</a>
+<a name="ln716">      }</a>
+<a name="ln717"> </a>
+<a name="ln718">QVariant FiguredBassItem::propertyDefault(Pid id) const</a>
+<a name="ln719">      {</a>
+<a name="ln720">      switch(id) {</a>
+<a name="ln721">            case Pid::FBPREFIX:</a>
+<a name="ln722">            case Pid::FBSUFFIX:</a>
+<a name="ln723">                  return int(Modifier::NONE);</a>
+<a name="ln724">            case Pid::FBDIGIT:</a>
+<a name="ln725">                  return FBIDigitNone;</a>
+<a name="ln726">            case Pid::FBCONTINUATIONLINE:</a>
+<a name="ln727">                  return false;</a>
+<a name="ln728">            default:</a>
+<a name="ln729">                  return Element::propertyDefault(id);</a>
+<a name="ln730">            }</a>
+<a name="ln731">      }</a>
+<a name="ln732"> </a>
+<a name="ln733">//---------------------------------------------------------</a>
+<a name="ln734">//   UNDOABLE PROPERTY SETTERS</a>
+<a name="ln735">//---------------------------------------------------------</a>
+<a name="ln736"> </a>
+<a name="ln737">void FiguredBassItem::undoSetPrefix(Modifier pref)</a>
+<a name="ln738">      {</a>
+<a name="ln739">      if(pref &lt;= Modifier::CROSS) {</a>
+<a name="ln740">            undoChangeProperty(Pid::FBPREFIX, (int)pref);</a>
+<a name="ln741">            // if setting some prefix and there is a suffix already, clear suffix</a>
+<a name="ln742">            if(pref != Modifier::NONE &amp;&amp; _suffix != Modifier::NONE)</a>
+<a name="ln743">                  undoChangeProperty(Pid::FBSUFFIX, int(Modifier::NONE));</a>
+<a name="ln744">            layout();                     // re-generate displayText</a>
+<a name="ln745">            }</a>
+<a name="ln746">      }</a>
+<a name="ln747"> </a>
+<a name="ln748">void FiguredBassItem::undoSetDigit(int digit)</a>
+<a name="ln749">      {</a>
+<a name="ln750">      if (digit &gt;= 0 &amp;&amp; digit &lt;= 9) {</a>
+<a name="ln751">            undoChangeProperty(Pid::FBDIGIT, digit);</a>
+<a name="ln752">            layout();                     // re-generate displayText</a>
+<a name="ln753">            }</a>
+<a name="ln754">      }</a>
+<a name="ln755"> </a>
+<a name="ln756">void FiguredBassItem::undoSetSuffix(Modifier suff)</a>
+<a name="ln757">      {</a>
+<a name="ln758">      undoChangeProperty(Pid::FBSUFFIX, int(suff));</a>
+<a name="ln759">      // if setting some suffix and there is a prefix already, clear prefix</a>
+<a name="ln760">      if(suff != Modifier::NONE &amp;&amp; _prefix != Modifier::NONE)</a>
+<a name="ln761">            undoChangeProperty(Pid::FBPREFIX, int(Modifier::NONE));</a>
+<a name="ln762">      layout();                     // re-generate displayText</a>
+<a name="ln763">      }</a>
+<a name="ln764"> </a>
+<a name="ln765">void FiguredBassItem::undoSetContLine(ContLine val)</a>
+<a name="ln766">      {</a>
+<a name="ln767">      undoChangeProperty(Pid::FBCONTINUATIONLINE, int(val));</a>
+<a name="ln768">      layout();                     // re-generate displayText</a>
+<a name="ln769">      }</a>
+<a name="ln770"> </a>
+<a name="ln771">void FiguredBassItem::undoSetParenth1(Parenthesis par)</a>
+<a name="ln772">      {</a>
+<a name="ln773">      undoChangeProperty(Pid::FBPARENTHESIS1, int(par));</a>
+<a name="ln774">      layout();                     // re-generate displayText</a>
+<a name="ln775">      }</a>
+<a name="ln776">void FiguredBassItem::undoSetParenth2(Parenthesis par)</a>
+<a name="ln777">      {</a>
+<a name="ln778">      undoChangeProperty(Pid::FBPARENTHESIS2, int(par));</a>
+<a name="ln779">      layout();                     // re-generate displayText</a>
+<a name="ln780">      }</a>
+<a name="ln781">void FiguredBassItem::undoSetParenth3(Parenthesis par)</a>
+<a name="ln782">      {</a>
+<a name="ln783">      undoChangeProperty(Pid::FBPARENTHESIS3, int(par));</a>
+<a name="ln784">      layout();                     // re-generate displayText</a>
+<a name="ln785">      }</a>
+<a name="ln786">void FiguredBassItem::undoSetParenth4(Parenthesis par)</a>
+<a name="ln787">      {</a>
+<a name="ln788">      undoChangeProperty(Pid::FBPARENTHESIS4, int(par));</a>
+<a name="ln789">      layout();                     // re-generate displayText</a>
+<a name="ln790">      }</a>
+<a name="ln791">void FiguredBassItem::undoSetParenth5(Parenthesis par)</a>
+<a name="ln792">      {</a>
+<a name="ln793">      undoChangeProperty(Pid::FBPARENTHESIS5, int(par));</a>
+<a name="ln794">      layout();                     // re-generate displayText</a>
+<a name="ln795">      }</a>
+<a name="ln796"> </a>
+<a name="ln797">//---------------------------------------------------------</a>
+<a name="ln798">//</a>
+<a name="ln799">//    MusicXML I/O</a>
+<a name="ln800">//</a>
+<a name="ln801">//---------------------------------------------------------</a>
+<a name="ln802"> </a>
+<a name="ln803">//---------------------------------------------------------</a>
+<a name="ln804">//   Convert MusicXML prefix/suffix to Modifier</a>
+<a name="ln805">//---------------------------------------------------------</a>
+<a name="ln806"> </a>
+<a name="ln807">FiguredBassItem::Modifier FiguredBassItem::MusicXML2Modifier(const QString prefix) const</a>
+<a name="ln808">      {</a>
+<a name="ln809">      if (prefix == &quot;sharp&quot;)</a>
+<a name="ln810">            return Modifier::SHARP;</a>
+<a name="ln811">      else if (prefix == &quot;flat&quot;)</a>
+<a name="ln812">            return Modifier::FLAT;</a>
+<a name="ln813">      else if (prefix == &quot;natural&quot;)</a>
+<a name="ln814">            return Modifier::NATURAL;</a>
+<a name="ln815">      else if (prefix == &quot;double-sharp&quot;)</a>
+<a name="ln816">            return Modifier::DOUBLESHARP;</a>
+<a name="ln817">      else if (prefix == &quot;flat-flat&quot;)</a>
+<a name="ln818">            return Modifier::DOUBLEFLAT;</a>
+<a name="ln819">      else if (prefix == &quot;sharp-sharp&quot;)</a>
+<a name="ln820">            return Modifier::DOUBLESHARP;</a>
+<a name="ln821">      else if (prefix == &quot;cross&quot;)</a>
+<a name="ln822">            return Modifier::CROSS;</a>
+<a name="ln823">      else if (prefix == &quot;backslash&quot;)</a>
+<a name="ln824">            return Modifier::BACKSLASH;</a>
+<a name="ln825">      else if (prefix == &quot;slash&quot;)</a>
+<a name="ln826">            return Modifier::SLASH;</a>
+<a name="ln827">      else</a>
+<a name="ln828">            return Modifier::NONE;</a>
+<a name="ln829">      }</a>
+<a name="ln830"> </a>
+<a name="ln831">//---------------------------------------------------------</a>
+<a name="ln832">//   Convert Modifier to MusicXML prefix/suffix</a>
+<a name="ln833">//---------------------------------------------------------</a>
+<a name="ln834"> </a>
+<a name="ln835">QString FiguredBassItem::Modifier2MusicXML(FiguredBassItem::Modifier prefix) const</a>
+<a name="ln836">      {</a>
+<a name="ln837">      switch (prefix) {</a>
+<a name="ln838">            case Modifier::NONE:        return &quot;&quot;;</a>
+<a name="ln839">            case Modifier::DOUBLEFLAT:  return &quot;flat-flat&quot;;</a>
+<a name="ln840">            case Modifier::FLAT:        return &quot;flat&quot;;</a>
+<a name="ln841">            case Modifier::NATURAL:     return &quot;natural&quot;;</a>
+<a name="ln842">            case Modifier::SHARP:       return &quot;sharp&quot;;</a>
+<a name="ln843">            case Modifier::DOUBLESHARP: return &quot;double-sharp&quot;;</a>
+<a name="ln844">            case Modifier::CROSS:       return &quot;cross&quot;;</a>
+<a name="ln845">            case Modifier::BACKSLASH:   return &quot;backslash&quot;;</a>
+<a name="ln846">            case Modifier::SLASH:       return &quot;slash&quot;;</a>
+<a name="ln847">            case Modifier::NUMOF:       return &quot;&quot;; // prevent gcc &quot;‘FBINumOfAccid’ not handled in switch&quot; warning</a>
+<a name="ln848">            }</a>
+<a name="ln849">      return &quot;&quot;;</a>
+<a name="ln850">      }</a>
+<a name="ln851"> </a>
+<a name="ln852">//---------------------------------------------------------</a>
+<a name="ln853">//   Read MusicXML</a>
+<a name="ln854">//</a>
+<a name="ln855">// Set the FiguredBassItem state based on the MusicXML &lt;figure&gt; node de.</a>
+<a name="ln856">// In MusicXML, parentheses is set to &quot;yes&quot; or &quot;no&quot; for the figured-bass</a>
+<a name="ln857">// node instead of for each individual &lt;figure&gt; node.</a>
+<a name="ln858">//---------------------------------------------------------</a>
+<a name="ln859"> </a>
+<a name="ln860">#if 0</a>
+<a name="ln861">void FiguredBassItem::readMusicXML(XmlReader&amp; e, bool paren)</a>
+<a name="ln862">      {</a>
+<a name="ln863">      // read the &lt;figure&gt; node de</a>
+<a name="ln864">      while (e.readNextStartElement()) {</a>
+<a name="ln865">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln866">            if (tag == &quot;figure-number&quot;) {</a>
+<a name="ln867">                  // MusicXML spec states figure-number is a number</a>
+<a name="ln868">                  // MuseScore can only handle single digit</a>
+<a name="ln869">                  int iVal = e.readInt();</a>
+<a name="ln870">                  if (1 &lt;= iVal &amp;&amp; iVal &lt;= 9)</a>
+<a name="ln871">                        _digit = iVal;</a>
+<a name="ln872">                  }</a>
+<a name="ln873">            else if (tag == &quot;prefix&quot;)</a>
+<a name="ln874">                  _prefix = MusicXML2Modifier(e.readElementText());</a>
+<a name="ln875">            else if (tag == &quot;suffix&quot;)</a>
+<a name="ln876">                  _suffix = MusicXML2Modifier(e.readElementText());</a>
+<a name="ln877">            else</a>
+<a name="ln878">                  e.unknown();</a>
+<a name="ln879">            }</a>
+<a name="ln880">      // set parentheses</a>
+<a name="ln881">      if (paren) {</a>
+<a name="ln882">            // parenthesis open</a>
+<a name="ln883">            if (_prefix != Modifier::NONE)</a>
+<a name="ln884">                  parenth[0] = Parenthesis::ROUNDOPEN; // before prefix</a>
+<a name="ln885">            else if (_digit != FBIDigitNone)</a>
+<a name="ln886">                  parenth[1] = Parenthesis::ROUNDOPEN; // before digit</a>
+<a name="ln887">            else if (_suffix != Modifier::NONE)</a>
+<a name="ln888">                  parenth[2] = Parenthesis::ROUNDOPEN; // before suffix</a>
+<a name="ln889">            // parenthesis close</a>
+<a name="ln890">            if (_suffix != Modifier::NONE)</a>
+<a name="ln891">                  parenth[3] = Parenthesis::ROUNDCLOSED; // after suffix</a>
+<a name="ln892">            else if (_digit != FBIDigitNone)</a>
+<a name="ln893">                  parenth[2] = Parenthesis::ROUNDCLOSED; // after digit</a>
+<a name="ln894">            else if (_prefix != Modifier::NONE)</a>
+<a name="ln895">                  parenth[1] = Parenthesis::ROUNDCLOSED; // after prefix</a>
+<a name="ln896">            }</a>
+<a name="ln897">      }</a>
+<a name="ln898">#endif</a>
+<a name="ln899"> </a>
+<a name="ln900">//---------------------------------------------------------</a>
+<a name="ln901">//   Write MusicXML</a>
+<a name="ln902">//</a>
+<a name="ln903">// Writes the portion within the &lt;figure&gt; tag.</a>
+<a name="ln904">//</a>
+<a name="ln905">// NOTE: Both MuseScore and MusicXML provide two ways of altering the (temporal) length of a</a>
+<a name="ln906">// figured bass object: extension lines and duration. The convention is that an EXTENSION is</a>
+<a name="ln907">// used if the figure lasts LONGER than the note (i.e., it &quot;extends&quot; to the following notes),</a>
+<a name="ln908">// whereas DURATION is used if the figure lasts SHORTER than the note (e.g., when notating a</a>
+<a name="ln909">// figure change under a note). However, MuseScore does not restrict durations in this way,</a>
+<a name="ln910">// allowing them to act as extensions themselves. As a result, a few more branches are</a>
+<a name="ln911">// required in the decision tree to handle everything correctly.</a>
+<a name="ln912">//---------------------------------------------------------</a>
+<a name="ln913"> </a>
+<a name="ln914">void FiguredBassItem::writeMusicXML(XmlWriter&amp; xml, bool isOriginalFigure, int crEndTick, int fbEndTick) const</a>
+<a name="ln915">      {</a>
+<a name="ln916">      xml.stag(&quot;figure&quot;);</a>
+<a name="ln917"> </a>
+<a name="ln918">      // The first figure of each group is the &quot;original&quot; figure. Practically, it is one inserted manually</a>
+<a name="ln919">      // by the user, rather than automatically by the &quot;duration&quot; extend method.</a>
+<a name="ln920">      if (isOriginalFigure) {</a>
+<a name="ln921">            QString strPrefix = Modifier2MusicXML(_prefix);</a>
+<a name="ln922">            if (strPrefix != &quot;&quot;)</a>
+<a name="ln923">                  xml.tag(&quot;prefix&quot;, strPrefix);</a>
+<a name="ln924">            if (_digit != FBIDigitNone)</a>
+<a name="ln925">                  xml.tag(&quot;figure-number&quot;, _digit);</a>
+<a name="ln926">            QString strSuffix = Modifier2MusicXML(_suffix);</a>
+<a name="ln927">            if (strSuffix != &quot;&quot;)</a>
+<a name="ln928">                  xml.tag(&quot;suffix&quot;, strSuffix);</a>
+<a name="ln929"> </a>
+<a name="ln930">            // Check if the figure ends before or at the same time as the current note. Otherwise, the figure</a>
+<a name="ln931">            // extends to the next note, and so carries an extension type &quot;start&quot; by definition.</a>
+<a name="ln932">            if (fbEndTick &lt;= crEndTick) {</a>
+<a name="ln933">                  if (_contLine == ContLine::SIMPLE)</a>
+<a name="ln934">                        xml.tagE(&quot;extend type=\&quot;stop\&quot; &quot;);</a>
+<a name="ln935">                  else if (_contLine == ContLine::EXTENDED) {</a>
+<a name="ln936">                        bool hasFigure = (strPrefix != &quot;&quot; || _digit != FBIDigitNone || strSuffix != &quot;&quot;);</a>
+<a name="ln937">                        if (hasFigure)</a>
+<a name="ln938">                              xml.tagE(&quot;extend type=\&quot;start\&quot; &quot;);</a>
+<a name="ln939">                        else</a>
+<a name="ln940">                              xml.tagE(&quot;extend type=\&quot;continue\&quot; &quot;);</a>
+<a name="ln941">                        }</a>
+<a name="ln942">                  }</a>
+<a name="ln943">            else</a>
+<a name="ln944">                  xml.tagE(&quot;extend type=\&quot;start\&quot; &quot;);</a>
+<a name="ln945">            }</a>
+<a name="ln946">      // If the figure is not &quot;original&quot;, it must have been created using the &quot;duration&quot; feature of figured bass.</a>
+<a name="ln947">      // In other words, the original figure belongs to a previous note rather than the current note.</a>
+<a name="ln948">      else {</a>
+<a name="ln949">            if (crEndTick &lt; fbEndTick)</a>
+<a name="ln950">                  xml.tagE(&quot;extend type=\&quot;continue\&quot; &quot;);</a>
+<a name="ln951">            else</a>
+<a name="ln952">                  xml.tagE(&quot;extend type=\&quot;stop\&quot; &quot;);</a>
+<a name="ln953">            }</a>
+<a name="ln954">      xml.etag();</a>
+<a name="ln955">      }</a>
+<a name="ln956"> </a>
+<a name="ln957">//---------------------------------------------------------</a>
+<a name="ln958">//   startsWithParenthesis</a>
+<a name="ln959">//---------------------------------------------------------</a>
+<a name="ln960"> </a>
+<a name="ln961">bool FiguredBassItem::startsWithParenthesis() const</a>
+<a name="ln962">      {</a>
+<a name="ln963">      if (_prefix != Modifier::NONE)</a>
+<a name="ln964">            return (parenth[0] != Parenthesis::NONE);</a>
+<a name="ln965">      if (_digit != FBIDigitNone)</a>
+<a name="ln966">            return (parenth[1] != Parenthesis::NONE);</a>
+<a name="ln967">      if (_suffix != Modifier::NONE)</a>
+<a name="ln968">            return (parenth[2] != Parenthesis::NONE);</a>
+<a name="ln969">      return false;</a>
+<a name="ln970">      }</a>
+<a name="ln971"> </a>
+<a name="ln972">//---------------------------------------------------------</a>
+<a name="ln973">//   F I G U R E D   B A S S</a>
+<a name="ln974">//---------------------------------------------------------</a>
+<a name="ln975"> </a>
+<a name="ln976">FiguredBass::FiguredBass(Score* s)</a>
+<a name="ln977">   : TextBase(s, ElementFlag::MOVABLE | ElementFlag::ON_STAFF)</a>
+<a name="ln978">      {</a>
+<a name="ln979">      initElementStyle(&amp;figuredBassStyle);</a>
+<a name="ln980">      // figured bass inherits from TextBase for layout purposes</a>
+<a name="ln981">      // but there is no specific text style to use as a basis for styled properties</a>
+<a name="ln982">      // (this is true for historical reasons due to the special layout of figured bass)</a>
+<a name="ln983">      // override the styled property definitions</a>
+<a name="ln984">      for (const StyledProperty&amp; p : *textStyle(tid()))</a>
+<a name="ln985">            setPropertyFlags(p.pid, PropertyFlags::NOSTYLE);</a>
+<a name="ln986">      for (const StyledProperty&amp; p : figuredBassTextStyle) {</a>
+<a name="ln987">            setPropertyFlags(p.pid, PropertyFlags::STYLED);</a>
+<a name="ln988">            setProperty(p.pid, styleValue(p.pid, p.sid));</a>
+<a name="ln989">            }</a>
+<a name="ln990">      setOnNote(true);</a>
+<a name="ln991">#if 0  // TODO</a>
+<a name="ln992">      TextStyle st(</a>
+<a name="ln993">         g_FBFonts[0].family,</a>
+<a name="ln994">         score()-&gt;styleD(Sid::figuredBassFontSize),</a>
+<a name="ln995">         false,</a>
+<a name="ln996">         false,</a>
+<a name="ln997">         false,</a>
+<a name="ln998">         Align::LEFT | Align::TOP,</a>
+<a name="ln999">         QPointF(0, score()-&gt;styleD(Sid::figuredBassYOffset)),</a>
+<a name="ln1000">         OffsetType::SPATIUM);</a>
+<a name="ln1001">      st.setSizeIsSpatiumDependent(true);</a>
+<a name="ln1002">      setElementStyle(st);</a>
+<a name="ln1003">#endif</a>
+<a name="ln1004">      setTicks(Fraction(0,1));</a>
+<a name="ln1005">      qDeleteAll(items);</a>
+<a name="ln1006">      items.clear();</a>
+<a name="ln1007">      }</a>
+<a name="ln1008"> </a>
+<a name="ln1009">FiguredBass::FiguredBass(const FiguredBass&amp; fb)</a>
+<a name="ln1010">   : TextBase(fb)</a>
+<a name="ln1011">      {</a>
+<a name="ln1012">      setOnNote(fb.onNote());</a>
+<a name="ln1013">      setTicks(fb.ticks());</a>
+<a name="ln1014">      for (auto i : fb.items) {     // deep copy is needed</a>
+<a name="ln1015">            FiguredBassItem* fbi = new FiguredBassItem(*i);</a>
+<a name="ln1016">            fbi-&gt;setParent(this);</a>
+<a name="ln1017">            items.push_back(fbi);</a>
+<a name="ln1018">            }</a>
+<a name="ln1019">//      items = fb.items;</a>
+<a name="ln1020">      }</a>
+<a name="ln1021"> </a>
+<a name="ln1022">FiguredBass::~FiguredBass()</a>
+<a name="ln1023">      {</a>
+<a name="ln1024">      for (FiguredBassItem* item : items)</a>
+<a name="ln1025">            delete item;</a>
+<a name="ln1026">      }</a>
+<a name="ln1027"> </a>
+<a name="ln1028">//---------------------------------------------------------</a>
+<a name="ln1029">//   getPropertyStyle</a>
+<a name="ln1030">//---------------------------------------------------------</a>
+<a name="ln1031"> </a>
+<a name="ln1032">Sid FiguredBass::getPropertyStyle(Pid id) const</a>
+<a name="ln1033">      {</a>
+<a name="ln1034">      // do not use TextBase::getPropertyStyle</a>
+<a name="ln1035">      // as most text style properties do not apply</a>
+<a name="ln1036">      for (const StyledProperty&amp; p : figuredBassTextStyle) {</a>
+<a name="ln1037">            if (p.pid == id)</a>
+<a name="ln1038">                  return p.sid;</a>
+<a name="ln1039">            }</a>
+<a name="ln1040">      return Element::getPropertyStyle(id);</a>
+<a name="ln1041">      }</a>
+<a name="ln1042"> </a>
+<a name="ln1043">//---------------------------------------------------------</a>
+<a name="ln1044">//   write</a>
+<a name="ln1045">//---------------------------------------------------------</a>
+<a name="ln1046"> </a>
+<a name="ln1047">void FiguredBass::write(XmlWriter&amp; xml) const</a>
+<a name="ln1048">      {</a>
+<a name="ln1049">      if (!xml.canWrite(this))</a>
+<a name="ln1050">            return;</a>
+<a name="ln1051">      xml.stag(this);</a>
+<a name="ln1052">      if (!onNote())</a>
+<a name="ln1053">            xml.tag(&quot;onNote&quot;, onNote());</a>
+<a name="ln1054">      if (ticks().isNotZero())</a>
+<a name="ln1055">            xml.tag(&quot;ticks&quot;, ticks());</a>
+<a name="ln1056">      // if unparseable items, write full text data</a>
+<a name="ln1057">      if (items.size() &lt; 1)</a>
+<a name="ln1058">            TextBase::writeProperties(xml, true);</a>
+<a name="ln1059">      else {</a>
+<a name="ln1060">//            if (textStyleType() != StyledPropertyListIdx::FIGURED_BASS)</a>
+<a name="ln1061">//                  // if all items parsed and not unstiled, we simply have a special style: write it</a>
+<a name="ln1062">//                  xml.tag(&quot;style&quot;, textStyle().name());</a>
+<a name="ln1063">            for (FiguredBassItem* item : items)</a>
+<a name="ln1064">                  item-&gt;write(xml);</a>
+<a name="ln1065">            for (const StyledProperty&amp; spp : *_elementStyle)</a>
+<a name="ln1066">                  writeProperty(xml, spp.pid);</a>
+<a name="ln1067">            Element::writeProperties(xml);</a>
+<a name="ln1068">            }</a>
+<a name="ln1069">      xml.etag();</a>
+<a name="ln1070">      }</a>
+<a name="ln1071"> </a>
+<a name="ln1072">//---------------------------------------------------------</a>
+<a name="ln1073">//   read</a>
+<a name="ln1074">//---------------------------------------------------------</a>
+<a name="ln1075"> </a>
+<a name="ln1076">void FiguredBass::read(XmlReader&amp; e)</a>
+<a name="ln1077">      {</a>
+<a name="ln1078">      QString normalizedText;</a>
+<a name="ln1079">      int idx = 0;</a>
+<a name="ln1080">      while (e.readNextStartElement()) {</a>
+<a name="ln1081">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1082">            if (tag == &quot;ticks&quot;)</a>
+<a name="ln1083">                  setTicks(e.readFraction());</a>
+<a name="ln1084">            else if (tag == &quot;onNote&quot;)</a>
+<a name="ln1085">                  setOnNote(e.readInt() != 0l);</a>
+<a name="ln1086">            else if (tag == &quot;FiguredBassItem&quot;) {</a>
+<a name="ln1087">                  FiguredBassItem * pItem = new FiguredBassItem(score(), idx++);</a>
+<a name="ln1088">                  pItem-&gt;setTrack(track());</a>
+<a name="ln1089">                  pItem-&gt;setParent(this);</a>
+<a name="ln1090">                  pItem-&gt;read(e);</a>
+<a name="ln1091">                  items.push_back(pItem);</a>
+<a name="ln1092">                  // add item normalized text</a>
+<a name="ln1093">                  if(!normalizedText.isEmpty())</a>
+<a name="ln1094">                        normalizedText.append('\n');</a>
+<a name="ln1095">                  normalizedText.append(pItem-&gt;normalizedText());</a>
+<a name="ln1096">                  }</a>
+<a name="ln1097">//            else if (tag == &quot;style&quot;)</a>
+<a name="ln1098">//                  setStyledPropertyListIdx(e.readElementText());</a>
+<a name="ln1099">            else if (!TextBase::readProperties(e))</a>
+<a name="ln1100">                  e.unknown();</a>
+<a name="ln1101">            }</a>
+<a name="ln1102">      // if items could be parsed set normalized text</a>
+<a name="ln1103">      if (items.size() &gt; 0)</a>
+<a name="ln1104">            setXmlText(normalizedText);      // this is the text to show while editing</a>
+<a name="ln1105">      }</a>
+<a name="ln1106"> </a>
+<a name="ln1107">//---------------------------------------------------------</a>
+<a name="ln1108">//   layout</a>
+<a name="ln1109">//---------------------------------------------------------</a>
+<a name="ln1110"> </a>
+<a name="ln1111">void FiguredBass::layout()</a>
+<a name="ln1112">      {</a>
+<a name="ln1113">      // if 'our' style, force 'our' style data from FiguredBass parameters</a>
+<a name="ln1114">#if 0</a>
+<a name="ln1115">      if (textStyleType() == StyledPropertyListIdx::FIGURED_BASS) {</a>
+<a name="ln1116">            TextStyle st(g_FBFonts[0].family, score()-&gt;styleD(Sid::figuredBassFontSize),</a>
+<a name="ln1117">                        false, false, false, Align::LEFT | Align::TOP, QPointF(0, yOff),</a>
+<a name="ln1118">                        OffsetType::SPATIUM);</a>
+<a name="ln1119">            st.setSizeIsSpatiumDependent(true);</a>
+<a name="ln1120">            setTextStyle(st);</a>
+<a name="ln1121">            }</a>
+<a name="ln1122">#endif</a>
+<a name="ln1123"> </a>
+<a name="ln1124">      // VERTICAL POSITION:</a>
+<a name="ln1125">      const qreal y = score()-&gt;styleD(Sid::figuredBassYOffset) * spatium();</a>
+<a name="ln1126">      setPos(QPointF(0.0, y));</a>
+<a name="ln1127"> </a>
+<a name="ln1128">      // BOUNDING BOX and individual item layout (if required)</a>
+<a name="ln1129">      TextBase::layout1(); // prepare structs and data expected by Text methods</a>
+<a name="ln1130">      // if element could be parsed into items, layout each element</a>
+<a name="ln1131">      // Items list will be empty in edit mode (see FiguredBass::startEdit).</a>
+<a name="ln1132">      // TODO: consider disabling specific layout in case text style is changed (tid() != Tid::FIGURED_BASS).</a>
+<a name="ln1133">      if (items.size() &gt; 0) {</a>
+<a name="ln1134">            layoutLines();</a>
+<a name="ln1135">            bbox().setRect(0, 0, _lineLengths.at(0), 0);</a>
+<a name="ln1136">            // layout each item and enlarge bbox to include items bboxes</a>
+<a name="ln1137">            for (FiguredBassItem* item : items) {</a>
+<a name="ln1138">                  item-&gt;layout();</a>
+<a name="ln1139">                  addbbox(item-&gt;bbox().translated(item-&gt;pos()));</a>
+<a name="ln1140">                  }</a>
+<a name="ln1141">            }</a>
+<a name="ln1142">      }</a>
+<a name="ln1143"> </a>
+<a name="ln1144">//---------------------------------------------------------</a>
+<a name="ln1145">//   layoutLines</a>
+<a name="ln1146">//</a>
+<a name="ln1147">//    lays out the duration indicator line(s), filling the _lineLengths array</a>
+<a name="ln1148">//    and the length of printed lines (used by continuation lines)</a>
+<a name="ln1149">//---------------------------------------------------------</a>
+<a name="ln1150"> </a>
+<a name="ln1151">void FiguredBass::layoutLines()</a>
+<a name="ln1152">      {</a>
+<a name="ln1153">      if (_ticks &lt;= Fraction(0,1) || !segment()) {</a>
+<a name="ln1154">            _lineLengths.resize(1);                         // be sure to always have</a>
+<a name="ln1155">            _lineLengths[0] = 0;                            // at least 1 item in array</a>
+<a name="ln1156">            return;</a>
+<a name="ln1157">            }</a>
+<a name="ln1158"> </a>
+<a name="ln1159">      ChordRest* lastCR  = nullptr;                       // the last ChordRest of this</a>
+<a name="ln1160">      Segment*  nextSegm = nullptr;                       // the Segment beyond this' segment</a>
+<a name="ln1161">      Fraction  nextTick = segment()-&gt;tick() + _ticks;    // the tick beyond this' duration</a>
+<a name="ln1162"> </a>
+<a name="ln1163">      // locate the measure containing the last tick of this; it is either:</a>
+<a name="ln1164">      // the same measure containing nextTick, if nextTick is not the first tick of a measure</a>
+<a name="ln1165">      //    (and line should stop right before it)</a>
+<a name="ln1166">      // or the previous measure, if nextTick is the first tick of a measure</a>
+<a name="ln1167">      //    (and line should stop before any measure terminal segment (bar, clef, ...) )</a>
+<a name="ln1168"> </a>
+<a name="ln1169">      Measure* m = score()-&gt;tick2measure(nextTick-Fraction::fromTicks(1));</a>
+<a name="ln1170">      if (m) {</a>
+<a name="ln1171">            // locate the first segment (of ANY type) right after this' last tick</a>
+<a name="ln1172">            for (nextSegm = m-&gt;first(SegmentType::All); nextSegm; nextSegm = nextSegm-&gt;next()) {</a>
+<a name="ln1173">                  if (nextSegm-&gt;tick() &gt;= nextTick)</a>
+<a name="ln1174">                        break;</a>
+<a name="ln1175">                  }</a>
+<a name="ln1176">            // locate the last ChordRest of this</a>
+<a name="ln1177">            if (nextSegm) {</a>
+<a name="ln1178">                  int startTrack = trackZeroVoice(track());</a>
+<a name="ln1179">                  int endTrack = startTrack + VOICES;</a>
+<a name="ln1180">                  for (const Segment* seg = nextSegm-&gt;prev1(); seg; seg = seg-&gt;prev1()) {</a>
+<a name="ln1181">                        for (int t = startTrack; t &lt; endTrack; ++t) {</a>
+<a name="ln1182">                              Element* el = seg-&gt;element(t);</a>
+<a name="ln1183">                              if (el &amp;&amp; el-&gt;isChordRest()) {</a>
+<a name="ln1184">                                    lastCR = toChordRest(el);</a>
+<a name="ln1185">                                    break;</a>
+<a name="ln1186">                                    }</a>
+<a name="ln1187">                              }</a>
+<a name="ln1188">                        if (lastCR)</a>
+<a name="ln1189">                              break;</a>
+<a name="ln1190">                        }</a>
+<a name="ln1191">                  }</a>
+<a name="ln1192">            }</a>
+<a name="ln1193">      if (!m || !nextSegm) {</a>
+<a name="ln1194">            qDebug(&quot;FiguredBass layout: no segment found for tick %d&quot;, nextTick.ticks());</a>
+<a name="ln1195">            _lineLengths.resize(1);                         // be sure to always have</a>
+<a name="ln1196">            _lineLengths[0] = 0;                            // at least 1 item in array</a>
+<a name="ln1197">            return;</a>
+<a name="ln1198">            }</a>
+<a name="ln1199"> </a>
+<a name="ln1200">      // get length of printed lines from horiz. page position of lastCR</a>
+<a name="ln1201">      // (enter a bit 'into' the ChordRest for clarity)</a>
+<a name="ln1202">      _printedLineLength = lastCR ? lastCR-&gt;pageX() - pageX() + 1.5 * spatium() : 3 * spatium();</a>
+<a name="ln1203"> </a>
+<a name="ln1204">      // get duration indicator line(s) from page position of nextSegm</a>
+<a name="ln1205">      const QList&lt;System*&gt;&amp; systems = score()-&gt;systems();</a>
+<a name="ln1206">      System* s1  = segment()-&gt;measure()-&gt;system();</a>
+<a name="ln1207">      System* s2  = nextSegm-&gt;measure()-&gt;system();</a>
+<a name="ln1208">      int sysIdx1 = systems.indexOf(s1);</a>
+<a name="ln1209">      int sysIdx2 = systems.indexOf(s2);</a>
+<a name="ln1210"> </a>
+<a name="ln1211">      if (sysIdx2 &lt; sysIdx1) {</a>
+<a name="ln1212">            sysIdx2 = sysIdx1;</a>
+<a name="ln1213">            nextSegm = segment()-&gt;next1();</a>
+<a name="ln1214">            // TODO</a>
+<a name="ln1215">            // During layout of figured bass next systems' numbers may be still</a>
+<a name="ln1216">            // undefined (then sysIdx2 == -1) or change in the future.</a>
+<a name="ln1217">            // A layoutSystem() approach similar to that for spanners should</a>
+<a name="ln1218">            // probably be implemented.</a>
+<a name="ln1219">            }</a>
+<a name="ln1220"> </a>
+<a name="ln1221">      int i, len ,segIdx;</a>
+<a name="ln1222">      for (i = sysIdx1, segIdx = 0; i &lt;= sysIdx2; ++i, ++segIdx) {</a>
+<a name="ln1223">            len = 0;</a>
+<a name="ln1224">            if (sysIdx1 == sysIdx2 || i == sysIdx1) {</a>
+<a name="ln1225">                  // single line</a>
+<a name="ln1226">                  len = nextSegm-&gt;pageX() - pageX() - 4;         // stop 4 raster units before next segm</a>
+<a name="ln1227">                  }</a>
+<a name="ln1228">            else if (i == sysIdx1) {</a>
+<a name="ln1229">                  // initial line</a>
+<a name="ln1230">                  qreal w   = s1-&gt;staff(staffIdx())-&gt;bbox().right();</a>
+<a name="ln1231">                  qreal x   = s1-&gt;pageX() + w;</a>
+<a name="ln1232">                  len = x - pageX();</a>
+<a name="ln1233">                  }</a>
+<a name="ln1234">            else if (i &gt; 0 &amp;&amp; i != sysIdx2) {</a>
+<a name="ln1235">                  // middle line</a>
+<a name="ln1236">qDebug(&quot;FiguredBass: duration indicator middle line not implemented&quot;);</a>
+<a name="ln1237">                  }</a>
+<a name="ln1238">            else if (i == sysIdx2) {</a>
+<a name="ln1239">                  // end line</a>
+<a name="ln1240">qDebug(&quot;FiguredBass: duration indicator end line not implemented&quot;);</a>
+<a name="ln1241">                  }</a>
+<a name="ln1242">            // store length item, reusing array items if already present</a>
+<a name="ln1243">            if (_lineLengths.size() &lt;= segIdx)</a>
+<a name="ln1244">                  _lineLengths.append(len);</a>
+<a name="ln1245">            else</a>
+<a name="ln1246">                  _lineLengths[segIdx] = len;</a>
+<a name="ln1247">            }</a>
+<a name="ln1248">      // if more array items than needed, truncate array</a>
+<a name="ln1249">      if (_lineLengths.size() &gt; segIdx)</a>
+<a name="ln1250">            _lineLengths.resize(segIdx);</a>
+<a name="ln1251">      }</a>
+<a name="ln1252"> </a>
+<a name="ln1253">//---------------------------------------------------------</a>
+<a name="ln1254">//   draw</a>
+<a name="ln1255">//---------------------------------------------------------</a>
+<a name="ln1256"> </a>
+<a name="ln1257">void FiguredBass::draw(QPainter* painter) const</a>
+<a name="ln1258">      {</a>
+<a name="ln1259">      // if not printing, draw duration line(s)</a>
+<a name="ln1260">      if (!score()-&gt;printing() &amp;&amp; score()-&gt;showUnprintable()) {</a>
+<a name="ln1261">            for (qreal len : _lineLengths) {</a>
+<a name="ln1262">                  if (len &gt; 0) {</a>
+<a name="ln1263">                        painter-&gt;setPen(QPen(Qt::lightGray, 3));</a>
+<a name="ln1264">                        painter-&gt;drawLine(0.0, -2, len, -2);      // -2: 2 rast. un. above digits</a>
+<a name="ln1265">                        }</a>
+<a name="ln1266">                  }</a>
+<a name="ln1267">            }</a>
+<a name="ln1268">      // if in edit mode or with custom style, use standard text drawing</a>
+<a name="ln1269">//      if (editMode() || subStyle() != ElementStyle::FIGURED_BASS)</a>
+<a name="ln1270">//      if (tid() != Tid::FIGURED_BASS)</a>
+<a name="ln1271">//            TextBase::draw(painter);</a>
+<a name="ln1272">//      else</a>
+<a name="ln1273">            {                                                // not edit mode:</a>
+<a name="ln1274">            if (items.size() &lt; 1)                           // if not parseable into f.b. items</a>
+<a name="ln1275">                  TextBase::draw(painter);                      // draw as standard text</a>
+<a name="ln1276">            else</a>
+<a name="ln1277">                  for (FiguredBassItem* item : items) {     // if parseable into f.b. items</a>
+<a name="ln1278">                        painter-&gt;translate(item-&gt;pos());    // draw each item in its proper position</a>
+<a name="ln1279">                        item-&gt;draw(painter);</a>
+<a name="ln1280">                        painter-&gt;translate(-item-&gt;pos());</a>
+<a name="ln1281">                        }</a>
+<a name="ln1282">            }</a>
+<a name="ln1283">/* DEBUG</a>
+<a name="ln1284">      QString str = QString();</a>
+<a name="ln1285">      str.setNum(_ticks);</a>
+<a name="ln1286">      painter-&gt;drawText(0, (_onNote ? 40 : 30), str);</a>
+<a name="ln1287">*/</a>
+<a name="ln1288">      }</a>
+<a name="ln1289"> </a>
+<a name="ln1290">//---------------------------------------------------------</a>
+<a name="ln1291">//   startEdit / edit / endEdit</a>
+<a name="ln1292">//---------------------------------------------------------</a>
+<a name="ln1293"> </a>
+<a name="ln1294">void FiguredBass::startEdit(EditData&amp; ed)</a>
+<a name="ln1295">      {</a>
+<a name="ln1296">      qDeleteAll(items);</a>
+<a name="ln1297">      items.clear();</a>
+<a name="ln1298">      layout1(); // re-layout without F.B.-specific formatting.</a>
+<a name="ln1299">      TextBase::startEdit(ed);</a>
+<a name="ln1300">      }</a>
+<a name="ln1301"> </a>
+<a name="ln1302">void FiguredBass::endEdit(EditData&amp; ed)</a>
+<a name="ln1303">      {</a>
+<a name="ln1304">      int idx;</a>
+<a name="ln1305"> </a>
+<a name="ln1306">      TextBase::endEdit(ed);</a>
+<a name="ln1307">      // as the standard text editor keeps inserting spurious HTML formatting and styles</a>
+<a name="ln1308">      // retrieve and work only on the plain text</a>
+<a name="ln1309">      QString txt = plainText();</a>
+<a name="ln1310">      if (txt.isEmpty()) {                       // if no text, nothing to do</a>
+<a name="ln1311">            setXmlText(txt);                       // clear the stored text: the empty f.b. element will be deleted</a>
+<a name="ln1312">            return;</a>
+<a name="ln1313">            }</a>
+<a name="ln1314"> </a>
+<a name="ln1315">      // split text into lines and create an item for each line</a>
+<a name="ln1316">      QStringList list = txt.split('\n', QString::SkipEmptyParts);</a>
+<a name="ln1317">      qDeleteAll(items);</a>
+<a name="ln1318">      items.clear();</a>
+<a name="ln1319">      QString normalizedText = QString();</a>
+<a name="ln1320">      idx = 0;</a>
+<a name="ln1321">      for (QString str : list) {</a>
+<a name="ln1322">            FiguredBassItem* pItem = new FiguredBassItem(score(), idx++);</a>
+<a name="ln1323">            if(!pItem-&gt;parse(str)) {            // if any item fails parsing</a>
+<a name="ln1324">                  qDeleteAll(items);</a>
+<a name="ln1325">                  items.clear();                // clear item list</a>
+<a name="ln1326">                  score()-&gt;startCmd();</a>
+<a name="ln1327">                  triggerLayout();</a>
+<a name="ln1328">                  score()-&gt;endCmd();</a>
+<a name="ln1329">                  return;</a>
+<a name="ln1330">                  }</a>
+<a name="ln1331">            pItem-&gt;setTrack(track());</a>
+<a name="ln1332">            pItem-&gt;setParent(this);</a>
+<a name="ln1333">            items.push_back(pItem);</a>
+<a name="ln1334"> </a>
+<a name="ln1335">            // add item normalized text</a>
+<a name="ln1336">            if(!normalizedText.isEmpty())</a>
+<a name="ln1337">                  normalizedText.append('\n');</a>
+<a name="ln1338">            normalizedText.append(pItem-&gt;normalizedText());</a>
+<a name="ln1339">            }</a>
+<a name="ln1340">      // if all items parsed and text is styled, replaced entered text with normalized text</a>
+<a name="ln1341">      if (items.size())</a>
+<a name="ln1342">            setXmlText(normalizedText);</a>
+<a name="ln1343"> </a>
+<a name="ln1344">      score()-&gt;startCmd();</a>
+<a name="ln1345">      triggerLayout();</a>
+<a name="ln1346">      score()-&gt;endCmd();</a>
+<a name="ln1347">      }</a>
+<a name="ln1348"> </a>
+<a name="ln1349">//---------------------------------------------------------</a>
+<a name="ln1350">//   setSelected /setVisible</a>
+<a name="ln1351">//</a>
+<a name="ln1352">//    forward flags to items</a>
+<a name="ln1353">//---------------------------------------------------------</a>
+<a name="ln1354"> </a>
+<a name="ln1355">void FiguredBass::setSelected(bool flag)</a>
+<a name="ln1356">      {</a>
+<a name="ln1357">      Element::setSelected(flag);</a>
+<a name="ln1358">      for(FiguredBassItem* item : items) {</a>
+<a name="ln1359">            item-&gt;setSelected(flag);</a>
+<a name="ln1360">            }</a>
+<a name="ln1361">      }</a>
+<a name="ln1362"> </a>
+<a name="ln1363">void FiguredBass::setVisible(bool flag)</a>
+<a name="ln1364">      {</a>
+<a name="ln1365">      Element::setVisible(flag);</a>
+<a name="ln1366">      for(FiguredBassItem* item : items) {</a>
+<a name="ln1367">            item-&gt;setVisible(flag);</a>
+<a name="ln1368">            }</a>
+<a name="ln1369">      }</a>
+<a name="ln1370"> </a>
+<a name="ln1371">//---------------------------------------------------------</a>
+<a name="ln1372">//   nextFiguredBass</a>
+<a name="ln1373">//</a>
+<a name="ln1374">//    returns the next *contiguous* FiguredBass element if it exists,</a>
+<a name="ln1375">//    i.e. the FiguredBass element which starts where 'this' ends</a>
+<a name="ln1376">//    returns 0 if none</a>
+<a name="ln1377">//---------------------------------------------------------</a>
+<a name="ln1378"> </a>
+<a name="ln1379">FiguredBass* FiguredBass::nextFiguredBass() const</a>
+<a name="ln1380">      {</a>
+<a name="ln1381">      if (_ticks &lt;= Fraction(0,1))                                      // if _ticks unset, no clear idea of when 'this' ends</a>
+<a name="ln1382">            return 0;</a>
+<a name="ln1383">      Segment* nextSegm;                                 // the Segment beyond this' segment</a>
+<a name="ln1384">      Fraction nextTick = segment()-&gt;tick() + _ticks;    // the tick beyond this' duration</a>
+<a name="ln1385"> </a>
+<a name="ln1386">      // locate the ChordRest segment right after this' end</a>
+<a name="ln1387">      nextSegm = score()-&gt;tick2segment(nextTick, true, SegmentType::ChordRest);</a>
+<a name="ln1388">      if (nextSegm == 0)</a>
+<a name="ln1389">            return 0;</a>
+<a name="ln1390"> </a>
+<a name="ln1391">      // scan segment annotations for an existing FB element in the this' staff</a>
+<a name="ln1392">      for (Element* e : nextSegm-&gt;annotations())</a>
+<a name="ln1393">            if (e-&gt;type() == ElementType::FIGURED_BASS &amp;&amp; e-&gt;track() == track())</a>
+<a name="ln1394">                  return toFiguredBass(e);</a>
+<a name="ln1395"> </a>
+<a name="ln1396">      return 0;</a>
+<a name="ln1397">      }</a>
+<a name="ln1398"> </a>
+<a name="ln1399">//---------------------------------------------------------</a>
+<a name="ln1400">//   additionalContLineX</a>
+<a name="ln1401">//</a>
+<a name="ln1402">//    if there is a continuation line, without other text elements, at pagePosY, returns its X coord (in page coords)</a>
+<a name="ln1403">//    returns 0 if no cont.line there or if there are text elements before the cont.line</a>
+<a name="ln1404">//</a>
+<a name="ln1405">//    In practice, returns the X coord of a cont. line which can be the continuation of a previous cont. line</a>
+<a name="ln1406">//</a>
+<a name="ln1407">//    Note: pagePosY is the Y coord of the FiguredBassItem containing the line, not of the line itself,</a>
+<a name="ln1408">//    as line position might depend on styles.</a>
+<a name="ln1409">//---------------------------------------------------------</a>
+<a name="ln1410"> </a>
+<a name="ln1411">qreal FiguredBass::additionalContLineX(qreal pagePosY) const</a>
+<a name="ln1412">{</a>
+<a name="ln1413">      QPointF pgPos = pagePos();</a>
+<a name="ln1414">      for (FiguredBassItem* fbi : items)</a>
+<a name="ln1415">            // if item has cont.line but nothing before it</a>
+<a name="ln1416">            // and item Y coord near enough to pagePosY</a>
+<a name="ln1417">            if(fbi-&gt;contLine() != FiguredBassItem::ContLine::NONE</a>
+<a name="ln1418">                  &amp;&amp; fbi-&gt;digit() == FBIDigitNone</a>
+<a name="ln1419">                     &amp;&amp; fbi-&gt;prefix() == FiguredBassItem::Modifier::NONE</a>
+<a name="ln1420">                        &amp;&amp; fbi-&gt;suffix() == FiguredBassItem::Modifier::NONE</a>
+<a name="ln1421">                           &amp;&amp; fbi-&gt;parenth4() == FiguredBassItem::Parenthesis::NONE</a>
+<a name="ln1422">                              &amp;&amp; qAbs(pgPos.y() + fbi-&gt;ipos().y() - pagePosY) &lt; 0.05)</a>
+<a name="ln1423">                  return pgPos.x() + fbi-&gt;ipos().x();</a>
+<a name="ln1424"> </a>
+<a name="ln1425">      return 0.0;                               // no suitable line</a>
+<a name="ln1426">}</a>
+<a name="ln1427"> </a>
+<a name="ln1428">//---------------------------------------------------------</a>
+<a name="ln1429">//   PROPERTY METHODS</a>
+<a name="ln1430">//---------------------------------------------------------</a>
+<a name="ln1431"> </a>
+<a name="ln1432">QVariant FiguredBass::getProperty(Pid propertyId) const</a>
+<a name="ln1433">      {</a>
+<a name="ln1434">      return TextBase::getProperty(propertyId);</a>
+<a name="ln1435">      }</a>
+<a name="ln1436"> </a>
+<a name="ln1437">bool FiguredBass::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln1438">      {</a>
+<a name="ln1439">      score()-&gt;addRefresh(canvasBoundingRect());</a>
+<a name="ln1440">      return TextBase::setProperty(propertyId, v);</a>
+<a name="ln1441">      }</a>
+<a name="ln1442"> </a>
+<a name="ln1443">QVariant FiguredBass::propertyDefault(Pid id) const</a>
+<a name="ln1444">      {</a>
+<a name="ln1445">      return TextBase::propertyDefault(id);</a>
+<a name="ln1446">      }</a>
+<a name="ln1447"> </a>
+<a name="ln1448">//---------------------------------------------------------</a>
+<a name="ln1449">//   TEMPORARY HACK!!!</a>
+<a name="ln1450">//---------------------------------------------------------</a>
+<a name="ln1451">/*</a>
+<a name="ln1452">FiguredBassItem * FiguredBass::addItem()</a>
+<a name="ln1453">      {</a>
+<a name="ln1454">      int line = items.size();</a>
+<a name="ln1455">      FiguredBassItem* fib = new FiguredBassItem(score(), line);</a>
+<a name="ln1456">      // tell QML not to garbage collect this item</a>
+<a name="ln1457">      QQmlEngine::setObjectOwnership(fib, QQmlEngine::CppOwnership);</a>
+<a name="ln1458">      items.push_back(fib);</a>
+<a name="ln1459">      return fib;</a>
+<a name="ln1460">      }</a>
+<a name="ln1461">*/</a>
+<a name="ln1462">//---------------------------------------------------------</a>
+<a name="ln1463">//   STATIC FUNCTION</a>
+<a name="ln1464">//    adding a new FiguredBass to a Segment;</a>
+<a name="ln1465">//    the main purpose of this function is to ensure that ONLY ONE F.b. element exists for each Segment/staff;</a>
+<a name="ln1466">//    it either re-uses an existing FiguredBass or creates a new one if none is found;</a>
+<a name="ln1467">//    returns the FiguredBass and sets pNew to true if it has been newly created.</a>
+<a name="ln1468">//</a>
+<a name="ln1469">//    Sets an initial duration of the element up to the next ChordRest of the same staff.</a>
+<a name="ln1470">//</a>
+<a name="ln1471">//    As the F.b. very concept requires the base chord to have ONLY ONE note,</a>
+<a name="ln1472">//    FiguredBass elements are created and looked for only in the first track of the staff.</a>
+<a name="ln1473">//---------------------------------------------------------</a>
+<a name="ln1474"> </a>
+<a name="ln1475">FiguredBass* FiguredBass::addFiguredBassToSegment(Segment * seg, int track, const Fraction&amp; extTicks, bool * pNew)</a>
+<a name="ln1476">      {</a>
+<a name="ln1477">      Fraction endTick;                      // where this FB is initially assumed to end</a>
+<a name="ln1478">      int  staff = track / VOICES;       // convert track to staff</a>
+<a name="ln1479">      track = staff * VOICES;                   // first track for this staff</a>
+<a name="ln1480"> </a>
+<a name="ln1481">      // scan segment annotations for an existing FB element in the same staff</a>
+<a name="ln1482">      FiguredBass* fb = 0;</a>
+<a name="ln1483">      for (Element* e : seg-&gt;annotations()) {</a>
+<a name="ln1484">            if (e-&gt;type() == ElementType::FIGURED_BASS &amp;&amp; (e-&gt;track() / VOICES) == staff) {</a>
+<a name="ln1485">                  // an FB already exists in segment: re-use it</a>
+<a name="ln1486">                  fb = toFiguredBass(e);</a>
+<a name="ln1487">                  *pNew = false;</a>
+<a name="ln1488">                  endTick = seg-&gt;tick() + fb-&gt;ticks();</a>
+<a name="ln1489">                  break;</a>
+<a name="ln1490">                  }</a>
+<a name="ln1491">            }</a>
+<a name="ln1492">      if (fb == 0) {                          // no FB at segment: create new</a>
+<a name="ln1493">            fb = new FiguredBass(seg-&gt;score());</a>
+<a name="ln1494">            fb-&gt;setTrack(track);</a>
+<a name="ln1495">            fb-&gt;setParent(seg);</a>
+<a name="ln1496"> </a>
+<a name="ln1497">            // locate next SegChordRest in the same staff to estimate presumed duration of element</a>
+<a name="ln1498">            endTick = Fraction(INT_MAX,1);</a>
+<a name="ln1499">            Segment *   nextSegm;</a>
+<a name="ln1500">            for (int iVoice = 0; iVoice &lt; VOICES; iVoice++) {</a>
+<a name="ln1501">                  nextSegm = seg-&gt;nextCR(track + iVoice);</a>
+<a name="ln1502">                  if(nextSegm &amp;&amp; nextSegm-&gt;tick() &lt; endTick)</a>
+<a name="ln1503">                        endTick = nextSegm-&gt;tick();</a>
+<a name="ln1504">                  }</a>
+<a name="ln1505">            if(endTick == Fraction(INT_MAX,1)) {            // no next segment: set up to score end</a>
+<a name="ln1506">                  Measure * meas = seg-&gt;score()-&gt;lastMeasure();</a>
+<a name="ln1507">                  endTick = meas-&gt;tick() + meas-&gt;ticks();</a>
+<a name="ln1508">                  }</a>
+<a name="ln1509">            fb-&gt;setTicks(endTick - seg-&gt;tick());</a>
+<a name="ln1510"> </a>
+<a name="ln1511">            // set onNote status</a>
+<a name="ln1512">            fb-&gt;setOnNote(false);               // assume not onNote</a>
+<a name="ln1513">            for (int i = track; i &lt; track + VOICES; i++)         // if segment has chord in staff, set onNote</a>
+<a name="ln1514">                  if (seg-&gt;element(i) &amp;&amp; seg-&gt;element(i)-&gt;type() == ElementType::CHORD) {</a>
+<a name="ln1515">                        fb-&gt;setOnNote(true);</a>
+<a name="ln1516">                        break;</a>
+<a name="ln1517">                  }</a>
+<a name="ln1518">            *pNew = true;</a>
+<a name="ln1519">            }</a>
+<a name="ln1520"> </a>
+<a name="ln1521">      // if we are extending a previous FB</a>
+<a name="ln1522">      if (extTicks &gt; Fraction(0,1)) {</a>
+<a name="ln1523">            // locate previous FB for same staff</a>
+<a name="ln1524">            Segment *         prevSegm;</a>
+<a name="ln1525">            FiguredBass*      prevFB = 0;</a>
+<a name="ln1526">            for(prevSegm = seg-&gt;prev1(SegmentType::ChordRest); prevSegm; prevSegm = prevSegm-&gt;prev1(SegmentType::ChordRest)) {</a>
+<a name="ln1527">                  for (Element* e : prevSegm-&gt;annotations()) {</a>
+<a name="ln1528">                        if (e-&gt;type() == ElementType::FIGURED_BASS &amp;&amp; (e-&gt;track() ) == track) {</a>
+<a name="ln1529">                              prevFB = toFiguredBass(e);   // previous FB found</a>
+<a name="ln1530">                              break;</a>
+<a name="ln1531">                              }</a>
+<a name="ln1532">                        }</a>
+<a name="ln1533">                  if(prevFB) {</a>
+<a name="ln1534">                        // if previous FB did not stop more than extTicks before this FB...</a>
+<a name="ln1535">                        Fraction delta = seg-&gt;tick() - prevFB-&gt;segment()-&gt;tick();</a>
+<a name="ln1536">                        if (prevFB-&gt;ticks() + extTicks &gt;= delta)</a>
+<a name="ln1537">                              prevFB-&gt;setTicks(delta);      // update prev FB ticks to last up to this FB</a>
+<a name="ln1538">                        break;</a>
+<a name="ln1539">                        }</a>
+<a name="ln1540">                  }</a>
+<a name="ln1541">            }</a>
+<a name="ln1542">      return fb;</a>
+<a name="ln1543">      }</a>
+<a name="ln1544"> </a>
+<a name="ln1545">//---------------------------------------------------------</a>
+<a name="ln1546">//   STATIC FUNCTIONS FOR FONT CONFIGURATION MANAGEMENT</a>
+<a name="ln1547">//---------------------------------------------------------</a>
+<a name="ln1548"> </a>
+<a name="ln1549">bool FiguredBassFont::read(XmlReader&amp; e)</a>
+<a name="ln1550">      {</a>
+<a name="ln1551">      while (e.readNextStartElement()) {</a>
+<a name="ln1552">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1553"> </a>
+<a name="ln1554">            if (tag == &quot;family&quot;)</a>
+<a name="ln1555">                  family = e.readElementText();</a>
+<a name="ln1556">            else if (tag == &quot;displayName&quot;)</a>
+<a name="ln1557">                  displayName = e.readElementText();</a>
+<a name="ln1558">            else if (tag == &quot;defaultPitch&quot;)</a>
+<a name="ln1559">                  defPitch = e.readDouble();</a>
+<a name="ln1560">            else if (tag == &quot;defaultLineHeight&quot;)</a>
+<a name="ln1561">                  defLineHeight = e.readDouble();</a>
+<a name="ln1562">            else if (tag == &quot;parenthesisRoundOpen&quot;)</a>
+<a name="ln1563">                  displayParenthesis[1] = e.readElementText()[0];</a>
+<a name="ln1564">            else if (tag == &quot;parenthesisRoundClosed&quot;)</a>
+<a name="ln1565">                  displayParenthesis[2] = e.readElementText()[0];</a>
+<a name="ln1566">            else if (tag == &quot;parenthesisSquareOpen&quot;)</a>
+<a name="ln1567">                  displayParenthesis[3] = e.readElementText()[0];</a>
+<a name="ln1568">            else if (tag == &quot;parenthesisSquareClosed&quot;)</a>
+<a name="ln1569">                  displayParenthesis[4] = e.readElementText()[0];</a>
+<a name="ln1570">            else if (tag == &quot;doubleflat&quot;)</a>
+<a name="ln1571">                  displayAccidental[int(FiguredBassItem::Modifier::DOUBLEFLAT)]= e.readElementText()[0];</a>
+<a name="ln1572">            else if (tag == &quot;flat&quot;)</a>
+<a name="ln1573">                  displayAccidental[int(FiguredBassItem::Modifier::FLAT)]      = e.readElementText()[0];</a>
+<a name="ln1574">            else if (tag == &quot;natural&quot;)</a>
+<a name="ln1575">                  displayAccidental[int(FiguredBassItem::Modifier::NATURAL)]   = e.readElementText()[0];</a>
+<a name="ln1576">            else if (tag == &quot;sharp&quot;)</a>
+<a name="ln1577">                  displayAccidental[int(FiguredBassItem::Modifier::SHARP)]     = e.readElementText()[0];</a>
+<a name="ln1578">            else if (tag == &quot;doublesharp&quot;)</a>
+<a name="ln1579">                  displayAccidental[int(FiguredBassItem::Modifier::DOUBLESHARP)]= e.readElementText()[0];</a>
+<a name="ln1580">            else if (tag == &quot;cross&quot;)</a>
+<a name="ln1581">                  displayAccidental[int(FiguredBassItem::Modifier::CROSS)]     = e.readElementText()[0];</a>
+<a name="ln1582">            else if (tag == &quot;backslash&quot;)</a>
+<a name="ln1583">                  displayAccidental[int(FiguredBassItem::Modifier::BACKSLASH)] = e.readElementText()[0];</a>
+<a name="ln1584">            else if (tag == &quot;slash&quot;)</a>
+<a name="ln1585">                  displayAccidental[int(FiguredBassItem::Modifier::SLASH)]     = e.readElementText()[0];</a>
+<a name="ln1586">            else if (tag == &quot;digit&quot;) {</a>
+<a name="ln1587">                  int digit = e.intAttribute(&quot;value&quot;);</a>
+<a name="ln1588">                  if (digit &lt; 0 || digit &gt; 9)</a>
+<a name="ln1589">                        return false;</a>
+<a name="ln1590">                  while (e.readNextStartElement()) {</a>
+<a name="ln1591">                        const QStringRef&amp; t(e.name());</a>
+<a name="ln1592">                        if (t == &quot;simple&quot;)</a>
+<a name="ln1593">                              displayDigit[int(FiguredBassItem::Style::MODERN)]  [digit][int(FiguredBassItem::Combination::SIMPLE)]      = e.readElementText()[0];</a>
+<a name="ln1594">                        else if (t == &quot;crossed&quot;)</a>
+<a name="ln1595">                              displayDigit[int(FiguredBassItem::Style::MODERN)]  [digit][int(FiguredBassItem::Combination::CROSSED)]     = e.readElementText()[0];</a>
+<a name="ln1596">                        else if (t == &quot;backslashed&quot;)</a>
+<a name="ln1597">                              displayDigit[int(FiguredBassItem::Style::MODERN)]  [digit][int(FiguredBassItem::Combination::BACKSLASHED)] = e.readElementText()[0];</a>
+<a name="ln1598">                        else if (t == &quot;slashed&quot;)</a>
+<a name="ln1599">                              displayDigit[int(FiguredBassItem::Style::MODERN)]  [digit][int(FiguredBassItem::Combination::SLASHED)]     = e.readElementText()[0];</a>
+<a name="ln1600">                        else if (t == &quot;simpleHistoric&quot;)</a>
+<a name="ln1601">                              displayDigit[int(FiguredBassItem::Style::HISTORIC)][digit][int(FiguredBassItem::Combination::SIMPLE)]      = e.readElementText()[0];</a>
+<a name="ln1602">                        else if (t == &quot;crossedHistoric&quot;)</a>
+<a name="ln1603">                              displayDigit[int(FiguredBassItem::Style::HISTORIC)][digit][int(FiguredBassItem::Combination::CROSSED)]     = e.readElementText()[0];</a>
+<a name="ln1604">                        else if (t == &quot;backslashedHistoric&quot;)</a>
+<a name="ln1605">                              displayDigit[int(FiguredBassItem::Style::HISTORIC)][digit][int(FiguredBassItem::Combination::BACKSLASHED)] = e.readElementText()[0];</a>
+<a name="ln1606">                        else if (t == &quot;slashedHistoric&quot;)</a>
+<a name="ln1607">                              displayDigit[int(FiguredBassItem::Style::HISTORIC)][digit][int(FiguredBassItem::Combination::SLASHED)]     = e.readElementText()[0];</a>
+<a name="ln1608">                        else {</a>
+<a name="ln1609">                              e.unknown();</a>
+<a name="ln1610">                              return false;</a>
+<a name="ln1611">                              }</a>
+<a name="ln1612">                        }</a>
+<a name="ln1613">                  }</a>
+<a name="ln1614">            else {</a>
+<a name="ln1615">                  e.unknown();</a>
+<a name="ln1616">                  return false;</a>
+<a name="ln1617">                  }</a>
+<a name="ln1618">            }</a>
+<a name="ln1619">      displayParenthesis[0] = displayAccidental[int(FiguredBassItem::Modifier::NONE)] = ' ';</a>
+<a name="ln1620">      return true;</a>
+<a name="ln1621">      }</a>
+<a name="ln1622"> </a>
+<a name="ln1623">//---------------------------------------------------------</a>
+<a name="ln1624">//   Read Configuration File</a>
+<a name="ln1625">//</a>
+<a name="ln1626">//    reads a configuration and appends read data to g_FBFonts</a>
+<a name="ln1627">//    resets everything and reads the built-in config file if fileName is null or empty</a>
+<a name="ln1628">//---------------------------------------------------------</a>
+<a name="ln1629"> </a>
+<a name="ln1630">bool FiguredBass::readConfigFile(const QString&amp; fileName)</a>
+<a name="ln1631">      {</a>
+<a name="ln1632">      QString     path;</a>
+<a name="ln1633"> </a>
+<a name="ln1634">      if (fileName == 0 || fileName.isEmpty()) {       // defaults to built-in xml</a>
+<a name="ln1635">#ifdef Q_OS_IOS</a>
+<a name="ln1636">            {</a>
+<a name="ln1637">            extern QString resourcePath();</a>
+<a name="ln1638">            QString rpath = resourcePath();</a>
+<a name="ln1639">            path = rpath + QString(&quot;/fonts_figuredbass.xml&quot;);</a>
+<a name="ln1640">            }</a>
+<a name="ln1641">#else</a>
+<a name="ln1642">            path = &quot;:/fonts/fonts_figuredbass.xml&quot;;</a>
+<a name="ln1643">#endif</a>
+<a name="ln1644">            g_FBFonts.clear();</a>
+<a name="ln1645">            }</a>
+<a name="ln1646">      else</a>
+<a name="ln1647">            path = fileName;</a>
+<a name="ln1648"> </a>
+<a name="ln1649">      QFile fi(path);</a>
+<a name="ln1650">      if (!fi.open(QIODevice::ReadOnly)) {</a>
+<a name="ln1651">            MScore::lastError = QObject::tr(&quot;Cannot open figured bass description:\n%1\n%2&quot;).arg(fi.fileName()).arg(fi.errorString());</a>
+<a name="ln1652">            qDebug(&quot;FiguredBass::read failed: &lt;%s&gt;&quot;, qPrintable(path));</a>
+<a name="ln1653">            return false;</a>
+<a name="ln1654">            }</a>
+<a name="ln1655">      XmlReader e(&amp;fi);</a>
+<a name="ln1656">      while (e.readNextStartElement()) {</a>
+<a name="ln1657">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln1658">                  // QString version = e.attribute(QString(&quot;version&quot;));</a>
+<a name="ln1659">                  // QStringList sl = version.split('.');</a>
+<a name="ln1660">                  // int _mscVersion = sl[0].toInt() * 100 + sl[1].toInt();</a>
+<a name="ln1661"> </a>
+<a name="ln1662">                  while (e.readNextStartElement()) {</a>
+<a name="ln1663">                        if (e.name() == &quot;font&quot;) {</a>
+<a name="ln1664">                              FiguredBassFont f;</a>
+<a name="ln1665">                              if (f.read(e))</a>
+<a name="ln1666">                                    g_FBFonts.append(f);</a>
+<a name="ln1667">                              else</a>
+<a name="ln1668">                                    return false;</a>
+<a name="ln1669">                              }</a>
+<a name="ln1670">                        else</a>
+<a name="ln1671">                              e.unknown();</a>
+<a name="ln1672">                        }</a>
+<a name="ln1673">                  return true;</a>
+<a name="ln1674">                  }</a>
+<a name="ln1675">            }</a>
+<a name="ln1676">      return false;</a>
+<a name="ln1677">      }</a>
+<a name="ln1678"> </a>
+<a name="ln1679">//---------------------------------------------------------</a>
+<a name="ln1680">//   Get Font Names</a>
+<a name="ln1681">//</a>
+<a name="ln1682">//    returns a list of display names for the fonts  configured to work with Figured Bass;</a>
+<a name="ln1683">//    the index of a name in the list can be used to retrieve the font data with fontData()</a>
+<a name="ln1684">//---------------------------------------------------------</a>
+<a name="ln1685"> </a>
+<a name="ln1686">QList&lt;QString&gt; FiguredBass::fontNames()</a>
+<a name="ln1687">      {</a>
+<a name="ln1688">      QList&lt;QString&gt; names;</a>
+<a name="ln1689">      foreach(const FiguredBassFont&amp; f, g_FBFonts)</a>
+<a name="ln1690">            names.append(f.displayName);</a>
+<a name="ln1691">      return names;</a>
+<a name="ln1692">      }</a>
+<a name="ln1693"> </a>
+<a name="ln1694">//---------------------------------------------------------</a>
+<a name="ln1695">//   Get Font Data</a>
+<a name="ln1696">//</a>
+<a name="ln1697">//    retrieves data about a Figured Bass font.</a>
+<a name="ln1698">//    returns: true if idx is valid | false if it is not</a>
+<a name="ln1699">// any of the pointer parameter can be null, if that datum is not needed</a>
+<a name="ln1700">//---------------------------------------------------------</a>
+<a name="ln1701"> </a>
+<a name="ln1702">bool FiguredBass::fontData(int nIdx, QString * pFamily, QString * pDisplayName,</a>
+<a name="ln1703">            qreal * pSize, qreal * pLineHeight)</a>
+<a name="ln1704">      {</a>
+<a name="ln1705">      if(nIdx &gt;= 0 &amp;&amp; nIdx &lt; g_FBFonts.size()) {</a>
+<a name="ln1706">            FiguredBassFont f = g_FBFonts.at(nIdx);</a>
+<a name="ln1707">            if(pFamily)       *pFamily          = f.family;</a>
+<a name="ln1708">            if(pDisplayName)  *pDisplayName     = f.displayName;</a>
+<a name="ln1709">            if(pSize)         *pSize            = f.defPitch;</a>
+<a name="ln1710">            if(pLineHeight)   *pLineHeight      = f.defLineHeight;</a>
+<a name="ln1711">            return true;</a>
+<a name="ln1712">      }</a>
+<a name="ln1713">      return false;</a>
+<a name="ln1714">      }</a>
+<a name="ln1715"> </a>
+<a name="ln1716">//---------------------------------------------------------</a>
+<a name="ln1717">//   hasParentheses</a>
+<a name="ln1718">//</a>
+<a name="ln1719">//   return true if any FiguredBassItem starts with a parenthesis</a>
+<a name="ln1720">//---------------------------------------------------------</a>
+<a name="ln1721"> </a>
+<a name="ln1722">bool FiguredBass::hasParentheses() const</a>
+<a name="ln1723">      {</a>
+<a name="ln1724">      for (FiguredBassItem* item : items)</a>
+<a name="ln1725">            if (item-&gt;startsWithParenthesis())</a>
+<a name="ln1726">                  return true;</a>
+<a name="ln1727">      return false;</a>
+<a name="ln1728">      }</a>
+<a name="ln1729"> </a>
+<a name="ln1730">//---------------------------------------------------------</a>
+<a name="ln1731">//   Write MusicXML</a>
+<a name="ln1732">//---------------------------------------------------------</a>
+<a name="ln1733"> </a>
+<a name="ln1734">void FiguredBass::writeMusicXML(XmlWriter&amp; xml, bool isOriginalFigure, int crEndTick, int fbEndTick, bool writeDuration, int divisions) const</a>
+<a name="ln1735">      {</a>
+<a name="ln1736">      QString stag = &quot;figured-bass&quot;;</a>
+<a name="ln1737">      if (hasParentheses())</a>
+<a name="ln1738">            stag += &quot; parentheses=\&quot;yes\&quot;&quot;;</a>
+<a name="ln1739">      xml.stag(stag);</a>
+<a name="ln1740">      for(FiguredBassItem* item : items)</a>
+<a name="ln1741">            item-&gt;writeMusicXML(xml, isOriginalFigure, crEndTick, fbEndTick);</a>
+<a name="ln1742">      if (writeDuration)</a>
+<a name="ln1743">            xml.tag(&quot;duration&quot;, ticks().ticks() / divisions);</a>
+<a name="ln1744">      xml.etag();</a>
+<a name="ln1745">      }</a>
+<a name="ln1746"> </a>
+<a name="ln1747">//---------------------------------------------------------</a>
+<a name="ln1748">//</a>
+<a name="ln1749">// METHODS BELONGING TO OTHER CLASSES</a>
+<a name="ln1750">//</a>
+<a name="ln1751">//    Work In Progress: kept here until the FiguredBass framework is reasonably set up;</a>
+<a name="ln1752">//    To be finally moved to their respective class implementation files.</a>
+<a name="ln1753">//</a>
+<a name="ln1754">//---------------------------------------------------------</a>
+<a name="ln1755"> </a>
+<a name="ln1756">//---------------------------------------------------------</a>
+<a name="ln1757">//   Score::addFiguredBass</a>
+<a name="ln1758">//    called from Keyboard Accelerator &amp; menus</a>
+<a name="ln1759">//---------------------------------------------------------</a>
+<a name="ln1760"> </a>
+<a name="ln1761"> </a>
+<a name="ln1762">FiguredBass* Score::addFiguredBass()</a>
+<a name="ln1763">      {</a>
+<a name="ln1764">      Element* el = selection().element();</a>
+<a name="ln1765">      if (!el || (!(el-&gt;isNote()) &amp;&amp; !(el-&gt;isRest()) &amp;&amp; !(el-&gt;isFiguredBass()))) {</a>
+<a name="ln1766">            MScore::setError(NO_NOTE_FIGUREDBASS_SELECTED);</a>
+<a name="ln1767">            return 0;</a>
+<a name="ln1768">            }</a>
+<a name="ln1769"> </a>
+<a name="ln1770">      FiguredBass * fb;</a>
+<a name="ln1771">      bool bNew;</a>
+<a name="ln1772">      if (el-&gt;isNote()) {</a>
+<a name="ln1773">            ChordRest * cr = toNote(el)-&gt;chord();</a>
+<a name="ln1774">            fb = FiguredBass::addFiguredBassToSegment(cr-&gt;segment(), cr-&gt;staffIdx() * VOICES, Fraction(0,1), &amp;bNew);</a>
+<a name="ln1775">            }</a>
+<a name="ln1776">      else if (el-&gt;isRest()) {</a>
+<a name="ln1777">            ChordRest* cr = toRest(el);</a>
+<a name="ln1778">            fb = FiguredBass::addFiguredBassToSegment(cr-&gt;segment(), cr-&gt;staffIdx() * VOICES, Fraction(0, 1), &amp;bNew);</a>
+<a name="ln1779">            }</a>
+<a name="ln1780">      else if (el-&gt;isFiguredBass()) {</a>
+<a name="ln1781">            fb = toFiguredBass(el);</a>
+<a name="ln1782">            bNew = false;</a>
+<a name="ln1783">            }</a>
+<a name="ln1784">      else</a>
+<a name="ln1785">            return 0;</a>
+<a name="ln1786"> </a>
+<a name="ln1787">      if(fb == 0)</a>
+<a name="ln1788">            return 0;</a>
+<a name="ln1789"> </a>
+<a name="ln1790">      if(bNew)</a>
+<a name="ln1791">            undoAddElement(fb);</a>
+<a name="ln1792">      select(fb, SelectType::SINGLE, 0);</a>
+<a name="ln1793">      return fb;</a>
+<a name="ln1794">      }</a>
+<a name="ln1795"> </a>
+<a name="ln1796">}</a>
+<a name="ln1797"> </a>
+
+</code></pre>
+<div class="balloon" rel="1329"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v773/" target="_blank">V773</a> The function was exited without releasing the 'pItem' pointer. A memory leak is possible.</p></div>
+<div class="balloon" rel="1652"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="67"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: textWidth.</p></div>
+<div class="balloon" rel="976"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> It is possible that not all members of a class are initialized inside the constructor. Consider inspecting: _printedLineLength.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

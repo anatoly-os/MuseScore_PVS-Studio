@@ -1,0 +1,387 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>voice.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  Zerberus</a>
+<a name="ln3">//  Zample player</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &lt;stdio.h&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;voice.h&quot;</a>
+<a name="ln16">#include &quot;instrument.h&quot;</a>
+<a name="ln17">#include &quot;channel.h&quot;</a>
+<a name="ln18">#include &quot;zerberus.h&quot;</a>
+<a name="ln19">#include &quot;zone.h&quot;</a>
+<a name="ln20">#include &quot;sample.h&quot;</a>
+<a name="ln21">#include &quot;synthesizer/msynthesizer.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">float Envelope::egPow[EG_SIZE];</a>
+<a name="ln24">float Envelope::egLin[EG_SIZE];</a>
+<a name="ln25"> </a>
+<a name="ln26">static const char* voiceStateNames[] = {</a>
+<a name="ln27">      &quot;OFF&quot;, &quot;ATTACK&quot;, &quot;PLAYING&quot;, &quot;SUSTAINED&quot;, &quot;STOP&quot;</a>
+<a name="ln28">      };</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   setTime</a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">void Envelope::setTime(float ms, int sampleRate)</a>
+<a name="ln35">      {</a>
+<a name="ln36">      val   = 1.0;</a>
+<a name="ln37">      if (ms &lt; 0.0f)</a>
+<a name="ln38">            ms = 0.0f;</a>
+<a name="ln39">      steps = int(ms * sampleRate / 1000);</a>
+<a name="ln40">      count = steps;</a>
+<a name="ln41">      }</a>
+<a name="ln42"> </a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44">//   Voice</a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46"> </a>
+<a name="ln47">Voice::Voice(Zerberus* z)</a>
+<a name="ln48">      {</a>
+<a name="ln49">      _zerberus = z;</a>
+<a name="ln50">      }</a>
+<a name="ln51"> </a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53">//   stop</a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55"> </a>
+<a name="ln56">void Voice::stop(float time)</a>
+<a name="ln57">      {</a>
+<a name="ln58">      _state = VoiceState::STOP;</a>
+<a name="ln59">      envelopes[V1Envelopes::RELEASE].setTime(time, _zerberus-&gt;sampleRate());</a>
+<a name="ln60">      envelopes[currentEnvelope].step();</a>
+<a name="ln61">      envelopes[V1Envelopes::RELEASE].max = envelopes[currentEnvelope].val;</a>
+<a name="ln62">      currentEnvelope = V1Envelopes::RELEASE;</a>
+<a name="ln63">      }</a>
+<a name="ln64"> </a>
+<a name="ln65">//---------------------------------------------------------</a>
+<a name="ln66">//   init</a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68"> </a>
+<a name="ln69">void Voice::init()</a>
+<a name="ln70">      {</a>
+<a name="ln71">      // Initialize the coefficients for the interpolation. The math comes</a>
+<a name="ln72">      // from a mail, posted by Olli Niemitalo to the music-dsp mailing</a>
+<a name="ln73">      // list (I found it in the music-dsp archives</a>
+<a name="ln74">      // http://www.smartelectronix.com/musicdsp/).</a>
+<a name="ln75"> </a>
+<a name="ln76">      static const float MIN_GAIN = -80.0;</a>
+<a name="ln77">      static const float dbStep = MIN_GAIN / float(EG_SIZE);</a>
+<a name="ln78"> </a>
+<a name="ln79">      for (int i = 0; i &lt; EG_SIZE; ++i) {</a>
+<a name="ln80">            Envelope::egPow[EG_SIZE-i-1] = pow(10.0, (dbStep * i)/20.0);</a>
+<a name="ln81">            Envelope::egLin[i]           = 1.0 - (double(i) / double(EG_SIZE));</a>
+<a name="ln82">            }</a>
+<a name="ln83"> </a>
+<a name="ln84">      }</a>
+<a name="ln85"> </a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87">//   start</a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89"> </a>
+<a name="ln90">void Voice::start(Channel* c, int key, int v, const Zone* zone, double durSinceNoteOn)</a>
+<a name="ln91">      {</a>
+<a name="ln92">      z = zone;</a>
+<a name="ln93">      _state    = VoiceState::ATTACK;</a>
+<a name="ln94">      //_state    = VoiceState::PLAYING;</a>
+<a name="ln95">      _channel  = c;</a>
+<a name="ln96">      _key      = key;</a>
+<a name="ln97">      _velocity = v;</a>
+<a name="ln98">      Sample* s = z-&gt;sample;</a>
+<a name="ln99">      audioChan = s-&gt;channel();</a>
+<a name="ln100">      data      = s-&gt;data() + z-&gt;offset * audioChan;</a>
+<a name="ln101">      //avoid processing sample if offset is bigger than sample length</a>
+<a name="ln102">      eidx      = std::max((s-&gt;frames() - z-&gt;offset - 1) * audioChan, 0ll);</a>
+<a name="ln103">      _loopMode = z-&gt;loopMode;</a>
+<a name="ln104">      _loopStart = z-&gt;loopStart;</a>
+<a name="ln105">      _loopEnd   = z-&gt;loopEnd;</a>
+<a name="ln106">      _samplesSinceStart = 0;</a>
+<a name="ln107"> </a>
+<a name="ln108">      _offMode  = z-&gt;offMode;</a>
+<a name="ln109">      _offBy    = z-&gt;offBy;</a>
+<a name="ln110"> </a>
+<a name="ln111">      trigger = z-&gt;trigger;</a>
+<a name="ln112"> </a>
+<a name="ln113">      float offset = -z-&gt;ampVeltrack;</a>
+<a name="ln114">      if (offset &lt;= 0)</a>
+<a name="ln115">            offset += 100;</a>
+<a name="ln116">      if (trigger == Trigger::CC)</a>
+<a name="ln117">            _velocity = 127;</a>
+<a name="ln118">      float curve = _velocity * _velocity / (127.0 * 127.0);</a>
+<a name="ln119"> </a>
+<a name="ln120">      double rt_decay_value = 1.0;</a>
+<a name="ln121">      if (trigger == Trigger::RELEASE)</a>
+<a name="ln122">            rt_decay_value = pow(10, (-z-&gt;rtDecay * durSinceNoteOn)/20);</a>
+<a name="ln123">      // the .005 in this calculation is made up like this:</a>
+<a name="ln124">      //    -&gt; (offset + z-&gt;ampVeltrack*curve) being a percent value so</a>
+<a name="ln125">      //       this should be divided by 100 or multiplied by 0.01</a>
+<a name="ln126">      //    -&gt; afterwards 0.5 (-6dB) is applied to compensate possible coherent</a>
+<a name="ln127">      //       signals in a stereo output see http://www.sengpielaudio.com/calculator-coherentsources.htm</a>
+<a name="ln128">      //    -&gt; 0.005 = 0.01 * 0.5</a>
+<a name="ln129">      gain        = (z-&gt;volume * z-&gt;group_volume * z-&gt;global_volume) * (offset + z-&gt;ampVeltrack * curve)</a>
+<a name="ln130">                    * .005 * c-&gt;gain() * rt_decay_value *</a>
+<a name="ln131">                    pow(10.0, 4.5 / 20.0); //attenuated volume between Fluid and Zerberus on 4.5dB</a>
+<a name="ln132"> </a>
+<a name="ln133">      phase.set(0);</a>
+<a name="ln134">      float sr = float(s-&gt;sampleRate()) / _zerberus-&gt;sampleRate();</a>
+<a name="ln135">      double targetcents = ((((key - z-&gt;keyBase) * z-&gt;pitchKeytrack) + z-&gt;keyBase) * 100.0) + z-&gt;tune;</a>
+<a name="ln136">      if (trigger == Trigger::CC)</a>
+<a name="ln137">            targetcents = z-&gt;keyBase * 100;</a>
+<a name="ln138">      phaseIncr.set(_zerberus-&gt;ct2hz(targetcents) * sr/_zerberus-&gt;ct2hz(z-&gt;keyBase * 100.0));</a>
+<a name="ln139"> </a>
+<a name="ln140">      filter.initialize(_zerberus, z, _velocity);</a>
+<a name="ln141"> </a>
+<a name="ln142">      currentEnvelope = V1Envelopes::DELAY;</a>
+<a name="ln143"> </a>
+<a name="ln144">      float velPercent = _velocity / 127.0;</a>
+<a name="ln145"> </a>
+<a name="ln146">      envelopes[V1Envelopes::DELAY].setTable(Envelope::egLin);</a>
+<a name="ln147">      envelopes[V1Envelopes::DELAY].setTime(z-&gt;ampegDelay + (z-&gt;ampegVel2Delay * velPercent) + z-&gt;delay, _zerberus-&gt;sampleRate());</a>
+<a name="ln148">      envelopes[V1Envelopes::DELAY].setConstant(0.0);</a>
+<a name="ln149"> </a>
+<a name="ln150">      envelopes[V1Envelopes::ATTACK].setTable(Envelope::egLin);</a>
+<a name="ln151">      envelopes[V1Envelopes::ATTACK].setVariable();</a>
+<a name="ln152">      envelopes[V1Envelopes::ATTACK].setTime(z-&gt;ampegAttack + (z-&gt;ampegVel2Attack * velPercent), _zerberus-&gt;sampleRate());</a>
+<a name="ln153">      envelopes[V1Envelopes::ATTACK].offset = z-&gt;ampegStart;</a>
+<a name="ln154"> </a>
+<a name="ln155">      envelopes[V1Envelopes::HOLD].setTable(Envelope::egLin);</a>
+<a name="ln156">      envelopes[V1Envelopes::HOLD].setTime(z-&gt;ampegHold + (z-&gt;ampegVel2Hold * velPercent), _zerberus-&gt;sampleRate());</a>
+<a name="ln157">      envelopes[V1Envelopes::HOLD].setConstant(1.0);</a>
+<a name="ln158"> </a>
+<a name="ln159">      envelopes[V1Envelopes::DECAY].setTable(Envelope::egPow);</a>
+<a name="ln160">      envelopes[V1Envelopes::DECAY].setVariable();</a>
+<a name="ln161">      envelopes[V1Envelopes::DECAY].setTime(z-&gt;ampegDecay + (z-&gt;ampegVel2Decay * velPercent), _zerberus-&gt;sampleRate());</a>
+<a name="ln162">      envelopes[V1Envelopes::DECAY].offset = z-&gt;ampegSustain;</a>
+<a name="ln163"> </a>
+<a name="ln164">      envelopes[V1Envelopes::SUSTAIN].setTable(Envelope::egLin);</a>
+<a name="ln165">      if (trigger == Trigger::RELEASE || trigger == Trigger::CC) {</a>
+<a name="ln166">            // Sample is played on noteoff. We need to stop the voice when it's done. Set the sustain duration accordingly.</a>
+<a name="ln167">            //in ZInstrument::readSample we create sample data array using frames*channels</a>
+<a name="ln168">            //so no need to devide by number of channels here, otherwise it reduces duration of samples by (Number of Channels)</a>
+<a name="ln169">            double sampleDur = ((double) z-&gt;sample-&gt;frames() / z-&gt;sample-&gt;sampleRate()) * 1000; // in ms</a>
+<a name="ln170">            double scaledSampleDur = sampleDur / (phaseIncr.data / 256.0);</a>
+<a name="ln171">            double sustainDur   = scaledSampleDur - (z-&gt;ampegDelay + z-&gt;ampegAttack + z-&gt;ampegHold + z-&gt;ampegDecay + z-&gt;ampegRelease + z-&gt;delay);</a>
+<a name="ln172">            envelopes[V1Envelopes::SUSTAIN].setTime(sustainDur, _zerberus-&gt;sampleRate());</a>
+<a name="ln173">            }</a>
+<a name="ln174">      else</a>
+<a name="ln175">            envelopes[V1Envelopes::SUSTAIN].setTime(std::numeric_limits&lt;float&gt;::infinity(), _zerberus-&gt;sampleRate());</a>
+<a name="ln176">      envelopes[V1Envelopes::SUSTAIN].setConstant(qBound(0.0f, z-&gt;ampegSustain + (z-&gt;ampegVel2Sustain * velPercent), 1.0f));</a>
+<a name="ln177"> </a>
+<a name="ln178">      envelopes[V1Envelopes::RELEASE].setTable(Envelope::egPow);</a>
+<a name="ln179">      envelopes[V1Envelopes::RELEASE].setVariable();</a>
+<a name="ln180">      envelopes[V1Envelopes::RELEASE].setTime(z-&gt;ampegRelease + (z-&gt;ampegVel2Release * velPercent), _zerberus-&gt;sampleRate());</a>
+<a name="ln181">      envelopes[V1Envelopes::RELEASE].max = envelopes[V1Envelopes::SUSTAIN].val;</a>
+<a name="ln182"> </a>
+<a name="ln183">      _looping = false;</a>
+<a name="ln184">      }</a>
+<a name="ln185"> </a>
+<a name="ln186">//---------------------------------------------------------</a>
+<a name="ln187">//   updateEnvelopes</a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189"> </a>
+<a name="ln190">void Voice::updateEnvelopes() {</a>
+<a name="ln191">      if (_state == VoiceState::ATTACK &amp;&amp; trigger != Trigger::RELEASE) {</a>
+<a name="ln192">            while (envelopes[currentEnvelope].step() &amp;&amp; currentEnvelope != V1Envelopes::SUSTAIN)</a>
+<a name="ln193">                  currentEnvelope++;</a>
+<a name="ln194"> </a>
+<a name="ln195">            // triggered by noteon enter virtually infinite sustain (play state)</a>
+<a name="ln196">            if (currentEnvelope == V1Envelopes::SUSTAIN)</a>
+<a name="ln197">                  _state = VoiceState::PLAYING;</a>
+<a name="ln198">            }</a>
+<a name="ln199">      else if (_state == VoiceState::ATTACK &amp;&amp; trigger == Trigger::RELEASE) {</a>
+<a name="ln200">            while (envelopes[currentEnvelope].step() &amp;&amp; currentEnvelope != V1Envelopes::RELEASE)</a>
+<a name="ln201">                  currentEnvelope++;</a>
+<a name="ln202"> </a>
+<a name="ln203">            // triggered by noteoff stop sample when entering release</a>
+<a name="ln204">            if (currentEnvelope == V1Envelopes::RELEASE)</a>
+<a name="ln205">                  _state = VoiceState::STOP;</a>
+<a name="ln206">            }</a>
+<a name="ln207">      else if (_state == VoiceState::STOP) {</a>
+<a name="ln208">            if (envelopes[V1Envelopes::RELEASE].step()) {</a>
+<a name="ln209">                  off();</a>
+<a name="ln210">                  }</a>
+<a name="ln211">            }</a>
+<a name="ln212">      }</a>
+<a name="ln213"> </a>
+<a name="ln214">//---------------------------------------------------------</a>
+<a name="ln215">//   process</a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217"> </a>
+<a name="ln218">void Voice::process(int frames, float* p)</a>
+<a name="ln219">      {</a>
+<a name="ln220">      filter.update();</a>
+<a name="ln221"> </a>
+<a name="ln222">      const float opcodePanLeftGain = 1.f - std::fmax(0.0f, z-&gt;pan / 100.0); //[0, 1]</a>
+<a name="ln223">      const float opcodePanRightGain = 1.f + std::fmin(0.0f, z-&gt;pan / 100.0); //[0, 1]</a>
+<a name="ln224">      const float leftChannelVol = gain * z-&gt;ccGain * _channel-&gt;panLeftGain() * opcodePanLeftGain;</a>
+<a name="ln225">      const float rightChannelVol = gain * z-&gt;ccGain * _channel-&gt;panRightGain() * opcodePanRightGain;</a>
+<a name="ln226">      if (audioChan == 1) {</a>
+<a name="ln227">            while (frames--) {</a>
+<a name="ln228"> </a>
+<a name="ln229">                  updateLoop();</a>
+<a name="ln230"> </a>
+<a name="ln231">                  long long idx = phase.index();</a>
+<a name="ln232"> </a>
+<a name="ln233">                  if (idx &gt;= eidx) {</a>
+<a name="ln234">                        off();</a>
+<a name="ln235">                        break;</a>
+<a name="ln236">                        }</a>
+<a name="ln237"> </a>
+<a name="ln238">                  float interpVal = filter.interpolate(phase.fract(),</a>
+<a name="ln239">                                                       getData(idx-1), getData(idx), getData(idx+1), getData(idx+2));</a>
+<a name="ln240">                  float v = filter.apply(interpVal, true);</a>
+<a name="ln241"> </a>
+<a name="ln242">                  updateEnvelopes();</a>
+<a name="ln243">                  if (_state == VoiceState::OFF)</a>
+<a name="ln244">                        break;</a>
+<a name="ln245"> </a>
+<a name="ln246">                  *p++  += v * envelopes[currentEnvelope].val * leftChannelVol;</a>
+<a name="ln247">                  *p++  += v * envelopes[currentEnvelope].val * rightChannelVol;</a>
+<a name="ln248"> </a>
+<a name="ln249">                  if (V1Envelopes::DELAY != currentEnvelope)</a>
+<a name="ln250">                        phase += phaseIncr;</a>
+<a name="ln251"> </a>
+<a name="ln252">                  _samplesSinceStart++;</a>
+<a name="ln253">                  }</a>
+<a name="ln254">            }</a>
+<a name="ln255">      else {</a>
+<a name="ln256">            //</a>
+<a name="ln257">            // handle interleaved stereo samples</a>
+<a name="ln258">            //</a>
+<a name="ln259">            while (frames--) {</a>
+<a name="ln260"> </a>
+<a name="ln261">                  updateLoop();</a>
+<a name="ln262"> </a>
+<a name="ln263">                  long long idx = phase.index() * 2;</a>
+<a name="ln264">                  if (idx &gt;= eidx) {</a>
+<a name="ln265">                        off();</a>
+<a name="ln266">//printf(&quot;end of sample\n&quot;);</a>
+<a name="ln267">                        break;</a>
+<a name="ln268">                        }</a>
+<a name="ln269"> </a>
+<a name="ln270">                  float interpValL = filter.interpolate(phase.fract(),</a>
+<a name="ln271">                                                       getData(idx-2), getData(idx), getData(idx+2), getData(idx+4));</a>
+<a name="ln272">                  float interpValR = filter.interpolate(phase.fract(),</a>
+<a name="ln273">                                                       getData(idx-1), getData(idx+1), getData(idx+3), getData(idx+5));</a>
+<a name="ln274">                  float valueL = filter.apply(interpValL, true);</a>
+<a name="ln275">                  float valueR = filter.apply(interpValR, false);</a>
+<a name="ln276"> </a>
+<a name="ln277">                  //apply volume</a>
+<a name="ln278">                  updateEnvelopes();</a>
+<a name="ln279">                  if (_state == VoiceState::OFF)</a>
+<a name="ln280">                        break;</a>
+<a name="ln281"> </a>
+<a name="ln282">                  *p++  += valueL * envelopes[currentEnvelope].val * leftChannelVol;</a>
+<a name="ln283">                  *p++  += valueR * envelopes[currentEnvelope].val * rightChannelVol;</a>
+<a name="ln284"> </a>
+<a name="ln285">                  if (V1Envelopes::DELAY != currentEnvelope)</a>
+<a name="ln286">                        phase += phaseIncr;</a>
+<a name="ln287"> </a>
+<a name="ln288">                  _samplesSinceStart++;</a>
+<a name="ln289">                  }</a>
+<a name="ln290">            }</a>
+<a name="ln291">      }</a>
+<a name="ln292"> </a>
+<a name="ln293">//---------------------------------------------------------</a>
+<a name="ln294">//   updateLoop</a>
+<a name="ln295">//---------------------------------------------------------</a>
+<a name="ln296"> </a>
+<a name="ln297">void Voice::updateLoop()</a>
+<a name="ln298">      {</a>
+<a name="ln299">      long long idx = phase.index();</a>
+<a name="ln300">      int loopOffset = (audioChan * 3) - 1; // offset due to interpolation</a>
+<a name="ln301">      bool validLoop = _loopEnd &gt; 0 &amp;&amp; _loopStart &gt;= 0 &amp;&amp; (_loopEnd &lt;= (eidx/audioChan));</a>
+<a name="ln302">      bool shallLoop = loopMode() == LoopMode::CONTINUOUS || (loopMode() == LoopMode::SUSTAIN &amp;&amp; (_state &lt; VoiceState::STOP));</a>
+<a name="ln303"> </a>
+<a name="ln304">      if (!(validLoop &amp;&amp; shallLoop)) {</a>
+<a name="ln305">            _looping = false;</a>
+<a name="ln306">            return;</a>
+<a name="ln307">            }</a>
+<a name="ln308"> </a>
+<a name="ln309">      if (idx + loopOffset &gt; _loopEnd)</a>
+<a name="ln310">            _looping = true;</a>
+<a name="ln311">      if (idx &gt; _loopEnd)</a>
+<a name="ln312">            phase.setIndex(_loopStart+(idx-_loopEnd-1));</a>
+<a name="ln313">      }</a>
+<a name="ln314"> </a>
+<a name="ln315">short Voice::getData(long long pos) {</a>
+<a name="ln316">      if (pos &lt; 0 &amp;&amp; !_looping)</a>
+<a name="ln317">            return 0;</a>
+<a name="ln318"> </a>
+<a name="ln319">      if (!_looping)</a>
+<a name="ln320">            return data[pos];</a>
+<a name="ln321"> </a>
+<a name="ln322">      long long loopEnd = _loopEnd * audioChan;</a>
+<a name="ln323">      long long loopStart = _loopStart * audioChan;</a>
+<a name="ln324"> </a>
+<a name="ln325">      if (pos &lt; loopStart)</a>
+<a name="ln326">            return data[loopEnd + (pos - loopStart) + audioChan];</a>
+<a name="ln327">      else if (pos &gt; (loopEnd + audioChan - 1))</a>
+<a name="ln328">            return data[loopStart + (pos - loopEnd) - audioChan];</a>
+<a name="ln329">      else</a>
+<a name="ln330">            return data[pos];</a>
+<a name="ln331">      }</a>
+<a name="ln332"> </a>
+<a name="ln333">//---------------------------------------------------------</a>
+<a name="ln334">//   state</a>
+<a name="ln335">//---------------------------------------------------------</a>
+<a name="ln336"> </a>
+<a name="ln337">const char* Voice::state() const</a>
+<a name="ln338">      {</a>
+<a name="ln339">      return voiceStateNames[int(_state)];</a>
+<a name="ln340">      }</a>
+<a name="ln341"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

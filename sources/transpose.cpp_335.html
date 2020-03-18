@@ -1,0 +1,782 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>transpose.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;utils.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;pitchspelling.h&quot;</a>
+<a name="ln16">#include &quot;key.h&quot;</a>
+<a name="ln17">#include &quot;staff.h&quot;</a>
+<a name="ln18">#include &quot;note.h&quot;</a>
+<a name="ln19">#include &quot;harmony.h&quot;</a>
+<a name="ln20">#include &quot;segment.h&quot;</a>
+<a name="ln21">#include &quot;undo.h&quot;</a>
+<a name="ln22">#include &quot;keysig.h&quot;</a>
+<a name="ln23">#include &quot;stafftype.h&quot;</a>
+<a name="ln24">#include &quot;chord.h&quot;</a>
+<a name="ln25">#include &quot;measure.h&quot;</a>
+<a name="ln26">#include &quot;fret.h&quot;</a>
+<a name="ln27">#include &quot;part.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">namespace Ms {</a>
+<a name="ln30"> </a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32">//   keydiff2Interval</a>
+<a name="ln33">//    keysig -   -7(Cb) - +7(C#)</a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35"> </a>
+<a name="ln36">static Interval keydiff2Interval(Key oKey, Key nKey, TransposeDirection dir)</a>
+<a name="ln37">      {</a>
+<a name="ln38">      static int stepTable[15] = {</a>
+<a name="ln39">            // C  G  D  A  E  B Fis</a>
+<a name="ln40">               0, 4, 1, 5, 2, 6, 3,</a>
+<a name="ln41">            };</a>
+<a name="ln42"> </a>
+<a name="ln43">      int cofSteps;     // circle of fifth steps</a>
+<a name="ln44">      int diatonic;</a>
+<a name="ln45">      if (nKey &gt; oKey)</a>
+<a name="ln46">            cofSteps = int(nKey) - int(oKey);</a>
+<a name="ln47">      else</a>
+<a name="ln48">            cofSteps = 12 - (int(oKey) - int(nKey));</a>
+<a name="ln49">      diatonic = stepTable[(int(nKey) + 7) % 7] - stepTable[(int(oKey) + 7) % 7];</a>
+<a name="ln50">      if (diatonic &lt; 0)</a>
+<a name="ln51">            diatonic += 7;</a>
+<a name="ln52">      diatonic %= 7;</a>
+<a name="ln53">      int chromatic = (cofSteps * 7) % 12;</a>
+<a name="ln54"> </a>
+<a name="ln55"> </a>
+<a name="ln56">      if ((dir == TransposeDirection::CLOSEST) &amp;&amp; (chromatic &gt; 6))</a>
+<a name="ln57">            dir = TransposeDirection::DOWN;</a>
+<a name="ln58"> </a>
+<a name="ln59">      if (dir == TransposeDirection::DOWN) {</a>
+<a name="ln60">            chromatic = chromatic - 12;</a>
+<a name="ln61">            diatonic  = diatonic - 7;</a>
+<a name="ln62">            if (diatonic == -7)</a>
+<a name="ln63">                  diatonic = 0;</a>
+<a name="ln64">            if (chromatic == -12)</a>
+<a name="ln65">                  chromatic = 0;</a>
+<a name="ln66">            }</a>
+<a name="ln67">      return Interval(diatonic, chromatic);</a>
+<a name="ln68">      }</a>
+<a name="ln69"> </a>
+<a name="ln70">/*!</a>
+<a name="ln71"> * Transposes both pitch and spelling for a note given an interval.</a>
+<a name="ln72"> *</a>
+<a name="ln73"> * Uses addition for pitch and transposeTpc() for spelling.</a>
+<a name="ln74"> *</a>
+<a name="ln75"> * @param pitch</a>
+<a name="ln76"> *  The initial (current) pitch. (pitch)</a>
+<a name="ln77"> * @param tpc</a>
+<a name="ln78"> *  The initial spelling. (tpc)</a>
+<a name="ln79"> * @param rpitch</a>
+<a name="ln80"> *  A pointer to the transposed pitch, calculated by this function. (pitch)</a>
+<a name="ln81"> * @param rtpc</a>
+<a name="ln82"> *  A pointer to the transposed spelling. (tcp)</a>
+<a name="ln83"> * @param interval</a>
+<a name="ln84"> *  The interval to transpose by.</a>
+<a name="ln85"> * @param useDoubleSharpsFlats</a>
+<a name="ln86"> *  Determines whether the output may include double sharps or flats (Abb)</a>
+<a name="ln87"> *  or should use an enharmonic pitch (Abb = G).</a>
+<a name="ln88"> */</a>
+<a name="ln89"> </a>
+<a name="ln90">void transposeInterval(int pitch, int tpc, int* rpitch, int* rtpc, Interval interval,</a>
+<a name="ln91">   bool useDoubleSharpsFlats)</a>
+<a name="ln92">      {</a>
+<a name="ln93">      *rpitch = pitch + interval.chromatic;</a>
+<a name="ln94">      *rtpc   = transposeTpc(tpc, interval, useDoubleSharpsFlats);</a>
+<a name="ln95">      }</a>
+<a name="ln96"> </a>
+<a name="ln97">/*!</a>
+<a name="ln98"> * Transposes a pitch spelling given an interval.</a>
+<a name="ln99"> *</a>
+<a name="ln100"> * This function transposes a pitch spelling using first</a>
+<a name="ln101"> * a diatonic transposition and then calculating any accidentals.</a>
+<a name="ln102"> * This insures that the note is changed by the correct number of</a>
+<a name="ln103"> * scale degrees unless it would require too many accidentals.</a>
+<a name="ln104"> *</a>
+<a name="ln105"> * @param tpc</a>
+<a name="ln106"> *  The initial pitch spelling.</a>
+<a name="ln107"> * @param interval</a>
+<a name="ln108"> *  The interval to be transposed by.</a>
+<a name="ln109"> * @param useDoubleSharpsFlats</a>
+<a name="ln110"> *  Determines whether the output may include double sharps or flats (Abb)</a>
+<a name="ln111"> *  or should use an enharmonic pitch (Abb = G).</a>
+<a name="ln112"> *</a>
+<a name="ln113"> * @return</a>
+<a name="ln114"> *  The transposed pitch spelling (tpc).</a>
+<a name="ln115"> */</a>
+<a name="ln116"> </a>
+<a name="ln117">int transposeTpc(int tpc, Interval interval, bool useDoubleSharpsFlats)</a>
+<a name="ln118">      {</a>
+<a name="ln119">      if (tpc == Tpc::TPC_INVALID) // perfect unison &amp; perfect octave</a>
+<a name="ln120">            return tpc;</a>
+<a name="ln121"> </a>
+<a name="ln122">      int minAlter;</a>
+<a name="ln123">      int maxAlter;</a>
+<a name="ln124">      if (useDoubleSharpsFlats) {</a>
+<a name="ln125">            minAlter = -2;</a>
+<a name="ln126">            maxAlter = 2;</a>
+<a name="ln127">            }</a>
+<a name="ln128">      else {</a>
+<a name="ln129">            minAlter = -1;</a>
+<a name="ln130">            maxAlter = 1;</a>
+<a name="ln131">            }</a>
+<a name="ln132">      int steps     = interval.diatonic;</a>
+<a name="ln133">      int semitones = interval.chromatic;</a>
+<a name="ln134"> </a>
+<a name="ln135">// qDebug(&quot;transposeTpc tpc %d steps %d semitones %d&quot;, tpc, steps, semitones);</a>
+<a name="ln136">      if (semitones == 0 &amp;&amp; steps == 0)</a>
+<a name="ln137">            return tpc;</a>
+<a name="ln138"> </a>
+<a name="ln139">      int step;</a>
+<a name="ln140">      int alter;</a>
+<a name="ln141">      int pitch = tpc2pitch(tpc);</a>
+<a name="ln142"> </a>
+<a name="ln143">      for (int k = 0; k &lt; 10; ++k) {</a>
+<a name="ln144">            step = tpc2step(tpc) + steps;</a>
+<a name="ln145">            while (step &lt; 0)</a>
+<a name="ln146">                  step += 7;</a>
+<a name="ln147">            step   %= 7;</a>
+<a name="ln148">            int p1 = tpc2pitch(step2tpc(step, AccidentalVal::NATURAL));</a>
+<a name="ln149">            alter  = semitones - (p1 - pitch);</a>
+<a name="ln150">            // alter  = p1 + semitones - pitch;</a>
+<a name="ln151"> </a>
+<a name="ln152">//            if (alter &lt; 0) {</a>
+<a name="ln153">//                  alter *= -1;</a>
+<a name="ln154">//                  alter = 12 - alter;</a>
+<a name="ln155">//                  }</a>
+<a name="ln156">            while (alter &lt; 0)</a>
+<a name="ln157">                  alter += 12;</a>
+<a name="ln158"> </a>
+<a name="ln159">            alter %= 12;</a>
+<a name="ln160">            if (alter &gt; 6)</a>
+<a name="ln161">                  alter -= 12;</a>
+<a name="ln162">            if (alter &gt; maxAlter)</a>
+<a name="ln163">                  ++steps;</a>
+<a name="ln164">            else if (alter &lt; minAlter)</a>
+<a name="ln165">                  --steps;</a>
+<a name="ln166">            else</a>
+<a name="ln167">                  break;</a>
+<a name="ln168">//            qDebug(&quot;  again alter %d steps %d, step %d&quot;, alter, steps, step);</a>
+<a name="ln169">            }</a>
+<a name="ln170">//      qDebug(&quot;  = step %d alter %d  tpc %d&quot;, step, alter, step2tpc(step, alter));</a>
+<a name="ln171">      return step2tpc(step, AccidentalVal(alter));</a>
+<a name="ln172">      }</a>
+<a name="ln173"> </a>
+<a name="ln174">//---------------------------------------------------------</a>
+<a name="ln175">//   transposeTpcDiatonicByKey</a>
+<a name="ln176">//</a>
+<a name="ln177">// returns the tpc diatonically transposed by steps, using degrees of given key</a>
+<a name="ln178">// option to keep any alteration tpc had with respect to unaltered corresponding degree of key</a>
+<a name="ln179">// option to enharmonically reduce tpc using double alterations</a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181"> </a>
+<a name="ln182">int transposeTpcDiatonicByKey(int tpc, int steps, Key key, bool keepAlteredDegrees, bool useDoubleSharpsFlats)</a>
+<a name="ln183">      {</a>
+<a name="ln184">      if (tpc == Tpc::TPC_INVALID)</a>
+<a name="ln185">            return tpc;</a>
+<a name="ln186"> </a>
+<a name="ln187">      // get step for tpc with alteration for key</a>
+<a name="ln188">      int alter;</a>
+<a name="ln189">      int step = tpc2stepByKey(tpc, key, &amp;alter);</a>
+<a name="ln190"> </a>
+<a name="ln191">      // transpose step and get tpc for step/key</a>
+<a name="ln192">      step += steps;</a>
+<a name="ln193">      int newTpc = step2tpcByKey(step, key);</a>
+<a name="ln194"> </a>
+<a name="ln195">      // if required, apply alteration to new tpc</a>
+<a name="ln196">      if(keepAlteredDegrees)</a>
+<a name="ln197">            newTpc += alter * TPC_DELTA_SEMITONE;</a>
+<a name="ln198"> </a>
+<a name="ln199">      // check results are in ranges</a>
+<a name="ln200">      while (newTpc &gt; Tpc::TPC_MAX)      newTpc   -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln201">      while (newTpc &lt; Tpc::TPC_MIN)      newTpc   += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln202"> </a>
+<a name="ln203">      // if required, reduce double alterations</a>
+<a name="ln204">      if(!useDoubleSharpsFlats) {</a>
+<a name="ln205">            if(newTpc &gt;= Tpc::TPC_F_SS)  newTpc   -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln206">            if(newTpc &lt;= Tpc::TPC_B_BB)  newTpc   += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln207">            }</a>
+<a name="ln208"> </a>
+<a name="ln209">      return newTpc;</a>
+<a name="ln210">      }</a>
+<a name="ln211"> </a>
+<a name="ln212">//---------------------------------------------------------</a>
+<a name="ln213">//   transpose</a>
+<a name="ln214">//    return false on failure</a>
+<a name="ln215">//---------------------------------------------------------</a>
+<a name="ln216"> </a>
+<a name="ln217">bool Score::transpose(Note* n, Interval interval, bool useDoubleSharpsFlats)</a>
+<a name="ln218">      {</a>
+<a name="ln219">      int npitch;</a>
+<a name="ln220">      int ntpc1, ntpc2;</a>
+<a name="ln221">      transposeInterval(n-&gt;pitch(), n-&gt;tpc1(), &amp;npitch, &amp;ntpc1, interval, useDoubleSharpsFlats);</a>
+<a name="ln222">      if (n-&gt;transposition()) {</a>
+<a name="ln223">            int p;</a>
+<a name="ln224">            transposeInterval(n-&gt;pitch() - n-&gt;transposition(), n-&gt;tpc2(), &amp;p, &amp;ntpc2, interval, useDoubleSharpsFlats);</a>
+<a name="ln225">            }</a>
+<a name="ln226">      else</a>
+<a name="ln227">            ntpc2 = ntpc1;</a>
+<a name="ln228">      if (npitch &gt; 127)</a>
+<a name="ln229">            return false;</a>
+<a name="ln230">      undoChangePitch(n, npitch, ntpc1, ntpc2);</a>
+<a name="ln231">      return true;</a>
+<a name="ln232">      }</a>
+<a name="ln233"> </a>
+<a name="ln234">//---------------------------------------------------------</a>
+<a name="ln235">//   transpose</a>
+<a name="ln236">//    return false on failure</a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238"> </a>
+<a name="ln239">bool Score::transpose(TransposeMode mode, TransposeDirection direction, Key trKey,</a>
+<a name="ln240">  int transposeInterval, bool trKeys, bool transposeChordNames, bool useDoubleSharpsFlats)</a>
+<a name="ln241">      {</a>
+<a name="ln242">      bool rangeSelection = selection().isRange();</a>
+<a name="ln243">      int startStaffIdx   = 0;</a>
+<a name="ln244">      int endStaffIdx     = 0;</a>
+<a name="ln245">      Fraction startTick  = Fraction(0,1);</a>
+<a name="ln246">      if (rangeSelection) {</a>
+<a name="ln247">            startStaffIdx = selection().staffStart();</a>
+<a name="ln248">            endStaffIdx   = selection().staffEnd();</a>
+<a name="ln249">            startTick     = selection().tickStart();</a>
+<a name="ln250">            }</a>
+<a name="ln251"> </a>
+<a name="ln252">      Staff* st = staff(startStaffIdx);</a>
+<a name="ln253"> </a>
+<a name="ln254">      Interval interval;</a>
+<a name="ln255">      if (mode != TransposeMode::DIATONICALLY) {</a>
+<a name="ln256">            if (mode == TransposeMode::BY_KEY) {</a>
+<a name="ln257">                  // calculate interval from &quot;transpose by key&quot;</a>
+<a name="ln258">                  // find the key of the first pitched staff</a>
+<a name="ln259">                  Key key = Key::C;</a>
+<a name="ln260">                  for (int i = startStaffIdx; i &lt; endStaffIdx; ++i) {</a>
+<a name="ln261">                        Staff* s = staff(i);</a>
+<a name="ln262">                        if (s-&gt;isPitchedStaff(startTick)) {</a>
+<a name="ln263">                              key = s-&gt;key(startTick);</a>
+<a name="ln264">                              if (!styleB(Sid::concertPitch)) {</a>
+<a name="ln265">                                    int diff = s-&gt;part()-&gt;instrument(startTick)-&gt;transpose().chromatic;</a>
+<a name="ln266">                                    if (diff)</a>
+<a name="ln267">                                          key = transposeKey(key, diff, s-&gt;part()-&gt;preferSharpFlat());</a>
+<a name="ln268">                                    }</a>
+<a name="ln269">                              // remember this staff to use as basis in transposing key signatures</a>
+<a name="ln270">                              st = s;</a>
+<a name="ln271">                              break;</a>
+<a name="ln272">                              }</a>
+<a name="ln273">                        }</a>
+<a name="ln274">                  if (key != trKey) {</a>
+<a name="ln275">                        interval = keydiff2Interval(key, trKey, direction);</a>
+<a name="ln276">                        }</a>
+<a name="ln277">                  else {      //same key, which direction?</a>
+<a name="ln278">                        if (direction == TransposeDirection::UP)</a>
+<a name="ln279">                              interval = Interval(12);</a>
+<a name="ln280">                        else if (direction == TransposeDirection::DOWN)</a>
+<a name="ln281">                              interval = Interval(-12);</a>
+<a name="ln282">                        else  //don't do anything for same key and closest direction</a>
+<a name="ln283">                              return true;</a>
+<a name="ln284">                        }</a>
+<a name="ln285">                  }</a>
+<a name="ln286">            else {</a>
+<a name="ln287">                  interval = intervalList[transposeInterval];</a>
+<a name="ln288">                  if (direction == TransposeDirection::DOWN)</a>
+<a name="ln289">                        interval.flip();</a>
+<a name="ln290">                  }</a>
+<a name="ln291"> </a>
+<a name="ln292">            if (!rangeSelection) {</a>
+<a name="ln293">                  trKeys = false;</a>
+<a name="ln294">                  }</a>
+<a name="ln295">            bool fullOctave = (interval.chromatic % 12) == 0;</a>
+<a name="ln296">            if (fullOctave &amp;&amp; (mode != TransposeMode::BY_KEY)) {</a>
+<a name="ln297">                  trKeys = false;</a>
+<a name="ln298">                  transposeChordNames = false;</a>
+<a name="ln299">                  }</a>
+<a name="ln300">            }</a>
+<a name="ln301">      else  { // diatonic transposition</a>
+<a name="ln302">            if (direction == TransposeDirection::DOWN)</a>
+<a name="ln303">                  transposeInterval *= -1;</a>
+<a name="ln304">            }</a>
+<a name="ln305"> </a>
+<a name="ln306">      if (_selection.isList()) {</a>
+<a name="ln307">            foreach (Element* e, _selection.uniqueElements()) {</a>
+<a name="ln308">                  if (!e-&gt;staff() || e-&gt;staff()-&gt;staffType(e-&gt;tick())-&gt;group() == StaffGroup::PERCUSSION)</a>
+<a name="ln309">                        continue;</a>
+<a name="ln310">                  if (e-&gt;isNote()) {</a>
+<a name="ln311">                        Note* note = toNote(e);</a>
+<a name="ln312">                        if (mode == TransposeMode::DIATONICALLY)</a>
+<a name="ln313">                              note-&gt;transposeDiatonic(transposeInterval, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln314">                        else {</a>
+<a name="ln315">                              if (!transpose(note, interval, useDoubleSharpsFlats))</a>
+<a name="ln316">                                    return false;</a>
+<a name="ln317">                              }</a>
+<a name="ln318">                        }</a>
+<a name="ln319">                  else if (e-&gt;isHarmony() &amp;&amp; transposeChordNames) {</a>
+<a name="ln320">                        Harmony* h  = toHarmony(e);</a>
+<a name="ln321">                        int rootTpc, baseTpc;</a>
+<a name="ln322">                        if (mode == TransposeMode::DIATONICALLY) {</a>
+<a name="ln323">                              Fraction tick = Fraction(0,1);</a>
+<a name="ln324">                              if (h-&gt;parent()-&gt;isSegment())</a>
+<a name="ln325">                                    tick = toSegment(h-&gt;parent())-&gt;tick();</a>
+<a name="ln326">                              else if (h-&gt;parent()-&gt;isFretDiagram() &amp;&amp; h-&gt;parent()-&gt;parent()-&gt;isSegment())</a>
+<a name="ln327">                                    tick = toSegment(h-&gt;parent()-&gt;parent())-&gt;tick();</a>
+<a name="ln328">                              Key key = !h-&gt;staff() ? Key::C : h-&gt;staff()-&gt;key(tick);</a>
+<a name="ln329">                              rootTpc = transposeTpcDiatonicByKey(h-&gt;rootTpc(),</a>
+<a name="ln330">                                          transposeInterval, key, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln331">                              baseTpc = transposeTpcDiatonicByKey(h-&gt;baseTpc(),</a>
+<a name="ln332">                                          transposeInterval, key, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln333">                        }</a>
+<a name="ln334">                        else {</a>
+<a name="ln335">                              rootTpc = transposeTpc(h-&gt;rootTpc(), interval, useDoubleSharpsFlats);</a>
+<a name="ln336">                              baseTpc = transposeTpc(h-&gt;baseTpc(), interval, useDoubleSharpsFlats);</a>
+<a name="ln337">                              }</a>
+<a name="ln338">                        undoTransposeHarmony(h, rootTpc, baseTpc);</a>
+<a name="ln339">                        }</a>
+<a name="ln340">                  else if (e-&gt;isKeySig() &amp;&amp; mode != TransposeMode::DIATONICALLY &amp;&amp; trKeys) {</a>
+<a name="ln341">                        KeySig* ks     = toKeySig(e);</a>
+<a name="ln342">                        if (!ks-&gt;isCustom() &amp;&amp; !ks-&gt;isAtonal()) {</a>
+<a name="ln343">                              Key key        = st-&gt;key(ks-&gt;tick());</a>
+<a name="ln344">                              KeySigEvent ke = ks-&gt;keySigEvent();</a>
+<a name="ln345">                              ke.setKey(key);</a>
+<a name="ln346">                              undo(new ChangeKeySig(ks, ke, ks-&gt;showCourtesy()));</a>
+<a name="ln347">                              }</a>
+<a name="ln348">                        }</a>
+<a name="ln349">                  }</a>
+<a name="ln350">            return true;</a>
+<a name="ln351">            }</a>
+<a name="ln352"> </a>
+<a name="ln353">      //--------------------------</a>
+<a name="ln354">      // process range selection</a>
+<a name="ln355">      //--------------------------</a>
+<a name="ln356"> </a>
+<a name="ln357">      QList&lt;Staff*&gt; sl;</a>
+<a name="ln358">      for (int staffIdx = _selection.staffStart(); staffIdx &lt; _selection.staffEnd(); ++staffIdx) {</a>
+<a name="ln359">            Staff* s = staff(staffIdx);</a>
+<a name="ln360">            if (s-&gt;staffType(Fraction(0,1))-&gt;group() == StaffGroup::PERCUSSION)      // ignore percussion staff</a>
+<a name="ln361">                  continue;</a>
+<a name="ln362">            if (sl.contains(s))</a>
+<a name="ln363">                  continue;</a>
+<a name="ln364">            bool alreadyThere = false;</a>
+<a name="ln365">            for (Staff* s2 : sl) {</a>
+<a name="ln366">                  if (s2 == s || (s2-&gt;links() &amp;&amp; s2-&gt;links()-&gt;contains(s))) {</a>
+<a name="ln367">                        alreadyThere = true;</a>
+<a name="ln368">                        break;</a>
+<a name="ln369">                        }</a>
+<a name="ln370">                  }</a>
+<a name="ln371">            if (!alreadyThere)</a>
+<a name="ln372">                  sl.append(s);</a>
+<a name="ln373">            }</a>
+<a name="ln374">      QList&lt;int&gt; tracks;</a>
+<a name="ln375">      for (Staff* s : sl) {</a>
+<a name="ln376">            int idx = s-&gt;idx() * VOICES;</a>
+<a name="ln377">            for (int i = 0; i &lt; VOICES; ++i)</a>
+<a name="ln378">                  tracks.append(idx + i);</a>
+<a name="ln379">            }</a>
+<a name="ln380"> </a>
+<a name="ln381">      Segment* s1 = _selection.startSegment();</a>
+<a name="ln382">      // if range start on mmRest, get the actual segment instead</a>
+<a name="ln383">      if (s1-&gt;measure()-&gt;isMMRest())</a>
+<a name="ln384">      	s1 = tick2segment(s1-&gt;tick(), true, s1-&gt;segmentType(), false);</a>
+<a name="ln385">      // if range starts with first CR of measure</a>
+<a name="ln386">      // then start looping from very beginning of measure</a>
+<a name="ln387">      // so we include key signature and can transpose that if requested</a>
+<a name="ln388">      if (s1-&gt;rtick().isZero())</a>
+<a name="ln389">            s1 = s1-&gt;measure()-&gt;first();</a>
+<a name="ln390">      Segment* s2 = _selection.endSegment();</a>
+<a name="ln391">      for (Segment* segment = s1; segment &amp;&amp; segment != s2; segment = segment-&gt;next1()) {</a>
+<a name="ln392">            if (!segment-&gt;enabled())</a>
+<a name="ln393">                  continue;</a>
+<a name="ln394">            for (int track : tracks) {</a>
+<a name="ln395">                  if (staff(track/VOICES)-&gt;staffType(s1-&gt;tick())-&gt;group() == StaffGroup::PERCUSSION)</a>
+<a name="ln396">                        continue;</a>
+<a name="ln397">                  Element* e = segment-&gt;element(track);</a>
+<a name="ln398">                  if (!e)</a>
+<a name="ln399">                        continue;</a>
+<a name="ln400"> </a>
+<a name="ln401">                  if (e-&gt;isChord()) {</a>
+<a name="ln402">                        Chord* chord = toChord(e);</a>
+<a name="ln403">                        std::vector&lt;Note*&gt; nl = chord-&gt;notes();</a>
+<a name="ln404">                        for (Note* n : nl) {</a>
+<a name="ln405">                              if (mode == TransposeMode::DIATONICALLY)</a>
+<a name="ln406">                                    n-&gt;transposeDiatonic(transposeInterval, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln407">                              else {</a>
+<a name="ln408">                                    if (!transpose(n, interval, useDoubleSharpsFlats))</a>
+<a name="ln409">                                          return false;</a>
+<a name="ln410">                                    }</a>
+<a name="ln411">                              }</a>
+<a name="ln412">                        for (Chord* g : chord-&gt;graceNotes()) {</a>
+<a name="ln413">                              for (Note* n : g-&gt;notes()) {</a>
+<a name="ln414">                                    if (mode == TransposeMode::DIATONICALLY)</a>
+<a name="ln415">                                          n-&gt;transposeDiatonic(transposeInterval, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln416">                                    else {</a>
+<a name="ln417">                                          if (!transpose(n, interval, useDoubleSharpsFlats))</a>
+<a name="ln418">                                                return false;</a>
+<a name="ln419">                                          }</a>
+<a name="ln420">                                    }</a>
+<a name="ln421">                              }</a>
+<a name="ln422">                        }</a>
+<a name="ln423">                  else if (e-&gt;isKeySig() &amp;&amp; trKeys &amp;&amp; mode != TransposeMode::DIATONICALLY) {</a>
+<a name="ln424">                        bool startKey = segment-&gt;tick() == s1-&gt;tick();</a>
+<a name="ln425">                        QList&lt;ScoreElement*&gt; ll = e-&gt;linkList();</a>
+<a name="ln426">                        for (ScoreElement* scoreElement : ll) {</a>
+<a name="ln427">                              KeySig* ks = toKeySig(scoreElement);</a>
+<a name="ln428">                              bool addKey = ks-&gt;isChange();</a>
+<a name="ln429">                              if (!ks-&gt;isCustom() &amp;&amp; !ks-&gt;isAtonal()) {</a>
+<a name="ln430">                                    Key nKey = transposeKey(ks-&gt;key(), interval, ks-&gt;part()-&gt;preferSharpFlat());</a>
+<a name="ln431">                                    KeySigEvent ke = ks-&gt;keySigEvent();</a>
+<a name="ln432">                                    ke.setKey(nKey);</a>
+<a name="ln433">                                    undo(new ChangeKeySig(ks, ke, ks-&gt;showCourtesy(), startKey || addKey));</a>
+<a name="ln434">                                    }</a>
+<a name="ln435">                              }</a>
+<a name="ln436">                        }</a>
+<a name="ln437">                  }</a>
+<a name="ln438">            if (transposeChordNames) {</a>
+<a name="ln439">                  foreach (Element* e, segment-&gt;annotations()) {</a>
+<a name="ln440">                        if ((e-&gt;type() != ElementType::HARMONY) || (!tracks.contains(e-&gt;track())))</a>
+<a name="ln441">                              continue;</a>
+<a name="ln442">                        Harmony* hh  = toHarmony(e);</a>
+<a name="ln443">                        int rootTpc, baseTpc;</a>
+<a name="ln444">                        // undoTransposeHarmony does not do links</a>
+<a name="ln445">                        // because it is also used to handle transposing instruments</a>
+<a name="ln446">                        // and score / parts could be in different concert pitch states</a>
+<a name="ln447">                        for (ScoreElement* se : hh-&gt;linkList()) {</a>
+<a name="ln448">                              Harmony* h = toHarmony(se);</a>
+<a name="ln449">                              if (mode == TransposeMode::DIATONICALLY) {</a>
+<a name="ln450">                                    Fraction tick = segment-&gt;tick();</a>
+<a name="ln451">                                    Key key = !h-&gt;staff() ? Key::C : h-&gt;staff()-&gt;key(tick);</a>
+<a name="ln452">                                    rootTpc = transposeTpcDiatonicByKey(h-&gt;rootTpc(),</a>
+<a name="ln453">                                                transposeInterval, key, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln454">                                    baseTpc = transposeTpcDiatonicByKey(h-&gt;baseTpc(),</a>
+<a name="ln455">                                                transposeInterval, key, trKeys, useDoubleSharpsFlats);</a>
+<a name="ln456">                                    }</a>
+<a name="ln457">                              else {</a>
+<a name="ln458">                                    rootTpc = transposeTpc(h-&gt;rootTpc(), interval, useDoubleSharpsFlats);</a>
+<a name="ln459">                                    baseTpc = transposeTpc(h-&gt;baseTpc(), interval, useDoubleSharpsFlats);</a>
+<a name="ln460">                                    }</a>
+<a name="ln461">                              undoTransposeHarmony(h, rootTpc, baseTpc);</a>
+<a name="ln462">                              }</a>
+<a name="ln463">                        }</a>
+<a name="ln464">                  }</a>
+<a name="ln465">            }</a>
+<a name="ln466">      //</a>
+<a name="ln467">      // create missing key signatures</a>
+<a name="ln468">      //</a>
+<a name="ln469">      if (trKeys &amp;&amp; (mode != TransposeMode::DIATONICALLY) &amp;&amp; (s1-&gt;tick() == Fraction(0,1))) {</a>
+<a name="ln470">            for (int track : tracks) {</a>
+<a name="ln471">                  if (track % VOICES)</a>
+<a name="ln472">                        continue;</a>
+<a name="ln473">                  Segment* seg = firstMeasure()-&gt;undoGetSegmentR(SegmentType::KeySig, Fraction(0,1));</a>
+<a name="ln474">                  KeySig* ks = toKeySig(seg-&gt;element(track));</a>
+<a name="ln475">                  if (!ks) {</a>
+<a name="ln476">                        ks = new KeySig(this);</a>
+<a name="ln477">                        ks-&gt;setTrack(track);</a>
+<a name="ln478">                        Key nKey = transposeKey(Key::C, interval, ks-&gt;part()-&gt;preferSharpFlat());</a>
+<a name="ln479">                        ks-&gt;setKey(nKey);</a>
+<a name="ln480">                        ks-&gt;setParent(seg);</a>
+<a name="ln481">                        undoAddElement(ks);</a>
+<a name="ln482">                        }</a>
+<a name="ln483">                  }</a>
+<a name="ln484">            }</a>
+<a name="ln485">      return true;</a>
+<a name="ln486">      }</a>
+<a name="ln487"> </a>
+<a name="ln488">//---------------------------------------------------------</a>
+<a name="ln489">//   transposeKeys</a>
+<a name="ln490">//    key -   -7(Cb) - +7(C#)</a>
+<a name="ln491">//---------------------------------------------------------</a>
+<a name="ln492"> </a>
+<a name="ln493">void Score::transposeKeys(int staffStart, int staffEnd, const Fraction&amp; ts, const Fraction&amp; tickEnd, const Interval&amp; interval, bool useInstrument, bool flip)</a>
+<a name="ln494">      {</a>
+<a name="ln495">      Fraction tickStart(ts);</a>
+<a name="ln496">      Interval firstInterval = interval;</a>
+<a name="ln497">      Interval segmentInterval = interval;</a>
+<a name="ln498">      if (tickStart &lt; Fraction(0,1))            // -1 and 0 are valid values to indicate start of score</a>
+<a name="ln499">            tickStart = Fraction(0,1);</a>
+<a name="ln500">      for (int staffIdx = staffStart; staffIdx &lt; staffEnd; ++staffIdx) {</a>
+<a name="ln501">            Staff* st = staff(staffIdx);</a>
+<a name="ln502">            if (st-&gt;staffType(tickStart)-&gt;group() == StaffGroup::PERCUSSION)</a>
+<a name="ln503">                  continue;</a>
+<a name="ln504"> </a>
+<a name="ln505">            bool createKey = tickStart.isZero();</a>
+<a name="ln506">            for (Segment* s = firstSegment(SegmentType::KeySig); s; s = s-&gt;next1(SegmentType::KeySig)) {</a>
+<a name="ln507">                  if (!s-&gt;enabled() || s-&gt;tick() &lt; tickStart)</a>
+<a name="ln508">                        continue;</a>
+<a name="ln509">                  if (tickEnd != Fraction(-1,1) &amp;&amp; s-&gt;tick() &gt;= tickEnd)</a>
+<a name="ln510">                        break;</a>
+<a name="ln511">                  if (useInstrument) {</a>
+<a name="ln512">                        segmentInterval = st-&gt;part()-&gt;instrument(s-&gt;tick())-&gt;transpose();</a>
+<a name="ln513">                        if (flip)</a>
+<a name="ln514">                              segmentInterval.flip();</a>
+<a name="ln515">                        }</a>
+<a name="ln516">                  KeySig* ks = toKeySig(s-&gt;element(staffIdx * VOICES));</a>
+<a name="ln517">                  if (!ks || ks-&gt;generated())</a>
+<a name="ln518">                        continue;</a>
+<a name="ln519">                  if (s-&gt;tick().isZero())</a>
+<a name="ln520">                        createKey = false;</a>
+<a name="ln521">                  if (!ks-&gt;isCustom() &amp;&amp; !ks-&gt;isAtonal()) {</a>
+<a name="ln522">                        Key key  = st-&gt;key(s-&gt;tick());</a>
+<a name="ln523">                        Key nKey = transposeKey(key, segmentInterval, ks-&gt;part()-&gt;preferSharpFlat());</a>
+<a name="ln524">                        // remove initial C major key signatures</a>
+<a name="ln525">                        if (nKey == Key::C &amp;&amp; s-&gt;tick().isZero()) {</a>
+<a name="ln526">                              undo(new RemoveElement(ks));</a>
+<a name="ln527">                              if (s-&gt;empty())</a>
+<a name="ln528">                                    undo(new RemoveElement(s));</a>
+<a name="ln529">                              }</a>
+<a name="ln530">                        else {</a>
+<a name="ln531">                              KeySigEvent ke;</a>
+<a name="ln532">                              ke.setKey(nKey);</a>
+<a name="ln533">                              undo(new ChangeKeySig(ks, ke, ks-&gt;showCourtesy()));</a>
+<a name="ln534">                              }</a>
+<a name="ln535">                        }</a>
+<a name="ln536">                  }</a>
+<a name="ln537">            if (createKey &amp;&amp; firstMeasure()) {</a>
+<a name="ln538">                  KeySig* ks = new KeySig(this);</a>
+<a name="ln539">                  ks-&gt;setTrack(staffIdx * VOICES);</a>
+<a name="ln540">                  Key nKey = transposeKey(Key::C, firstInterval, ks-&gt;part()-&gt;preferSharpFlat());</a>
+<a name="ln541">                  KeySigEvent ke;</a>
+<a name="ln542">                  ke.setKey(nKey);</a>
+<a name="ln543">                  ks-&gt;setKeySigEvent(ke);</a>
+<a name="ln544">                  Segment* seg = firstMeasure()-&gt;undoGetSegmentR(SegmentType::KeySig, Fraction(0,1));</a>
+<a name="ln545">                  seg-&gt;setHeader(true);</a>
+<a name="ln546">                  ks-&gt;setParent(seg);</a>
+<a name="ln547">                  undoAddElement(ks);</a>
+<a name="ln548">                  }</a>
+<a name="ln549">            }</a>
+<a name="ln550">      }</a>
+<a name="ln551"> </a>
+<a name="ln552">//---------------------------------------------------------</a>
+<a name="ln553">//   transposeSemitone</a>
+<a name="ln554">//---------------------------------------------------------</a>
+<a name="ln555"> </a>
+<a name="ln556">void Score::transposeSemitone(int step)</a>
+<a name="ln557">      {</a>
+<a name="ln558">      if (step == 0)</a>
+<a name="ln559">            return;</a>
+<a name="ln560">      if (step &gt; 1)</a>
+<a name="ln561">            step = 1;</a>
+<a name="ln562">      if (step &lt; -1)</a>
+<a name="ln563">            step = -1;</a>
+<a name="ln564"> </a>
+<a name="ln565">      TransposeDirection dir = step &gt; 0 ? TransposeDirection::UP : TransposeDirection::DOWN;</a>
+<a name="ln566"> </a>
+<a name="ln567">      int keyType = int(staff(0)-&gt;key(Fraction(0,1))) + 7;   // ??</a>
+<a name="ln568"> </a>
+<a name="ln569">      int intervalListArray[15][2] = {</a>
+<a name="ln570">            // up - down</a>
+<a name="ln571">            { 1, 1 },  // Cb</a>
+<a name="ln572">            { 1, 1 },  // Gb</a>
+<a name="ln573">            { 1, 1 },  // Db</a>
+<a name="ln574">            { 1, 1 },  // Ab</a>
+<a name="ln575">            { 1, 1 },  // Eb</a>
+<a name="ln576">            { 1, 1 },  // Bb</a>
+<a name="ln577">            { 1, 1 },  // F</a>
+<a name="ln578">            { 1, 1 },  // C</a>
+<a name="ln579">            { 1, 1 },  // G</a>
+<a name="ln580">            { 1, 1 },  // D</a>
+<a name="ln581">            { 1, 1 },  // A</a>
+<a name="ln582">            { 1, 1 },  // E</a>
+<a name="ln583">            { 1, 1 },  // B</a>
+<a name="ln584">            { 1, 1 },  // F#</a>
+<a name="ln585">            { 1, 1 }   // C#</a>
+<a name="ln586">            };</a>
+<a name="ln587"> </a>
+<a name="ln588">      const int interval = intervalListArray[keyType][step &gt; 0 ? 0 : 1];</a>
+<a name="ln589"> </a>
+<a name="ln590">      cmdSelectAll();</a>
+<a name="ln591">      if (!transpose(TransposeMode::BY_INTERVAL, dir, Key::C, interval, true, true, false)) {</a>
+<a name="ln592">            qDebug(&quot;Score::transposeSemitone: failed&quot;);</a>
+<a name="ln593">            // TODO: set error message</a>
+<a name="ln594">            }</a>
+<a name="ln595">      else {</a>
+<a name="ln596">            deselectAll();</a>
+<a name="ln597">            }</a>
+<a name="ln598">      }</a>
+<a name="ln599"> </a>
+<a name="ln600">//---------------------------------------------------------</a>
+<a name="ln601">//   Note::transposeDiatonic</a>
+<a name="ln602">//---------------------------------------------------------</a>
+<a name="ln603"> </a>
+<a name="ln604">void Note::transposeDiatonic(int interval, bool keepAlterations, bool useDoubleAccidentals)</a>
+<a name="ln605">      {</a>
+<a name="ln606">      // compute note current absolute step</a>
+<a name="ln607">      int alter;</a>
+<a name="ln608">      Fraction tick = chord()-&gt;segment()-&gt;tick();</a>
+<a name="ln609">      Key key       = staff() ? staff()-&gt;key(tick) : Key::C;</a>
+<a name="ln610">      int absStep   = pitch2absStepByKey(epitch(), tpc(), key, &amp;alter);</a>
+<a name="ln611"> </a>
+<a name="ln612">      // get pitch and tcp corresponding to unaltered degree for this key</a>
+<a name="ln613">      int newPitch = absStep2pitchByKey(absStep + interval, key);</a>
+<a name="ln614">      int newTpc   = step2tpcByKey((absStep + interval) % STEP_DELTA_OCTAVE, key);</a>
+<a name="ln615"> </a>
+<a name="ln616">      // if required, transfer original degree alteration to new pitch and tpc</a>
+<a name="ln617">      if (keepAlterations) {</a>
+<a name="ln618">            newPitch += alter;</a>
+<a name="ln619">            newTpc  += alter * TPC_DELTA_SEMITONE;</a>
+<a name="ln620">            }</a>
+<a name="ln621"> </a>
+<a name="ln622">      // transpose appropriately</a>
+<a name="ln623">      int newTpc1 = TPC_INVALID;</a>
+<a name="ln624">      int newTpc2 = TPC_INVALID;</a>
+<a name="ln625">      Interval v   = staff() ? staff()-&gt;part()-&gt;instrument(tick)-&gt;transpose() : Interval(0);</a>
+<a name="ln626">      if (concertPitch()) {</a>
+<a name="ln627">            v.flip();</a>
+<a name="ln628">            newTpc1 = newTpc;</a>
+<a name="ln629">            newTpc2 = Ms::transposeTpc(newTpc, v, true);</a>
+<a name="ln630">            }</a>
+<a name="ln631">      else {</a>
+<a name="ln632">            newPitch += v.chromatic;</a>
+<a name="ln633">            newTpc1 = Ms::transposeTpc(newTpc, v, true);</a>
+<a name="ln634">            newTpc2 = newTpc;</a>
+<a name="ln635">            }</a>
+<a name="ln636"> </a>
+<a name="ln637">      // check results are in ranges</a>
+<a name="ln638">      while (newPitch &gt; 127)</a>
+<a name="ln639">            newPitch -= PITCH_DELTA_OCTAVE;</a>
+<a name="ln640">      while (newPitch &lt; 0)</a>
+<a name="ln641">            newPitch += PITCH_DELTA_OCTAVE;</a>
+<a name="ln642">      while (newTpc1 &gt; Tpc::TPC_MAX)</a>
+<a name="ln643">            newTpc1 -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln644">      while (newTpc1 &lt; Tpc::TPC_MIN)</a>
+<a name="ln645">            newTpc1 += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln646">      while (newTpc2 &gt; Tpc::TPC_MAX)</a>
+<a name="ln647">            newTpc2 -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln648">      while (newTpc2 &lt; Tpc::TPC_MIN)</a>
+<a name="ln649">            newTpc2 += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln650"> </a>
+<a name="ln651">      // if required, reduce double alterations</a>
+<a name="ln652">      if (!useDoubleAccidentals) {</a>
+<a name="ln653">            if (newTpc1 &gt;= Tpc::TPC_F_SS)</a>
+<a name="ln654">                  newTpc1 -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln655">            if (newTpc1 &lt;= Tpc::TPC_B_BB)</a>
+<a name="ln656">                  newTpc1 += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln657">            if (newTpc2 &gt;= Tpc::TPC_F_SS)</a>
+<a name="ln658">                  newTpc2 -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln659">            if (newTpc2 &lt;= Tpc::TPC_B_BB)</a>
+<a name="ln660">                  newTpc2 += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln661">            }</a>
+<a name="ln662"> </a>
+<a name="ln663">      // store new data</a>
+<a name="ln664">      score()-&gt;undoChangePitch(this, newPitch, newTpc1, newTpc2);</a>
+<a name="ln665">      }</a>
+<a name="ln666"> </a>
+<a name="ln667">//---------------------------------------------------------</a>
+<a name="ln668">//   transpositionChanged</a>
+<a name="ln669">//---------------------------------------------------------</a>
+<a name="ln670"> </a>
+<a name="ln671">void Score::transpositionChanged(Part* part, Interval oldV, Fraction tickStart, Fraction tickEnd)</a>
+<a name="ln672">      {</a>
+<a name="ln673">      if (tickStart == Fraction(-1,1))</a>
+<a name="ln674">            tickStart = Fraction(0,1);</a>
+<a name="ln675">      Interval v = part-&gt;instrument(tickStart)-&gt;transpose();</a>
+<a name="ln676">      v.flip();</a>
+<a name="ln677">      Interval diffV(oldV.chromatic + v.chromatic);</a>
+<a name="ln678"> </a>
+<a name="ln679">      // transpose keys first</a>
+<a name="ln680">      QList&lt;Score*&gt; scores;</a>
+<a name="ln681">      for (Staff* ls : part-&gt;staff(0)-&gt;staffList()) {</a>
+<a name="ln682">            // TODO: special handling for linked staves within a score</a>
+<a name="ln683">            // could be useful for capo</a>
+<a name="ln684">            Score* score = ls-&gt;score();</a>
+<a name="ln685">            if (scores.contains(score))</a>
+<a name="ln686">                  continue;</a>
+<a name="ln687">            scores.append(score);</a>
+<a name="ln688">            Part* lp = ls-&gt;part();</a>
+<a name="ln689">            if (!score-&gt;styleB(Sid::concertPitch))</a>
+<a name="ln690">                  score-&gt;transposeKeys(lp-&gt;startTrack() / VOICES, lp-&gt;endTrack() / VOICES, tickStart, tickEnd, diffV);</a>
+<a name="ln691">            }</a>
+<a name="ln692"> </a>
+<a name="ln693">      // now transpose notes and chord symbols</a>
+<a name="ln694">      for (Segment* s = firstSegment(SegmentType::ChordRest); s; s = s-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln695">            if (s-&gt;tick() &lt; tickStart)</a>
+<a name="ln696">                  continue;</a>
+<a name="ln697">            if (tickEnd != Fraction(-1,1) &amp;&amp; s-&gt;tick() &gt;= tickEnd)</a>
+<a name="ln698">                  break;</a>
+<a name="ln699">            for (Staff* st : *part-&gt;staves()) {</a>
+<a name="ln700">                  if (st-&gt;staffType(tickStart)-&gt;group() == StaffGroup::PERCUSSION)</a>
+<a name="ln701">                        continue;</a>
+<a name="ln702">                  int t1 = st-&gt;idx() * VOICES;</a>
+<a name="ln703">                  int t2 = t1 + VOICES;</a>
+<a name="ln704">                  for (int track = t1; track &lt; t2; ++track) {</a>
+<a name="ln705">                        Element* e = s-&gt;element(track);</a>
+<a name="ln706">                        if (e &amp;&amp; e-&gt;isChord()) {</a>
+<a name="ln707">                              Chord* c = toChord(e);</a>
+<a name="ln708">                              for (Chord* gc : c-&gt;graceNotes()) {</a>
+<a name="ln709">                                    for (Note* n : gc-&gt;notes()) {</a>
+<a name="ln710">                                          int tpc = transposeTpc(n-&gt;tpc1(), v, true);</a>
+<a name="ln711">                                          n-&gt;undoChangeProperty(Pid::TPC2, tpc);</a>
+<a name="ln712">                                          }</a>
+<a name="ln713">                                    }</a>
+<a name="ln714">                              for (Note* n : c-&gt;notes()) {</a>
+<a name="ln715">                                    int tpc = transposeTpc(n-&gt;tpc1(), v, true);</a>
+<a name="ln716">                                    n-&gt;undoChangeProperty(Pid::TPC2, tpc);</a>
+<a name="ln717">                                    }</a>
+<a name="ln718">                              }</a>
+<a name="ln719">                        // find chord symbols</a>
+<a name="ln720">                        for (Element* element : s-&gt;annotations()) {</a>
+<a name="ln721">                              if (element-&gt;track() != track || element-&gt;type() != ElementType::HARMONY)</a>
+<a name="ln722">                                    continue;</a>
+<a name="ln723">                              Harmony* h  = toHarmony(element);</a>
+<a name="ln724">                              int rootTpc = transposeTpc(h-&gt;rootTpc(), diffV, false);</a>
+<a name="ln725">                              int baseTpc = transposeTpc(h-&gt;baseTpc(), diffV, false);</a>
+<a name="ln726">                              for (ScoreElement* scoreElement : h-&gt;linkList()) {</a>
+<a name="ln727">                                    if (!scoreElement-&gt;score()-&gt;styleB(Sid::concertPitch))</a>
+<a name="ln728">                                          undoTransposeHarmony(toHarmony(scoreElement), rootTpc, baseTpc);</a>
+<a name="ln729">                                    }</a>
+<a name="ln730">                              }</a>
+<a name="ln731">                        }</a>
+<a name="ln732">                  }</a>
+<a name="ln733">            }</a>
+<a name="ln734">      }</a>
+<a name="ln735">}</a>
+<a name="ln736"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

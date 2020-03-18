@@ -1,0 +1,650 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pfrobjs.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  pfrobjs.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    FreeType PFR object methods (body).                                  */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2002-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &quot;pfrobjs.h&quot;</a>
+<a name="ln20">#include &quot;pfrload.h&quot;</a>
+<a name="ln21">#include &quot;pfrgload.h&quot;</a>
+<a name="ln22">#include &quot;pfrcmap.h&quot;</a>
+<a name="ln23">#include &quot;pfrsbit.h&quot;</a>
+<a name="ln24">#include FT_OUTLINE_H</a>
+<a name="ln25">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln26">#include FT_INTERNAL_CALC_H</a>
+<a name="ln27">#include FT_TRUETYPE_IDS_H</a>
+<a name="ln28"> </a>
+<a name="ln29">#include &quot;pfrerror.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">#undef  FT_COMPONENT</a>
+<a name="ln32">#define FT_COMPONENT  trace_pfr</a>
+<a name="ln33"> </a>
+<a name="ln34"> </a>
+<a name="ln35">  /*************************************************************************/</a>
+<a name="ln36">  /*************************************************************************/</a>
+<a name="ln37">  /*****                                                               *****/</a>
+<a name="ln38">  /*****                     FACE OBJECT METHODS                       *****/</a>
+<a name="ln39">  /*****                                                               *****/</a>
+<a name="ln40">  /*************************************************************************/</a>
+<a name="ln41">  /*************************************************************************/</a>
+<a name="ln42"> </a>
+<a name="ln43">  FT_LOCAL_DEF( void )</a>
+<a name="ln44">  pfr_face_done( FT_Face  pfrface )     /* PFR_Face */</a>
+<a name="ln45">  {</a>
+<a name="ln46">    PFR_Face   face = (PFR_Face)pfrface;</a>
+<a name="ln47">    FT_Memory  memory;</a>
+<a name="ln48"> </a>
+<a name="ln49"> </a>
+<a name="ln50">    if ( !face )</a>
+<a name="ln51">      return;</a>
+<a name="ln52"> </a>
+<a name="ln53">    memory = pfrface-&gt;driver-&gt;root.memory;</a>
+<a name="ln54"> </a>
+<a name="ln55">    /* we don't want dangling pointers */</a>
+<a name="ln56">    pfrface-&gt;family_name = NULL;</a>
+<a name="ln57">    pfrface-&gt;style_name  = NULL;</a>
+<a name="ln58"> </a>
+<a name="ln59">    /* finalize the physical font record */</a>
+<a name="ln60">    pfr_phy_font_done( &amp;face-&gt;phy_font, FT_FACE_MEMORY( face ) );</a>
+<a name="ln61"> </a>
+<a name="ln62">    /* no need to finalize the logical font or the header */</a>
+<a name="ln63">    FT_FREE( pfrface-&gt;available_sizes );</a>
+<a name="ln64">  }</a>
+<a name="ln65"> </a>
+<a name="ln66"> </a>
+<a name="ln67">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln68">  pfr_face_init( FT_Stream      stream,</a>
+<a name="ln69">                 FT_Face        pfrface,</a>
+<a name="ln70">                 FT_Int         face_index,</a>
+<a name="ln71">                 FT_Int         num_params,</a>
+<a name="ln72">                 FT_Parameter*  params )</a>
+<a name="ln73">  {</a>
+<a name="ln74">    PFR_Face  face = (PFR_Face)pfrface;</a>
+<a name="ln75">    FT_Error  error;</a>
+<a name="ln76"> </a>
+<a name="ln77">    FT_UNUSED( num_params );</a>
+<a name="ln78">    FT_UNUSED( params );</a>
+<a name="ln79"> </a>
+<a name="ln80"> </a>
+<a name="ln81">    FT_TRACE2(( &quot;PFR driver\n&quot; ));</a>
+<a name="ln82"> </a>
+<a name="ln83">    /* load the header and check it */</a>
+<a name="ln84">    error = pfr_header_load( &amp;face-&gt;header, stream );</a>
+<a name="ln85">    if ( error )</a>
+<a name="ln86">      goto Exit;</a>
+<a name="ln87"> </a>
+<a name="ln88">    if ( !pfr_header_check( &amp;face-&gt;header ) )</a>
+<a name="ln89">    {</a>
+<a name="ln90">      FT_TRACE2(( &quot;  not a PFR font\n&quot; ));</a>
+<a name="ln91">      error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln92">      goto Exit;</a>
+<a name="ln93">    }</a>
+<a name="ln94"> </a>
+<a name="ln95">    /* check face index */</a>
+<a name="ln96">    {</a>
+<a name="ln97">      FT_Long  num_faces;</a>
+<a name="ln98"> </a>
+<a name="ln99"> </a>
+<a name="ln100">      error = pfr_log_font_count( stream,</a>
+<a name="ln101">                                  face-&gt;header.log_dir_offset,</a>
+<a name="ln102">                                  &amp;num_faces );</a>
+<a name="ln103">      if ( error )</a>
+<a name="ln104">        goto Exit;</a>
+<a name="ln105"> </a>
+<a name="ln106">      pfrface-&gt;num_faces = num_faces;</a>
+<a name="ln107">    }</a>
+<a name="ln108"> </a>
+<a name="ln109">    if ( face_index &lt; 0 )</a>
+<a name="ln110">      goto Exit;</a>
+<a name="ln111"> </a>
+<a name="ln112">    if ( ( face_index &amp; 0xFFFF ) &gt;= pfrface-&gt;num_faces )</a>
+<a name="ln113">    {</a>
+<a name="ln114">      FT_ERROR(( &quot;pfr_face_init: invalid face index\n&quot; ));</a>
+<a name="ln115">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln116">      goto Exit;</a>
+<a name="ln117">    }</a>
+<a name="ln118"> </a>
+<a name="ln119">    /* load the face */</a>
+<a name="ln120">    error = pfr_log_font_load(</a>
+<a name="ln121">               &amp;face-&gt;log_font, stream, (FT_UInt)( face_index &amp; 0xFFFF ),</a>
+<a name="ln122">               face-&gt;header.log_dir_offset,</a>
+<a name="ln123">               FT_BOOL( face-&gt;header.phy_font_max_size_high != 0 ) );</a>
+<a name="ln124">    if ( error )</a>
+<a name="ln125">      goto Exit;</a>
+<a name="ln126"> </a>
+<a name="ln127">    /* now load the physical font descriptor */</a>
+<a name="ln128">    error = pfr_phy_font_load( &amp;face-&gt;phy_font, stream,</a>
+<a name="ln129">                               face-&gt;log_font.phys_offset,</a>
+<a name="ln130">                               face-&gt;log_font.phys_size );</a>
+<a name="ln131">    if ( error )</a>
+<a name="ln132">      goto Exit;</a>
+<a name="ln133"> </a>
+<a name="ln134">    /* now set up all root face fields */</a>
+<a name="ln135">    {</a>
+<a name="ln136">      PFR_PhyFont  phy_font = &amp;face-&gt;phy_font;</a>
+<a name="ln137"> </a>
+<a name="ln138"> </a>
+<a name="ln139">      pfrface-&gt;face_index = face_index &amp; 0xFFFF;</a>
+<a name="ln140">      pfrface-&gt;num_glyphs = (FT_Long)phy_font-&gt;num_chars + 1;</a>
+<a name="ln141"> </a>
+<a name="ln142">      pfrface-&gt;face_flags |= FT_FACE_FLAG_SCALABLE;</a>
+<a name="ln143"> </a>
+<a name="ln144">      /* if all characters point to the same gps_offset 0, we */</a>
+<a name="ln145">      /* assume that the font only contains bitmaps           */</a>
+<a name="ln146">      {</a>
+<a name="ln147">        FT_UInt  nn;</a>
+<a name="ln148"> </a>
+<a name="ln149"> </a>
+<a name="ln150">        for ( nn = 0; nn &lt; phy_font-&gt;num_chars; nn++ )</a>
+<a name="ln151">          if ( phy_font-&gt;chars[nn].gps_offset != 0 )</a>
+<a name="ln152">            break;</a>
+<a name="ln153"> </a>
+<a name="ln154">        if ( nn == phy_font-&gt;num_chars )</a>
+<a name="ln155">        {</a>
+<a name="ln156">          if ( phy_font-&gt;num_strikes &gt; 0 )</a>
+<a name="ln157">            pfrface-&gt;face_flags = 0;        /* not scalable */</a>
+<a name="ln158">          else</a>
+<a name="ln159">          {</a>
+<a name="ln160">            FT_ERROR(( &quot;pfr_face_init: font doesn't contain glyphs\n&quot; ));</a>
+<a name="ln161">            error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln162">            goto Exit;</a>
+<a name="ln163">          }</a>
+<a name="ln164">        }</a>
+<a name="ln165">      }</a>
+<a name="ln166"> </a>
+<a name="ln167">      if ( (phy_font-&gt;flags &amp; PFR_PHY_PROPORTIONAL) == 0 )</a>
+<a name="ln168">        pfrface-&gt;face_flags |= FT_FACE_FLAG_FIXED_WIDTH;</a>
+<a name="ln169"> </a>
+<a name="ln170">      if ( phy_font-&gt;flags &amp; PFR_PHY_VERTICAL )</a>
+<a name="ln171">        pfrface-&gt;face_flags |= FT_FACE_FLAG_VERTICAL;</a>
+<a name="ln172">      else</a>
+<a name="ln173">        pfrface-&gt;face_flags |= FT_FACE_FLAG_HORIZONTAL;</a>
+<a name="ln174"> </a>
+<a name="ln175">      if ( phy_font-&gt;num_strikes &gt; 0 )</a>
+<a name="ln176">        pfrface-&gt;face_flags |= FT_FACE_FLAG_FIXED_SIZES;</a>
+<a name="ln177"> </a>
+<a name="ln178">      if ( phy_font-&gt;num_kern_pairs &gt; 0 )</a>
+<a name="ln179">        pfrface-&gt;face_flags |= FT_FACE_FLAG_KERNING;</a>
+<a name="ln180"> </a>
+<a name="ln181">      /* If no family name was found in the &quot;undocumented&quot; auxiliary</a>
+<a name="ln182">       * data, use the font ID instead.  This sucks but is better than</a>
+<a name="ln183">       * nothing.</a>
+<a name="ln184">       */</a>
+<a name="ln185">      pfrface-&gt;family_name = phy_font-&gt;family_name;</a>
+<a name="ln186">      if ( pfrface-&gt;family_name == NULL )</a>
+<a name="ln187">        pfrface-&gt;family_name = phy_font-&gt;font_id;</a>
+<a name="ln188"> </a>
+<a name="ln189">      /* note that the style name can be NULL in certain PFR fonts,</a>
+<a name="ln190">       * probably meaning &quot;Regular&quot;</a>
+<a name="ln191">       */</a>
+<a name="ln192">      pfrface-&gt;style_name = phy_font-&gt;style_name;</a>
+<a name="ln193"> </a>
+<a name="ln194">      pfrface-&gt;num_fixed_sizes = 0;</a>
+<a name="ln195">      pfrface-&gt;available_sizes = NULL;</a>
+<a name="ln196"> </a>
+<a name="ln197">      pfrface-&gt;bbox         = phy_font-&gt;bbox;</a>
+<a name="ln198">      pfrface-&gt;units_per_EM = (FT_UShort)phy_font-&gt;outline_resolution;</a>
+<a name="ln199">      pfrface-&gt;ascender     = (FT_Short) phy_font-&gt;bbox.yMax;</a>
+<a name="ln200">      pfrface-&gt;descender    = (FT_Short) phy_font-&gt;bbox.yMin;</a>
+<a name="ln201"> </a>
+<a name="ln202">      pfrface-&gt;height = (FT_Short)( ( pfrface-&gt;units_per_EM * 12 ) / 10 );</a>
+<a name="ln203">      if ( pfrface-&gt;height &lt; pfrface-&gt;ascender - pfrface-&gt;descender )</a>
+<a name="ln204">        pfrface-&gt;height = (FT_Short)(pfrface-&gt;ascender - pfrface-&gt;descender);</a>
+<a name="ln205"> </a>
+<a name="ln206">      if ( phy_font-&gt;num_strikes &gt; 0 )</a>
+<a name="ln207">      {</a>
+<a name="ln208">        FT_UInt          n, count = phy_font-&gt;num_strikes;</a>
+<a name="ln209">        FT_Bitmap_Size*  size;</a>
+<a name="ln210">        PFR_Strike       strike;</a>
+<a name="ln211">        FT_Memory        memory = pfrface-&gt;stream-&gt;memory;</a>
+<a name="ln212"> </a>
+<a name="ln213"> </a>
+<a name="ln214">        if ( FT_NEW_ARRAY( pfrface-&gt;available_sizes, count ) )</a>
+<a name="ln215">          goto Exit;</a>
+<a name="ln216"> </a>
+<a name="ln217">        size   = pfrface-&gt;available_sizes;</a>
+<a name="ln218">        strike = phy_font-&gt;strikes;</a>
+<a name="ln219">        for ( n = 0; n &lt; count; n++, size++, strike++ )</a>
+<a name="ln220">        {</a>
+<a name="ln221">          size-&gt;height = (FT_Short)strike-&gt;y_ppm;</a>
+<a name="ln222">          size-&gt;width  = (FT_Short)strike-&gt;x_ppm;</a>
+<a name="ln223">          size-&gt;size   = (FT_Pos)( strike-&gt;y_ppm &lt;&lt; 6 );</a>
+<a name="ln224">          size-&gt;x_ppem = (FT_Pos)( strike-&gt;x_ppm &lt;&lt; 6 );</a>
+<a name="ln225">          size-&gt;y_ppem = (FT_Pos)( strike-&gt;y_ppm &lt;&lt; 6 );</a>
+<a name="ln226">        }</a>
+<a name="ln227">        pfrface-&gt;num_fixed_sizes = (FT_Int)count;</a>
+<a name="ln228">      }</a>
+<a name="ln229"> </a>
+<a name="ln230">      /* now compute maximum advance width */</a>
+<a name="ln231">      if ( ( phy_font-&gt;flags &amp; PFR_PHY_PROPORTIONAL ) == 0 )</a>
+<a name="ln232">        pfrface-&gt;max_advance_width = (FT_Short)phy_font-&gt;standard_advance;</a>
+<a name="ln233">      else</a>
+<a name="ln234">      {</a>
+<a name="ln235">        FT_Int    max = 0;</a>
+<a name="ln236">        FT_UInt   count = phy_font-&gt;num_chars;</a>
+<a name="ln237">        PFR_Char  gchar = phy_font-&gt;chars;</a>
+<a name="ln238"> </a>
+<a name="ln239"> </a>
+<a name="ln240">        for ( ; count &gt; 0; count--, gchar++ )</a>
+<a name="ln241">        {</a>
+<a name="ln242">          if ( max &lt; gchar-&gt;advance )</a>
+<a name="ln243">            max = gchar-&gt;advance;</a>
+<a name="ln244">        }</a>
+<a name="ln245"> </a>
+<a name="ln246">        pfrface-&gt;max_advance_width = (FT_Short)max;</a>
+<a name="ln247">      }</a>
+<a name="ln248"> </a>
+<a name="ln249">      pfrface-&gt;max_advance_height = pfrface-&gt;height;</a>
+<a name="ln250"> </a>
+<a name="ln251">      pfrface-&gt;underline_position  = (FT_Short)( -pfrface-&gt;units_per_EM / 10 );</a>
+<a name="ln252">      pfrface-&gt;underline_thickness = (FT_Short)(  pfrface-&gt;units_per_EM / 30 );</a>
+<a name="ln253"> </a>
+<a name="ln254">      /* create charmap */</a>
+<a name="ln255">      {</a>
+<a name="ln256">        FT_CharMapRec  charmap;</a>
+<a name="ln257"> </a>
+<a name="ln258"> </a>
+<a name="ln259">        charmap.face        = pfrface;</a>
+<a name="ln260">        charmap.platform_id = TT_PLATFORM_MICROSOFT;</a>
+<a name="ln261">        charmap.encoding_id = TT_MS_ID_UNICODE_CS;</a>
+<a name="ln262">        charmap.encoding    = FT_ENCODING_UNICODE;</a>
+<a name="ln263"> </a>
+<a name="ln264">        error = FT_CMap_New( &amp;pfr_cmap_class_rec, NULL, &amp;charmap, NULL );</a>
+<a name="ln265"> </a>
+<a name="ln266">#if 0</a>
+<a name="ln267">        /* Select default charmap */</a>
+<a name="ln268">        if ( pfrface-&gt;num_charmaps )</a>
+<a name="ln269">          pfrface-&gt;charmap = pfrface-&gt;charmaps[0];</a>
+<a name="ln270">#endif</a>
+<a name="ln271">      }</a>
+<a name="ln272"> </a>
+<a name="ln273">      /* check whether we've loaded any kerning pairs */</a>
+<a name="ln274">      if ( phy_font-&gt;num_kern_pairs )</a>
+<a name="ln275">        pfrface-&gt;face_flags |= FT_FACE_FLAG_KERNING;</a>
+<a name="ln276">    }</a>
+<a name="ln277"> </a>
+<a name="ln278">  Exit:</a>
+<a name="ln279">    return error;</a>
+<a name="ln280">  }</a>
+<a name="ln281"> </a>
+<a name="ln282"> </a>
+<a name="ln283">  /*************************************************************************/</a>
+<a name="ln284">  /*************************************************************************/</a>
+<a name="ln285">  /*****                                                               *****/</a>
+<a name="ln286">  /*****                    SLOT OBJECT METHOD                         *****/</a>
+<a name="ln287">  /*****                                                               *****/</a>
+<a name="ln288">  /*************************************************************************/</a>
+<a name="ln289">  /*************************************************************************/</a>
+<a name="ln290"> </a>
+<a name="ln291">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln292">  pfr_slot_init( FT_GlyphSlot  pfrslot )        /* PFR_Slot */</a>
+<a name="ln293">  {</a>
+<a name="ln294">    PFR_Slot        slot   = (PFR_Slot)pfrslot;</a>
+<a name="ln295">    FT_GlyphLoader  loader = pfrslot-&gt;internal-&gt;loader;</a>
+<a name="ln296"> </a>
+<a name="ln297"> </a>
+<a name="ln298">    pfr_glyph_init( &amp;slot-&gt;glyph, loader );</a>
+<a name="ln299"> </a>
+<a name="ln300">    return 0;</a>
+<a name="ln301">  }</a>
+<a name="ln302"> </a>
+<a name="ln303"> </a>
+<a name="ln304">  FT_LOCAL_DEF( void )</a>
+<a name="ln305">  pfr_slot_done( FT_GlyphSlot  pfrslot )        /* PFR_Slot */</a>
+<a name="ln306">  {</a>
+<a name="ln307">    PFR_Slot  slot = (PFR_Slot)pfrslot;</a>
+<a name="ln308"> </a>
+<a name="ln309"> </a>
+<a name="ln310">    pfr_glyph_done( &amp;slot-&gt;glyph );</a>
+<a name="ln311">  }</a>
+<a name="ln312"> </a>
+<a name="ln313"> </a>
+<a name="ln314">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln315">  pfr_slot_load( FT_GlyphSlot  pfrslot,         /* PFR_Slot */</a>
+<a name="ln316">                 FT_Size       pfrsize,         /* PFR_Size */</a>
+<a name="ln317">                 FT_UInt       gindex,</a>
+<a name="ln318">                 FT_Int32      load_flags )</a>
+<a name="ln319">  {</a>
+<a name="ln320">    PFR_Slot     slot    = (PFR_Slot)pfrslot;</a>
+<a name="ln321">    PFR_Size     size    = (PFR_Size)pfrsize;</a>
+<a name="ln322">    FT_Error     error;</a>
+<a name="ln323">    PFR_Face     face    = (PFR_Face)pfrslot-&gt;face;</a>
+<a name="ln324">    PFR_Char     gchar;</a>
+<a name="ln325">    FT_Outline*  outline = &amp;pfrslot-&gt;outline;</a>
+<a name="ln326">    FT_ULong     gps_offset;</a>
+<a name="ln327"> </a>
+<a name="ln328"> </a>
+<a name="ln329">    FT_TRACE1(( &quot;pfr_slot_load: glyph index %d\n&quot;, gindex ));</a>
+<a name="ln330"> </a>
+<a name="ln331">    if ( gindex &gt; 0 )</a>
+<a name="ln332">      gindex--;</a>
+<a name="ln333"> </a>
+<a name="ln334">    if ( !face || gindex &gt;= face-&gt;phy_font.num_chars )</a>
+<a name="ln335">    {</a>
+<a name="ln336">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln337">      goto Exit;</a>
+<a name="ln338">    }</a>
+<a name="ln339"> </a>
+<a name="ln340">    /* try to load an embedded bitmap */</a>
+<a name="ln341">    if ( ( load_flags &amp; ( FT_LOAD_NO_SCALE | FT_LOAD_NO_BITMAP ) ) == 0 )</a>
+<a name="ln342">    {</a>
+<a name="ln343">      error = pfr_slot_load_bitmap( slot, size, gindex );</a>
+<a name="ln344">      if ( error == 0 )</a>
+<a name="ln345">        goto Exit;</a>
+<a name="ln346">    }</a>
+<a name="ln347"> </a>
+<a name="ln348">    if ( load_flags &amp; FT_LOAD_SBITS_ONLY )</a>
+<a name="ln349">    {</a>
+<a name="ln350">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln351">      goto Exit;</a>
+<a name="ln352">    }</a>
+<a name="ln353"> </a>
+<a name="ln354">    gchar               = face-&gt;phy_font.chars + gindex;</a>
+<a name="ln355">    pfrslot-&gt;format     = FT_GLYPH_FORMAT_OUTLINE;</a>
+<a name="ln356">    outline-&gt;n_points   = 0;</a>
+<a name="ln357">    outline-&gt;n_contours = 0;</a>
+<a name="ln358">    gps_offset          = face-&gt;header.gps_section_offset;</a>
+<a name="ln359"> </a>
+<a name="ln360">    /* load the glyph outline (FT_LOAD_NO_RECURSE isn't supported) */</a>
+<a name="ln361">    error = pfr_glyph_load( &amp;slot-&gt;glyph, face-&gt;root.stream,</a>
+<a name="ln362">                            gps_offset, gchar-&gt;gps_offset, gchar-&gt;gps_size );</a>
+<a name="ln363"> </a>
+<a name="ln364">    if ( !error )</a>
+<a name="ln365">    {</a>
+<a name="ln366">      FT_BBox            cbox;</a>
+<a name="ln367">      FT_Glyph_Metrics*  metrics = &amp;pfrslot-&gt;metrics;</a>
+<a name="ln368">      FT_Pos             advance;</a>
+<a name="ln369">      FT_UInt            em_metrics, em_outline;</a>
+<a name="ln370">      FT_Bool            scaling;</a>
+<a name="ln371"> </a>
+<a name="ln372"> </a>
+<a name="ln373">      scaling = FT_BOOL( ( load_flags &amp; FT_LOAD_NO_SCALE ) == 0 );</a>
+<a name="ln374"> </a>
+<a name="ln375">      /* copy outline data */</a>
+<a name="ln376">      *outline = slot-&gt;glyph.loader-&gt;base.outline;</a>
+<a name="ln377"> </a>
+<a name="ln378">      outline-&gt;flags &amp;= ~FT_OUTLINE_OWNER;</a>
+<a name="ln379">      outline-&gt;flags |= FT_OUTLINE_REVERSE_FILL;</a>
+<a name="ln380"> </a>
+<a name="ln381">      if ( size &amp;&amp; pfrsize-&gt;metrics.y_ppem &lt; 24 )</a>
+<a name="ln382">        outline-&gt;flags |= FT_OUTLINE_HIGH_PRECISION;</a>
+<a name="ln383"> </a>
+<a name="ln384">      /* compute the advance vector */</a>
+<a name="ln385">      metrics-&gt;horiAdvance = 0;</a>
+<a name="ln386">      metrics-&gt;vertAdvance = 0;</a>
+<a name="ln387"> </a>
+<a name="ln388">      advance    = gchar-&gt;advance;</a>
+<a name="ln389">      em_metrics = face-&gt;phy_font.metrics_resolution;</a>
+<a name="ln390">      em_outline = face-&gt;phy_font.outline_resolution;</a>
+<a name="ln391"> </a>
+<a name="ln392">      if ( em_metrics != em_outline )</a>
+<a name="ln393">        advance = FT_MulDiv( advance,</a>
+<a name="ln394">                             (FT_Long)em_outline,</a>
+<a name="ln395">                             (FT_Long)em_metrics );</a>
+<a name="ln396"> </a>
+<a name="ln397">      if ( face-&gt;phy_font.flags &amp; PFR_PHY_VERTICAL )</a>
+<a name="ln398">        metrics-&gt;vertAdvance = advance;</a>
+<a name="ln399">      else</a>
+<a name="ln400">        metrics-&gt;horiAdvance = advance;</a>
+<a name="ln401"> </a>
+<a name="ln402">      pfrslot-&gt;linearHoriAdvance = metrics-&gt;horiAdvance;</a>
+<a name="ln403">      pfrslot-&gt;linearVertAdvance = metrics-&gt;vertAdvance;</a>
+<a name="ln404"> </a>
+<a name="ln405">      /* make-up vertical metrics(?) */</a>
+<a name="ln406">      metrics-&gt;vertBearingX = 0;</a>
+<a name="ln407">      metrics-&gt;vertBearingY = 0;</a>
+<a name="ln408"> </a>
+<a name="ln409">#if 0 /* some fonts seem to be broken here! */</a>
+<a name="ln410"> </a>
+<a name="ln411">      /* Apply the font matrix, if any.                 */</a>
+<a name="ln412">      /* TODO: Test existing fonts with unusual matrix  */</a>
+<a name="ln413">      /* whether we have to adjust Units per EM.        */</a>
+<a name="ln414">      {</a>
+<a name="ln415">        FT_Matrix font_matrix;</a>
+<a name="ln416"> </a>
+<a name="ln417"> </a>
+<a name="ln418">        font_matrix.xx = face-&gt;log_font.matrix[0] &lt;&lt; 8;</a>
+<a name="ln419">        font_matrix.yx = face-&gt;log_font.matrix[1] &lt;&lt; 8;</a>
+<a name="ln420">        font_matrix.xy = face-&gt;log_font.matrix[2] &lt;&lt; 8;</a>
+<a name="ln421">        font_matrix.yy = face-&gt;log_font.matrix[3] &lt;&lt; 8;</a>
+<a name="ln422"> </a>
+<a name="ln423">        FT_Outline_Transform( outline, &amp;font_matrix );</a>
+<a name="ln424">      }</a>
+<a name="ln425">#endif</a>
+<a name="ln426"> </a>
+<a name="ln427">      /* scale when needed */</a>
+<a name="ln428">      if ( scaling )</a>
+<a name="ln429">      {</a>
+<a name="ln430">        FT_Int      n;</a>
+<a name="ln431">        FT_Fixed    x_scale = pfrsize-&gt;metrics.x_scale;</a>
+<a name="ln432">        FT_Fixed    y_scale = pfrsize-&gt;metrics.y_scale;</a>
+<a name="ln433">        FT_Vector*  vec     = outline-&gt;points;</a>
+<a name="ln434"> </a>
+<a name="ln435"> </a>
+<a name="ln436">        /* scale outline points */</a>
+<a name="ln437">        for ( n = 0; n &lt; outline-&gt;n_points; n++, vec++ )</a>
+<a name="ln438">        {</a>
+<a name="ln439">          vec-&gt;x = FT_MulFix( vec-&gt;x, x_scale );</a>
+<a name="ln440">          vec-&gt;y = FT_MulFix( vec-&gt;y, y_scale );</a>
+<a name="ln441">        }</a>
+<a name="ln442"> </a>
+<a name="ln443">        /* scale the advance */</a>
+<a name="ln444">        metrics-&gt;horiAdvance = FT_MulFix( metrics-&gt;horiAdvance, x_scale );</a>
+<a name="ln445">        metrics-&gt;vertAdvance = FT_MulFix( metrics-&gt;vertAdvance, y_scale );</a>
+<a name="ln446">      }</a>
+<a name="ln447"> </a>
+<a name="ln448">      /* compute the rest of the metrics */</a>
+<a name="ln449">      FT_Outline_Get_CBox( outline, &amp;cbox );</a>
+<a name="ln450"> </a>
+<a name="ln451">      metrics-&gt;width        = cbox.xMax - cbox.xMin;</a>
+<a name="ln452">      metrics-&gt;height       = cbox.yMax - cbox.yMin;</a>
+<a name="ln453">      metrics-&gt;horiBearingX = cbox.xMin;</a>
+<a name="ln454">      metrics-&gt;horiBearingY = cbox.yMax - metrics-&gt;height;</a>
+<a name="ln455">    }</a>
+<a name="ln456"> </a>
+<a name="ln457">  Exit:</a>
+<a name="ln458">    return error;</a>
+<a name="ln459">  }</a>
+<a name="ln460"> </a>
+<a name="ln461"> </a>
+<a name="ln462">  /*************************************************************************/</a>
+<a name="ln463">  /*************************************************************************/</a>
+<a name="ln464">  /*****                                                               *****/</a>
+<a name="ln465">  /*****                      KERNING METHOD                           *****/</a>
+<a name="ln466">  /*****                                                               *****/</a>
+<a name="ln467">  /*************************************************************************/</a>
+<a name="ln468">  /*************************************************************************/</a>
+<a name="ln469"> </a>
+<a name="ln470">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln471">  pfr_face_get_kerning( FT_Face     pfrface,        /* PFR_Face */</a>
+<a name="ln472">                        FT_UInt     glyph1,</a>
+<a name="ln473">                        FT_UInt     glyph2,</a>
+<a name="ln474">                        FT_Vector*  kerning )</a>
+<a name="ln475">  {</a>
+<a name="ln476">    PFR_Face     face     = (PFR_Face)pfrface;</a>
+<a name="ln477">    FT_Error     error    = FT_Err_Ok;</a>
+<a name="ln478">    PFR_PhyFont  phy_font = &amp;face-&gt;phy_font;</a>
+<a name="ln479">    FT_UInt32    code1, code2, pair;</a>
+<a name="ln480"> </a>
+<a name="ln481"> </a>
+<a name="ln482">    kerning-&gt;x = 0;</a>
+<a name="ln483">    kerning-&gt;y = 0;</a>
+<a name="ln484"> </a>
+<a name="ln485">    if ( glyph1 &gt; 0 )</a>
+<a name="ln486">      glyph1--;</a>
+<a name="ln487"> </a>
+<a name="ln488">    if ( glyph2 &gt; 0 )</a>
+<a name="ln489">      glyph2--;</a>
+<a name="ln490"> </a>
+<a name="ln491">    /* convert glyph indices to character codes */</a>
+<a name="ln492">    if ( glyph1 &gt; phy_font-&gt;num_chars ||</a>
+<a name="ln493">         glyph2 &gt; phy_font-&gt;num_chars )</a>
+<a name="ln494">      goto Exit;</a>
+<a name="ln495"> </a>
+<a name="ln496">    code1 = phy_font-&gt;chars[glyph1].char_code;</a>
+<a name="ln497">    code2 = phy_font-&gt;chars[glyph2].char_code;</a>
+<a name="ln498">    pair  = PFR_KERN_INDEX( code1, code2 );</a>
+<a name="ln499"> </a>
+<a name="ln500">    /* now search the list of kerning items */</a>
+<a name="ln501">    {</a>
+<a name="ln502">      PFR_KernItem  item   = phy_font-&gt;kern_items;</a>
+<a name="ln503">      FT_Stream     stream = pfrface-&gt;stream;</a>
+<a name="ln504"> </a>
+<a name="ln505"> </a>
+<a name="ln506">      for ( ; item; item = item-&gt;next )</a>
+<a name="ln507">      {</a>
+<a name="ln508">        if ( pair &gt;= item-&gt;pair1 &amp;&amp; pair &lt;= item-&gt;pair2 )</a>
+<a name="ln509">          goto FoundPair;</a>
+<a name="ln510">      }</a>
+<a name="ln511">      goto Exit;</a>
+<a name="ln512"> </a>
+<a name="ln513">    FoundPair: /* we found an item, now parse it and find the value if any */</a>
+<a name="ln514">      if ( FT_STREAM_SEEK( item-&gt;offset )                       ||</a>
+<a name="ln515">           FT_FRAME_ENTER( item-&gt;pair_count * item-&gt;pair_size ) )</a>
+<a name="ln516">        goto Exit;</a>
+<a name="ln517"> </a>
+<a name="ln518">      {</a>
+<a name="ln519">        FT_UInt    count       = item-&gt;pair_count;</a>
+<a name="ln520">        FT_UInt    size        = item-&gt;pair_size;</a>
+<a name="ln521">        FT_UInt    power       = 1 &lt;&lt; FT_MSB( count );</a>
+<a name="ln522">        FT_UInt    probe       = power * size;</a>
+<a name="ln523">        FT_UInt    extra       = count - power;</a>
+<a name="ln524">        FT_Byte*   base        = stream-&gt;cursor;</a>
+<a name="ln525">        FT_Bool    twobytes    = FT_BOOL( item-&gt;flags &amp; 1 );</a>
+<a name="ln526">        FT_Bool    twobyte_adj = FT_BOOL( item-&gt;flags &amp; 2 );</a>
+<a name="ln527">        FT_Byte*   p;</a>
+<a name="ln528">        FT_UInt32  cpair;</a>
+<a name="ln529"> </a>
+<a name="ln530"> </a>
+<a name="ln531">        if ( extra &gt; 0 )</a>
+<a name="ln532">        {</a>
+<a name="ln533">          p = base + extra * size;</a>
+<a name="ln534"> </a>
+<a name="ln535">          if ( twobytes )</a>
+<a name="ln536">            cpair = FT_NEXT_ULONG( p );</a>
+<a name="ln537">          else</a>
+<a name="ln538">            cpair = PFR_NEXT_KPAIR( p );</a>
+<a name="ln539"> </a>
+<a name="ln540">          if ( cpair == pair )</a>
+<a name="ln541">            goto Found;</a>
+<a name="ln542"> </a>
+<a name="ln543">          if ( cpair &lt; pair )</a>
+<a name="ln544">          {</a>
+<a name="ln545">            if ( twobyte_adj )</a>
+<a name="ln546">              p += 2;</a>
+<a name="ln547">            else</a>
+<a name="ln548">              p++;</a>
+<a name="ln549">            base = p;</a>
+<a name="ln550">          }</a>
+<a name="ln551">        }</a>
+<a name="ln552"> </a>
+<a name="ln553">        while ( probe &gt; size )</a>
+<a name="ln554">        {</a>
+<a name="ln555">          probe &gt;&gt;= 1;</a>
+<a name="ln556">          p       = base + probe;</a>
+<a name="ln557"> </a>
+<a name="ln558">          if ( twobytes )</a>
+<a name="ln559">            cpair = FT_NEXT_ULONG( p );</a>
+<a name="ln560">          else</a>
+<a name="ln561">            cpair = PFR_NEXT_KPAIR( p );</a>
+<a name="ln562"> </a>
+<a name="ln563">          if ( cpair == pair )</a>
+<a name="ln564">            goto Found;</a>
+<a name="ln565"> </a>
+<a name="ln566">          if ( cpair &lt; pair )</a>
+<a name="ln567">            base += probe;</a>
+<a name="ln568">        }</a>
+<a name="ln569"> </a>
+<a name="ln570">        p = base;</a>
+<a name="ln571"> </a>
+<a name="ln572">        if ( twobytes )</a>
+<a name="ln573">          cpair = FT_NEXT_ULONG( p );</a>
+<a name="ln574">        else</a>
+<a name="ln575">          cpair = PFR_NEXT_KPAIR( p );</a>
+<a name="ln576"> </a>
+<a name="ln577">        if ( cpair == pair )</a>
+<a name="ln578">        {</a>
+<a name="ln579">          FT_Int  value;</a>
+<a name="ln580"> </a>
+<a name="ln581"> </a>
+<a name="ln582">        Found:</a>
+<a name="ln583">          if ( twobyte_adj )</a>
+<a name="ln584">            value = FT_PEEK_SHORT( p );</a>
+<a name="ln585">          else</a>
+<a name="ln586">            value = p[0];</a>
+<a name="ln587"> </a>
+<a name="ln588">          kerning-&gt;x = item-&gt;base_adj + value;</a>
+<a name="ln589">        }</a>
+<a name="ln590">      }</a>
+<a name="ln591"> </a>
+<a name="ln592">      FT_FRAME_EXIT();</a>
+<a name="ln593">    }</a>
+<a name="ln594"> </a>
+<a name="ln595">  Exit:</a>
+<a name="ln596">    return error;</a>
+<a name="ln597">  }</a>
+<a name="ln598"> </a>
+<a name="ln599">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="223"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v629/" target="_blank">V629</a> Consider inspecting the 'strike->y_ppm << 6' expression. Bit shifting of the 32-bit value with a subsequent expansion to the 64-bit type.</p></div>
+<div class="balloon" rel="223"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'strike->y_ppm << 6' operator to the 'FT_Pos' type, not the result.</p></div>
+<div class="balloon" rel="224"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v629/" target="_blank">V629</a> Consider inspecting the 'strike->x_ppm << 6' expression. Bit shifting of the 32-bit value with a subsequent expansion to the 64-bit type.</p></div>
+<div class="balloon" rel="224"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'strike->x_ppm << 6' operator to the 'FT_Pos' type, not the result.</p></div>
+<div class="balloon" rel="225"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v629/" target="_blank">V629</a> Consider inspecting the 'strike->y_ppm << 6' expression. Bit shifting of the 32-bit value with a subsequent expansion to the 64-bit type.</p></div>
+<div class="balloon" rel="225"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'strike->y_ppm << 6' operator to the 'FT_Pos' type, not the result.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,2379 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>rendermidi.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">/**</a>
+<a name="ln14"> \file</a>
+<a name="ln15"> render score into event list</a>
+<a name="ln16">*/</a>
+<a name="ln17"> </a>
+<a name="ln18">#include &lt;set&gt;</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;rendermidi.h&quot;</a>
+<a name="ln21">#include &quot;score.h&quot;</a>
+<a name="ln22">#include &quot;volta.h&quot;</a>
+<a name="ln23">#include &quot;note.h&quot;</a>
+<a name="ln24">#include &quot;glissando.h&quot;</a>
+<a name="ln25">#include &quot;instrument.h&quot;</a>
+<a name="ln26">#include &quot;part.h&quot;</a>
+<a name="ln27">#include &quot;chord.h&quot;</a>
+<a name="ln28">#include &quot;trill.h&quot;</a>
+<a name="ln29">#include &quot;vibrato.h&quot;</a>
+<a name="ln30">#include &quot;style.h&quot;</a>
+<a name="ln31">#include &quot;slur.h&quot;</a>
+<a name="ln32">#include &quot;tie.h&quot;</a>
+<a name="ln33">#include &quot;stafftext.h&quot;</a>
+<a name="ln34">#include &quot;repeat.h&quot;</a>
+<a name="ln35">#include &quot;articulation.h&quot;</a>
+<a name="ln36">#include &quot;arpeggio.h&quot;</a>
+<a name="ln37">#include &quot;durationtype.h&quot;</a>
+<a name="ln38">#include &quot;measure.h&quot;</a>
+<a name="ln39">#include &quot;tempo.h&quot;</a>
+<a name="ln40">#include &quot;repeatlist.h&quot;</a>
+<a name="ln41">#include &quot;changeMap.h&quot;</a>
+<a name="ln42">#include &quot;dynamic.h&quot;</a>
+<a name="ln43">#include &quot;navigate.h&quot;</a>
+<a name="ln44">#include &quot;pedal.h&quot;</a>
+<a name="ln45">#include &quot;staff.h&quot;</a>
+<a name="ln46">#include &quot;hairpin.h&quot;</a>
+<a name="ln47">#include &quot;bend.h&quot;</a>
+<a name="ln48">#include &quot;tremolo.h&quot;</a>
+<a name="ln49">#include &quot;noteevent.h&quot;</a>
+<a name="ln50">#include &quot;synthesizer/event.h&quot;</a>
+<a name="ln51">#include &quot;segment.h&quot;</a>
+<a name="ln52">#include &quot;undo.h&quot;</a>
+<a name="ln53">#include &quot;utils.h&quot;</a>
+<a name="ln54">#include &quot;sym.h&quot;</a>
+<a name="ln55">#include &quot;synthesizerstate.h&quot;</a>
+<a name="ln56"> </a>
+<a name="ln57">namespace Ms {</a>
+<a name="ln58"> </a>
+<a name="ln59">    //int printNoteEventLists(NoteEventList el, int prefix, int j){</a>
+<a name="ln60">    //    int k=0;</a>
+<a name="ln61">    //    for (NoteEvent event : el) {</a>
+<a name="ln62">    //        qDebug(&quot;%d: %d: %d pitch=%d ontime=%d duration=%d&quot;,prefix, j, k, event.pitch(), event.ontime(), event.len());</a>
+<a name="ln63">    //        k++;</a>
+<a name="ln64">    //    }</a>
+<a name="ln65">    //    return 0;</a>
+<a name="ln66">    //}</a>
+<a name="ln67">    //int printNoteEventLists(QList&lt;NoteEventList&gt; ell, int prefix){</a>
+<a name="ln68">    //    int j=0;</a>
+<a name="ln69">    //    for (NoteEventList el : ell) {</a>
+<a name="ln70">    //        printNoteEventLists(el,prefix,j);</a>
+<a name="ln71">    //        j++;</a>
+<a name="ln72">    //    }</a>
+<a name="ln73">    //    return 0;</a>
+<a name="ln74">    //}</a>
+<a name="ln75"> </a>
+<a name="ln76">struct SndConfig {</a>
+<a name="ln77">      bool useSND = false;</a>
+<a name="ln78">      int controller = -1;</a>
+<a name="ln79">      DynamicsRenderMethod method = DynamicsRenderMethod::SEG_START;</a>
+<a name="ln80"> </a>
+<a name="ln81">      SndConfig() {};</a>
+<a name="ln82">      SndConfig(bool use, int c, DynamicsRenderMethod me) : useSND(use), controller(c), method(me) {};</a>
+<a name="ln83">      };</a>
+<a name="ln84"> </a>
+<a name="ln85">bool graceNotesMerged(Chord *chord);</a>
+<a name="ln86"> </a>
+<a name="ln87">//---------------------------------------------------------</a>
+<a name="ln88">//   updateSwing</a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90"> </a>
+<a name="ln91">void Score::updateSwing()</a>
+<a name="ln92">      {</a>
+<a name="ln93">      for (Staff* s : _staves) {</a>
+<a name="ln94">            s-&gt;clearSwingList();</a>
+<a name="ln95">            }</a>
+<a name="ln96">      Measure* fm = firstMeasure();</a>
+<a name="ln97">      if (!fm)</a>
+<a name="ln98">            return;</a>
+<a name="ln99">      for (Segment* s = fm-&gt;first(SegmentType::ChordRest); s; s = s-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln100">            for (const Element* e : s-&gt;annotations()) {</a>
+<a name="ln101">                  if (!e-&gt;isStaffTextBase())</a>
+<a name="ln102">                        continue;</a>
+<a name="ln103">                  const StaffTextBase* st = toStaffTextBase(e);</a>
+<a name="ln104">                  if (st-&gt;xmlText().isEmpty())</a>
+<a name="ln105">                        continue;</a>
+<a name="ln106">                  Staff* staff = st-&gt;staff();</a>
+<a name="ln107">                  if (!st-&gt;swing())</a>
+<a name="ln108">                        continue;</a>
+<a name="ln109">                  SwingParameters sp;</a>
+<a name="ln110">                  sp.swingRatio = st-&gt;swingParameters()-&gt;swingRatio;</a>
+<a name="ln111">                  sp.swingUnit = st-&gt;swingParameters()-&gt;swingUnit;</a>
+<a name="ln112">                  if (st-&gt;systemFlag()) {</a>
+<a name="ln113">                        for (Staff* sta : _staves) {</a>
+<a name="ln114">                              sta-&gt;insertIntoSwingList(s-&gt;tick(),sp);</a>
+<a name="ln115">                              }</a>
+<a name="ln116">                        }</a>
+<a name="ln117">                  else</a>
+<a name="ln118">                        staff-&gt;insertIntoSwingList(s-&gt;tick(),sp);</a>
+<a name="ln119">                  }</a>
+<a name="ln120">            }</a>
+<a name="ln121">      }</a>
+<a name="ln122"> </a>
+<a name="ln123">//---------------------------------------------------------</a>
+<a name="ln124">//   updateCapo</a>
+<a name="ln125">//---------------------------------------------------------</a>
+<a name="ln126"> </a>
+<a name="ln127">void Score::updateCapo()</a>
+<a name="ln128">      {</a>
+<a name="ln129">      for (Staff* s : _staves) {</a>
+<a name="ln130">            s-&gt;clearCapoList();</a>
+<a name="ln131">            }</a>
+<a name="ln132">      Measure* fm = firstMeasure();</a>
+<a name="ln133">      if (!fm)</a>
+<a name="ln134">            return;</a>
+<a name="ln135">      for (Segment* s = fm-&gt;first(SegmentType::ChordRest); s; s = s-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln136">            for (const Element* e : s-&gt;annotations()) {</a>
+<a name="ln137">                  if (!e-&gt;isStaffTextBase())</a>
+<a name="ln138">                        continue;</a>
+<a name="ln139">                  const StaffTextBase* st = toStaffTextBase(e);</a>
+<a name="ln140">                  if (st-&gt;xmlText().isEmpty())</a>
+<a name="ln141">                        continue;</a>
+<a name="ln142">                  Staff* staff = st-&gt;staff();</a>
+<a name="ln143">                  if (st-&gt;capo() == 0)</a>
+<a name="ln144">                        continue;</a>
+<a name="ln145">                  staff-&gt;insertIntoCapoList(s-&gt;tick(),st-&gt;capo());</a>
+<a name="ln146">                  }</a>
+<a name="ln147">            }</a>
+<a name="ln148">      }</a>
+<a name="ln149"> </a>
+<a name="ln150">//---------------------------------------------------------</a>
+<a name="ln151">//   updateChannel</a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153"> </a>
+<a name="ln154">void Score::updateChannel()</a>
+<a name="ln155">      {</a>
+<a name="ln156">      for (Staff* s : staves()) {</a>
+<a name="ln157">            for (int i = 0; i &lt; VOICES; ++i)</a>
+<a name="ln158">                  s-&gt;clearChannelList(i);</a>
+<a name="ln159">            }</a>
+<a name="ln160">      Measure* fm = firstMeasure();</a>
+<a name="ln161">      if (!fm)</a>
+<a name="ln162">            return;</a>
+<a name="ln163">      for (Segment* s = fm-&gt;first(SegmentType::ChordRest); s; s = s-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln164">            for (const Element* e : s-&gt;annotations()) {</a>
+<a name="ln165">                  if (e-&gt;isInstrumentChange()) {</a>
+<a name="ln166">                        Staff* staff = Score::staff(e-&gt;staffIdx());</a>
+<a name="ln167">                        for (int voice = 0; voice &lt; VOICES; ++voice)</a>
+<a name="ln168">                              staff-&gt;insertIntoChannelList(voice, s-&gt;tick(), 0);</a>
+<a name="ln169">                        continue;</a>
+<a name="ln170">                        }</a>
+<a name="ln171">                  if (!e-&gt;isStaffTextBase())</a>
+<a name="ln172">                        continue;</a>
+<a name="ln173">                  const StaffTextBase* st = toStaffTextBase(e);</a>
+<a name="ln174">                  for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln175">                        QString an(st-&gt;channelName(voice));</a>
+<a name="ln176">                        if (an.isEmpty())</a>
+<a name="ln177">                              continue;</a>
+<a name="ln178">                        Staff* staff = Score::staff(st-&gt;staffIdx());</a>
+<a name="ln179">                        int a = staff-&gt;part()-&gt;instrument(s-&gt;tick())-&gt;channelIdx(an);</a>
+<a name="ln180">                        if (a != -1)</a>
+<a name="ln181">                              staff-&gt;insertIntoChannelList(voice, s-&gt;tick(), a);</a>
+<a name="ln182">                        }</a>
+<a name="ln183">                  }</a>
+<a name="ln184">            }</a>
+<a name="ln185"> </a>
+<a name="ln186">      for (auto it = spanner().cbegin(); it != spanner().cend(); ++it) {</a>
+<a name="ln187">            Spanner* spanner = (*it).second;</a>
+<a name="ln188">            if (!spanner-&gt;isVolta())</a>
+<a name="ln189">                  continue;</a>
+<a name="ln190">            Volta* volta = toVolta(spanner);</a>
+<a name="ln191">            volta-&gt;setChannel();</a>
+<a name="ln192">            }</a>
+<a name="ln193"> </a>
+<a name="ln194">      for (Segment* s = fm-&gt;first(SegmentType::ChordRest); s; s = s-&gt;next1(SegmentType::ChordRest)) {</a>
+<a name="ln195">            for (Staff* st : staves()) {</a>
+<a name="ln196">                  int strack = st-&gt;idx() * VOICES;</a>
+<a name="ln197">                  int etrack = strack + VOICES;</a>
+<a name="ln198">                  for (int track = strack; track &lt; etrack; ++track) {</a>
+<a name="ln199">                        if (!s-&gt;element(track))</a>
+<a name="ln200">                              continue;</a>
+<a name="ln201">                        Element* e = s-&gt;element(track);</a>
+<a name="ln202">                        if (e-&gt;type() != ElementType::CHORD)</a>
+<a name="ln203">                              continue;</a>
+<a name="ln204">                        Chord* c = toChord(e);</a>
+<a name="ln205">                        int channel = st-&gt;channel(c-&gt;tick(), c-&gt;voice());</a>
+<a name="ln206">                        Instrument* instr = c-&gt;part()-&gt;instrument(c-&gt;tick());</a>
+<a name="ln207">                        if (channel &gt;= instr-&gt;channel().size()) {</a>
+<a name="ln208">                              qDebug() &lt;&lt; &quot;Channel &quot; &lt;&lt; channel &lt;&lt; &quot; too high. Max &quot; &lt;&lt; instr-&gt;channel().size();</a>
+<a name="ln209">                              channel = 0;</a>
+<a name="ln210">                              }</a>
+<a name="ln211">                        for (Note* note : c-&gt;notes()) {</a>
+<a name="ln212">                              if (note-&gt;hidden())</a>
+<a name="ln213">                                    continue;</a>
+<a name="ln214">                              if (note-&gt;tieBack())</a>
+<a name="ln215">                                    continue;</a>
+<a name="ln216">                              note-&gt;setSubchannel(channel);</a>
+<a name="ln217">                              }</a>
+<a name="ln218">                        }</a>
+<a name="ln219">                  }</a>
+<a name="ln220">            }</a>
+<a name="ln221">      }</a>
+<a name="ln222"> </a>
+<a name="ln223">//---------------------------------------------------------</a>
+<a name="ln224">//   playNote</a>
+<a name="ln225">//---------------------------------------------------------</a>
+<a name="ln226"> </a>
+<a name="ln227">static void playNote(EventMap* events, const Note* note, int channel, int pitch,</a>
+<a name="ln228">   int velo, int onTime, int offTime, int staffIdx)</a>
+<a name="ln229">      {</a>
+<a name="ln230">      if (!note-&gt;play())</a>
+<a name="ln231">            return;</a>
+<a name="ln232">      velo = note-&gt;customizeVelocity(velo);</a>
+<a name="ln233">      NPlayEvent ev(ME_NOTEON, channel, pitch, velo);</a>
+<a name="ln234">      ev.setOriginatingStaff(staffIdx);</a>
+<a name="ln235">      ev.setTuning(note-&gt;tuning());</a>
+<a name="ln236">      ev.setNote(note);</a>
+<a name="ln237">      if (offTime &lt; onTime)</a>
+<a name="ln238">            offTime = onTime;</a>
+<a name="ln239">      events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(onTime, ev));</a>
+<a name="ln240">      ev.setVelo(0);</a>
+<a name="ln241">      events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(offTime, ev));</a>
+<a name="ln242">      }</a>
+<a name="ln243"> </a>
+<a name="ln244">//---------------------------------------------------------</a>
+<a name="ln245">//   collectNote</a>
+<a name="ln246">//---------------------------------------------------------</a>
+<a name="ln247"> </a>
+<a name="ln248">static void collectNote(EventMap* events, int channel, const Note* note, qreal velocityMultiplier, int tickOffset, Staff* staff, SndConfig config)</a>
+<a name="ln249">      {</a>
+<a name="ln250">      if (!note-&gt;play() || note-&gt;hidden())      // do not play overlapping notes</a>
+<a name="ln251">            return;</a>
+<a name="ln252">      Chord* chord = note-&gt;chord();</a>
+<a name="ln253"> </a>
+<a name="ln254">      int staffIdx = staff-&gt;idx();</a>
+<a name="ln255">      int ticks;</a>
+<a name="ln256">      int tieLen = 0;</a>
+<a name="ln257">      if (chord-&gt;isGrace()) {</a>
+<a name="ln258">            Q_ASSERT( !graceNotesMerged(chord)); // this function should not be called on a grace note if grace notes are merged</a>
+<a name="ln259">            chord = toChord(chord-&gt;parent());</a>
+<a name="ln260">            }</a>
+<a name="ln261"> </a>
+<a name="ln262">      ticks = chord-&gt;actualTicks().ticks(); // ticks of the actual note</a>
+<a name="ln263">      // calculate additional length due to ties forward</a>
+<a name="ln264">      // taking NoteEvent length adjustments into account</a>
+<a name="ln265">      // but stopping at any note with multiple NoteEvents</a>
+<a name="ln266">      // and processing those notes recursively</a>
+<a name="ln267">      if (note-&gt;tieFor()) {</a>
+<a name="ln268">            Note* n = note-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln269">            while (n) {</a>
+<a name="ln270">                  NoteEventList nel = n-&gt;playEvents();</a>
+<a name="ln271">                  if (nel.size() == 1) {</a>
+<a name="ln272">                        // add value of this note to main note</a>
+<a name="ln273">                        // if we wish to suppress first note of ornament,</a>
+<a name="ln274">                        // then do this regardless of number of NoteEvents</a>
+<a name="ln275">                        tieLen += (n-&gt;chord()-&gt;actualTicks().ticks() * (nel[0].len())) / 1000;</a>
+<a name="ln276">                        }</a>
+<a name="ln277">                  else {</a>
+<a name="ln278">                        // recurse</a>
+<a name="ln279">                        collectNote(events, channel, n, velocityMultiplier, tickOffset, staff, config);</a>
+<a name="ln280">                        break;</a>
+<a name="ln281">                        }</a>
+<a name="ln282">                  if (n-&gt;tieFor() &amp;&amp; n != n-&gt;tieFor()-&gt;endNote())</a>
+<a name="ln283">                        n = n-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln284">                  else</a>
+<a name="ln285">                        break;</a>
+<a name="ln286">                  }</a>
+<a name="ln287">            }</a>
+<a name="ln288"> </a>
+<a name="ln289">      int tick1    = chord-&gt;tick().ticks() + tickOffset;</a>
+<a name="ln290">      bool tieFor  = note-&gt;tieFor();</a>
+<a name="ln291">      bool tieBack = note-&gt;tieBack();</a>
+<a name="ln292"> </a>
+<a name="ln293">      NoteEventList nel = note-&gt;playEvents();</a>
+<a name="ln294">      int nels = nel.size();</a>
+<a name="ln295">      for (int i = 0, pitch = note-&gt;ppitch(); i &lt; nels; ++i) {</a>
+<a name="ln296">            const NoteEvent&amp; e = nel[i]; // we make an explicit const ref, not a const copy.  no need to copy as we won't change the original object.</a>
+<a name="ln297"> </a>
+<a name="ln298">            // skip if note has a tie into it and only one NoteEvent</a>
+<a name="ln299">            // its length was already added to previous note</a>
+<a name="ln300">            // if we wish to suppress first note of ornament</a>
+<a name="ln301">            // then change &quot;nels == 1&quot; to &quot;i == 0&quot;, and change &quot;break&quot; to &quot;continue&quot;</a>
+<a name="ln302">            if (tieBack &amp;&amp; nels == 1)</a>
+<a name="ln303">                  break;</a>
+<a name="ln304">            int p = pitch + e.pitch();</a>
+<a name="ln305">            if (p &lt; 0)</a>
+<a name="ln306">                  p = 0;</a>
+<a name="ln307">            else if (p &gt; 127)</a>
+<a name="ln308">                  p = 127;</a>
+<a name="ln309">            int on  = tick1 + (ticks * e.ontime())/1000;</a>
+<a name="ln310">            int off = on + (ticks * e.len())/1000 - 1;</a>
+<a name="ln311">            if (tieFor &amp;&amp; i == nels - 1)</a>
+<a name="ln312">                  off += tieLen;</a>
+<a name="ln313"> </a>
+<a name="ln314">            // Get the velocity used for this note from the staff</a>
+<a name="ln315">            // This allows correct playback of tremolos even without SND enabled.</a>
+<a name="ln316">            int velo;</a>
+<a name="ln317">            Fraction nonUnwoundTick = Fraction::fromTicks(on - tickOffset);</a>
+<a name="ln318">            if (config.useSND) {</a>
+<a name="ln319">                  switch (config.method) {</a>
+<a name="ln320">                        case DynamicsRenderMethod::FIXED_MAX:</a>
+<a name="ln321">                              velo = 127;</a>
+<a name="ln322">                              break;</a>
+<a name="ln323">                        case DynamicsRenderMethod::SEG_START:</a>
+<a name="ln324">                        default:</a>
+<a name="ln325">                              velo = staff-&gt;velocities().val(nonUnwoundTick);</a>
+<a name="ln326">                              break;</a>
+<a name="ln327">                        }</a>
+<a name="ln328">                  }</a>
+<a name="ln329">            else {</a>
+<a name="ln330">                  velo = staff-&gt;velocities().val(nonUnwoundTick);</a>
+<a name="ln331">                  }</a>
+<a name="ln332"> </a>
+<a name="ln333">            velo *= velocityMultiplier;</a>
+<a name="ln334">            playNote(events, note, channel, p, qBound(1, velo, 127), on, off, staffIdx);</a>
+<a name="ln335">            }</a>
+<a name="ln336"> </a>
+<a name="ln337">      // Single-note dynamics</a>
+<a name="ln338">      // Find any changes, and apply events</a>
+<a name="ln339">      if (config.useSND) {</a>
+<a name="ln340">            ChangeMap&amp; veloEvents = staff-&gt;velocities();</a>
+<a name="ln341">            Fraction stick = chord-&gt;tick();</a>
+<a name="ln342">            Fraction etick = stick + chord-&gt;ticks();</a>
+<a name="ln343">            auto changes = veloEvents.changesInRange(stick, etick);</a>
+<a name="ln344">            for (auto&amp; change : changes) {</a>
+<a name="ln345">                  int lastVal = -1;</a>
+<a name="ln346">                  int endPoint = change.second.ticks();</a>
+<a name="ln347">                  for (int t = change.first.ticks(); t &lt;= endPoint; t++) {</a>
+<a name="ln348">                        int velo = veloEvents.val(Fraction::fromTicks(t));</a>
+<a name="ln349">                        if (velo == lastVal)</a>
+<a name="ln350">                              continue;</a>
+<a name="ln351">                        lastVal = velo;</a>
+<a name="ln352"> </a>
+<a name="ln353">                        // NOTE:JT if we ever want to use poly aftertouch instead of CC, this is where we want to</a>
+<a name="ln354">                        // be using it. Instead of ME_CONTROLLER, use ME_POLYAFTER (but duplicate for each note in chord)</a>
+<a name="ln355">                        NPlayEvent event = NPlayEvent(ME_CONTROLLER, channel, config.controller, qBound(1, int(velo * velocityMultiplier), 127));</a>
+<a name="ln356">                        event.setOriginatingStaff(staffIdx);</a>
+<a name="ln357">                        events-&gt;insert(std::make_pair(t + tickOffset, event));</a>
+<a name="ln358">                        }</a>
+<a name="ln359">                  }</a>
+<a name="ln360">            }</a>
+<a name="ln361"> </a>
+<a name="ln362">      // Bends</a>
+<a name="ln363">      for (Element* e : note-&gt;el()) {</a>
+<a name="ln364">            if (e == 0 || e-&gt;type() != ElementType::BEND)</a>
+<a name="ln365">                  continue;</a>
+<a name="ln366">            Bend* bend = toBend(e);</a>
+<a name="ln367">            if (!bend-&gt;playBend())</a>
+<a name="ln368">                  break;</a>
+<a name="ln369">            const QList&lt;PitchValue&gt;&amp; points = bend-&gt;points();</a>
+<a name="ln370">            int pitchSize = points.size();</a>
+<a name="ln371"> </a>
+<a name="ln372">            double noteLen = note-&gt;playTicks();</a>
+<a name="ln373">            int lastPointTick = tick1;</a>
+<a name="ln374">            for (int pitchIndex = 0; pitchIndex &lt; pitchSize-1; pitchIndex++) {</a>
+<a name="ln375">                  PitchValue pitchValue = points[pitchIndex];</a>
+<a name="ln376">                  PitchValue nextPitch  = points[pitchIndex+1];</a>
+<a name="ln377">                  int nextPointTick = tick1 + nextPitch.time / 60.0 * noteLen;</a>
+<a name="ln378">                  int pitch = pitchValue.pitch;</a>
+<a name="ln379"> </a>
+<a name="ln380">                  if (pitchIndex == 0 &amp;&amp; (pitch == nextPitch.pitch)) {</a>
+<a name="ln381">                        int midiPitch = (pitch * 16384) / 1200 + 8192;</a>
+<a name="ln382">                        int msb = midiPitch / 128;</a>
+<a name="ln383">                        int lsb = midiPitch % 128;</a>
+<a name="ln384">                        NPlayEvent ev(ME_PITCHBEND, channel, lsb, msb);</a>
+<a name="ln385">                        ev.setOriginatingStaff(staffIdx);</a>
+<a name="ln386">                        events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(lastPointTick, ev));</a>
+<a name="ln387">                        lastPointTick = nextPointTick;</a>
+<a name="ln388">                        continue;</a>
+<a name="ln389">                        }</a>
+<a name="ln390">                  if (pitch == nextPitch.pitch &amp;&amp; !(pitchIndex == 0 &amp;&amp; pitch != 0)) {</a>
+<a name="ln391">                        lastPointTick = nextPointTick;</a>
+<a name="ln392">                        continue;</a>
+<a name="ln393">                        }</a>
+<a name="ln394"> </a>
+<a name="ln395">                  double pitchDelta = nextPitch.pitch - pitch;</a>
+<a name="ln396">                  double tickDelta  = nextPitch.time - pitchValue.time;</a>
+<a name="ln397">                  /*         B</a>
+<a name="ln398">                            /.                   pitch is 1/100 semitones</a>
+<a name="ln399">                    bend   / .  pitchDelta       time is in noteDuration/60</a>
+<a name="ln400">                          /  .                   midi pitch is 12/16384 semitones</a>
+<a name="ln401">                         A....</a>
+<a name="ln402">                       tickDelta   */</a>
+<a name="ln403">                  for (int i = lastPointTick; i &lt;= nextPointTick; i += 16) {</a>
+<a name="ln404">                        double dx = ((i-lastPointTick) * 60) / noteLen;</a>
+<a name="ln405">                        int p = pitch + dx * pitchDelta / tickDelta;</a>
+<a name="ln406"> </a>
+<a name="ln407">                        // We don't support negative pitch, but Midi does. Let's center by adding 8192.</a>
+<a name="ln408">                        int midiPitch = (p * 16384) / 1200 + 8192;</a>
+<a name="ln409">                        // Representing pitch as two bytes</a>
+<a name="ln410">                        int msb = midiPitch / 128;</a>
+<a name="ln411">                        int lsb = midiPitch % 128;</a>
+<a name="ln412">                        NPlayEvent ev(ME_PITCHBEND, channel, lsb, msb);</a>
+<a name="ln413">                        ev.setOriginatingStaff(staffIdx);</a>
+<a name="ln414">                        events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(i, ev));</a>
+<a name="ln415">                        }</a>
+<a name="ln416">                  lastPointTick = nextPointTick;</a>
+<a name="ln417">                  }</a>
+<a name="ln418">            NPlayEvent ev(ME_PITCHBEND, channel, 0, 64); // 0:64 is 8192 - no pitch bend</a>
+<a name="ln419">            ev.setOriginatingStaff(staffIdx);</a>
+<a name="ln420">            events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(tick1+int(noteLen), ev));</a>
+<a name="ln421">            }</a>
+<a name="ln422">      }</a>
+<a name="ln423"> </a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425">//   aeolusSetStop</a>
+<a name="ln426">//---------------------------------------------------------</a>
+<a name="ln427"> </a>
+<a name="ln428">static void aeolusSetStop(int tick, int channel, int i, int k, bool val, EventMap* events)</a>
+<a name="ln429">      {</a>
+<a name="ln430">      NPlayEvent event;</a>
+<a name="ln431">      event.setType(ME_CONTROLLER);</a>
+<a name="ln432">      event.setController(98);</a>
+<a name="ln433">      if (val)</a>
+<a name="ln434">            event.setValue(0x40 + 0x20  + i);</a>
+<a name="ln435">      else</a>
+<a name="ln436">            event.setValue(0x40 + 0x10  + i);</a>
+<a name="ln437"> </a>
+<a name="ln438">      event.setChannel(channel);</a>
+<a name="ln439">      events-&gt;insert(std::pair&lt;int,NPlayEvent&gt;(tick, event));</a>
+<a name="ln440"> </a>
+<a name="ln441">      event.setValue(k);</a>
+<a name="ln442">      events-&gt;insert(std::pair&lt;int,NPlayEvent&gt;(tick, event));</a>
+<a name="ln443">//      event.setValue(0x40 + i);</a>
+<a name="ln444">//      events-&gt;insert(std::pair&lt;int,NPlayEvent&gt;(tick, event));</a>
+<a name="ln445">      }</a>
+<a name="ln446"> </a>
+<a name="ln447">//---------------------------------------------------------</a>
+<a name="ln448">//   collectProgramChanges</a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450"> </a>
+<a name="ln451">static void collectProgramChanges(EventMap* events, Measure* m, Staff* staff, int tickOffset)</a>
+<a name="ln452">      {</a>
+<a name="ln453">      int firstStaffIdx = staff-&gt;idx();</a>
+<a name="ln454">      int nextStaffIdx  = firstStaffIdx + 1;</a>
+<a name="ln455"> </a>
+<a name="ln456">      //</a>
+<a name="ln457">      // collect program changes and controller</a>
+<a name="ln458">      //</a>
+<a name="ln459">      for (Segment* s = m-&gt;first(SegmentType::ChordRest); s; s = s-&gt;next(SegmentType::ChordRest)) {</a>
+<a name="ln460">            for (Element* e : s-&gt;annotations()) {</a>
+<a name="ln461">                  if (!e-&gt;isStaffTextBase() || e-&gt;staffIdx() &lt; firstStaffIdx || e-&gt;staffIdx() &gt;= nextStaffIdx)</a>
+<a name="ln462">                        continue;</a>
+<a name="ln463">                  const StaffTextBase* st1 = toStaffTextBase(e);</a>
+<a name="ln464">                  Fraction tick = s-&gt;tick() + Fraction::fromTicks(tickOffset);</a>
+<a name="ln465"> </a>
+<a name="ln466">                  Instrument* instr = e-&gt;part()-&gt;instrument(tick);</a>
+<a name="ln467">                  for (const ChannelActions&amp; ca : *st1-&gt;channelActions()) {</a>
+<a name="ln468">                        int channel = instr-&gt;channel().at(ca.channel)-&gt;channel();</a>
+<a name="ln469">                        for (const QString&amp; ma : ca.midiActionNames) {</a>
+<a name="ln470">                              NamedEventList* nel = instr-&gt;midiAction(ma, ca.channel);</a>
+<a name="ln471">                              if (!nel)</a>
+<a name="ln472">                                    continue;</a>
+<a name="ln473">                              for (MidiCoreEvent event : nel-&gt;events) {</a>
+<a name="ln474">                                    event.setChannel(channel);</a>
+<a name="ln475">                                    NPlayEvent e1(event);</a>
+<a name="ln476">                                    e1.setOriginatingStaff(firstStaffIdx);</a>
+<a name="ln477">                                    if (e1.dataA() == CTRL_PROGRAM)</a>
+<a name="ln478">                                          events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(tick.ticks()-1, e1));</a>
+<a name="ln479">                                    else</a>
+<a name="ln480">                                          events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(tick.ticks(), e1));</a>
+<a name="ln481">                                    }</a>
+<a name="ln482">                              }</a>
+<a name="ln483">                        }</a>
+<a name="ln484">                  if (st1-&gt;setAeolusStops()) {</a>
+<a name="ln485">                        Staff* s1 = st1-&gt;staff();</a>
+<a name="ln486">                        int voice   = 0;</a>
+<a name="ln487">                        int channel = s1-&gt;channel(tick, voice);</a>
+<a name="ln488"> </a>
+<a name="ln489">                        for (int i = 0; i &lt; 4; ++i) {</a>
+<a name="ln490">                              static int num[4] = { 12, 13, 16, 16 };</a>
+<a name="ln491">                              for (int k = 0; k &lt; num[i]; ++k)</a>
+<a name="ln492">                                    aeolusSetStop(tick.ticks(), channel, i, k, st1-&gt;getAeolusStop(i, k), events);</a>
+<a name="ln493">                              }</a>
+<a name="ln494">                        }</a>
+<a name="ln495">                  }</a>
+<a name="ln496">            }</a>
+<a name="ln497">      }</a>
+<a name="ln498"> </a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500">//   getControllerFromCC</a>
+<a name="ln501">//---------------------------------------------------------</a>
+<a name="ln502"> </a>
+<a name="ln503">static int getControllerFromCC(int cc)</a>
+<a name="ln504">      {</a>
+<a name="ln505">      int controller = -1;</a>
+<a name="ln506"> </a>
+<a name="ln507">      switch (cc) {</a>
+<a name="ln508">            case 1:</a>
+<a name="ln509">                  controller = CTRL_MODULATION;</a>
+<a name="ln510">                  break;</a>
+<a name="ln511">            case 2:</a>
+<a name="ln512">                  controller = CTRL_BREATH;</a>
+<a name="ln513">                  break;</a>
+<a name="ln514">            case 4:</a>
+<a name="ln515">                  controller = CTRL_FOOT;</a>
+<a name="ln516">                  break;</a>
+<a name="ln517">            case 11:</a>
+<a name="ln518">                  controller = CTRL_EXPRESSION;</a>
+<a name="ln519">                  break;</a>
+<a name="ln520">            default:</a>
+<a name="ln521">                  break;</a>
+<a name="ln522">            }</a>
+<a name="ln523"> </a>
+<a name="ln524">      return controller;</a>
+<a name="ln525">      }</a>
+<a name="ln526"> </a>
+<a name="ln527">//---------------------------------------------------------</a>
+<a name="ln528">//   collectMeasureEventsSimple</a>
+<a name="ln529">//    the original, velocity-only method of collecting events.</a>
+<a name="ln530">//---------------------------------------------------------</a>
+<a name="ln531"> </a>
+<a name="ln532">static void collectMeasureEventsSimple(EventMap* events, Measure* m, Staff* staff, int tickOffset)</a>
+<a name="ln533">      {</a>
+<a name="ln534">      int firstStaffIdx = staff-&gt;idx();</a>
+<a name="ln535">      int nextStaffIdx  = firstStaffIdx + 1;</a>
+<a name="ln536"> </a>
+<a name="ln537">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln538">      int strack = firstStaffIdx * VOICES;</a>
+<a name="ln539">      int etrack = nextStaffIdx * VOICES;</a>
+<a name="ln540"> </a>
+<a name="ln541">      for (Segment* seg = m-&gt;first(st); seg; seg = seg-&gt;next(st)) {</a>
+<a name="ln542">            int tick = seg-&gt;tick().ticks();</a>
+<a name="ln543">            for (int track = strack; track &lt; etrack; ++track) {</a>
+<a name="ln544">                  // skip linked staves, except primary</a>
+<a name="ln545">                  if (!m-&gt;score()-&gt;staff(track / VOICES)-&gt;primaryStaff()) {</a>
+<a name="ln546">                        track += VOICES-1;</a>
+<a name="ln547">                        continue;</a>
+<a name="ln548">                        }</a>
+<a name="ln549">                  Element* cr = seg-&gt;element(track);</a>
+<a name="ln550">                  if (cr == 0 || cr-&gt;type() != ElementType::CHORD)</a>
+<a name="ln551">                        continue;</a>
+<a name="ln552"> </a>
+<a name="ln553">                  Chord* chord = toChord(cr);</a>
+<a name="ln554">                  Staff* st1   = chord-&gt;staff();</a>
+<a name="ln555">                  Instrument* instr = chord-&gt;part()-&gt;instrument(Fraction::fromTicks(tick));</a>
+<a name="ln556">                  int channel = instr-&gt;channel(chord-&gt;upNote()-&gt;subchannel())-&gt;channel();</a>
+<a name="ln557">                  events-&gt;registerChannel(channel);</a>
+<a name="ln558"> </a>
+<a name="ln559">                  qreal veloMultiplier = 1;</a>
+<a name="ln560">                  for (Articulation* a : chord-&gt;articulations()) {</a>
+<a name="ln561">                        if (a-&gt;playArticulation()) {</a>
+<a name="ln562">                              veloMultiplier *= instr-&gt;getVelocityMultiplier(a-&gt;articulationName());</a>
+<a name="ln563">                              }</a>
+<a name="ln564">                        }</a>
+<a name="ln565"> </a>
+<a name="ln566">                  SndConfig config;       // dummy</a>
+<a name="ln567"> </a>
+<a name="ln568">                  if (!graceNotesMerged(chord))</a>
+<a name="ln569">                      for (Chord* c : chord-&gt;graceNotesBefore())</a>
+<a name="ln570">                          for (const Note* note : c-&gt;notes())</a>
+<a name="ln571">                              collectNote(events, channel, note, veloMultiplier, tickOffset, st1, config);</a>
+<a name="ln572"> </a>
+<a name="ln573">                  for (const Note* note : chord-&gt;notes())</a>
+<a name="ln574">                        collectNote(events, channel, note, veloMultiplier, tickOffset, st1, config);</a>
+<a name="ln575"> </a>
+<a name="ln576">                  if (!graceNotesMerged(chord))</a>
+<a name="ln577">                      for (Chord* c : chord-&gt;graceNotesAfter())</a>
+<a name="ln578">                          for (const Note* note : c-&gt;notes())</a>
+<a name="ln579">                              collectNote(events, channel, note, veloMultiplier, tickOffset, st1, config);</a>
+<a name="ln580">                 }</a>
+<a name="ln581">            }</a>
+<a name="ln582">      }</a>
+<a name="ln583"> </a>
+<a name="ln584">//---------------------------------------------------------</a>
+<a name="ln585">//   collectMeasureEventsDefault</a>
+<a name="ln586">//    this uses only CC events to control note velocity, and sets the</a>
+<a name="ln587">//    note-on velocity to always be 127 (max). This is the method that allows</a>
+<a name="ln588">//    single note dynamics, but only works if the soundfont supports it.</a>
+<a name="ln589">//    Method is one of:</a>
+<a name="ln590">//          FIXED_MAX - default: velocity is fixed at 127</a>
+<a name="ln591">//          SEG_START - note-on velocity is the same as the start velocity of the seg</a>
+<a name="ln592">//---------------------------------------------------------</a>
+<a name="ln593"> </a>
+<a name="ln594">static void collectMeasureEventsDefault(EventMap* events, Measure* m, Staff* staff, int tickOffset, DynamicsRenderMethod method, int cc)</a>
+<a name="ln595">      {</a>
+<a name="ln596">      int controller = getControllerFromCC(cc);</a>
+<a name="ln597"> </a>
+<a name="ln598">      if (controller == -1) {</a>
+<a name="ln599">            qWarning(&quot;controller for CC %d not valid&quot;, cc);</a>
+<a name="ln600">            return;</a>
+<a name="ln601">            }</a>
+<a name="ln602"> </a>
+<a name="ln603">      int firstStaffIdx = staff-&gt;idx();</a>
+<a name="ln604">      int nextStaffIdx  = firstStaffIdx + 1;</a>
+<a name="ln605"> </a>
+<a name="ln606">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln607">      int strack = firstStaffIdx * VOICES;</a>
+<a name="ln608">      int etrack = nextStaffIdx * VOICES;</a>
+<a name="ln609">      for (Segment* seg = m-&gt;first(st); seg; seg = seg-&gt;next(st)) {</a>
+<a name="ln610">            Fraction tick = seg-&gt;tick();</a>
+<a name="ln611">            for (int track = strack; track &lt; etrack; ++track) {</a>
+<a name="ln612">                  // Skip linked staves, except primary</a>
+<a name="ln613">                  Staff* st1 = m-&gt;score()-&gt;staff(track / VOICES);</a>
+<a name="ln614">                  if (!st1-&gt;primaryStaff()) {</a>
+<a name="ln615">                        track += VOICES - 1;</a>
+<a name="ln616">                        continue;</a>
+<a name="ln617">                        }</a>
+<a name="ln618"> </a>
+<a name="ln619">                  Element* cr = seg-&gt;element(track);</a>
+<a name="ln620">                  if (!cr)</a>
+<a name="ln621">                        continue;</a>
+<a name="ln622"> </a>
+<a name="ln623">                  if (!cr-&gt;isChord())</a>
+<a name="ln624">                        continue;</a>
+<a name="ln625"> </a>
+<a name="ln626">                  Chord* chord = toChord(cr);</a>
+<a name="ln627"> </a>
+<a name="ln628">                  Instrument* instr = st1-&gt;part()-&gt;instrument(tick);</a>
+<a name="ln629">                  int subchannel = chord-&gt;upNote()-&gt;subchannel();</a>
+<a name="ln630">                  int channel = instr-&gt;channel(subchannel)-&gt;channel();</a>
+<a name="ln631"> </a>
+<a name="ln632">                  events-&gt;registerChannel(channel);</a>
+<a name="ln633"> </a>
+<a name="ln634">                  // Get a velocity multiplier</a>
+<a name="ln635">                  qreal veloMultiplier = 1;</a>
+<a name="ln636">                  for (Articulation* a : chord-&gt;articulations()) {</a>
+<a name="ln637">                        if (a-&gt;playArticulation()) {</a>
+<a name="ln638">                              veloMultiplier *= instr-&gt;getVelocityMultiplier(a-&gt;articulationName());</a>
+<a name="ln639">                              }</a>
+<a name="ln640">                        }</a>
+<a name="ln641"> </a>
+<a name="ln642">                  bool useSND = instr-&gt;singleNoteDynamics();</a>
+<a name="ln643">                  SndConfig config = SndConfig(useSND, controller, method);</a>
+<a name="ln644"> </a>
+<a name="ln645">                  //</a>
+<a name="ln646">                  // Add normal note events</a>
+<a name="ln647">                  //</a>
+<a name="ln648"> </a>
+<a name="ln649">                  if (!graceNotesMerged(chord))</a>
+<a name="ln650">                        for (Chord* c : chord-&gt;graceNotesBefore())</a>
+<a name="ln651">                              for (const Note* note : c-&gt;notes())</a>
+<a name="ln652">                                    collectNote(events, channel, note, veloMultiplier, tickOffset, st1, config);</a>
+<a name="ln653"> </a>
+<a name="ln654">                  for (const Note* note : chord-&gt;notes())</a>
+<a name="ln655">                        collectNote(events, channel, note, veloMultiplier, tickOffset, st1, config);</a>
+<a name="ln656"> </a>
+<a name="ln657">                  if (!graceNotesMerged(chord))</a>
+<a name="ln658">                        for (Chord* c : chord-&gt;graceNotesAfter())</a>
+<a name="ln659">                              for (const Note* note : c-&gt;notes())</a>
+<a name="ln660">                                    collectNote(events, channel, note, veloMultiplier, tickOffset, st1, config);</a>
+<a name="ln661">                  }</a>
+<a name="ln662">            }</a>
+<a name="ln663">      }</a>
+<a name="ln664"> </a>
+<a name="ln665">//---------------------------------------------------------</a>
+<a name="ln666">//   collectMeasureEvents</a>
+<a name="ln667">//    redirects to the correct function based on the passed method</a>
+<a name="ln668">//---------------------------------------------------------</a>
+<a name="ln669"> </a>
+<a name="ln670">static void collectMeasureEvents(EventMap* events, Measure* m, Staff* staff, int tickOffset, DynamicsRenderMethod method, int cc)</a>
+<a name="ln671">      {</a>
+<a name="ln672">      switch (method) {</a>
+<a name="ln673">            case DynamicsRenderMethod::SIMPLE:</a>
+<a name="ln674">                  collectMeasureEventsSimple(events, m, staff, tickOffset);</a>
+<a name="ln675">                  break;</a>
+<a name="ln676">            case DynamicsRenderMethod::SEG_START:</a>
+<a name="ln677">            case DynamicsRenderMethod::FIXED_MAX:</a>
+<a name="ln678">                  collectMeasureEventsDefault(events, m, staff, tickOffset, method, cc);</a>
+<a name="ln679">                  break;</a>
+<a name="ln680">            default:</a>
+<a name="ln681">                  qWarning(&quot;Unrecognized dynamics method: %d&quot;, int(method));</a>
+<a name="ln682">                  break;</a>
+<a name="ln683">            }</a>
+<a name="ln684"> </a>
+<a name="ln685">      collectProgramChanges(events, m, staff, tickOffset);</a>
+<a name="ln686">      }</a>
+<a name="ln687"> </a>
+<a name="ln688">//---------------------------------------------------------</a>
+<a name="ln689">//   updateHairpin</a>
+<a name="ln690">//---------------------------------------------------------</a>
+<a name="ln691"> </a>
+<a name="ln692">void Score::updateHairpin(Hairpin* h)</a>
+<a name="ln693">      {</a>
+<a name="ln694">      Staff* st = h-&gt;staff();</a>
+<a name="ln695">      Fraction tick  = h-&gt;tick();</a>
+<a name="ln696">      Fraction tick2 = h-&gt;tick2();</a>
+<a name="ln697">      int veloChange  = h-&gt;veloChange();</a>
+<a name="ln698">      ChangeMethod method = h-&gt;veloChangeMethod();</a>
+<a name="ln699"> </a>
+<a name="ln700">      // Make the change negative when the hairpin is a diminuendo</a>
+<a name="ln701">      HairpinType htype = h-&gt;hairpinType();</a>
+<a name="ln702">      ChangeDirection direction = ChangeDirection::INCREASING;</a>
+<a name="ln703">      if (htype == HairpinType::DECRESC_HAIRPIN || htype == HairpinType::DECRESC_LINE) {</a>
+<a name="ln704">            veloChange *= -1;</a>
+<a name="ln705">            direction = ChangeDirection::DECREASING;</a>
+<a name="ln706">            }</a>
+<a name="ln707"> </a>
+<a name="ln708">      switch (h-&gt;dynRange()) {</a>
+<a name="ln709">            case Dynamic::Range::STAFF:</a>
+<a name="ln710">                  st-&gt;velocities().addRamp(tick, tick2, veloChange, method, direction);</a>
+<a name="ln711">                  break;</a>
+<a name="ln712">            case Dynamic::Range::PART:</a>
+<a name="ln713">                  for (Staff* s : *st-&gt;part()-&gt;staves()) {</a>
+<a name="ln714">                        s-&gt;velocities().addRamp(tick, tick2, veloChange, method, direction);</a>
+<a name="ln715">                        }</a>
+<a name="ln716">                  break;</a>
+<a name="ln717">            case Dynamic::Range::SYSTEM:</a>
+<a name="ln718">                  for (Staff* s : _staves) {</a>
+<a name="ln719">                        s-&gt;velocities().addRamp(tick, tick2, veloChange, method, direction);</a>
+<a name="ln720">                        }</a>
+<a name="ln721">                  break;</a>
+<a name="ln722">            }</a>
+<a name="ln723">      }</a>
+<a name="ln724"> </a>
+<a name="ln725">//---------------------------------------------------------</a>
+<a name="ln726">//   updateVelo</a>
+<a name="ln727">//    calculate velocity for all notes</a>
+<a name="ln728">//---------------------------------------------------------</a>
+<a name="ln729"> </a>
+<a name="ln730">void Score::updateVelo()</a>
+<a name="ln731">      {</a>
+<a name="ln732">      //</a>
+<a name="ln733">      //    collect Dynamics</a>
+<a name="ln734">      //</a>
+<a name="ln735">      if (!firstMeasure())</a>
+<a name="ln736">            return;</a>
+<a name="ln737"> </a>
+<a name="ln738">      for (Staff* st : _staves) {</a>
+<a name="ln739">            ChangeMap&amp; velo = st-&gt;velocities();</a>
+<a name="ln740">            velo.clear();</a>
+<a name="ln741">            }</a>
+<a name="ln742">      for (int staffIdx = 0; staffIdx &lt; nstaves(); ++staffIdx) {</a>
+<a name="ln743">            Staff* st      = staff(staffIdx);</a>
+<a name="ln744">            ChangeMap&amp; velo = st-&gt;velocities();</a>
+<a name="ln745">            Part* prt      = st-&gt;part();</a>
+<a name="ln746">            int partStaves = prt-&gt;nstaves();</a>
+<a name="ln747">            int partStaff  = Score::staffIdx(prt);</a>
+<a name="ln748"> </a>
+<a name="ln749">            for (Segment* s = firstMeasure()-&gt;first(); s; s = s-&gt;next1()) {</a>
+<a name="ln750">                  Fraction tick = s-&gt;tick();</a>
+<a name="ln751">                  for (const Element* e : s-&gt;annotations()) {</a>
+<a name="ln752">                        if (e-&gt;staffIdx() != staffIdx)</a>
+<a name="ln753">                              continue;</a>
+<a name="ln754">                        if (e-&gt;type() != ElementType::DYNAMIC)</a>
+<a name="ln755">                              continue;</a>
+<a name="ln756">                        const Dynamic* d = toDynamic(e);</a>
+<a name="ln757">                        int v            = d-&gt;velocity();</a>
+<a name="ln758"> </a>
+<a name="ln759">                        // treat an invalid dynamic as no change, i.e. a dynamic set to 0</a>
+<a name="ln760">                        if (v &lt; 1)</a>
+<a name="ln761">                              continue;</a>
+<a name="ln762"> </a>
+<a name="ln763">                        v = qBound(1, v, 127);     //  illegal values</a>
+<a name="ln764"> </a>
+<a name="ln765">                        // If a dynamic has 'velocity change' update its ending</a>
+<a name="ln766">                        int change = d-&gt;changeInVelocity();</a>
+<a name="ln767">                        ChangeDirection direction = ChangeDirection::INCREASING;</a>
+<a name="ln768">                        if (change &lt; 0) {</a>
+<a name="ln769">                              direction = ChangeDirection::DECREASING;</a>
+<a name="ln770">                              }</a>
+<a name="ln771"> </a>
+<a name="ln772">                        int dStaffIdx = d-&gt;staffIdx();</a>
+<a name="ln773">                        switch(d-&gt;dynRange()) {</a>
+<a name="ln774">                              case Dynamic::Range::STAFF:</a>
+<a name="ln775">                                    if (dStaffIdx == staffIdx) {</a>
+<a name="ln776">                                          velo.addFixed(tick, v);</a>
+<a name="ln777">                                          if (change != 0) {</a>
+<a name="ln778">                                                Fraction etick = tick + d-&gt;velocityChangeLength();</a>
+<a name="ln779">                                                ChangeMethod method = ChangeMethod::NORMAL;</a>
+<a name="ln780">                                                velo.addRamp(tick, etick, change, method, direction);</a>
+<a name="ln781">                                                }</a>
+<a name="ln782">                                          }</a>
+<a name="ln783">                                    break;</a>
+<a name="ln784">                              case Dynamic::Range::PART:</a>
+<a name="ln785">                                    if (dStaffIdx &gt;= partStaff &amp;&amp; dStaffIdx &lt; partStaff+partStaves) {</a>
+<a name="ln786">                                          for (int i = partStaff; i &lt; partStaff+partStaves; ++i) {</a>
+<a name="ln787">                                                ChangeMap&amp; stVelo = staff(i)-&gt;velocities();</a>
+<a name="ln788">                                                stVelo.addFixed(tick, v);</a>
+<a name="ln789">                                                if (change != 0) {</a>
+<a name="ln790">                                                      Fraction etick = tick + d-&gt;velocityChangeLength();</a>
+<a name="ln791">                                                      ChangeMethod method = ChangeMethod::NORMAL;</a>
+<a name="ln792">                                                      stVelo.addRamp(tick, etick, change, method, direction);</a>
+<a name="ln793">                                                      }</a>
+<a name="ln794">                                                }</a>
+<a name="ln795">                                          }</a>
+<a name="ln796">                                    break;</a>
+<a name="ln797">                              case Dynamic::Range::SYSTEM:</a>
+<a name="ln798">                                    for (int i = 0; i &lt; nstaves(); ++i) {</a>
+<a name="ln799">                                          ChangeMap&amp; stVelo = staff(i)-&gt;velocities();</a>
+<a name="ln800">                                          stVelo.addFixed(tick, v);</a>
+<a name="ln801">                                          if (change != 0) {</a>
+<a name="ln802">                                                Fraction etick = tick + d-&gt;velocityChangeLength();</a>
+<a name="ln803">                                                ChangeMethod method = ChangeMethod::NORMAL;</a>
+<a name="ln804">                                                stVelo.addRamp(tick, etick, change, method, direction);</a>
+<a name="ln805">                                                }</a>
+<a name="ln806">                                          }</a>
+<a name="ln807">                                    break;</a>
+<a name="ln808">                              }</a>
+<a name="ln809">                        }</a>
+<a name="ln810">                  }</a>
+<a name="ln811">            for (const auto&amp; sp : _spanner.map()) {</a>
+<a name="ln812">                  Spanner* s = sp.second;</a>
+<a name="ln813">                  if (s-&gt;type() != ElementType::HAIRPIN || sp.second-&gt;staffIdx() != staffIdx)</a>
+<a name="ln814">                        continue;</a>
+<a name="ln815">                  Hairpin* h = toHairpin(s);</a>
+<a name="ln816">                  updateHairpin(h);</a>
+<a name="ln817">                  }</a>
+<a name="ln818">            }</a>
+<a name="ln819"> </a>
+<a name="ln820">      for (Staff* st : _staves) {</a>
+<a name="ln821">            st-&gt;velocities().cleanup();</a>
+<a name="ln822">            }</a>
+<a name="ln823"> </a>
+<a name="ln824">      for (auto it = spanner().cbegin(); it != spanner().cend(); ++it) {</a>
+<a name="ln825">            Spanner* spanner = (*it).second;</a>
+<a name="ln826">            if (!spanner-&gt;isVolta())</a>
+<a name="ln827">                  continue;</a>
+<a name="ln828">            Volta* volta = toVolta(spanner);</a>
+<a name="ln829">            volta-&gt;setVelocity();</a>
+<a name="ln830">            }</a>
+<a name="ln831">      }</a>
+<a name="ln832"> </a>
+<a name="ln833">//---------------------------------------------------------</a>
+<a name="ln834">//   renderStaffSegment</a>
+<a name="ln835">//---------------------------------------------------------</a>
+<a name="ln836"> </a>
+<a name="ln837">void MidiRenderer::renderStaffChunk(const Chunk&amp; chunk, EventMap* events, Staff* staff, DynamicsRenderMethod method, int cc)</a>
+<a name="ln838">      {</a>
+<a name="ln839">      Measure* start = chunk.startMeasure();</a>
+<a name="ln840">      Measure* end = chunk.endMeasure();</a>
+<a name="ln841">      const int tickOffset = chunk.tickOffset();</a>
+<a name="ln842"> </a>
+<a name="ln843">      Measure* lastMeasure = start-&gt;prevMeasure();</a>
+<a name="ln844"> </a>
+<a name="ln845">      for (Measure* m = start; m != end; m = m-&gt;nextMeasure()) {</a>
+<a name="ln846">            if (lastMeasure &amp;&amp; m-&gt;isRepeatMeasure(staff)) {</a>
+<a name="ln847">                  int offset = (m-&gt;tick() - lastMeasure-&gt;tick()).ticks();</a>
+<a name="ln848">                  collectMeasureEvents(events, lastMeasure, staff, tickOffset + offset, method, cc);</a>
+<a name="ln849">                  }</a>
+<a name="ln850">            else {</a>
+<a name="ln851">                  lastMeasure = m;</a>
+<a name="ln852">                  collectMeasureEvents(events, lastMeasure, staff, tickOffset, method, cc);</a>
+<a name="ln853">                  }</a>
+<a name="ln854">            }</a>
+<a name="ln855">      }</a>
+<a name="ln856"> </a>
+<a name="ln857">//---------------------------------------------------------</a>
+<a name="ln858">//   renderSpanners</a>
+<a name="ln859">//---------------------------------------------------------</a>
+<a name="ln860"> </a>
+<a name="ln861">void MidiRenderer::renderSpanners(const Chunk&amp; chunk, EventMap* events)</a>
+<a name="ln862">      {</a>
+<a name="ln863">      const int tickOffset = chunk.tickOffset();</a>
+<a name="ln864">      const int tick1 = chunk.tick1();</a>
+<a name="ln865">      const int tick2 = chunk.tick2();</a>
+<a name="ln866"> </a>
+<a name="ln867">      std::map&lt;int, std::vector&lt;std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;&gt;&gt; channelPedalEvents;</a>
+<a name="ln868">      for (const auto&amp; sp : score-&gt;spannerMap().map()) {</a>
+<a name="ln869">            Spanner* s = sp.second;</a>
+<a name="ln870"> </a>
+<a name="ln871">            int staff = s-&gt;staffIdx();</a>
+<a name="ln872">            int idx = s-&gt;staff()-&gt;channel(s-&gt;tick(), 0);</a>
+<a name="ln873">            int channel = s-&gt;part()-&gt;instrument(s-&gt;tick())-&gt;channel(idx)-&gt;channel();</a>
+<a name="ln874"> </a>
+<a name="ln875">            if (s-&gt;isPedal() || s-&gt;isLetRing()) {</a>
+<a name="ln876">                  channelPedalEvents.insert({channel, std::vector&lt;std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;&gt;()});</a>
+<a name="ln877">                  std::vector&lt;std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;&gt; pedalEventList = channelPedalEvents.at(channel);</a>
+<a name="ln878">                  std::pair&lt;int, std::pair&lt;bool, int&gt;&gt; lastEvent;</a>
+<a name="ln879"> </a>
+<a name="ln880">                  if (!pedalEventList.empty())</a>
+<a name="ln881">                        lastEvent = pedalEventList.back();</a>
+<a name="ln882">                  else</a>
+<a name="ln883">                        lastEvent = std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;(0, std::pair&lt;bool, int&gt;(true, staff));</a>
+<a name="ln884"> </a>
+<a name="ln885">                  int st = s-&gt;tick().ticks();</a>
+<a name="ln886">                  if (st &gt;= tick1 &amp;&amp; st &lt; tick2) {</a>
+<a name="ln887">                        // Handle &quot;overlapping&quot; pedal segments (usual case for connected pedal line)</a>
+<a name="ln888">                        if (lastEvent.second.first == false &amp;&amp; lastEvent.first &gt;= (st + tickOffset + 2)) {</a>
+<a name="ln889">                              channelPedalEvents.at(channel).pop_back();</a>
+<a name="ln890">                              channelPedalEvents.at(channel).push_back(std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;(st + tickOffset + 1, std::pair&lt;bool, int&gt;(false, staff)));</a>
+<a name="ln891">                              }</a>
+<a name="ln892">                        int a = st + tickOffset + 2;</a>
+<a name="ln893">                        channelPedalEvents.at(channel).push_back(std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;(a, std::pair&lt;bool, int&gt;(true, staff)));</a>
+<a name="ln894">                        }</a>
+<a name="ln895">                  if (s-&gt;tick2().ticks() &gt;= tick1 &amp;&amp; s-&gt;tick2().ticks() &lt;= tick2) {</a>
+<a name="ln896">                        int t = s-&gt;tick2().ticks() + tickOffset + 1;</a>
+<a name="ln897">                        const RepeatSegment&amp; lastRepeat = *score-&gt;repeatList().back();</a>
+<a name="ln898">                        if (t &gt; lastRepeat.utick + lastRepeat.len())</a>
+<a name="ln899">                              t = lastRepeat.utick + lastRepeat.len();</a>
+<a name="ln900">                        channelPedalEvents.at(channel).push_back(std::pair&lt;int, std::pair&lt;bool, int&gt;&gt;(t, std::pair&lt;bool, int&gt;(false, staff)));</a>
+<a name="ln901">                        }</a>
+<a name="ln902">                  }</a>
+<a name="ln903">            else if (s-&gt;isVibrato()) {</a>
+<a name="ln904">                  int stick = s-&gt;tick().ticks();</a>
+<a name="ln905">                  int etick = s-&gt;tick2().ticks();</a>
+<a name="ln906">                  if (stick &gt;= tick2 || etick &lt; tick1)</a>
+<a name="ln907">                        continue;</a>
+<a name="ln908"> </a>
+<a name="ln909">                  if (stick &lt; tick1)</a>
+<a name="ln910">                        stick = tick1;</a>
+<a name="ln911">                  if (etick &gt; tick2)</a>
+<a name="ln912">                        etick = tick2;</a>
+<a name="ln913"> </a>
+<a name="ln914">                  // from start to end of trill, send bend events at regular interval</a>
+<a name="ln915">                  Vibrato* t = toVibrato(s);</a>
+<a name="ln916">                  // guitar vibrato, up only</a>
+<a name="ln917">                  int spitch = 0; // 1/8 (100 is a semitone)</a>
+<a name="ln918">                  int epitch = 12;</a>
+<a name="ln919">                  if (t-&gt;vibratoType() == Vibrato::Type::GUITAR_VIBRATO_WIDE) {</a>
+<a name="ln920">                        spitch = 0; // 1/4</a>
+<a name="ln921">                        epitch = 25;</a>
+<a name="ln922">                        }</a>
+<a name="ln923">                  // vibrato with whammy bar up and down</a>
+<a name="ln924">                  else if (t-&gt;vibratoType() == Vibrato::Type::VIBRATO_SAWTOOTH_WIDE) {</a>
+<a name="ln925">                        spitch = 25; // 1/16</a>
+<a name="ln926">                        epitch = -25;</a>
+<a name="ln927">                        }</a>
+<a name="ln928">                  else if (t-&gt;vibratoType() == Vibrato::Type::VIBRATO_SAWTOOTH) {</a>
+<a name="ln929">                        spitch = 12;</a>
+<a name="ln930">                        epitch = -12;</a>
+<a name="ln931">                        }</a>
+<a name="ln932"> </a>
+<a name="ln933">                  int j = 0;</a>
+<a name="ln934">                  int delta = MScore::division / 8; // 1/8 note</a>
+<a name="ln935">                  int lastPointTick = stick;</a>
+<a name="ln936">                  while (lastPointTick &lt; etick) {</a>
+<a name="ln937">                        int pitch = (j % 4 &lt; 2) ? spitch : epitch;</a>
+<a name="ln938">                        int nextPitch = ((j+1) % 4 &lt; 2) ? spitch : epitch;</a>
+<a name="ln939">                        int nextPointTick = lastPointTick + delta;</a>
+<a name="ln940">                        for (int i = lastPointTick; i &lt;= nextPointTick; i += 16) {</a>
+<a name="ln941">                              double dx = ((i - lastPointTick) * 60) / delta;</a>
+<a name="ln942">                              int p = pitch + dx * (nextPitch - pitch) / delta;</a>
+<a name="ln943">                              int midiPitch = (p * 16384) / 1200 + 8192;</a>
+<a name="ln944">                              int msb = midiPitch / 128;</a>
+<a name="ln945">                              int lsb = midiPitch % 128;</a>
+<a name="ln946">                              NPlayEvent ev(ME_PITCHBEND, channel, lsb, msb);</a>
+<a name="ln947">                              ev.setOriginatingStaff(staff);</a>
+<a name="ln948">                              events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(i + tickOffset, ev));</a>
+<a name="ln949">                              }</a>
+<a name="ln950">                        lastPointTick = nextPointTick;</a>
+<a name="ln951">                        j++;</a>
+<a name="ln952">                        }</a>
+<a name="ln953">                  NPlayEvent ev(ME_PITCHBEND, channel, 0, 64); // no pitch bend</a>
+<a name="ln954">                  ev.setOriginatingStaff(staff);</a>
+<a name="ln955">                  events-&gt;insert(std::pair&lt;int, NPlayEvent&gt;(etick + tickOffset, ev));</a>
+<a name="ln956">                  }</a>
+<a name="ln957">            else</a>
+<a name="ln958">                  continue;</a>
+<a name="ln959">            }</a>
+<a name="ln960"> </a>
+<a name="ln961">      for (const auto&amp; pedalEvents : channelPedalEvents) {</a>
+<a name="ln962">            int channel = pedalEvents.first;</a>
+<a name="ln963">            for (const auto&amp; pe : pedalEvents.second) {</a>
+<a name="ln964">                  NPlayEvent event;</a>
+<a name="ln965">                  if (pe.second.first == true)</a>
+<a name="ln966">                        event = NPlayEvent(ME_CONTROLLER, channel, CTRL_SUSTAIN, 127);</a>
+<a name="ln967">                  else</a>
+<a name="ln968">                        event = NPlayEvent(ME_CONTROLLER, channel, CTRL_SUSTAIN, 0);</a>
+<a name="ln969">                  event.setOriginatingStaff(pe.second.second);</a>
+<a name="ln970">                  events-&gt;insert(std::pair&lt;int,NPlayEvent&gt;(pe.first, event));</a>
+<a name="ln971">                  }</a>
+<a name="ln972">            }</a>
+<a name="ln973">      }</a>
+<a name="ln974"> </a>
+<a name="ln975">//--------------------------------------------------------</a>
+<a name="ln976">//   swingAdjustParams</a>
+<a name="ln977">//--------------------------------------------------------</a>
+<a name="ln978"> </a>
+<a name="ln979">void Score::swingAdjustParams(Chord* chord, int&amp; gateTime, int&amp; ontime, int swingUnit, int swingRatio)</a>
+<a name="ln980">      {</a>
+<a name="ln981">      Fraction tick = chord-&gt;rtick();</a>
+<a name="ln982">      // adjust for anacrusis</a>
+<a name="ln983">      Measure* cm     = chord-&gt;measure();</a>
+<a name="ln984">      MeasureBase* pm = cm-&gt;prev();</a>
+<a name="ln985">      ElementType pt  = pm ? pm-&gt;type() : ElementType::INVALID;</a>
+<a name="ln986">      if (!pm || pm-&gt;lineBreak() || pm-&gt;pageBreak() || pm-&gt;sectionBreak()</a>
+<a name="ln987">         || pt == ElementType::VBOX || pt == ElementType::HBOX</a>
+<a name="ln988">         || pt == ElementType::FBOX || pt == ElementType::TBOX) {</a>
+<a name="ln989">            Fraction offset = cm-&gt;timesig() - cm-&gt;ticks();</a>
+<a name="ln990">            if (offset &gt; Fraction(0,1)) {</a>
+<a name="ln991">                  tick += offset;</a>
+<a name="ln992">                  }</a>
+<a name="ln993">            }</a>
+<a name="ln994"> </a>
+<a name="ln995">      int swingBeat           = swingUnit * 2;</a>
+<a name="ln996">      qreal ticksDuration     = (qreal)chord-&gt;actualTicks().ticks();</a>
+<a name="ln997">      qreal swingTickAdjust   = ((qreal)swingBeat) * (((qreal)(swingRatio-50))/100.0);</a>
+<a name="ln998">      qreal swingActualAdjust = (swingTickAdjust/ticksDuration) * 1000.0;</a>
+<a name="ln999">      ChordRest *ncr          = nextChordRest(chord);</a>
+<a name="ln1000"> </a>
+<a name="ln1001">      //Check the position of the chord to apply changes accordingly</a>
+<a name="ln1002">      if (tick.ticks() % swingBeat == swingUnit) {</a>
+<a name="ln1003">            if (!isSubdivided(chord,swingUnit)) {</a>
+<a name="ln1004">                  ontime = ontime + swingActualAdjust;</a>
+<a name="ln1005">                  }</a>
+<a name="ln1006">            }</a>
+<a name="ln1007">      int endTick = tick.ticks() + ticksDuration;</a>
+<a name="ln1008">      if ((endTick % swingBeat == swingUnit) &amp;&amp; (!isSubdivided(ncr,swingUnit))) {</a>
+<a name="ln1009">            gateTime = gateTime + (swingActualAdjust/10);</a>
+<a name="ln1010">            }</a>
+<a name="ln1011">      }</a>
+<a name="ln1012"> </a>
+<a name="ln1013">//---------------------------------------------------------</a>
+<a name="ln1014">//   isSubdivided</a>
+<a name="ln1015">//   Check for subdivided beat</a>
+<a name="ln1016">//---------------------------------------------------------</a>
+<a name="ln1017"> </a>
+<a name="ln1018">bool Score::isSubdivided(ChordRest* chord, int swingUnit)</a>
+<a name="ln1019">      {</a>
+<a name="ln1020">      if (!chord)</a>
+<a name="ln1021">            return false;</a>
+<a name="ln1022">      ChordRest* prev = prevChordRest(chord);</a>
+<a name="ln1023">      if (chord-&gt;actualTicks().ticks() &lt; swingUnit || (prev &amp;&amp; prev-&gt;actualTicks().ticks() &lt; swingUnit))</a>
+<a name="ln1024">            return true;</a>
+<a name="ln1025">      else</a>
+<a name="ln1026">            return false;</a>
+<a name="ln1027">      }</a>
+<a name="ln1028"> </a>
+<a name="ln1029">const Drumset* getDrumset(const Chord* chord)</a>
+<a name="ln1030">      {</a>
+<a name="ln1031">      if (chord-&gt;staff() &amp;&amp; chord-&gt;staff()-&gt;isDrumStaff(chord-&gt;tick())) {</a>
+<a name="ln1032">            const Drumset* ds = chord-&gt;staff()-&gt;part()-&gt;instrument(chord-&gt;tick())-&gt;drumset();</a>
+<a name="ln1033">            return ds;</a>
+<a name="ln1034">            }</a>
+<a name="ln1035">      return nullptr;</a>
+<a name="ln1036">      }</a>
+<a name="ln1037"> </a>
+<a name="ln1038">//---------------------------------------------------------</a>
+<a name="ln1039">//   renderTremolo</a>
+<a name="ln1040">//---------------------------------------------------------</a>
+<a name="ln1041"> </a>
+<a name="ln1042">void renderTremolo(Chord* chord, QList&lt;NoteEventList&gt;&amp; ell)</a>
+<a name="ln1043">      {</a>
+<a name="ln1044">      Segment* seg = chord-&gt;segment();</a>
+<a name="ln1045">      Tremolo* tremolo = chord-&gt;tremolo();</a>
+<a name="ln1046">      int notes = int(chord-&gt;notes().size());</a>
+<a name="ln1047"> </a>
+<a name="ln1048">      // check if tremolo was rendered before for drum staff</a>
+<a name="ln1049">      const Drumset* ds = getDrumset(chord);</a>
+<a name="ln1050">      if (ds) {</a>
+<a name="ln1051">            for (Note* n : chord-&gt;notes()) {</a>
+<a name="ln1052">                  DrumInstrumentVariant div = ds-&gt;findVariant(n-&gt;pitch(), chord-&gt;articulations(), chord-&gt;tremolo());</a>
+<a name="ln1053">                  if (div.pitch != INVALID_PITCH &amp;&amp; div.tremolo == tremolo-&gt;tremoloType())</a>
+<a name="ln1054">                        return; // already rendered</a>
+<a name="ln1055">                  }</a>
+<a name="ln1056">            }</a>
+<a name="ln1057"> </a>
+<a name="ln1058">      // we cannot render buzz roll with MIDI events only</a>
+<a name="ln1059">      if (tremolo-&gt;tremoloType() == TremoloType::BUZZ_ROLL)</a>
+<a name="ln1060">            return;</a>
+<a name="ln1061"> </a>
+<a name="ln1062">      // render tremolo with multiple events</a>
+<a name="ln1063">      if (chord-&gt;tremoloChordType() == TremoloChordType::TremoloFirstNote) {</a>
+<a name="ln1064">            int t = MScore::division / (1 &lt;&lt; (tremolo-&gt;lines() + chord-&gt;durationType().hooks()));</a>
+<a name="ln1065">            SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln1066">            Segment* seg2 = seg-&gt;next(st);</a>
+<a name="ln1067">            int track = chord-&gt;track();</a>
+<a name="ln1068">            while (seg2 &amp;&amp; !seg2-&gt;element(track))</a>
+<a name="ln1069">                  seg2 = seg2-&gt;next(st);</a>
+<a name="ln1070"> </a>
+<a name="ln1071">            if (!seg2)</a>
+<a name="ln1072">                  return;</a>
+<a name="ln1073"> </a>
+<a name="ln1074">            Element* s2El = seg2-&gt;element(track);</a>
+<a name="ln1075">            if (s2El) {</a>
+<a name="ln1076">                  if (!s2El-&gt;isChord())</a>
+<a name="ln1077">                        return;</a>
+<a name="ln1078">                  }</a>
+<a name="ln1079">            else</a>
+<a name="ln1080">                  return;</a>
+<a name="ln1081"> </a>
+<a name="ln1082">            Chord* c2 = toChord(s2El);</a>
+<a name="ln1083">            if (c2-&gt;type() == ElementType::CHORD) {</a>
+<a name="ln1084">                  int notes2 = int(c2-&gt;notes().size());</a>
+<a name="ln1085">                  int tnotes = qMax(notes, notes2);</a>
+<a name="ln1086">                  int tticks = chord-&gt;actualTicks().ticks() * 2; // use twice the size</a>
+<a name="ln1087">                  int n = tticks / t;</a>
+<a name="ln1088">                  n /= 2;</a>
+<a name="ln1089">                  int l = 2000 * t / tticks;</a>
+<a name="ln1090">                  for (int k = 0; k &lt; tnotes; ++k) {</a>
+<a name="ln1091">                        NoteEventList* events;</a>
+<a name="ln1092">                        if (k &lt; notes) {</a>
+<a name="ln1093">                              // first chord has note</a>
+<a name="ln1094">                              events = &amp;ell[k];</a>
+<a name="ln1095">                              events-&gt;clear();</a>
+<a name="ln1096">                              }</a>
+<a name="ln1097">                        else {</a>
+<a name="ln1098">                              // otherwise reuse note 0</a>
+<a name="ln1099">                              events = &amp;ell[0];</a>
+<a name="ln1100">                              }</a>
+<a name="ln1101">                        if (k &lt; notes &amp;&amp; k &lt; notes2) {</a>
+<a name="ln1102">                              // both chords have note</a>
+<a name="ln1103">                              int p1 = chord-&gt;notes()[k]-&gt;pitch();</a>
+<a name="ln1104">                              int p2 = c2-&gt;notes()[k]-&gt;pitch();</a>
+<a name="ln1105">                              int dpitch = p2 - p1;</a>
+<a name="ln1106">                              for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln1107">                                    events-&gt;append(NoteEvent(0, l * i * 2, l));</a>
+<a name="ln1108">                                    events-&gt;append(NoteEvent(dpitch, l * i * 2 + l, l));</a>
+<a name="ln1109">                                    }</a>
+<a name="ln1110">                              }</a>
+<a name="ln1111">                        else if (k &lt; notes) {</a>
+<a name="ln1112">                              // only first chord has note</a>
+<a name="ln1113">                              for (int i = 0; i &lt; n; ++i)</a>
+<a name="ln1114">                                    events-&gt;append(NoteEvent(0, l * i * 2, l));</a>
+<a name="ln1115">                              }</a>
+<a name="ln1116">                        else {</a>
+<a name="ln1117">                              // only second chord has note</a>
+<a name="ln1118">                              // reuse note 0 of first chord</a>
+<a name="ln1119">                              int p1 = chord-&gt;notes()[0]-&gt;pitch();</a>
+<a name="ln1120">                              int p2 = c2-&gt;notes()[k]-&gt;pitch();</a>
+<a name="ln1121">                              int dpitch = p2-p1;</a>
+<a name="ln1122">                              for (int i = 0; i &lt; n; ++i)</a>
+<a name="ln1123">                                    events-&gt;append(NoteEvent(dpitch, l * i * 2 + l, l));</a>
+<a name="ln1124">                              }</a>
+<a name="ln1125">                        }</a>
+<a name="ln1126">                  }</a>
+<a name="ln1127">            else</a>
+<a name="ln1128">                  qDebug(&quot;Chord::renderTremolo: cannot find 2. chord&quot;);</a>
+<a name="ln1129">            }</a>
+<a name="ln1130">      else if (chord-&gt;tremoloChordType() == TremoloChordType::TremoloSecondNote) {</a>
+<a name="ln1131">            for (int k = 0; k &lt; notes; ++k) {</a>
+<a name="ln1132">                  NoteEventList* events = &amp;(ell)[k];</a>
+<a name="ln1133">                  events-&gt;clear();</a>
+<a name="ln1134">                  }</a>
+<a name="ln1135">            }</a>
+<a name="ln1136">      else if (chord-&gt;tremoloChordType() == TremoloChordType::TremoloSingle) {</a>
+<a name="ln1137">            int t = MScore::division / (1 &lt;&lt; (tremolo-&gt;lines() + chord-&gt;durationType().hooks()));</a>
+<a name="ln1138">            if (t == 0) // avoid crash on very short tremolo</a>
+<a name="ln1139">                  t = 1;</a>
+<a name="ln1140">            int n = chord-&gt;ticks().ticks() / t;</a>
+<a name="ln1141">            int l = 1000 / n;</a>
+<a name="ln1142">            for (int k = 0; k &lt; notes; ++k) {</a>
+<a name="ln1143">                  NoteEventList* events = &amp;(ell)[k];</a>
+<a name="ln1144">                  events-&gt;clear();</a>
+<a name="ln1145">                  for (int i = 0; i &lt; n; ++i)</a>
+<a name="ln1146">                        events-&gt;append(NoteEvent(0, l * i, l));</a>
+<a name="ln1147">                  }</a>
+<a name="ln1148">            }</a>
+<a name="ln1149">      }</a>
+<a name="ln1150"> </a>
+<a name="ln1151">//---------------------------------------------------------</a>
+<a name="ln1152">//   renderArpeggio</a>
+<a name="ln1153">//---------------------------------------------------------</a>
+<a name="ln1154"> </a>
+<a name="ln1155">void renderArpeggio(Chord *chord, QList&lt;NoteEventList&gt; &amp; ell)</a>
+<a name="ln1156">      {</a>
+<a name="ln1157">      int notes = int(chord-&gt;notes().size());</a>
+<a name="ln1158">      int l = 64;</a>
+<a name="ln1159">      while (l &amp;&amp; (l * notes &gt; chord-&gt;upNote()-&gt;playTicks()))</a>
+<a name="ln1160">            l = 2*l / 3;</a>
+<a name="ln1161">      int start, end, step;</a>
+<a name="ln1162">      bool up = chord-&gt;arpeggio()-&gt;arpeggioType() != ArpeggioType::DOWN &amp;&amp; chord-&gt;arpeggio()-&gt;arpeggioType() != ArpeggioType::DOWN_STRAIGHT;</a>
+<a name="ln1163">      if (up) {</a>
+<a name="ln1164">            start = 0;</a>
+<a name="ln1165">            end   = notes;</a>
+<a name="ln1166">            step  = 1;</a>
+<a name="ln1167">            }</a>
+<a name="ln1168">      else {</a>
+<a name="ln1169">            start = notes - 1;</a>
+<a name="ln1170">            end   = -1;</a>
+<a name="ln1171">            step  = -1;</a>
+<a name="ln1172">            }</a>
+<a name="ln1173">      int j = 0;</a>
+<a name="ln1174">      for (int i = start; i != end; i += step) {</a>
+<a name="ln1175">            NoteEventList* events = &amp;(ell)[i];</a>
+<a name="ln1176">            events-&gt;clear();</a>
+<a name="ln1177"> </a>
+<a name="ln1178">            auto tempoRatio = chord-&gt;score()-&gt;tempomap()-&gt;tempo(chord-&gt;tick().ticks()) / Score::defaultTempo();</a>
+<a name="ln1179">            int ot = (l * j * 1000) / chord-&gt;upNote()-&gt;playTicks() *</a>
+<a name="ln1180">                        tempoRatio * chord-&gt;arpeggio()-&gt;Stretch();</a>
+<a name="ln1181"> </a>
+<a name="ln1182">            events-&gt;append(NoteEvent(0, ot, 1000 - ot));</a>
+<a name="ln1183">            j++;</a>
+<a name="ln1184">            }</a>
+<a name="ln1185">      }</a>
+<a name="ln1186"> </a>
+<a name="ln1187">//---------------------------------------------------------</a>
+<a name="ln1188">//   convertLine</a>
+<a name="ln1189">// find the line in clefF corresponding to lineL2 in clefR</a>
+<a name="ln1190">//---------------------------------------------------------</a>
+<a name="ln1191"> </a>
+<a name="ln1192">int convertLine (int lineL2, ClefType clefL, ClefType clefR) {</a>
+<a name="ln1193">      int lineR2 = lineL2;</a>
+<a name="ln1194">      int goalpitch = line2pitch(lineL2, clefL, Key::C);</a>
+<a name="ln1195">      int p;</a>
+<a name="ln1196">      while ( (p = line2pitch(lineR2, clefR, Key::C)) &gt; goalpitch &amp;&amp; p &lt; 127)</a>
+<a name="ln1197">            lineR2++;</a>
+<a name="ln1198">      while ( (p = line2pitch(lineR2, clefR, Key::C)) &lt; goalpitch &amp;&amp;  p &gt; 0)</a>
+<a name="ln1199">            lineR2--;</a>
+<a name="ln1200">      return lineR2;</a>
+<a name="ln1201">      }</a>
+<a name="ln1202"> </a>
+<a name="ln1203">//---------------------------------------------------------</a>
+<a name="ln1204">//   convertLine</a>
+<a name="ln1205">// find the line in clef for NoteL corresponding to lineL2 in clef for noteR</a>
+<a name="ln1206">// for example middle C is line 10 in Treble clef, but is line -2 in Bass clef.</a>
+<a name="ln1207">//---------------------------------------------------------</a>
+<a name="ln1208"> </a>
+<a name="ln1209">int convertLine(int lineL2, Note *noteL, Note *noteR)</a>
+<a name="ln1210">      {</a>
+<a name="ln1211">      return convertLine(lineL2,</a>
+<a name="ln1212">         noteL-&gt;chord()-&gt;staff()-&gt;clef(noteL-&gt;chord()-&gt;tick()),</a>
+<a name="ln1213">         noteR-&gt;chord()-&gt;staff()-&gt;clef(noteR-&gt;chord()-&gt;tick()));</a>
+<a name="ln1214">      }</a>
+<a name="ln1215"> </a>
+<a name="ln1216">//---------------------------------------------------------</a>
+<a name="ln1217">//   articulationExcursion -- an articulation such as a trill, or modant consists of several notes</a>
+<a name="ln1218">// played in succession.  The pitch offsets of each such note in the sequence can be represented either</a>
+<a name="ln1219">// as a number of steps in the diatonic scale, or in half steps as on a piano keyboard.</a>
+<a name="ln1220">// this function, articulationExcursion, takes deltastep indicating the number of steps in the</a>
+<a name="ln1221">// diatonic scale, and calculates (and returns) the number of half steps, taking several things into account.</a>
+<a name="ln1222">// E.g., the key signature, a trill from e to f, is to be understood as a trill between E and F# if we are</a>
+<a name="ln1223">// in the key of G.</a>
+<a name="ln1224">// E.g., if previously (looking backward in time) in the same measure there is another note on the same</a>
+<a name="ln1225">// staff line/space, and that note has an accidental (sharp,flat,natural,etc), then we want to match that</a>
+<a name="ln1226">// tone exactly.</a>
+<a name="ln1227">// E.g., If there are multiple notes on the same line/space, then we only consider the most</a>
+<a name="ln1228">// recent one, but avoid looking forward in time after the current note.</a>
+<a name="ln1229">// E.g., Also if there is an accidental     // on a note one (or more) octaves above or below we</a>
+<a name="ln1230">// observe its accidental as well.</a>
+<a name="ln1231">// E.g., Still another case is that if two staffs are involved (such as a glissando between two</a>
+<a name="ln1232">// notes on different staffs) then we have to search both staffs for the most recent accidental.</a>
+<a name="ln1233">//</a>
+<a name="ln1234">// noteL is the note to measure the deltastep from, i.e., ornaments are w.r.t. this note</a>
+<a name="ln1235">// noteR is the note to search backward from to find accidentals.</a>
+<a name="ln1236">//    for ornament calculation noteL and noteR are the same, but for glissando they are</a>
+<a name="ln1237">//     the start end end note of glissando.</a>
+<a name="ln1238">// deltastep is the desired number of diatonic steps between the base note and this articulation step.</a>
+<a name="ln1239">//---------------------------------------------------------</a>
+<a name="ln1240"> </a>
+<a name="ln1241">int articulationExcursion(Note *noteL, Note *noteR, int deltastep)</a>
+<a name="ln1242">      {</a>
+<a name="ln1243">      if (0 == deltastep)</a>
+<a name="ln1244">            return 0;</a>
+<a name="ln1245">      Chord *chordL = noteL-&gt;chord();</a>
+<a name="ln1246">      Chord *chordR = noteR-&gt;chord();</a>
+<a name="ln1247">      int epitchL = noteL-&gt;epitch();</a>
+<a name="ln1248">      Fraction tickL = chordL-&gt;tick();</a>
+<a name="ln1249">      // we cannot use staffL = chord-&gt;staff() because that won't correspond to the noteL-&gt;line()</a>
+<a name="ln1250">      //   in the case the user has pressed Shift-Cmd-&gt;Up or Shift-Cmd-Down.</a>
+<a name="ln1251">      //   Therefore we have to take staffMove() into account using vStaffIdx().</a>
+<a name="ln1252">      Staff * staffL = noteL-&gt;score()-&gt;staff(chordL-&gt;vStaffIdx());</a>
+<a name="ln1253">      ClefType clefL = staffL-&gt;clef(tickL);</a>
+<a name="ln1254">      // line represents the ledger line of the staff.  0 is the top line, 1, is the space between the top 2 lines,</a>
+<a name="ln1255">      //  ... 8 is the bottom line.</a>
+<a name="ln1256">      int lineL     = noteL-&gt;line();</a>
+<a name="ln1257">      // we use line - deltastep, because lines are oriented from top to bottom, while step is oriented from bottom to top.</a>
+<a name="ln1258">      int lineL2    = lineL - deltastep;</a>
+<a name="ln1259">      Measure* measureR = chordR-&gt;segment()-&gt;measure();</a>
+<a name="ln1260"> </a>
+<a name="ln1261">      Segment* segment = noteL-&gt;chord()-&gt;segment();</a>
+<a name="ln1262">      int lineR2 = convertLine(lineL2, noteL, noteR);</a>
+<a name="ln1263">      // is there another note in this segment on the same line?</a>
+<a name="ln1264">      // if so, use its pitch exactly.</a>
+<a name="ln1265">      int halfsteps = 0;</a>
+<a name="ln1266">      int staffIdx = noteL-&gt;chord()-&gt;staff()-&gt;idx(); // cannot use staffL-&gt;idx() because of staffMove()</a>
+<a name="ln1267">      int startTrack = staffIdx * VOICES;</a>
+<a name="ln1268">      int endTrack   = startTrack + VOICES;</a>
+<a name="ln1269">      bool done = false;</a>
+<a name="ln1270">      for (int track = startTrack; track &lt; endTrack; ++track) {</a>
+<a name="ln1271">            Element *e = segment-&gt;element(track);</a>
+<a name="ln1272">            if (!e || e-&gt;type() != ElementType::CHORD)</a>
+<a name="ln1273">                  continue;</a>
+<a name="ln1274">            Chord* chord = toChord(e);</a>
+<a name="ln1275">            if (chord-&gt;vStaffIdx() != chordL-&gt;vStaffIdx())</a>
+<a name="ln1276">                  continue;</a>
+<a name="ln1277">            for (Note* note : chord-&gt;notes()) {</a>
+<a name="ln1278">                  if (note-&gt;tieBack())</a>
+<a name="ln1279">                        continue;</a>
+<a name="ln1280">                  int pc = (note-&gt;line() + 700) % 7;</a>
+<a name="ln1281">                  int pc2 = (lineL2 + 700) % 7;</a>
+<a name="ln1282">                  if (pc2 == pc) {</a>
+<a name="ln1283">                        // e.g., if there is an F# note at this staff/tick, then force every F to be F#.</a>
+<a name="ln1284">                        int octaves = (note-&gt;line() - lineL2) / 7;</a>
+<a name="ln1285">                        halfsteps = note-&gt;epitch() + 12 * octaves - epitchL;</a>
+<a name="ln1286">                        done = true;</a>
+<a name="ln1287">                        break;</a>
+<a name="ln1288">                        }</a>
+<a name="ln1289">                  }</a>
+<a name="ln1290">            if (!done) {</a>
+<a name="ln1291">                  if (staffL-&gt;isPitchedStaff(segment-&gt;tick())) {</a>
+<a name="ln1292">                        bool error = false;</a>
+<a name="ln1293">                        AccidentalVal acciv2 = measureR-&gt;findAccidental(chordR-&gt;segment(), chordR-&gt;vStaffIdx(), lineR2, error);</a>
+<a name="ln1294">                        int acci2 = int(acciv2);</a>
+<a name="ln1295">                        // epitch (effective pitch) is a visible pitch so line2pitch returns exactly that.</a>
+<a name="ln1296">                        halfsteps = line2pitch(lineL-deltastep, clefL, Key::C) + acci2 - epitchL;</a>
+<a name="ln1297">                        }</a>
+<a name="ln1298">                  else {</a>
+<a name="ln1299">                        // cannot rely on accidentals or key signatures</a>
+<a name="ln1300">                        halfsteps = deltastep;</a>
+<a name="ln1301">                        }</a>
+<a name="ln1302">                  }</a>
+<a name="ln1303">            }</a>
+<a name="ln1304">      return halfsteps;</a>
+<a name="ln1305">      }</a>
+<a name="ln1306"> </a>
+<a name="ln1307">//---------------------------------------------------------</a>
+<a name="ln1308">// totalTiedNoteTicks</a>
+<a name="ln1309">//      return the total of the actualTicks of the given note plus</a>
+<a name="ln1310">//      the chain of zero or more notes tied to it to the right.</a>
+<a name="ln1311">//---------------------------------------------------------</a>
+<a name="ln1312"> </a>
+<a name="ln1313">int totalTiedNoteTicks(Note* note)</a>
+<a name="ln1314">      {</a>
+<a name="ln1315">      Fraction total = note-&gt;chord()-&gt;actualTicks();</a>
+<a name="ln1316">      while (note-&gt;tieFor() &amp;&amp; note-&gt;tieFor()-&gt;endNote() &amp;&amp; (note-&gt;chord()-&gt;tick() &lt; note-&gt;tieFor()-&gt;endNote()-&gt;chord()-&gt;tick())) {</a>
+<a name="ln1317">            note = note-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln1318">            total += note-&gt;chord()-&gt;actualTicks();</a>
+<a name="ln1319">            }</a>
+<a name="ln1320">      return total.ticks();</a>
+<a name="ln1321">      }</a>
+<a name="ln1322"> </a>
+<a name="ln1323">//---------------------------------------------------------</a>
+<a name="ln1324">//   renderNoteArticulation</a>
+<a name="ln1325">// prefix, vector of int, normally something like {0,-1,0,1} modeling the prefix of tremblement relative to the base note</a>
+<a name="ln1326">// body, vector of int, normally something like {0,-1,0,1} modeling the possibly repeated tremblement relative to the base note</a>
+<a name="ln1327">// tickspernote, number of ticks, either _16h or _32nd, i.e., MScore::division/4 or MScore::division/8</a>
+<a name="ln1328">// repeatp, true means repeat the body as many times as possible to fill the time slice.</a>
+<a name="ln1329">// sustainp, true means the last note of the body is sustained to fill remaining time slice</a>
+<a name="ln1330">//---------------------------------------------------------</a>
+<a name="ln1331"> </a>
+<a name="ln1332">bool renderNoteArticulation(NoteEventList* events, Note* note, bool chromatic, int requestedTicksPerNote,</a>
+<a name="ln1333">   const vector&lt;int&gt;&amp; prefix, const vector&lt;int&gt;&amp; body,</a>
+<a name="ln1334">   bool repeatp, bool sustainp, const vector&lt;int&gt;&amp; suffix,</a>
+<a name="ln1335">   int fastestFreq=64, int slowestFreq=8 // 64 Hz and 8 Hz</a>
+<a name="ln1336">   )</a>
+<a name="ln1337">      {</a>
+<a name="ln1338">      events-&gt;clear();</a>
+<a name="ln1339">      Chord *chord = note-&gt;chord();</a>
+<a name="ln1340">      int maxticks = totalTiedNoteTicks(note);</a>
+<a name="ln1341">      int space = 1000 * maxticks;</a>
+<a name="ln1342">      int numrepeat = 1;</a>
+<a name="ln1343">      int sustain   = 0;</a>
+<a name="ln1344">      int ontime    = 0;</a>
+<a name="ln1345"> </a>
+<a name="ln1346">      int gnb = note-&gt;chord()-&gt;graceNotesBefore().size();</a>
+<a name="ln1347">      int p = int(prefix.size());</a>
+<a name="ln1348">      int b = int(body.size());</a>
+<a name="ln1349">      int s = int(suffix.size());</a>
+<a name="ln1350">      int gna = note-&gt;chord()-&gt;graceNotesAfter().size();</a>
+<a name="ln1351"> </a>
+<a name="ln1352">      int ticksPerNote = 0;</a>
+<a name="ln1353"> </a>
+<a name="ln1354">      if (gnb + p + b + s + gna &lt;= 0 )</a>
+<a name="ln1355">            return false;</a>
+<a name="ln1356"> </a>
+<a name="ln1357">      Fraction tick = chord-&gt;tick();</a>
+<a name="ln1358">      qreal tempo = chord-&gt;score()-&gt;tempo(tick);</a>
+<a name="ln1359">      int ticksPerSecond = tempo * MScore::division;</a>
+<a name="ln1360"> </a>
+<a name="ln1361">      int minTicksPerNote = int(ticksPerSecond / fastestFreq);</a>
+<a name="ln1362">      int maxTicksPerNote = (0 == slowestFreq) ? 0 : int(ticksPerSecond / slowestFreq);</a>
+<a name="ln1363"> </a>
+<a name="ln1364">      // for fast tempos, we have to slow down the tremblement frequency, i.e., increase the ticks per note</a>
+<a name="ln1365">      if (requestedTicksPerNote &gt;= minTicksPerNote)</a>
+<a name="ln1366">            ;</a>
+<a name="ln1367">      else { // try to divide the requested frequency by a power of 2 if possible, if not, use the maximum frequency, ie., minTicksPerNote</a>
+<a name="ln1368">            ticksPerNote = requestedTicksPerNote;</a>
+<a name="ln1369">            while (ticksPerNote &lt; minTicksPerNote) {</a>
+<a name="ln1370">                  ticksPerNote *= 2; // decrease the tremblement frequency</a>
+<a name="ln1371">                  }</a>
+<a name="ln1372">            if (ticksPerNote &gt; maxTicksPerNote)</a>
+<a name="ln1373">                  ticksPerNote = minTicksPerNote;</a>
+<a name="ln1374">            }</a>
+<a name="ln1375"> </a>
+<a name="ln1376">      ticksPerNote = max(requestedTicksPerNote, minTicksPerNote);</a>
+<a name="ln1377"> </a>
+<a name="ln1378">      if (slowestFreq &lt;= 0) // no slowest freq given such as something silly like glissando with 4 notes over 8 counts.</a>
+<a name="ln1379">            ;</a>
+<a name="ln1380">      else if (ticksPerNote &lt;= maxTicksPerNote) // in a good range, so we don't need to adjust ticksPerNote</a>
+<a name="ln1381">            ;</a>
+<a name="ln1382">      else {</a>
+<a name="ln1383">            // for slow tempos, such as adagio, we may need to speed up the tremblement frequency, i.e., decrease the ticks per note, to make it sound reasonable.</a>
+<a name="ln1384">            ticksPerNote = requestedTicksPerNote ;</a>
+<a name="ln1385">            while (ticksPerNote &gt; maxTicksPerNote) {</a>
+<a name="ln1386">                  ticksPerNote /= 2;</a>
+<a name="ln1387">                  }</a>
+<a name="ln1388">            if (ticksPerNote &lt; minTicksPerNote)</a>
+<a name="ln1389">                  ticksPerNote = minTicksPerNote;</a>
+<a name="ln1390">            }</a>
+<a name="ln1391">      // calculate whether to shorten the duration value.</a>
+<a name="ln1392">      if ( ticksPerNote*(gnb + p + b + s + gna) &lt;= maxticks )</a>
+<a name="ln1393">            ; // plenty of space to play the notes without changing the requested trill note duration</a>
+<a name="ln1394">      else if ( ticksPerNote == minTicksPerNote )</a>
+<a name="ln1395">            return false; // the ornament is impossible to implement respecting the minimum duration and all the notes it contains</a>
+<a name="ln1396">      else {</a>
+<a name="ln1397">            ticksPerNote = maxticks / (gnb + p + b + s + gna);  // integer division ignoring remainder</a>
+<a name="ln1398">            if ( slowestFreq &lt;= 0 )</a>
+<a name="ln1399">                  ;</a>
+<a name="ln1400">            else if ( ticksPerNote &lt; minTicksPerNote )</a>
+<a name="ln1401">                  return false;</a>
+<a name="ln1402">            }</a>
+<a name="ln1403"> </a>
+<a name="ln1404">      int millespernote = space * ticksPerNote  / maxticks;  // rescale duration into per mille</a>
+<a name="ln1405"> </a>
+<a name="ln1406">      // local function:</a>
+<a name="ln1407">      // look ahead in the given vector to see if the current note is the same pitch as the next note or next several notes.</a>
+<a name="ln1408">      // If so, increment the duration by the appropriate note duration, and increment the index, j, to the next note index</a>
+<a name="ln1409">      // of a different pitch.</a>
+<a name="ln1410">      // The total duration of the tied note is returned, and the index is modified.</a>
+<a name="ln1411">      auto tieForward = [millespernote] (int &amp; j, const vector&lt;int&gt; &amp; vec) {</a>
+<a name="ln1412">            int size = int(vec.size());</a>
+<a name="ln1413">            int duration = millespernote;</a>
+<a name="ln1414">            while ( j &lt; size-1 &amp;&amp; vec[j] == vec[j+1] ) {</a>
+<a name="ln1415">                  duration += millespernote;</a>
+<a name="ln1416">                  j++;</a>
+<a name="ln1417">                  }</a>
+<a name="ln1418">            return duration;</a>
+<a name="ln1419">            };</a>
+<a name="ln1420"> </a>
+<a name="ln1421">      // local function:</a>
+<a name="ln1422">      //   append a NoteEvent either by calculating an articulationExcursion or by</a>
+<a name="ln1423">      //   the given chromatic relative pitch.</a>
+<a name="ln1424">      //   RETURNS the new ontime value.  The caller is expected to assign this value.</a>
+<a name="ln1425">      auto makeEvent = [note,chord,chromatic,events] (int pitch, int ontime, int duration) {</a>
+<a name="ln1426">            events-&gt;append( NoteEvent(chromatic ? pitch : articulationExcursion(note,note,pitch),</a>
+<a name="ln1427">               ontime/chord-&gt;actualTicks().ticks(),</a>
+<a name="ln1428">               duration/chord-&gt;actualTicks().ticks()));</a>
+<a name="ln1429">            return ontime + duration;</a>
+<a name="ln1430">            };</a>
+<a name="ln1431"> </a>
+<a name="ln1432">      // local function:</a>
+<a name="ln1433">      //    Given a chord from a grace note, (normally the chord contains a single note) and create</a>
+<a name="ln1434">      //    a NoteEvent as if the grace note were part of the articulation (such as trill).  This</a>
+<a name="ln1435">      //    local function works for the graceNotesBefore() and also graceNotesAfter().</a>
+<a name="ln1436">      //    If the grace note has play=false, then it will sound as a rest, but the other grace</a>
+<a name="ln1437">      //    notes will still play.  This means graceExtend simply omits the call to append( NoteEvent(...))</a>
+<a name="ln1438">      //    but still updates ontime +=millespernote.</a>
+<a name="ln1439">      //    RETURNS the new value of ontime, so caller must make an assignment to the return value.</a>
+<a name="ln1440">      auto graceExtend = [millespernote,chord,events] (int notePitch, QVector&lt;Chord*&gt; graceNotes, int ontime) {</a>
+<a name="ln1441">            for (Chord* c : graceNotes) {</a>
+<a name="ln1442">                  for (Note* n : c-&gt;notes()) {</a>
+<a name="ln1443">                        // NoteEvent takes relative pitch as first argument.</a>
+<a name="ln1444">                        // The pitch is relative to the pitch of the note, the event is rendering</a>
+<a name="ln1445">                        if (n-&gt;play())</a>
+<a name="ln1446">                              events-&gt;append( NoteEvent(n-&gt;pitch() - notePitch,</a>
+<a name="ln1447">                                 ontime/chord-&gt;actualTicks().ticks(),</a>
+<a name="ln1448">                                 millespernote/chord-&gt;actualTicks().ticks()));</a>
+<a name="ln1449">                        }</a>
+<a name="ln1450">                  ontime += millespernote;</a>
+<a name="ln1451">                  }</a>
+<a name="ln1452">            return ontime;</a>
+<a name="ln1453">            };</a>
+<a name="ln1454"> </a>
+<a name="ln1455">      // calculate the number of times to repeat the body, and sustain the last note of the body</a>
+<a name="ln1456">      // 1000 = P + numrepeat*B+sustain + S</a>
+<a name="ln1457">      if (repeatp)</a>
+<a name="ln1458">            numrepeat = (space - millespernote*(gnb + p + s + gna)) / (millespernote * b);</a>
+<a name="ln1459">      if (sustainp)</a>
+<a name="ln1460">            sustain   = space - millespernote*(gnb + p + numrepeat * b + s + gna);</a>
+<a name="ln1461">      // render the graceNotesBefore</a>
+<a name="ln1462">      ontime = graceExtend(note-&gt;pitch(),note-&gt;chord()-&gt;graceNotesBefore(), ontime);</a>
+<a name="ln1463"> </a>
+<a name="ln1464">      // render the prefix</a>
+<a name="ln1465">      for (int j=0; j &lt; p; j++)</a>
+<a name="ln1466">            ontime = makeEvent(prefix[j], ontime, tieForward(j,prefix));</a>
+<a name="ln1467"> </a>
+<a name="ln1468">      if (b &gt; 0) {</a>
+<a name="ln1469">            // render the body, but not the final repetition</a>
+<a name="ln1470">            for (int r = 0; r &lt; numrepeat-1; r++) {</a>
+<a name="ln1471">                  for (int j=0; j &lt; b; j++)</a>
+<a name="ln1472">                        ontime = makeEvent(body[j], ontime, millespernote);</a>
+<a name="ln1473">                  }</a>
+<a name="ln1474">            // render the final repetition of body, but not the final note of the repition</a>
+<a name="ln1475">            for (int j = 0; j &lt; b - 1; j++)</a>
+<a name="ln1476">                  ontime = makeEvent(body[j], ontime, millespernote);</a>
+<a name="ln1477">            // render the final note of the final repeat of body</a>
+<a name="ln1478">            ontime = makeEvent(body[b-1], ontime, millespernote+sustain);</a>
+<a name="ln1479">            }</a>
+<a name="ln1480">      // render the suffix</a>
+<a name="ln1481">      for (int j = 0; j &lt; s; j++)</a>
+<a name="ln1482">            ontime = makeEvent(suffix[j], ontime, tieForward(j,suffix));</a>
+<a name="ln1483">      // render graceNotesAfter</a>
+<a name="ln1484">      graceExtend(note-&gt;pitch(), note-&gt;chord()-&gt;graceNotesAfter(), ontime);</a>
+<a name="ln1485">      return true;</a>
+<a name="ln1486">      }</a>
+<a name="ln1487"> </a>
+<a name="ln1488">// This struct specifies how to render an articulation.</a>
+<a name="ln1489">//   atype - the articulation type to implement, such as SymId::ornamentTurn</a>
+<a name="ln1490">//   ostyles - the actual ornament has a property called ornamentStyle whose value is</a>
+<a name="ln1491">//             a value of type MScore::OrnamentStyle.  This ostyles field indicates the</a>
+<a name="ln1492">//             the set of ornamentStyles which apply to this rendition.</a>
+<a name="ln1493">//   duration - the default duration for each note in the rendition, the final duration</a>
+<a name="ln1494">//            rendered might be less than this if an articulation is attached to a note of</a>
+<a name="ln1495">//            short duration.</a>
+<a name="ln1496">//   prefix - vector of integers. indicating which notes to play at the beginning of rendering the</a>
+<a name="ln1497">//            articulation.  0 represents the principle note, 1==&gt; the note diatonically 1 above</a>
+<a name="ln1498">//            -1 ==&gt; the note diatonically 1 below.  E.g., in the key of G, if a turn articulation</a>
+<a name="ln1499">//            occurs above the note F#, then 0==&gt;F#, 1==&gt;G, -1==&gt;E.</a>
+<a name="ln1500">//            These integers indicate which notes actual notes to play when rendering the ornamented</a>
+<a name="ln1501">//            note.   However, if the same integer appears several times adjacently such as {0,0,0,1}</a>
+<a name="ln1502">//            That means play the notes tied.  e.g., F# followed by G, but the duration of F# is 3x the</a>
+<a name="ln1503">//            duration of the G.</a>
+<a name="ln1504">//    body   - notes to play comprising the body of the rendered ornament.</a>
+<a name="ln1505">//            The body differs from the prefix and suffix in several ways.</a>
+<a name="ln1506">//            * body does not support tied notes: {0,0,0,1} means play 4 distinct notes (not tied).</a>
+<a name="ln1507">//            * if there is sufficient duration in the principle note, AND repeatep is true, then body</a>
+<a name="ln1508">//               will be rendered multiple times, as the duration allows.</a>
+<a name="ln1509">//            * to avoid a time gap (or rest) in rendering the articulation, if sustainp is true,</a>
+<a name="ln1510">//               then the final note of the body will be sustained to fill the left-over time.</a>
+<a name="ln1511">//    suffix - similar to prefix but played once at the end of the rendered ornament.</a>
+<a name="ln1512">//    repeatp  - whether the body is repeatable in its entirety.</a>
+<a name="ln1513">//    sustainp - whether the final note of the body should be sustained to fill the remaining duration.</a>
+<a name="ln1514"> </a>
+<a name="ln1515">struct OrnamentExcursion {</a>
+<a name="ln1516">      SymId atype;</a>
+<a name="ln1517">      set&lt;MScore::OrnamentStyle&gt; ostyles;</a>
+<a name="ln1518">      int duration;</a>
+<a name="ln1519">      vector&lt;int&gt; prefix;</a>
+<a name="ln1520">      vector&lt;int&gt; body;</a>
+<a name="ln1521">      bool repeatp;</a>
+<a name="ln1522">      bool sustainp;</a>
+<a name="ln1523">      vector&lt;int&gt; suffix;</a>
+<a name="ln1524">      };</a>
+<a name="ln1525"> </a>
+<a name="ln1526">set&lt;MScore::OrnamentStyle&gt; baroque  = {MScore::OrnamentStyle::BAROQUE};</a>
+<a name="ln1527">set&lt;MScore::OrnamentStyle&gt; defstyle = {MScore::OrnamentStyle::DEFAULT};</a>
+<a name="ln1528">set&lt;MScore::OrnamentStyle&gt; any; // empty set has the special meaning of any-style, rather than no-styles.</a>
+<a name="ln1529">int _16th = MScore::division / 4;</a>
+<a name="ln1530">int _32nd = _16th / 2;</a>
+<a name="ln1531"> </a>
+<a name="ln1532">vector&lt;OrnamentExcursion&gt; excursions = {</a>
+<a name="ln1533">      //  articulation type            set of  duration       body         repeatp      suffix</a>
+<a name="ln1534">      //                               styles          prefix                    sustainp</a>
+<a name="ln1535">      { SymId::ornamentTurn,                any, _32nd, {},    {1,0,-1,0},   false, true, {}}</a>
+<a name="ln1536">      ,{SymId::ornamentTurnInverted,        any, _32nd, {},    {-1,0,1,0},   false, true, {}}</a>
+<a name="ln1537">      ,{SymId::ornamentTrill,           baroque, _32nd, {1,0}, {1,0},        true,  true, {}}</a>
+<a name="ln1538">      ,{SymId::ornamentTrill,          defstyle, _32nd, {0,1}, {0,1},        true,  true, {}}</a>
+<a name="ln1539">      ,{SymId::brassMuteClosed,         baroque, _32nd, {0,-1},{0, -1},      true,  true, {}}</a>
+<a name="ln1540">      ,{SymId::ornamentMordentInverted,     any, _32nd, {},    {0,-1,0},     false, true, {}}</a>
+<a name="ln1541">      ,{SymId::ornamentMordent,        defstyle, _32nd, {},    {0,1,0},      false, true, {}} // inverted mordent</a>
+<a name="ln1542">      ,{SymId::ornamentMordent,         baroque, _32nd, {1,0,1},{0},         false, true, {}} // short trill</a>
+<a name="ln1543">      ,{SymId::ornamentTremblement,         any, _32nd, {1,0}, {1,0},        false, true, {}}</a>
+<a name="ln1544">      ,{SymId::ornamentPrallMordent,        any, _32nd, {},    {1,0,-1,0},   false, true, {}}</a>
+<a name="ln1545">      ,{SymId::ornamentLinePrall,           any, _32nd, {2,2,2},{1,0},       true,  true, {}}</a>
+<a name="ln1546">      ,{SymId::ornamentUpPrall,             any, _16th, {-1,0},{1,0},        true,  true, {1,0}} // p 144 Ex 152 [1]</a>
+<a name="ln1547">      ,{SymId::ornamentUpMordent,           any, _16th, {-1,0},{1,0},        true,  true, {-1,0}} // p 144 Ex 152 [1]</a>
+<a name="ln1548"> </a>
+<a name="ln1549">      ,{SymId::ornamentPrecompMordentUpperPrefix, any, _16th, {1,1,1,0}, {1,0},    true,  true, {}} // p136 Cadence Appuyee [1] [2]</a>
+<a name="ln1550">      ,{SymId::ornamentDownMordent,         any, _16th, {1,1,1,0}, {1,0},    true,  true, {-1, 0}} // p136 Cadence Appuyee + mordent [1] [2]</a>
+<a name="ln1551">      ,{SymId::ornamentPrallUp,             any, _16th, {1,0}, {1,0},        true,  true, {-1,0}} // p136 Double Cadence [1]</a>
+<a name="ln1552">      ,{SymId::ornamentPrallDown,           any, _16th, {1,0}, {1,0},        true,  true, {-1,0,0,0}} // p144 ex 153 [1]</a>
+<a name="ln1553">      ,{SymId::ornamentPrecompSlide,        any, _32nd, {},    {0},          false, true, {}}</a>
+<a name="ln1554"> </a>
+<a name="ln1555">      // [1] Some of the articulations/ornaments in the excursions table above come from</a>
+<a name="ln1556">      // Baroque Music, Style and Performance A Handbook, by Robert Donington,(c) 1982</a>
+<a name="ln1557">      // ISBN 0-393-30052-8, W. W. Norton &amp; Company, Inc.</a>
+<a name="ln1558"> </a>
+<a name="ln1559">      // [2] In some cases, the example from [1] does not preserve the timing.</a>
+<a name="ln1560">      // For example, illustrates 2+1/4 counts per half note.</a>
+<a name="ln1561">      };</a>
+<a name="ln1562"> </a>
+<a name="ln1563">//---------------------------------------------------------</a>
+<a name="ln1564">//   renderNoteArticulation</a>
+<a name="ln1565">//---------------------------------------------------------</a>
+<a name="ln1566"> </a>
+<a name="ln1567">bool renderNoteArticulation(NoteEventList* events, Note * note, bool chromatic, SymId articulationType, MScore::OrnamentStyle ornamentStyle)</a>
+<a name="ln1568">      {</a>
+<a name="ln1569">      if (!note-&gt;staff()-&gt;isPitchedStaff(note-&gt;tick())) // not enough info in tab staff</a>
+<a name="ln1570">            return false;</a>
+<a name="ln1571"> </a>
+<a name="ln1572">      vector&lt;int&gt; emptypattern = {};</a>
+<a name="ln1573">      for (auto&amp; oe : excursions) {</a>
+<a name="ln1574">            if (oe.atype == articulationType &amp;&amp; ( 0 == oe.ostyles.size()</a>
+<a name="ln1575">                  || oe.ostyles.end() != oe.ostyles.find(ornamentStyle))) {</a>
+<a name="ln1576">                     return renderNoteArticulation(events, note, chromatic, oe.duration,</a>
+<a name="ln1577">                                                   oe.prefix, oe.body, oe.repeatp, oe.sustainp, oe.suffix);</a>
+<a name="ln1578">                     }</a>
+<a name="ln1579">            }</a>
+<a name="ln1580">      return false;</a>
+<a name="ln1581">      }</a>
+<a name="ln1582"> </a>
+<a name="ln1583">//---------------------------------------------------------</a>
+<a name="ln1584">//   renderNoteArticulation</a>
+<a name="ln1585">//---------------------------------------------------------</a>
+<a name="ln1586"> </a>
+<a name="ln1587">bool renderNoteArticulation(NoteEventList* events, Note * note, bool chromatic, Trill::Type trillType, MScore::OrnamentStyle ornamentStyle)</a>
+<a name="ln1588">      {</a>
+<a name="ln1589">      map&lt;Trill::Type,SymId&gt; articulationMap = {</a>
+<a name="ln1590">            {Trill::Type::TRILL_LINE,      SymId::ornamentTrill      }</a>
+<a name="ln1591">           ,{Trill::Type::UPPRALL_LINE,    SymId::ornamentUpPrall    }</a>
+<a name="ln1592">           ,{Trill::Type::DOWNPRALL_LINE,  SymId::ornamentPrecompMordentUpperPrefix  }</a>
+<a name="ln1593">           ,{Trill::Type::PRALLPRALL_LINE, SymId::ornamentTrill      }</a>
+<a name="ln1594">            };</a>
+<a name="ln1595">      auto it = articulationMap.find(trillType);</a>
+<a name="ln1596">      if (it == articulationMap.cend())</a>
+<a name="ln1597">            return false;</a>
+<a name="ln1598">      else</a>
+<a name="ln1599">            return renderNoteArticulation(events, note, chromatic, it-&gt;second, ornamentStyle);</a>
+<a name="ln1600">      }</a>
+<a name="ln1601"> </a>
+<a name="ln1602">//---------------------------------------------------------</a>
+<a name="ln1603">//   noteHasGlissando</a>
+<a name="ln1604">// true if note is the end of a glissando</a>
+<a name="ln1605">//---------------------------------------------------------</a>
+<a name="ln1606"> </a>
+<a name="ln1607">bool noteHasGlissando(Note *note)</a>
+<a name="ln1608">      {</a>
+<a name="ln1609">      for (Spanner* spanner : note-&gt;spannerFor()) {</a>
+<a name="ln1610">            if ((spanner-&gt;type() == ElementType::GLISSANDO)</a>
+<a name="ln1611">               &amp;&amp; spanner-&gt;endElement()</a>
+<a name="ln1612">               &amp;&amp; (ElementType::NOTE == spanner-&gt;endElement()-&gt;type()))</a>
+<a name="ln1613">                  return true;</a>
+<a name="ln1614">            }</a>
+<a name="ln1615">      return false;</a>
+<a name="ln1616">      }</a>
+<a name="ln1617"> </a>
+<a name="ln1618">//---------------------------------------------------------</a>
+<a name="ln1619">//   renderGlissando</a>
+<a name="ln1620">//---------------------------------------------------------</a>
+<a name="ln1621"> </a>
+<a name="ln1622">void renderGlissando(NoteEventList* events, Note *notestart)</a>
+<a name="ln1623">      {</a>
+<a name="ln1624">      vector&lt;int&gt; empty = {};</a>
+<a name="ln1625">      int Cnote = 60; // pitch of middle C</a>
+<a name="ln1626">      int pitchstart = notestart-&gt;ppitch();</a>
+<a name="ln1627">      int linestart = notestart-&gt;line();</a>
+<a name="ln1628"> </a>
+<a name="ln1629">      set&lt;int&gt; blacknotes = {  1,  3,    6, 8, 10};</a>
+<a name="ln1630">      set&lt;int&gt; whitenotes = {0,  2, 4, 5, 7,  9, 11};</a>
+<a name="ln1631"> </a>
+<a name="ln1632">      for (Spanner* spanner : notestart-&gt;spannerFor()) {</a>
+<a name="ln1633">            if (spanner-&gt;type() == ElementType::GLISSANDO) {</a>
+<a name="ln1634">                  Glissando *glissando = toGlissando(spanner);</a>
+<a name="ln1635">                  GlissandoStyle glissandoStyle = glissando-&gt;glissandoStyle();</a>
+<a name="ln1636">                  Element* ee = spanner-&gt;endElement();</a>
+<a name="ln1637">                  // only consider glissando connected to NOTE.</a>
+<a name="ln1638">                  if (glissando-&gt;playGlissando() &amp;&amp; ElementType::NOTE == ee-&gt;type()) {</a>
+<a name="ln1639">                        vector&lt;int&gt; body;</a>
+<a name="ln1640">                        Note *noteend  = toNote(ee);</a>
+<a name="ln1641">                        int pitchend   = noteend-&gt;ppitch();</a>
+<a name="ln1642">                        bool direction = pitchend &gt;  pitchstart;</a>
+<a name="ln1643">                        if (pitchend == pitchstart)</a>
+<a name="ln1644">                              continue; // next spanner</a>
+<a name="ln1645">                        if (glissandoStyle == GlissandoStyle::DIATONIC) { // scale obeying accidentals</a>
+<a name="ln1646">                              int line;</a>
+<a name="ln1647">                              int p = pitchstart;</a>
+<a name="ln1648">                              // iterate as long as we haven't past the pitchend.</a>
+<a name="ln1649">                              for (line = linestart; (direction) ? (p&lt;pitchend) : (p&gt;pitchend);</a>
+<a name="ln1650">                                 (direction) ? line-- : line++) {</a>
+<a name="ln1651">                                    int halfsteps = articulationExcursion(notestart, noteend, linestart - line);</a>
+<a name="ln1652">                                    p = pitchstart + halfsteps;</a>
+<a name="ln1653">                                    if (direction ? p &lt; pitchend : p &gt; pitchend)</a>
+<a name="ln1654">                                          body.push_back(halfsteps);</a>
+<a name="ln1655">                                    }</a>
+<a name="ln1656">                              }</a>
+<a name="ln1657">                        else {</a>
+<a name="ln1658">                              for (int p = pitchstart; direction ? p &lt; pitchend : p &gt; pitchend; p += (direction ? 1 : -1)) {</a>
+<a name="ln1659">                                    bool choose = false;</a>
+<a name="ln1660">                                    int mod = ((p - Cnote) + 1200) % 12;</a>
+<a name="ln1661">                                    switch (glissandoStyle) {</a>
+<a name="ln1662">                                          case GlissandoStyle::CHROMATIC:</a>
+<a name="ln1663">                                                choose = true;</a>
+<a name="ln1664">                                                break;</a>
+<a name="ln1665">                                          case GlissandoStyle::WHITE_KEYS: // white note</a>
+<a name="ln1666">                                                choose = (whitenotes.find(mod) != whitenotes.end());</a>
+<a name="ln1667">                                                break;</a>
+<a name="ln1668">                                          case GlissandoStyle::BLACK_KEYS: // black note</a>
+<a name="ln1669">                                                choose =  (blacknotes.find(mod) != blacknotes.end());</a>
+<a name="ln1670">                                                break;</a>
+<a name="ln1671">                                          default:</a>
+<a name="ln1672">                                                choose = false;</a>
+<a name="ln1673">                                          }</a>
+<a name="ln1674">                                    if (choose)</a>
+<a name="ln1675">                                          body.push_back(p - pitchstart);</a>
+<a name="ln1676">                                    }</a>
+<a name="ln1677">                              }</a>
+<a name="ln1678">                        renderNoteArticulation(events, notestart, true, MScore::division, empty, body, false, true, empty, 16, 0);</a>
+<a name="ln1679">                        }</a>
+<a name="ln1680">                  }</a>
+<a name="ln1681">            }</a>
+<a name="ln1682">      }</a>
+<a name="ln1683"> </a>
+<a name="ln1684"> </a>
+<a name="ln1685"> </a>
+<a name="ln1686">//---------------------------------------------------------</a>
+<a name="ln1687">// findFirstTrill</a>
+<a name="ln1688">//  search the spanners in the score, finding the first one</a>
+<a name="ln1689">//  which overlaps this chord and is of type ElementType::TRILL</a>
+<a name="ln1690">//---------------------------------------------------------</a>
+<a name="ln1691"> </a>
+<a name="ln1692">Trill* findFirstTrill(Chord *chord)</a>
+<a name="ln1693">      {</a>
+<a name="ln1694">      auto spanners = chord-&gt;score()-&gt;spannerMap().findOverlapping(1+chord-&gt;tick().ticks(),</a>
+<a name="ln1695">         chord-&gt;tick().ticks() + chord-&gt;actualTicks().ticks() - 1);</a>
+<a name="ln1696">      for (auto i : spanners) {</a>
+<a name="ln1697">            if (i.value-&gt;type() != ElementType::TRILL)</a>
+<a name="ln1698">                  continue;</a>
+<a name="ln1699">            if (i.value-&gt;track() != chord-&gt;track())</a>
+<a name="ln1700">                  continue;</a>
+<a name="ln1701">            Trill *trill = toTrill (i.value);</a>
+<a name="ln1702">            if (trill-&gt;playArticulation() == false)</a>
+<a name="ln1703">                  continue;</a>
+<a name="ln1704">            return trill;</a>
+<a name="ln1705">            }</a>
+<a name="ln1706">      return nullptr;</a>
+<a name="ln1707">      }</a>
+<a name="ln1708"> </a>
+<a name="ln1709">// In the case that graceNotesBefore or graceNotesAfter are attached to a note</a>
+<a name="ln1710">// with an articulation such as a trill, then the grace notes are/will-be/have-been</a>
+<a name="ln1711">// already merged into the articulation.</a>
+<a name="ln1712">// So this predicate, graceNotesMerged, checks for this condition to avoid calling</a>
+<a name="ln1713">// functions which would re-emit the grace notes by a different algorithm.</a>
+<a name="ln1714"> </a>
+<a name="ln1715">bool graceNotesMerged(Chord* chord)</a>
+<a name="ln1716">      {</a>
+<a name="ln1717">      if (findFirstTrill(chord))</a>
+<a name="ln1718">            return true;</a>
+<a name="ln1719">      for (Articulation* a : chord-&gt;articulations())</a>
+<a name="ln1720">            for (auto&amp; oe : excursions)</a>
+<a name="ln1721">                  if ( oe.atype == a-&gt;symId() )</a>
+<a name="ln1722">                        return true;</a>
+<a name="ln1723">      return false;</a>
+<a name="ln1724">      }</a>
+<a name="ln1725"> </a>
+<a name="ln1726">//---------------------------------------------------------</a>
+<a name="ln1727">//   renderChordArticulation</a>
+<a name="ln1728">//---------------------------------------------------------</a>
+<a name="ln1729"> </a>
+<a name="ln1730">void renderChordArticulation(Chord* chord, QList&lt;NoteEventList&gt; &amp; ell, int &amp; gateTime)</a>
+<a name="ln1731">      {</a>
+<a name="ln1732">      Segment* seg = chord-&gt;segment();</a>
+<a name="ln1733">      Instrument* instr = chord-&gt;part()-&gt;instrument(seg-&gt;tick());</a>
+<a name="ln1734">      int channel  = 0;  // note-&gt;subchannel();</a>
+<a name="ln1735"> </a>
+<a name="ln1736">      for (unsigned k = 0; k &lt; chord-&gt;notes().size(); ++k) {</a>
+<a name="ln1737">            NoteEventList* events = &amp;ell[k];</a>
+<a name="ln1738">            Note *note = chord-&gt;notes()[k];</a>
+<a name="ln1739">            Trill *trill;</a>
+<a name="ln1740"> </a>
+<a name="ln1741">            if (noteHasGlissando(note))</a>
+<a name="ln1742">                  renderGlissando(events, note);</a>
+<a name="ln1743">            else if (chord-&gt;staff()-&gt;isPitchedStaff(chord-&gt;tick())  &amp;&amp; (trill = findFirstTrill(chord)) != nullptr) {</a>
+<a name="ln1744">                  renderNoteArticulation(events, note, false, trill-&gt;trillType(), trill-&gt;ornamentStyle());</a>
+<a name="ln1745">                  }</a>
+<a name="ln1746">            else {</a>
+<a name="ln1747">                  for (Articulation* a : chord-&gt;articulations()) {</a>
+<a name="ln1748">                        if (!a-&gt;playArticulation())</a>
+<a name="ln1749">                              continue;</a>
+<a name="ln1750">                        if (!renderNoteArticulation(events, note, false, a-&gt;symId(), a-&gt;ornamentStyle()))</a>
+<a name="ln1751">                              instr-&gt;updateGateTime(&amp;gateTime, channel, a-&gt;articulationName());</a>
+<a name="ln1752">                        }</a>
+<a name="ln1753">                  }</a>
+<a name="ln1754">            }</a>
+<a name="ln1755">      }</a>
+<a name="ln1756"> </a>
+<a name="ln1757">//---------------------------------------------------------</a>
+<a name="ln1758">//   shouldRenderNote</a>
+<a name="ln1759">//---------------------------------------------------------</a>
+<a name="ln1760"> </a>
+<a name="ln1761">static bool shouldRenderNote(Note* n)</a>
+<a name="ln1762">      {</a>
+<a name="ln1763">      while (n-&gt;tieBack()) {</a>
+<a name="ln1764">            n = n-&gt;tieBack()-&gt;startNote();</a>
+<a name="ln1765">            if (findFirstTrill(n-&gt;chord()))</a>
+<a name="ln1766">                  // The previous tied note probably has events for this note too.</a>
+<a name="ln1767">                  // That is, we don't need to render this note separately.</a>
+<a name="ln1768">                  return false;</a>
+<a name="ln1769">            for (Articulation* a : n-&gt;chord()-&gt;articulations()) {</a>
+<a name="ln1770">                  if (a-&gt;isOrnament()) {</a>
+<a name="ln1771">                        return false;</a>
+<a name="ln1772">                        }</a>
+<a name="ln1773">                  }</a>
+<a name="ln1774">            }</a>
+<a name="ln1775">      return true;</a>
+<a name="ln1776">      }</a>
+<a name="ln1777"> </a>
+<a name="ln1778">//---------------------------------------------------------</a>
+<a name="ln1779">//   renderChord</a>
+<a name="ln1780">//    ontime and trailtime in 1/1000 of duration</a>
+<a name="ln1781">//    ontime signifies how much gap to leave, i.e., how late the note should start because of graceNotesBefore which have already been rendered</a>
+<a name="ln1782">//    trailtime signifies how much gap to leave after the note to allow for graceNotesAfter to be rendered</a>
+<a name="ln1783">//---------------------------------------------------------</a>
+<a name="ln1784"> </a>
+<a name="ln1785">static QList&lt;NoteEventList&gt; renderChord(Chord* chord, int gateTime, int ontime, int trailtime)</a>
+<a name="ln1786">      {</a>
+<a name="ln1787">      QList&lt;NoteEventList&gt; ell;</a>
+<a name="ln1788">      if (chord-&gt;notes().empty())</a>
+<a name="ln1789">            return ell;</a>
+<a name="ln1790"> </a>
+<a name="ln1791">      size_t notes = chord-&gt;notes().size();</a>
+<a name="ln1792">      for (size_t i = 0; i &lt; notes; ++i)</a>
+<a name="ln1793">            ell.append(NoteEventList());</a>
+<a name="ln1794"> </a>
+<a name="ln1795">      bool arpeggio = false;</a>
+<a name="ln1796">      if (chord-&gt;tremolo()) {</a>
+<a name="ln1797">            renderTremolo(chord, ell);</a>
+<a name="ln1798">            }</a>
+<a name="ln1799">      else if (chord-&gt;arpeggio() &amp;&amp; chord-&gt;arpeggio()-&gt;playArpeggio()) {</a>
+<a name="ln1800">            renderArpeggio(chord, ell);</a>
+<a name="ln1801">            arpeggio = true;</a>
+<a name="ln1802">            }</a>
+<a name="ln1803">      else</a>
+<a name="ln1804">            renderChordArticulation(chord, ell, gateTime);</a>
+<a name="ln1805"> </a>
+<a name="ln1806">      // Check each note and apply gateTime</a>
+<a name="ln1807">      for (unsigned i = 0; i &lt; notes; ++i) {</a>
+<a name="ln1808">            NoteEventList* el = &amp;ell[i];</a>
+<a name="ln1809">            if (!shouldRenderNote(chord-&gt;notes()[i])) {</a>
+<a name="ln1810">                  el-&gt;clear();</a>
+<a name="ln1811">                  continue;</a>
+<a name="ln1812">                  }</a>
+<a name="ln1813">            if (arpeggio)</a>
+<a name="ln1814">                  continue; // don't add extra events and apply gateTime to arpeggio</a>
+<a name="ln1815"> </a>
+<a name="ln1816">            // If we are here then we still need to render the note.</a>
+<a name="ln1817">            // Render its body if necessary and apply gateTime.</a>
+<a name="ln1818">            if (el-&gt;size() == 0 &amp;&amp; chord-&gt;tremoloChordType() != TremoloChordType::TremoloSecondNote) {</a>
+<a name="ln1819">                  el-&gt;append(NoteEvent(0, ontime, 1000 - ontime - trailtime));</a>
+<a name="ln1820">                  }</a>
+<a name="ln1821">            if (trailtime == 0) // if trailtime is non-zero that means we have graceNotesAfter, so we don't need additional gate time.</a>
+<a name="ln1822">                for (NoteEvent&amp; e : ell[i])</a>
+<a name="ln1823">                      e.setLen(e.len() * gateTime / 100);</a>
+<a name="ln1824">            }</a>
+<a name="ln1825">      return ell;</a>
+<a name="ln1826">      }</a>
+<a name="ln1827"> </a>
+<a name="ln1828">//---------------------------------------------------------</a>
+<a name="ln1829">//   createGraceNotesPlayEvent</a>
+<a name="ln1830">// as a side effect of createGraceNotesPlayEvents, ontime and trailtime (passed by ref)</a>
+<a name="ln1831">// are modified.  ontime reflects the time needed to play the grace-notes-before, and</a>
+<a name="ln1832">// trailtime reflects the time for the grace-notes-after.  These are used by the caller</a>
+<a name="ln1833">// to effect the on/off time of the main note</a>
+<a name="ln1834">//---------------------------------------------------------</a>
+<a name="ln1835"> </a>
+<a name="ln1836">void Score::createGraceNotesPlayEvents(const Fraction&amp; tick, Chord* chord, int&amp; ontime, int&amp; trailtime)</a>
+<a name="ln1837">      {</a>
+<a name="ln1838">      QVector&lt;Chord*&gt; gnb = chord-&gt;graceNotesBefore();</a>
+<a name="ln1839">      QVector&lt;Chord*&gt; gna = chord-&gt;graceNotesAfter();</a>
+<a name="ln1840">      int nb = gnb.size();</a>
+<a name="ln1841">      int na = gna.size();</a>
+<a name="ln1842">      if (0 == nb + na){</a>
+<a name="ln1843">            return; // return immediately if no grace notes to deal with</a>
+<a name="ln1844">            }</a>
+<a name="ln1845">      // return immediately if the chord has a trill or articulation which effectively plays the graces notes.</a>
+<a name="ln1846">      if (graceNotesMerged(chord)) {</a>
+<a name="ln1847">            return;</a>
+<a name="ln1848">            }</a>
+<a name="ln1849">      // if there are graceNotesBefore and also graceNotesAfter, and the before grace notes are</a>
+<a name="ln1850">      // not ACCIACCATURA, then the total time of all of them will be 50% of the time of the main note.</a>
+<a name="ln1851">      // if the before grace notes are ACCIACCATURA then the grace notes after (if there are any).</a>
+<a name="ln1852">      // get 50% of the time of the main note.</a>
+<a name="ln1853">      // this is achieved by the two floating point weights: weighta and weightb whose total is 1.0</a>
+<a name="ln1854">      // assuring that all the grace notes get the same duration, and their total is 50%.</a>
+<a name="ln1855">      // exception is if the note is dotted or double-dotted; see below.</a>
+<a name="ln1856">      float weighta = float(na) / (nb+na);</a>
+<a name="ln1857">      float weightb = float(nb) / (nb+na);</a>
+<a name="ln1858"> </a>
+<a name="ln1859">      int graceDuration = 0;</a>
+<a name="ln1860">      bool drumset = (getDrumset(chord) != nullptr);</a>
+<a name="ln1861">      const qreal ticksPerSecond = tempo(tick) * MScore::division;</a>
+<a name="ln1862">      const qreal chordTimeMS = (chord-&gt;actualTicks().ticks() / ticksPerSecond) * 1000;</a>
+<a name="ln1863">      if (drumset) {</a>
+<a name="ln1864">            int flamDuration = 15; //ms</a>
+<a name="ln1865">            graceDuration = flamDuration / chordTimeMS * 1000; //ratio 1/1000 from the main note length</a>
+<a name="ln1866">            ontime = graceDuration * nb;</a>
+<a name="ln1867">            }</a>
+<a name="ln1868">      else if (nb) {</a>
+<a name="ln1869">            //</a>
+<a name="ln1870">            //  render grace notes:</a>
+<a name="ln1871">            //  simplified implementation:</a>
+<a name="ln1872">            //  - grace notes start on the beat of the main note</a>
+<a name="ln1873">            //  - duration: appoggiatura: 0.5  * duration of main note (2/3 for dotted notes, 4/7 for double-dotted)</a>
+<a name="ln1874">            //              acciacatura: min of 0.5 * duration or 65ms fixed (independent of duration or tempo)</a>
+<a name="ln1875">            //  - for appoggiaturas, the duration is divided by the number of grace notes</a>
+<a name="ln1876">            //  - the grace note duration as notated does not matter</a>
+<a name="ln1877">            //</a>
+<a name="ln1878">            Chord* graceChord = gnb[0];</a>
+<a name="ln1879">            if (graceChord-&gt;noteType() ==  NoteType::ACCIACCATURA) {</a>
+<a name="ln1880">                  int graceTimeMS = 65 * nb;     // value determined empirically (TODO: make instrument-specific, like articulations)</a>
+<a name="ln1881">                  // 1000 occurs below as a unit for ontime</a>
+<a name="ln1882">                  ontime = qMin(500, static_cast&lt;int&gt;((graceTimeMS / chordTimeMS) * 1000));</a>
+<a name="ln1883">                  weightb = 0.0;</a>
+<a name="ln1884">                  weighta = 1.0;</a>
+<a name="ln1885">                  }</a>
+<a name="ln1886">            else if (chord-&gt;dots() == 1)</a>
+<a name="ln1887">                  ontime = floor(667 * weightb);</a>
+<a name="ln1888">            else if (chord-&gt;dots() == 2)</a>
+<a name="ln1889">                  ontime = floor(571 * weightb);</a>
+<a name="ln1890">            else</a>
+<a name="ln1891">                  ontime = floor(500 * weightb);</a>
+<a name="ln1892"> </a>
+<a name="ln1893">            graceDuration = ontime / nb;</a>
+<a name="ln1894">            }</a>
+<a name="ln1895"> </a>
+<a name="ln1896">      for (int i = 0, on = 0; i &lt; nb; ++i) {</a>
+<a name="ln1897">            QList&lt;NoteEventList&gt; el;</a>
+<a name="ln1898">            Chord* gc = gnb.at(i);</a>
+<a name="ln1899">            size_t nn = gc-&gt;notes().size();</a>
+<a name="ln1900">            for (unsigned ii = 0; ii &lt; nn; ++ii) {</a>
+<a name="ln1901">                  NoteEventList nel;</a>
+<a name="ln1902">                  nel.append(NoteEvent(0, on, graceDuration));</a>
+<a name="ln1903">                  el.append(nel);</a>
+<a name="ln1904">                  }</a>
+<a name="ln1905"> </a>
+<a name="ln1906">            if (gc-&gt;playEventType() == PlayEventType::Auto)</a>
+<a name="ln1907">                  gc-&gt;setNoteEventLists(el);</a>
+<a name="ln1908">            on += graceDuration;</a>
+<a name="ln1909">            }</a>
+<a name="ln1910">      if (na) {</a>
+<a name="ln1911">            if (chord-&gt;dots() == 1)</a>
+<a name="ln1912">                  trailtime = floor(667 * weighta);</a>
+<a name="ln1913">            else if (chord-&gt;dots() == 2)</a>
+<a name="ln1914">                  trailtime = floor(571 * weighta);</a>
+<a name="ln1915">            else</a>
+<a name="ln1916">                  trailtime = floor(500 * weighta);</a>
+<a name="ln1917">            int graceDuration1 = trailtime / na;</a>
+<a name="ln1918">            int on = 1000 - trailtime;</a>
+<a name="ln1919">            for (int i = 0; i &lt; na; ++i) {</a>
+<a name="ln1920">                  QList&lt;NoteEventList&gt; el;</a>
+<a name="ln1921">                  Chord* gc = gna.at(i);</a>
+<a name="ln1922">                  size_t nn = gc-&gt;notes().size();</a>
+<a name="ln1923">                  for (size_t ii = 0; ii &lt; nn; ++ii) {</a>
+<a name="ln1924">                        NoteEventList nel;</a>
+<a name="ln1925">                        nel.append(NoteEvent(0, on, graceDuration1)); // NoteEvent(pitch,ontime,len)</a>
+<a name="ln1926">                        el.append(nel);</a>
+<a name="ln1927">                        }</a>
+<a name="ln1928"> </a>
+<a name="ln1929">                  if (gc-&gt;playEventType() == PlayEventType::Auto)</a>
+<a name="ln1930">                        gc-&gt;setNoteEventLists(el);</a>
+<a name="ln1931">                  on += graceDuration1;</a>
+<a name="ln1932">                  }</a>
+<a name="ln1933">            }</a>
+<a name="ln1934">      }</a>
+<a name="ln1935"> </a>
+<a name="ln1936">//---------------------------------------------------------</a>
+<a name="ln1937">//   createPlayEvents</a>
+<a name="ln1938">//    create default play events</a>
+<a name="ln1939">//---------------------------------------------------------</a>
+<a name="ln1940"> </a>
+<a name="ln1941">void Score::createPlayEvents(Chord* chord)</a>
+<a name="ln1942">      {</a>
+<a name="ln1943">      int gateTime = 100;</a>
+<a name="ln1944"> </a>
+<a name="ln1945">      Fraction tick = chord-&gt;tick();</a>
+<a name="ln1946">      Slur* slur = 0;</a>
+<a name="ln1947">      for (auto sp : _spanner.map()) {</a>
+<a name="ln1948">            if (!sp.second-&gt;isSlur() || sp.second-&gt;staffIdx() != chord-&gt;staffIdx())</a>
+<a name="ln1949">                  continue;</a>
+<a name="ln1950">            Slur* s = toSlur(sp.second);</a>
+<a name="ln1951">            if (tick &gt;= s-&gt;tick() &amp;&amp; tick &lt; s-&gt;tick2()) {</a>
+<a name="ln1952">                  slur = s;</a>
+<a name="ln1953">                  break;</a>
+<a name="ln1954">                  }</a>
+<a name="ln1955">            }</a>
+<a name="ln1956">      // gateTime is 100% for slured notes</a>
+<a name="ln1957">      if (!slur) {</a>
+<a name="ln1958">            Instrument* instr = chord-&gt;part()-&gt;instrument(tick);</a>
+<a name="ln1959">            instr-&gt;updateGateTime(&amp;gateTime, 0, &quot;&quot;);</a>
+<a name="ln1960">            }</a>
+<a name="ln1961"> </a>
+<a name="ln1962">      int ontime    = 0;</a>
+<a name="ln1963">      int trailtime = 0;</a>
+<a name="ln1964">      createGraceNotesPlayEvents(tick, chord, ontime, trailtime); // ontime and trailtime are modified by this call depending on grace notes before and after</a>
+<a name="ln1965"> </a>
+<a name="ln1966">      SwingParameters st = chord-&gt;staff()-&gt;swing(tick);</a>
+<a name="ln1967">      int unit           = st.swingUnit;</a>
+<a name="ln1968">      int ratio          = st.swingRatio;</a>
+<a name="ln1969">      // Check if swing needs to be applied</a>
+<a name="ln1970">      if (unit &amp;&amp; !chord-&gt;tuplet()) {</a>
+<a name="ln1971">            swingAdjustParams(chord, gateTime, ontime, unit, ratio);</a>
+<a name="ln1972">            }</a>
+<a name="ln1973">      //</a>
+<a name="ln1974">      //    render normal (and articulated) chords</a>
+<a name="ln1975">      //</a>
+<a name="ln1976">      QList&lt;NoteEventList&gt; el = renderChord(chord, gateTime, ontime, trailtime);</a>
+<a name="ln1977">      if (chord-&gt;playEventType() == PlayEventType::Auto)</a>
+<a name="ln1978">            chord-&gt;setNoteEventLists(el);</a>
+<a name="ln1979">      // don't change event list if type is PlayEventType::User</a>
+<a name="ln1980">      }</a>
+<a name="ln1981"> </a>
+<a name="ln1982">void Score::createPlayEvents(Measure* start, Measure* end)</a>
+<a name="ln1983">      {</a>
+<a name="ln1984">      if (!start)</a>
+<a name="ln1985">            start = firstMeasure();</a>
+<a name="ln1986"> </a>
+<a name="ln1987">      int etrack = nstaves() * VOICES;</a>
+<a name="ln1988">      for (int track = 0; track &lt; etrack; ++track) {</a>
+<a name="ln1989">            bool rangeEnded = false;</a>
+<a name="ln1990">            for (Measure* m = start; m; m = m-&gt;nextMeasure()) {</a>
+<a name="ln1991">                  constexpr SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln1992"> </a>
+<a name="ln1993">                  if (m == end)</a>
+<a name="ln1994">                        rangeEnded = true;</a>
+<a name="ln1995">                  if (rangeEnded) {</a>
+<a name="ln1996">                        // The range has ended, but we should collect events</a>
+<a name="ln1997">                        // for tied notes. So we'll check if this is the case.</a>
+<a name="ln1998">                        const Segment* seg = m-&gt;first(st);</a>
+<a name="ln1999">                        const Element* e = seg-&gt;element(track);</a>
+<a name="ln2000">                        bool tie = false;</a>
+<a name="ln2001">                        if (e &amp;&amp; e-&gt;isChord()) {</a>
+<a name="ln2002">                              for (const Note* n : toChord(e)-&gt;notes()) {</a>
+<a name="ln2003">                                    if (n-&gt;tieBack()) {</a>
+<a name="ln2004">                                          tie = true;</a>
+<a name="ln2005">                                          break;</a>
+<a name="ln2006">                                          }</a>
+<a name="ln2007">                                    }</a>
+<a name="ln2008">                              }</a>
+<a name="ln2009">                        if (!tie)</a>
+<a name="ln2010">                              break;</a>
+<a name="ln2011">                        }</a>
+<a name="ln2012"> </a>
+<a name="ln2013">                  // skip linked staves, except primary</a>
+<a name="ln2014">                  if (!m-&gt;score()-&gt;staff(track / VOICES)-&gt;primaryStaff())</a>
+<a name="ln2015">                        continue;</a>
+<a name="ln2016">                  for (Segment* seg = m-&gt;first(st); seg; seg = seg-&gt;next(st)) {</a>
+<a name="ln2017">                        Element* e = seg-&gt;element(track);</a>
+<a name="ln2018">                        if (e == 0 || !e-&gt;isChord())</a>
+<a name="ln2019">                              continue;</a>
+<a name="ln2020">                        createPlayEvents(toChord(e));</a>
+<a name="ln2021">                        }</a>
+<a name="ln2022">                  }</a>
+<a name="ln2023">            }</a>
+<a name="ln2024">      }</a>
+<a name="ln2025"> </a>
+<a name="ln2026">//---------------------------------------------------------</a>
+<a name="ln2027">//   renderMetronome</a>
+<a name="ln2028">///   add metronome tick events</a>
+<a name="ln2029">//---------------------------------------------------------</a>
+<a name="ln2030"> </a>
+<a name="ln2031">void MidiRenderer::renderMetronome(const Chunk&amp; chunk, EventMap* events)</a>
+<a name="ln2032">      {</a>
+<a name="ln2033">      const int tickOffset = chunk.tickOffset();</a>
+<a name="ln2034">      Measure* start = chunk.startMeasure();</a>
+<a name="ln2035">      Measure* end = chunk.endMeasure();</a>
+<a name="ln2036"> </a>
+<a name="ln2037">      for (Measure* m = start; m != end; m = m-&gt;nextMeasure())</a>
+<a name="ln2038">            renderMetronome(events, m, Fraction::fromTicks(tickOffset));</a>
+<a name="ln2039">      }</a>
+<a name="ln2040"> </a>
+<a name="ln2041">//---------------------------------------------------------</a>
+<a name="ln2042">//   renderMetronome</a>
+<a name="ln2043">///   add metronome tick events</a>
+<a name="ln2044">//---------------------------------------------------------</a>
+<a name="ln2045"> </a>
+<a name="ln2046">void MidiRenderer::renderMetronome(EventMap* events, Measure* m, const Fraction&amp; tickOffset)</a>
+<a name="ln2047">      {</a>
+<a name="ln2048">      int msrTick         = m-&gt;tick().ticks();</a>
+<a name="ln2049">      qreal tempo         = score-&gt;tempomap()-&gt;tempo(msrTick);</a>
+<a name="ln2050">      TimeSigFrac timeSig = score-&gt;sigmap()-&gt;timesig(msrTick).nominal();</a>
+<a name="ln2051"> </a>
+<a name="ln2052">      int clickTicks      = timeSig.isBeatedCompound(tempo) ? timeSig.beatTicks() : timeSig.dUnitTicks();</a>
+<a name="ln2053">      int endTick         = m-&gt;endTick().ticks();</a>
+<a name="ln2054"> </a>
+<a name="ln2055">      int rtick;</a>
+<a name="ln2056"> </a>
+<a name="ln2057">      if (m-&gt;isAnacrusis()) {</a>
+<a name="ln2058">            int rem = m-&gt;ticks().ticks() % clickTicks;</a>
+<a name="ln2059">            msrTick += rem;</a>
+<a name="ln2060">            rtick = rem + timeSig.ticksPerMeasure() - m-&gt;ticks().ticks();</a>
+<a name="ln2061">            }</a>
+<a name="ln2062">      else</a>
+<a name="ln2063">            rtick = 0;</a>
+<a name="ln2064"> </a>
+<a name="ln2065">      for (int tick = msrTick; tick &lt; endTick; tick += clickTicks, rtick += clickTicks)</a>
+<a name="ln2066">            events-&gt;insert(std::pair&lt;int,NPlayEvent&gt;(tick + tickOffset.ticks(), NPlayEvent(timeSig.rtick2beatType(rtick))));</a>
+<a name="ln2067">      }</a>
+<a name="ln2068"> </a>
+<a name="ln2069">//---------------------------------------------------------</a>
+<a name="ln2070">//   renderMidi</a>
+<a name="ln2071">//    export score to event list</a>
+<a name="ln2072">//---------------------------------------------------------</a>
+<a name="ln2073"> </a>
+<a name="ln2074">void Score::renderMidi(EventMap* events, const SynthesizerState&amp; synthState)</a>
+<a name="ln2075">      {</a>
+<a name="ln2076">      renderMidi(events, true, MScore::playRepeats, synthState);</a>
+<a name="ln2077">      }</a>
+<a name="ln2078"> </a>
+<a name="ln2079">void Score::renderMidi(EventMap* events, bool metronome, bool expandRepeats, const SynthesizerState&amp; synthState)</a>
+<a name="ln2080">      {</a>
+<a name="ln2081">      masterScore()-&gt;setExpandRepeats(expandRepeats);</a>
+<a name="ln2082">      MidiRenderer(this).renderScore(events, synthState, metronome);</a>
+<a name="ln2083">      }</a>
+<a name="ln2084"> </a>
+<a name="ln2085">void MidiRenderer::renderScore(EventMap* events, const SynthesizerState&amp; synthState, bool metronome)</a>
+<a name="ln2086">      {</a>
+<a name="ln2087">      updateState();</a>
+<a name="ln2088">      for (const Chunk&amp; chunk : chunks) {</a>
+<a name="ln2089">            renderChunk(chunk, events, synthState, metronome);</a>
+<a name="ln2090">            }</a>
+<a name="ln2091">      }</a>
+<a name="ln2092"> </a>
+<a name="ln2093">void MidiRenderer::renderChunk(const Chunk&amp; chunk, EventMap* events, const SynthesizerState&amp; synthState, bool metronome)</a>
+<a name="ln2094">      {</a>
+<a name="ln2095">      // TODO: avoid doing it multiple times for the same measures</a>
+<a name="ln2096">      score-&gt;createPlayEvents(chunk.startMeasure(), chunk.endMeasure());</a>
+<a name="ln2097"> </a>
+<a name="ln2098">      score-&gt;updateChannel();</a>
+<a name="ln2099">      score-&gt;updateVelo();</a>
+<a name="ln2100"> </a>
+<a name="ln2101">      SynthesizerState s = score-&gt;synthesizerState();</a>
+<a name="ln2102">      int method = s.method();</a>
+<a name="ln2103">      int cc = s.ccToUse();</a>
+<a name="ln2104"> </a>
+<a name="ln2105">      // check if the score synth settings are actually set</a>
+<a name="ln2106">      // if not, use the global synth state</a>
+<a name="ln2107">      if (method == -1) {</a>
+<a name="ln2108">            method = synthState.method();</a>
+<a name="ln2109">            cc = synthState.ccToUse();</a>
+<a name="ln2110"> </a>
+<a name="ln2111">            if (method == -1) {</a>
+<a name="ln2112">                  // fall back to defaults - this may be needed to pass tests,</a>
+<a name="ln2113">                  // since sometimes the synth state is not init</a>
+<a name="ln2114">                  method = 1;</a>
+<a name="ln2115">                  cc = 2;</a>
+<a name="ln2116">                  qWarning(&quot;Had to fall back to defaults to render measure&quot;);</a>
+<a name="ln2117">                  }</a>
+<a name="ln2118">            }</a>
+<a name="ln2119"> </a>
+<a name="ln2120">      DynamicsRenderMethod renderMethod = DynamicsRenderMethod::SIMPLE;</a>
+<a name="ln2121">      switch (method) {</a>
+<a name="ln2122">            case 0:</a>
+<a name="ln2123">                  renderMethod = DynamicsRenderMethod::SIMPLE;</a>
+<a name="ln2124">                  break;</a>
+<a name="ln2125">            case 1:</a>
+<a name="ln2126">                  renderMethod = DynamicsRenderMethod::SEG_START;</a>
+<a name="ln2127">                  break;</a>
+<a name="ln2128">            case 2:</a>
+<a name="ln2129">                  renderMethod = DynamicsRenderMethod::FIXED_MAX;</a>
+<a name="ln2130">                  break;</a>
+<a name="ln2131">            default:</a>
+<a name="ln2132">                  qWarning(&quot;Unrecognized dynamics method: %d&quot;, method);</a>
+<a name="ln2133">                  break;</a>
+<a name="ln2134">            }</a>
+<a name="ln2135"> </a>
+<a name="ln2136">      // create note &amp; other events</a>
+<a name="ln2137">      for (Staff* st : score-&gt;staves())</a>
+<a name="ln2138">            renderStaffChunk(chunk, events, st, renderMethod, cc);</a>
+<a name="ln2139">      events-&gt;fixupMIDI();</a>
+<a name="ln2140"> </a>
+<a name="ln2141">      // create sustain pedal events</a>
+<a name="ln2142">      renderSpanners(chunk, events);</a>
+<a name="ln2143"> </a>
+<a name="ln2144">      if (metronome)</a>
+<a name="ln2145">            renderMetronome(chunk, events);</a>
+<a name="ln2146"> </a>
+<a name="ln2147">      // NOTE:JT this is a temporary fix for duplicate events until polyphonic aftertouch support</a>
+<a name="ln2148">      // can be implemented. This removes duplicate SND events.</a>
+<a name="ln2149">      int lastChannel = -1;</a>
+<a name="ln2150">      int lastController = -1;</a>
+<a name="ln2151">      int lastValue = -1;</a>
+<a name="ln2152">      for (auto i = events-&gt;begin(); i != events-&gt;end();) {</a>
+<a name="ln2153">            if (i-&gt;second.type() == ME_CONTROLLER) {</a>
+<a name="ln2154">                  auto&amp; event = i-&gt;second;</a>
+<a name="ln2155">                  if (event.channel() == lastChannel &amp;&amp;</a>
+<a name="ln2156">                      event.controller() == lastController &amp;&amp;</a>
+<a name="ln2157">                      event.value() == lastValue) {</a>
+<a name="ln2158">                        i = events-&gt;erase(i);</a>
+<a name="ln2159">                        }</a>
+<a name="ln2160">                  else {</a>
+<a name="ln2161">                        lastChannel = event.channel();</a>
+<a name="ln2162">                        lastController = event.controller();</a>
+<a name="ln2163">                        lastValue = event.value();</a>
+<a name="ln2164">                        i++;</a>
+<a name="ln2165">                        }</a>
+<a name="ln2166">                  }</a>
+<a name="ln2167">            else {</a>
+<a name="ln2168">                  i++;</a>
+<a name="ln2169">                  }</a>
+<a name="ln2170">            }</a>
+<a name="ln2171">      }</a>
+<a name="ln2172"> </a>
+<a name="ln2173">//---------------------------------------------------------</a>
+<a name="ln2174">//   MidiRenderer::updateState</a>
+<a name="ln2175">//---------------------------------------------------------</a>
+<a name="ln2176"> </a>
+<a name="ln2177">void MidiRenderer::updateState()</a>
+<a name="ln2178">      {</a>
+<a name="ln2179">      if (needUpdate) {</a>
+<a name="ln2180">            // Update the related structures inside score</a>
+<a name="ln2181">            // to avoid doing it multiple times on chunks rendering</a>
+<a name="ln2182">            score-&gt;updateSwing();</a>
+<a name="ln2183">            score-&gt;updateCapo();</a>
+<a name="ln2184"> </a>
+<a name="ln2185">            updateChunksPartition();</a>
+<a name="ln2186"> </a>
+<a name="ln2187">            needUpdate = false;</a>
+<a name="ln2188">            }</a>
+<a name="ln2189">      }</a>
+<a name="ln2190"> </a>
+<a name="ln2191">//---------------------------------------------------------</a>
+<a name="ln2192">//   MidiRenderer::canBreakChunk</a>
+<a name="ln2193">///   Helper function for updateChunksPartition</a>
+<a name="ln2194">///   Determines whether it is allowed to break MIDI</a>
+<a name="ln2195">///   rendering chunk at given measure.</a>
+<a name="ln2196">//---------------------------------------------------------</a>
+<a name="ln2197"> </a>
+<a name="ln2198">bool MidiRenderer::canBreakChunk(const Measure* last)</a>
+<a name="ln2199">      {</a>
+<a name="ln2200">      Score* score = last-&gt;score();</a>
+<a name="ln2201"> </a>
+<a name="ln2202">      // Check for hairpins that overlap measure end:</a>
+<a name="ln2203">      // hairpins should be inside one chunk, if possible</a>
+<a name="ln2204">      const int endTick = last-&gt;endTick().ticks();</a>
+<a name="ln2205">      const auto&amp; spanners = score-&gt;spannerMap().findOverlapping(endTick - 1, endTick);</a>
+<a name="ln2206">      for (const auto&amp; interval : spanners) {</a>
+<a name="ln2207">            const Spanner* sp = interval.value;</a>
+<a name="ln2208">            if (sp-&gt;isHairpin() &amp;&amp; sp-&gt;tick2().ticks() &gt; endTick)</a>
+<a name="ln2209">                  return false;</a>
+<a name="ln2210">            }</a>
+<a name="ln2211"> </a>
+<a name="ln2212">      // Repeat measures rely on the previous measure</a>
+<a name="ln2213">      // being properly rendered, disallow breaking</a>
+<a name="ln2214">      // chunk at repeat measure.</a>
+<a name="ln2215">      if (const Measure* next = last-&gt;nextMeasure())</a>
+<a name="ln2216">            for (const Staff* staff : score-&gt;staves()) {</a>
+<a name="ln2217">                  if (next-&gt;isRepeatMeasure(staff))</a>
+<a name="ln2218">                        return false;</a>
+<a name="ln2219">            }</a>
+<a name="ln2220"> </a>
+<a name="ln2221">      return true;</a>
+<a name="ln2222">      }</a>
+<a name="ln2223"> </a>
+<a name="ln2224">//---------------------------------------------------------</a>
+<a name="ln2225">//   MidiRenderer::updateChunksPartition</a>
+<a name="ln2226">//---------------------------------------------------------</a>
+<a name="ln2227"> </a>
+<a name="ln2228">void MidiRenderer::updateChunksPartition()</a>
+<a name="ln2229">      {</a>
+<a name="ln2230">      chunks.clear();</a>
+<a name="ln2231"> </a>
+<a name="ln2232">      const RepeatList&amp; repeatList = score-&gt;repeatList();</a>
+<a name="ln2233"> </a>
+<a name="ln2234">      for (const RepeatSegment* rs : repeatList) {</a>
+<a name="ln2235">            const int tickOffset = rs-&gt;utick - rs-&gt;tick;</a>
+<a name="ln2236"> </a>
+<a name="ln2237">            if (!minChunkSize) {</a>
+<a name="ln2238">                  // just make chunks corresponding to repeat segments</a>
+<a name="ln2239">                  chunks.emplace_back(tickOffset, rs-&gt;firstMeasure(), rs-&gt;lastMeasure());</a>
+<a name="ln2240">                  continue;</a>
+<a name="ln2241">                  }</a>
+<a name="ln2242"> </a>
+<a name="ln2243">            Measure* end = rs-&gt;lastMeasure()-&gt;nextMeasure();</a>
+<a name="ln2244">            int count = 0;</a>
+<a name="ln2245">            bool needBreak = false;</a>
+<a name="ln2246">            Measure* chunkStart = nullptr;</a>
+<a name="ln2247">            for (Measure* m = rs-&gt;firstMeasure(); m != end; m = m-&gt;nextMeasure()) {</a>
+<a name="ln2248">                  if (!chunkStart)</a>
+<a name="ln2249">                        chunkStart = m;</a>
+<a name="ln2250">                  if ((++count) &gt;= minChunkSize)</a>
+<a name="ln2251">                        needBreak = true;</a>
+<a name="ln2252">                  if (needBreak &amp;&amp; canBreakChunk(m)) {</a>
+<a name="ln2253">                        chunks.emplace_back(tickOffset, chunkStart, m);</a>
+<a name="ln2254">                        chunkStart = nullptr;</a>
+<a name="ln2255">                        needBreak = false;</a>
+<a name="ln2256">                        count = 0;</a>
+<a name="ln2257">                        }</a>
+<a name="ln2258">                  }</a>
+<a name="ln2259">            if (chunkStart) // last measures did not get added to chunk list</a>
+<a name="ln2260">                  chunks.emplace_back(tickOffset, chunkStart, rs-&gt;lastMeasure());</a>
+<a name="ln2261">            }</a>
+<a name="ln2262"> </a>
+<a name="ln2263">      if (score != repeatList.score()) {</a>
+<a name="ln2264">            // Repeat list may belong to another linked score (e.g. MasterScore).</a>
+<a name="ln2265">            // Update chunks to make them contain measures from the currently</a>
+<a name="ln2266">            // rendered score.</a>
+<a name="ln2267">            for (Chunk&amp; ch : chunks) {</a>
+<a name="ln2268">                  Measure* first = score-&gt;tick2measure(ch.startMeasure()-&gt;tick());</a>
+<a name="ln2269">                  Measure* last = score-&gt;tick2measure(ch.lastMeasure()-&gt;tick());</a>
+<a name="ln2270">                  ch = Chunk(ch.tickOffset(), first, last);</a>
+<a name="ln2271">                  }</a>
+<a name="ln2272">            }</a>
+<a name="ln2273">      }</a>
+<a name="ln2274"> </a>
+<a name="ln2275">//---------------------------------------------------------</a>
+<a name="ln2276">//   MidiRenderer::getChunkAt</a>
+<a name="ln2277">//---------------------------------------------------------</a>
+<a name="ln2278"> </a>
+<a name="ln2279">MidiRenderer::Chunk MidiRenderer::getChunkAt(int utick)</a>
+<a name="ln2280">      {</a>
+<a name="ln2281">      updateState();</a>
+<a name="ln2282"> </a>
+<a name="ln2283">      auto it = std::upper_bound(chunks.begin(), chunks.end(), utick, [](int utick, const Chunk&amp; ch) { return utick &lt; ch.utick1(); });</a>
+<a name="ln2284">      if (it == chunks.begin())</a>
+<a name="ln2285">            return Chunk();</a>
+<a name="ln2286">      --it;</a>
+<a name="ln2287">      const Chunk&amp; ch = *it;</a>
+<a name="ln2288">      if (ch.utick2() &lt;= utick)</a>
+<a name="ln2289">            return Chunk();</a>
+<a name="ln2290">      return ch;</a>
+<a name="ln2291">      }</a>
+<a name="ln2292"> </a>
+<a name="ln2293">//---------------------------------------------------------</a>
+<a name="ln2294">//   RangeMap::setOccupied</a>
+<a name="ln2295">//---------------------------------------------------------</a>
+<a name="ln2296"> </a>
+<a name="ln2297">void RangeMap::setOccupied(int tick1, int tick2)</a>
+<a name="ln2298">      {</a>
+<a name="ln2299">      auto it1 = status.upper_bound(tick1);</a>
+<a name="ln2300">      const bool beforeBegin = (it1 == status.begin());</a>
+<a name="ln2301">      if (beforeBegin || (--it1)-&gt;second != Range::BEGIN) {</a>
+<a name="ln2302">            if (!beforeBegin &amp;&amp; it1-&gt;first == tick1)</a>
+<a name="ln2303">                  status.erase(it1);</a>
+<a name="ln2304">            else</a>
+<a name="ln2305">                  status.insert(std::make_pair(tick1, Range::BEGIN));</a>
+<a name="ln2306">            }</a>
+<a name="ln2307"> </a>
+<a name="ln2308">      const auto it2 = status.lower_bound(tick2);</a>
+<a name="ln2309">      const bool afterEnd = (it2 == status.end());</a>
+<a name="ln2310">      if (afterEnd || it2-&gt;second != Range::END) {</a>
+<a name="ln2311">            if (!afterEnd &amp;&amp; it2-&gt;first == tick2)</a>
+<a name="ln2312">                  status.erase(it2);</a>
+<a name="ln2313">            else</a>
+<a name="ln2314">                  status.insert(std::make_pair(tick2, Range::END));</a>
+<a name="ln2315">            }</a>
+<a name="ln2316">      }</a>
+<a name="ln2317"> </a>
+<a name="ln2318">//---------------------------------------------------------</a>
+<a name="ln2319">//   RangeMap::occupiedRangeEnd</a>
+<a name="ln2320">//---------------------------------------------------------</a>
+<a name="ln2321"> </a>
+<a name="ln2322">int RangeMap::occupiedRangeEnd(int tick) const</a>
+<a name="ln2323">      {</a>
+<a name="ln2324">      const auto it = status.upper_bound(tick);</a>
+<a name="ln2325">      if (it == status.begin())</a>
+<a name="ln2326">            return tick;</a>
+<a name="ln2327">      const int rangeEnd = (it == status.end()) ? tick : it-&gt;first;</a>
+<a name="ln2328">      if (it-&gt;second == Range::END)</a>
+<a name="ln2329">            return rangeEnd;</a>
+<a name="ln2330">      return tick;</a>
+<a name="ln2331">      }</a>
+<a name="ln2332">}</a>
+
+</code></pre>
+<div class="balloon" rel="941"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v636/" target="_blank">V636</a> The '((i - lastPointTick) * 60) / delta' expression was implicitly cast from 'int' type to 'double' type. Consider utilizing an explicit type cast to avoid the loss of a fractional part. An example: double A = (double)(X) / Y;.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,604 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>image.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2007-2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;image.h&quot;</a>
+<a name="ln14">#include &quot;xml.h&quot;</a>
+<a name="ln15">#include &quot;score.h&quot;</a>
+<a name="ln16">#include &quot;undo.h&quot;</a>
+<a name="ln17">#include &quot;mscore.h&quot;</a>
+<a name="ln18">#include &quot;imageStore.h&quot;</a>
+<a name="ln19"> </a>
+<a name="ln20">namespace Ms {</a>
+<a name="ln21"> </a>
+<a name="ln22">//---------------------------------------------------------</a>
+<a name="ln23">//   propertyList</a>
+<a name="ln24">//---------------------------------------------------------</a>
+<a name="ln25"> </a>
+<a name="ln26">static bool defaultAutoScale        = false;</a>
+<a name="ln27">static bool defaultLockAspectRatio  = true;</a>
+<a name="ln28">static bool defaultSizeIsSpatium    = true;</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   Image</a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">Image::Image(Score* s)</a>
+<a name="ln35">   : BSymbol(s, ElementFlag::MOVABLE)</a>
+<a name="ln36">      {</a>
+<a name="ln37">      imageType        = ImageType::NONE;</a>
+<a name="ln38">      rasterDoc        = 0;</a>
+<a name="ln39">      _size            = QSizeF(0, 0);</a>
+<a name="ln40">      _storeItem       = 0;</a>
+<a name="ln41">      _dirty           = false;</a>
+<a name="ln42">      _lockAspectRatio = defaultLockAspectRatio;</a>
+<a name="ln43">      _autoScale       = defaultAutoScale;</a>
+<a name="ln44">      _sizeIsSpatium   = defaultSizeIsSpatium;</a>
+<a name="ln45">      _linkIsValid     = false;</a>
+<a name="ln46">      }</a>
+<a name="ln47"> </a>
+<a name="ln48">Image::Image(const Image&amp; img)</a>
+<a name="ln49">   : BSymbol(img)</a>
+<a name="ln50">      {</a>
+<a name="ln51">      imageType        = img.imageType;</a>
+<a name="ln52">      buffer           = img.buffer;</a>
+<a name="ln53">      _size            = img._size;</a>
+<a name="ln54">      _lockAspectRatio = img._lockAspectRatio;</a>
+<a name="ln55">      _autoScale       = img._autoScale;</a>
+<a name="ln56">      _dirty           = img._dirty;</a>
+<a name="ln57">      _storeItem       = img._storeItem;</a>
+<a name="ln58">      _sizeIsSpatium   = img._sizeIsSpatium;</a>
+<a name="ln59">      if (_storeItem)</a>
+<a name="ln60">            _storeItem-&gt;reference(this);</a>
+<a name="ln61">      _linkPath        = img._linkPath;</a>
+<a name="ln62">      _linkIsValid     = img._linkIsValid;</a>
+<a name="ln63">      if (imageType == ImageType::RASTER)</a>
+<a name="ln64">            rasterDoc = img.rasterDoc ? new QImage(*img.rasterDoc) : 0;</a>
+<a name="ln65">      else if (imageType == ImageType::SVG)</a>
+<a name="ln66">            svgDoc = img.svgDoc ? new QSvgRenderer(_storeItem-&gt;buffer()) : 0;</a>
+<a name="ln67">      setZ(img.z());</a>
+<a name="ln68">      }</a>
+<a name="ln69"> </a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71">//   Image</a>
+<a name="ln72">//---------------------------------------------------------</a>
+<a name="ln73"> </a>
+<a name="ln74">Image::~Image()</a>
+<a name="ln75">      {</a>
+<a name="ln76">      if (_storeItem)</a>
+<a name="ln77">            _storeItem-&gt;dereference(this);</a>
+<a name="ln78">      if (imageType == ImageType::SVG)</a>
+<a name="ln79">            delete svgDoc;</a>
+<a name="ln80">      else if (imageType == ImageType::RASTER)</a>
+<a name="ln81">            delete rasterDoc;</a>
+<a name="ln82">      }</a>
+<a name="ln83"> </a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85">//   setImageType</a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87"> </a>
+<a name="ln88">void Image::setImageType(ImageType t)</a>
+<a name="ln89">      {</a>
+<a name="ln90">      imageType = t;</a>
+<a name="ln91">      if (imageType == ImageType::SVG)</a>
+<a name="ln92">            svgDoc = 0;</a>
+<a name="ln93">      else if (imageType == ImageType::RASTER)</a>
+<a name="ln94">            rasterDoc = 0;</a>
+<a name="ln95">      else</a>
+<a name="ln96">            qDebug(&quot;illegal image type&quot;);</a>
+<a name="ln97">      }</a>
+<a name="ln98"> </a>
+<a name="ln99">//---------------------------------------------------------</a>
+<a name="ln100">//   imageSize</a>
+<a name="ln101">//---------------------------------------------------------</a>
+<a name="ln102"> </a>
+<a name="ln103">QSizeF Image::imageSize() const</a>
+<a name="ln104">      {</a>
+<a name="ln105">      if (!isValid())</a>
+<a name="ln106">            return QSizeF();</a>
+<a name="ln107">      return imageType == ImageType::RASTER ? rasterDoc-&gt;size() : svgDoc-&gt;defaultSize();</a>
+<a name="ln108">      }</a>
+<a name="ln109"> </a>
+<a name="ln110">//---------------------------------------------------------</a>
+<a name="ln111">//   draw</a>
+<a name="ln112">//---------------------------------------------------------</a>
+<a name="ln113"> </a>
+<a name="ln114">void Image::draw(QPainter* painter) const</a>
+<a name="ln115">      {</a>
+<a name="ln116">      bool emptyImage = false;</a>
+<a name="ln117">      if (imageType == ImageType::SVG) {</a>
+<a name="ln118">            if (!svgDoc)</a>
+<a name="ln119">                  emptyImage = true;</a>
+<a name="ln120">            else</a>
+<a name="ln121">                  svgDoc-&gt;render(painter, bbox());</a>
+<a name="ln122">            }</a>
+<a name="ln123">      else if (imageType == ImageType::RASTER) {</a>
+<a name="ln124">            if (rasterDoc == nullptr)</a>
+<a name="ln125">                  emptyImage = true;</a>
+<a name="ln126">            else {</a>
+<a name="ln127">                  painter-&gt;save();</a>
+<a name="ln128">                  QSizeF s;</a>
+<a name="ln129">                  if (_sizeIsSpatium)</a>
+<a name="ln130">                        s = _size * spatium();</a>
+<a name="ln131">                  else</a>
+<a name="ln132">                        s = _size * DPMM;</a>
+<a name="ln133">                  if (score()-&gt;printing() &amp;&amp; !MScore::svgPrinting) {</a>
+<a name="ln134">                        // use original image size for printing, but not for svg for reasonable file size.</a>
+<a name="ln135">                        painter-&gt;scale(s.width() / rasterDoc-&gt;width(), s.height() / rasterDoc-&gt;height());</a>
+<a name="ln136">                        painter-&gt;drawPixmap(QPointF(0, 0), QPixmap::fromImage(*rasterDoc));</a>
+<a name="ln137">                        }</a>
+<a name="ln138">                  else {</a>
+<a name="ln139">                        QTransform t = painter-&gt;transform();</a>
+<a name="ln140">                        QSize ss = QSizeF(s.width() * t.m11(), s.height() * t.m22()).toSize();</a>
+<a name="ln141">                        t.setMatrix(1.0, t.m12(), t.m13(), t.m21(), 1.0, t.m23(), t.m31(), t.m32(), t.m33());</a>
+<a name="ln142">                        painter-&gt;setWorldTransform(t);</a>
+<a name="ln143">                        if ((buffer.size() != ss || _dirty) &amp;&amp; rasterDoc &amp;&amp; !rasterDoc-&gt;isNull()) {</a>
+<a name="ln144">                              buffer = QPixmap::fromImage(rasterDoc-&gt;scaled(ss, Qt::IgnoreAspectRatio, Qt::SmoothTransformation));</a>
+<a name="ln145">                              _dirty = false;</a>
+<a name="ln146">                              }</a>
+<a name="ln147">                        if (buffer.isNull())</a>
+<a name="ln148">                              emptyImage = true;</a>
+<a name="ln149">                        else</a>
+<a name="ln150">                              painter-&gt;drawPixmap(QPointF(0.0, 0.0), buffer);</a>
+<a name="ln151">                        }</a>
+<a name="ln152">                  painter-&gt;restore();</a>
+<a name="ln153">                  }</a>
+<a name="ln154">            }</a>
+<a name="ln155">      if (emptyImage) {</a>
+<a name="ln156">            painter-&gt;setBrush(Qt::NoBrush);</a>
+<a name="ln157">            painter-&gt;setPen(Qt::black);</a>
+<a name="ln158">            painter-&gt;drawRect(bbox());</a>
+<a name="ln159">            painter-&gt;drawLine(0.0, 0.0, bbox().width(), bbox().height());</a>
+<a name="ln160">            painter-&gt;drawLine(bbox().width(), 0.0, 0.0, bbox().height());</a>
+<a name="ln161">            }</a>
+<a name="ln162">      if (selected() &amp;&amp; !(score() &amp;&amp; score()-&gt;printing())) {</a>
+<a name="ln163">            painter-&gt;setBrush(Qt::NoBrush);</a>
+<a name="ln164">            painter-&gt;setPen(MScore::selectColor[0]);</a>
+<a name="ln165">            painter-&gt;drawRect(bbox());</a>
+<a name="ln166">            }</a>
+<a name="ln167">      }</a>
+<a name="ln168"> </a>
+<a name="ln169">//---------------------------------------------------------</a>
+<a name="ln170">//   write</a>
+<a name="ln171">//---------------------------------------------------------</a>
+<a name="ln172"> </a>
+<a name="ln173">void Image::write(XmlWriter&amp; xml) const</a>
+<a name="ln174">      {</a>
+<a name="ln175">      // attempt to convert the _linkPath to a path relative to the score</a>
+<a name="ln176">      //</a>
+<a name="ln177">      // TODO : on Save As, score()-&gt;fileInfo() still contains the old path and fname</a>
+<a name="ln178">      //          if the Save As path is different, image relative path will be wrong!</a>
+<a name="ln179">      //</a>
+<a name="ln180">      QString relativeFilePath= QString();</a>
+<a name="ln181">      if (!_linkPath.isEmpty() &amp;&amp; _linkIsValid) {</a>
+<a name="ln182">            QFileInfo fi(_linkPath);</a>
+<a name="ln183">            // score()-&gt;fileInfo()-&gt;canonicalPath() would be better</a>
+<a name="ln184">            // but we are saving under a temp file name and the 'final' file</a>
+<a name="ln185">            // might not exist yet, so canonicalFilePath() may return only &quot;/&quot;</a>
+<a name="ln186">            // OTOH, the score 'final' file name is practically always canonical, at this point</a>
+<a name="ln187">            QString scorePath = score()-&gt;masterScore()-&gt;fileInfo()-&gt;absolutePath();</a>
+<a name="ln188">            QString imgFPath  = fi.canonicalFilePath();</a>
+<a name="ln189">            // if imgFPath is in (or below) the directory of scorePath</a>
+<a name="ln190">            if (imgFPath.startsWith(scorePath, Qt::CaseSensitive)) {</a>
+<a name="ln191">                  // relative img path is the part exceeding scorePath</a>
+<a name="ln192">                  imgFPath.remove(0, scorePath.size());</a>
+<a name="ln193">                  if(imgFPath.startsWith('/'))</a>
+<a name="ln194">                        imgFPath.remove(0, 1);</a>
+<a name="ln195">                  relativeFilePath = imgFPath;</a>
+<a name="ln196">                  }</a>
+<a name="ln197">            // try 1 level up</a>
+<a name="ln198">            else {</a>
+<a name="ln199">                  // reduce scorePath by one path level</a>
+<a name="ln200">                  fi.setFile(scorePath);</a>
+<a name="ln201">                  scorePath = fi.path();</a>
+<a name="ln202">                  // if imgFPath is in (or below) the directory up the score directory</a>
+<a name="ln203">                  if (imgFPath.startsWith(scorePath, Qt::CaseSensitive)) {</a>
+<a name="ln204">                        // relative img path is the part exceeding new scorePath plus &quot;../&quot;</a>
+<a name="ln205">                        imgFPath.remove(0, scorePath.size());</a>
+<a name="ln206">                        if (!imgFPath.startsWith('/'))</a>
+<a name="ln207">                              imgFPath.prepend('/');</a>
+<a name="ln208">                        imgFPath.prepend(&quot;..&quot;);</a>
+<a name="ln209">                        relativeFilePath = imgFPath;</a>
+<a name="ln210">                        }</a>
+<a name="ln211">                  }</a>
+<a name="ln212">            }</a>
+<a name="ln213">      // if no match, use full _linkPath</a>
+<a name="ln214">      if (relativeFilePath.isEmpty())</a>
+<a name="ln215">            relativeFilePath = _linkPath;</a>
+<a name="ln216"> </a>
+<a name="ln217">      xml.stag(this);</a>
+<a name="ln218">      BSymbol::writeProperties(xml);</a>
+<a name="ln219">      // keep old &quot;path&quot; tag, for backward compatibility and because it is used elsewhere</a>
+<a name="ln220">      // (for instance by Box:read(), Measure:read(), Note:read(), ...)</a>
+<a name="ln221">      xml.tag(&quot;path&quot;, _storeItem ? _storeItem-&gt;hashName() : relativeFilePath);</a>
+<a name="ln222">      xml.tag(&quot;linkPath&quot;, relativeFilePath);</a>
+<a name="ln223"> </a>
+<a name="ln224">      writeProperty(xml, Pid::AUTOSCALE);</a>
+<a name="ln225">      writeProperty(xml, Pid::SIZE);</a>
+<a name="ln226">      writeProperty(xml, Pid::LOCK_ASPECT_RATIO);</a>
+<a name="ln227">      writeProperty(xml, Pid::SIZE_IS_SPATIUM);</a>
+<a name="ln228"> </a>
+<a name="ln229">      xml.etag();</a>
+<a name="ln230">      }</a>
+<a name="ln231"> </a>
+<a name="ln232">//---------------------------------------------------------</a>
+<a name="ln233">//   read</a>
+<a name="ln234">//---------------------------------------------------------</a>
+<a name="ln235"> </a>
+<a name="ln236">void Image::read(XmlReader&amp; e)</a>
+<a name="ln237">      {</a>
+<a name="ln238">      if (score()-&gt;mscVersion() &lt;= 114)</a>
+<a name="ln239">            _sizeIsSpatium = false;</a>
+<a name="ln240"> </a>
+<a name="ln241">      while (e.readNextStartElement()) {</a>
+<a name="ln242">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln243">            if (tag == &quot;autoScale&quot;)</a>
+<a name="ln244">                  readProperty(e, Pid::AUTOSCALE);</a>
+<a name="ln245">            else if (tag == &quot;size&quot;)</a>
+<a name="ln246">                  readProperty(e, Pid::SIZE);</a>
+<a name="ln247">            else if (tag == &quot;lockAspectRatio&quot;)</a>
+<a name="ln248">                  readProperty(e, Pid::LOCK_ASPECT_RATIO);</a>
+<a name="ln249">            else if (tag == &quot;sizeIsSpatium&quot;)</a>
+<a name="ln250">                  // setting this using the property Pid::SIZE_IS_SPATIUM breaks, because the</a>
+<a name="ln251">                  // property setter attempts to maintain a constant size. If we're reading, we</a>
+<a name="ln252">                  // don't want to do that, because the stored size will be in:</a>
+<a name="ln253">                  //    mm if size isn't spatium</a>
+<a name="ln254">                  //    sp if size is spatium</a>
+<a name="ln255">                  _sizeIsSpatium = e.readBool();</a>
+<a name="ln256">            else if (tag == &quot;path&quot;)</a>
+<a name="ln257">                  _storePath = e.readElementText();</a>
+<a name="ln258">            else if (tag == &quot;linkPath&quot;)</a>
+<a name="ln259">                  _linkPath = e.readElementText();</a>
+<a name="ln260">            else if (tag == &quot;subtype&quot;)    // obsolete</a>
+<a name="ln261">                  e.skipCurrentElement();</a>
+<a name="ln262">            else if (!BSymbol::readProperties(e))</a>
+<a name="ln263">                  e.unknown();</a>
+<a name="ln264">            }</a>
+<a name="ln265"> </a>
+<a name="ln266">      // once all paths are read, load img or retrieve it from store</a>
+<a name="ln267">      // loading from file is tried first to update the stored image, if necessary</a>
+<a name="ln268"> </a>
+<a name="ln269">      qDebug(&quot;linkPath &lt;%s&gt;&quot;, qPrintable(_linkPath));</a>
+<a name="ln270">      qDebug(&quot;storePath &lt;%s&gt;&quot;, qPrintable(_storePath));</a>
+<a name="ln271"> </a>
+<a name="ln272">      QString path;</a>
+<a name="ln273">      bool    loaded = false;</a>
+<a name="ln274">      // if a store path is given, attempt to get the image from the store</a>
+<a name="ln275">      if (!_storePath.isEmpty()) {</a>
+<a name="ln276">            _storeItem = imageStore.getImage(_storePath);</a>
+<a name="ln277">            if (_storeItem) {</a>
+<a name="ln278">                  _storeItem-&gt;reference(this);</a>
+<a name="ln279">                  loaded = true;</a>
+<a name="ln280">                  }</a>
+<a name="ln281">            // if no image in store, attempt to load from path (for backward compatibility)</a>
+<a name="ln282">            else</a>
+<a name="ln283">                  loaded = load(_storePath);</a>
+<a name="ln284">            path = _storePath;</a>
+<a name="ln285">            }</a>
+<a name="ln286">      // if no success from store path, attempt loading from link path (for .mscx files)</a>
+<a name="ln287">      if (!loaded) {</a>
+<a name="ln288">            _linkIsValid = load(_linkPath);</a>
+<a name="ln289">            path = _linkPath;</a>
+<a name="ln290">            }</a>
+<a name="ln291"> </a>
+<a name="ln292">      if (path.endsWith(&quot;.svg&quot;))</a>
+<a name="ln293">            setImageType(ImageType::SVG);</a>
+<a name="ln294">      else</a>
+<a name="ln295">            setImageType(ImageType::RASTER);</a>
+<a name="ln296">      }</a>
+<a name="ln297"> </a>
+<a name="ln298">//---------------------------------------------------------</a>
+<a name="ln299">//   load</a>
+<a name="ln300">//    load image from file and put into ImageStore</a>
+<a name="ln301">//    return true on success</a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303"> </a>
+<a name="ln304">bool Image::load(const QString&amp; ss)</a>
+<a name="ln305">      {</a>
+<a name="ln306">      qDebug(&quot;Image::load &lt;%s&gt;&quot;, qPrintable(ss));</a>
+<a name="ln307">      QString path(ss);</a>
+<a name="ln308">      // if file path is relative, prepend score path</a>
+<a name="ln309">      QFileInfo fi(path);</a>
+<a name="ln310">      if (fi.isRelative()) {</a>
+<a name="ln311">            path.prepend(score()-&gt;masterScore()-&gt;fileInfo()-&gt;absolutePath() + &quot;/&quot;);</a>
+<a name="ln312">            fi.setFile(path);</a>
+<a name="ln313">            }</a>
+<a name="ln314"> </a>
+<a name="ln315">      _linkIsValid = false;                     // assume link fname is invalid</a>
+<a name="ln316">      QFile f(path);</a>
+<a name="ln317">      if (!f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln318">            qDebug(&quot;Image::load&lt;%s&gt; failed&quot;, qPrintable(path));</a>
+<a name="ln319">            return false;</a>
+<a name="ln320">            }</a>
+<a name="ln321">      QByteArray ba = f.readAll();</a>
+<a name="ln322">      f.close();</a>
+<a name="ln323"> </a>
+<a name="ln324">      _linkIsValid = true;</a>
+<a name="ln325">      _linkPath = fi.canonicalFilePath();</a>
+<a name="ln326">      _storeItem = imageStore.add(_linkPath, ba);</a>
+<a name="ln327">      _storeItem-&gt;reference(this);</a>
+<a name="ln328">      if (path.endsWith(&quot;.svg&quot;))</a>
+<a name="ln329">            setImageType(ImageType::SVG);</a>
+<a name="ln330">      else</a>
+<a name="ln331">            setImageType(ImageType::RASTER);</a>
+<a name="ln332">      return true;</a>
+<a name="ln333">      }</a>
+<a name="ln334"> </a>
+<a name="ln335">//---------------------------------------------------------</a>
+<a name="ln336">//   loadFromData</a>
+<a name="ln337">//    load image from data and put into ImageStore</a>
+<a name="ln338">//    return true on success</a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340"> </a>
+<a name="ln341">bool Image::loadFromData(const QString&amp; ss, const QByteArray&amp; ba)</a>
+<a name="ln342">      {</a>
+<a name="ln343">      qDebug(&quot;Image::loadFromData &lt;%s&gt;&quot;, qPrintable(ss));</a>
+<a name="ln344"> </a>
+<a name="ln345">      _linkIsValid = false;</a>
+<a name="ln346">      _linkPath = &quot;&quot;;</a>
+<a name="ln347">      _storeItem = imageStore.add(ss, ba);</a>
+<a name="ln348">      _storeItem-&gt;reference(this);</a>
+<a name="ln349">      if (ss.endsWith(&quot;.svg&quot;))</a>
+<a name="ln350">            setImageType(ImageType::SVG);</a>
+<a name="ln351">      else</a>
+<a name="ln352">            setImageType(ImageType::RASTER);</a>
+<a name="ln353">      return true;</a>
+<a name="ln354">      }</a>
+<a name="ln355"> </a>
+<a name="ln356">//---------------------------------------------------------</a>
+<a name="ln357">//   startDrag</a>
+<a name="ln358">//---------------------------------------------------------</a>
+<a name="ln359"> </a>
+<a name="ln360">void Image::startEditDrag(EditData&amp; data)</a>
+<a name="ln361">      {</a>
+<a name="ln362">      BSymbol::startEditDrag(data);</a>
+<a name="ln363">      ElementEditData* eed = data.getData(this);</a>
+<a name="ln364"> </a>
+<a name="ln365">      eed-&gt;pushProperty(Pid::SIZE);</a>
+<a name="ln366">      }</a>
+<a name="ln367"> </a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369">//   editDrag</a>
+<a name="ln370">//---------------------------------------------------------</a>
+<a name="ln371"> </a>
+<a name="ln372">void Image::editDrag(EditData&amp; ed)</a>
+<a name="ln373">      {</a>
+<a name="ln374">      qreal ratio = _size.width() / _size.height();</a>
+<a name="ln375">      qreal dx = ed.delta.x();</a>
+<a name="ln376">      qreal dy = ed.delta.y();</a>
+<a name="ln377">      if (_sizeIsSpatium) {</a>
+<a name="ln378">            qreal _spatium = spatium();</a>
+<a name="ln379">            dx /= _spatium;</a>
+<a name="ln380">            dy /= _spatium;</a>
+<a name="ln381">            }</a>
+<a name="ln382">      else {</a>
+<a name="ln383">            dx /= DPMM;</a>
+<a name="ln384">            dy /= DPMM;</a>
+<a name="ln385">            }</a>
+<a name="ln386">      if (ed.curGrip == Grip::START) {</a>
+<a name="ln387">            _size.setWidth(_size.width() + dx);</a>
+<a name="ln388">            if (_lockAspectRatio)</a>
+<a name="ln389">                  _size.setHeight(_size.width() / ratio);</a>
+<a name="ln390">            }</a>
+<a name="ln391">      else {</a>
+<a name="ln392">            _size.setHeight(_size.height() + dy);</a>
+<a name="ln393">            if (_lockAspectRatio)</a>
+<a name="ln394">                  _size.setWidth(_size.height() * ratio);</a>
+<a name="ln395">            }</a>
+<a name="ln396">      layout();</a>
+<a name="ln397">      }</a>
+<a name="ln398"> </a>
+<a name="ln399">//---------------------------------------------------------</a>
+<a name="ln400">//   gripsPositions</a>
+<a name="ln401">//---------------------------------------------------------</a>
+<a name="ln402"> </a>
+<a name="ln403">std::vector&lt;QPointF&gt; Image::gripsPositions(const EditData&amp;) const</a>
+<a name="ln404">      {</a>
+<a name="ln405">      QRectF r(pageBoundingRect());</a>
+<a name="ln406">      return {</a>
+<a name="ln407">            QPointF(r.x() + r.width(), r.y() + r.height() * .5),</a>
+<a name="ln408">            QPointF(r.x() + r.width() * .5, r.y() + r.height())</a>
+<a name="ln409">            };</a>
+<a name="ln410">      }</a>
+<a name="ln411"> </a>
+<a name="ln412">//---------------------------------------------------------</a>
+<a name="ln413">//   pixel2Size</a>
+<a name="ln414">//---------------------------------------------------------</a>
+<a name="ln415"> </a>
+<a name="ln416">QSizeF Image::pixel2size(const QSizeF&amp; s) const</a>
+<a name="ln417">      {</a>
+<a name="ln418">      return s / (_sizeIsSpatium ? spatium() : DPMM);</a>
+<a name="ln419">      }</a>
+<a name="ln420"> </a>
+<a name="ln421">//---------------------------------------------------------</a>
+<a name="ln422">//   size2pixel</a>
+<a name="ln423">//---------------------------------------------------------</a>
+<a name="ln424"> </a>
+<a name="ln425">QSizeF Image::size2pixel(const QSizeF&amp; s) const</a>
+<a name="ln426">      {</a>
+<a name="ln427">      return s * (_sizeIsSpatium ? spatium() : DPMM);</a>
+<a name="ln428">      }</a>
+<a name="ln429"> </a>
+<a name="ln430">//---------------------------------------------------------</a>
+<a name="ln431">//   layout</a>
+<a name="ln432">//---------------------------------------------------------</a>
+<a name="ln433"> </a>
+<a name="ln434">void Image::layout()</a>
+<a name="ln435">      {</a>
+<a name="ln436">      setPos(0.0, 0.0);</a>
+<a name="ln437">      if (imageType == ImageType::SVG &amp;&amp; !svgDoc) {</a>
+<a name="ln438">            if (_storeItem)</a>
+<a name="ln439">                  svgDoc = new QSvgRenderer(_storeItem-&gt;buffer());</a>
+<a name="ln440">            }</a>
+<a name="ln441">      else if (imageType == ImageType::RASTER &amp;&amp; !rasterDoc) {</a>
+<a name="ln442">            if (_storeItem) {</a>
+<a name="ln443">                  rasterDoc = new QImage;</a>
+<a name="ln444">                  rasterDoc-&gt;loadFromData(_storeItem-&gt;buffer());</a>
+<a name="ln445">                  if (!rasterDoc-&gt;isNull())</a>
+<a name="ln446">                        _dirty = true;</a>
+<a name="ln447">                  }</a>
+<a name="ln448">            }</a>
+<a name="ln449">      if (_size.isNull())</a>
+<a name="ln450">            _size = pixel2size(imageSize());</a>
+<a name="ln451"> </a>
+<a name="ln452">      // if autoscale &amp;&amp; inside a box, scale to box relevant size</a>
+<a name="ln453">      if (autoScale() &amp;&amp; parent() &amp;&amp; ((parent()-&gt;isHBox() || parent()-&gt;isVBox()))) {</a>
+<a name="ln454">            if (_lockAspectRatio) {</a>
+<a name="ln455">                  qreal f = _sizeIsSpatium ? spatium() : DPMM;</a>
+<a name="ln456">                  QSizeF size(imageSize());</a>
+<a name="ln457">                  qreal ratio = size.width() / size.height();</a>
+<a name="ln458">                  qreal w = parent()-&gt;width();</a>
+<a name="ln459">                  qreal h = parent()-&gt;height();</a>
+<a name="ln460">                  if ((w / h) &lt; ratio) {</a>
+<a name="ln461">                        _size.setWidth(w / f);</a>
+<a name="ln462">                        _size.setHeight((w / ratio) / f);</a>
+<a name="ln463">                        }</a>
+<a name="ln464">                  else {</a>
+<a name="ln465">                        _size.setHeight(h / f);</a>
+<a name="ln466">                        _size.setWidth(h * ratio / f);</a>
+<a name="ln467">                        }</a>
+<a name="ln468">                  }</a>
+<a name="ln469">            else</a>
+<a name="ln470">                  _size = pixel2size(parent()-&gt;bbox().size());</a>
+<a name="ln471">            }</a>
+<a name="ln472"> </a>
+<a name="ln473">      // in any case, adjust position relative to parent</a>
+<a name="ln474">      setbbox(QRectF(QPointF(), size2pixel(_size)));</a>
+<a name="ln475">      }</a>
+<a name="ln476"> </a>
+<a name="ln477">//---------------------------------------------------------</a>
+<a name="ln478">//   getProperty</a>
+<a name="ln479">//---------------------------------------------------------</a>
+<a name="ln480"> </a>
+<a name="ln481">QVariant Image::getProperty(Pid propertyId) const</a>
+<a name="ln482">      {</a>
+<a name="ln483">      switch(propertyId) {</a>
+<a name="ln484">            case Pid::AUTOSCALE:</a>
+<a name="ln485">                  return autoScale();</a>
+<a name="ln486">            case Pid::SIZE:</a>
+<a name="ln487">                  return size();</a>
+<a name="ln488">            case Pid::LOCK_ASPECT_RATIO:</a>
+<a name="ln489">                  return lockAspectRatio();</a>
+<a name="ln490">            case Pid::SIZE_IS_SPATIUM:</a>
+<a name="ln491">                  return sizeIsSpatium();</a>
+<a name="ln492">            default:</a>
+<a name="ln493">                  return Element::getProperty(propertyId);</a>
+<a name="ln494">            }</a>
+<a name="ln495">      }</a>
+<a name="ln496"> </a>
+<a name="ln497">//---------------------------------------------------------</a>
+<a name="ln498">//   setProperty</a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500"> </a>
+<a name="ln501">bool Image::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln502">      {</a>
+<a name="ln503">      bool rv = true;</a>
+<a name="ln504">      score()-&gt;addRefresh(canvasBoundingRect());</a>
+<a name="ln505">      switch(propertyId) {</a>
+<a name="ln506">            case Pid::AUTOSCALE:</a>
+<a name="ln507">                  setAutoScale(v.toBool());</a>
+<a name="ln508">                  break;</a>
+<a name="ln509">            case Pid::SIZE:</a>
+<a name="ln510">                  setSize(v.toSizeF());</a>
+<a name="ln511">                  break;</a>
+<a name="ln512">            case Pid::LOCK_ASPECT_RATIO:</a>
+<a name="ln513">                  setLockAspectRatio(v.toBool());</a>
+<a name="ln514">                  break;</a>
+<a name="ln515">            case Pid::SIZE_IS_SPATIUM:</a>
+<a name="ln516">                  {</a>
+<a name="ln517">                  QSizeF s = size2pixel(_size);</a>
+<a name="ln518">                  setSizeIsSpatium(v.toBool());</a>
+<a name="ln519">                  _size = pixel2size(s);</a>
+<a name="ln520">                  }</a>
+<a name="ln521">                  break;</a>
+<a name="ln522">            default:</a>
+<a name="ln523">                  rv = Element::setProperty(propertyId, v);</a>
+<a name="ln524">                  break;</a>
+<a name="ln525">            }</a>
+<a name="ln526">      setGenerated(false);</a>
+<a name="ln527">      _dirty = true;</a>
+<a name="ln528">      triggerLayout();</a>
+<a name="ln529">      return rv;</a>
+<a name="ln530">      }</a>
+<a name="ln531"> </a>
+<a name="ln532">//---------------------------------------------------------</a>
+<a name="ln533">//   propertyDefault</a>
+<a name="ln534">//---------------------------------------------------------</a>
+<a name="ln535"> </a>
+<a name="ln536">QVariant Image::propertyDefault(Pid id) const</a>
+<a name="ln537">      {</a>
+<a name="ln538">      switch(id) {</a>
+<a name="ln539">            case Pid::AUTOSCALE:</a>
+<a name="ln540">                  return defaultAutoScale;</a>
+<a name="ln541">            case Pid::SIZE:</a>
+<a name="ln542">                  return pixel2size(imageSize());</a>
+<a name="ln543">            case Pid::LOCK_ASPECT_RATIO:</a>
+<a name="ln544">                  return defaultLockAspectRatio;</a>
+<a name="ln545">            case Pid::SIZE_IS_SPATIUM:</a>
+<a name="ln546">                  return defaultSizeIsSpatium;</a>
+<a name="ln547">            default:</a>
+<a name="ln548">                  return Element::propertyDefault(id);</a>
+<a name="ln549">            }</a>
+<a name="ln550">      }</a>
+<a name="ln551">}</a>
+<a name="ln552"> </a>
+
+</code></pre>
+<div class="balloon" rel="133"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'score()' pointer was utilized before it was verified against nullptr. Check lines: 133, 162.</p></div>
+<div class="balloon" rel="269"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="270"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="306"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="318"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="343"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

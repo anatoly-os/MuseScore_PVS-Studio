@@ -1,0 +1,614 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>dynamic.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;dynamic.h&quot;</a>
+<a name="ln14">#include &quot;xml.h&quot;</a>
+<a name="ln15">#include &quot;score.h&quot;</a>
+<a name="ln16">#include &quot;measure.h&quot;</a>
+<a name="ln17">#include &quot;system.h&quot;</a>
+<a name="ln18">#include &quot;segment.h&quot;</a>
+<a name="ln19">#include &quot;utils.h&quot;</a>
+<a name="ln20">#include &quot;style.h&quot;</a>
+<a name="ln21">#include &quot;mscore.h&quot;</a>
+<a name="ln22">#include &quot;chord.h&quot;</a>
+<a name="ln23">#include &quot;undo.h&quot;</a>
+<a name="ln24">#include &quot;sym.h&quot;</a>
+<a name="ln25">#include &quot;musescoreCore.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">namespace Ms {</a>
+<a name="ln28"> </a>
+<a name="ln29">//-----------------------------------------------------------------------------</a>
+<a name="ln30">//   Dyn</a>
+<a name="ln31">//    see: http://en.wikipedia.org/wiki/File:Dynamic's_Note_Velocity.svg</a>
+<a name="ln32">//-----------------------------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">struct Dyn {</a>
+<a name="ln35">      int velocity;      ///&lt; associated midi velocity (0-127, -1 = none)</a>
+<a name="ln36">      bool accent;       ///&lt; if true add velocity to current chord velocity</a>
+<a name="ln37">      const char* tag;   // name of dynamics, eg. &quot;fff&quot;</a>
+<a name="ln38">      const char* text;  // utf8 text of dynamic</a>
+<a name="ln39">      int changeInVelocity;</a>
+<a name="ln40">      };</a>
+<a name="ln41"> </a>
+<a name="ln42">// variant with ligatures, works for both emmentaler and bravura:</a>
+<a name="ln43"> </a>
+<a name="ln44">static Dyn dynList[] = {</a>
+<a name="ln45">      // dynamic:</a>
+<a name="ln46">      {  -1,  true,  &quot;other-dynamics&quot;, &quot;&quot;, 0 },</a>
+<a name="ln47">      {   1,  false, &quot;pppppp&quot;, &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln48">      {   5,  false, &quot;ppppp&quot;,  &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln49">      {  10,  false, &quot;pppp&quot;,   &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln50">      {  16,  false, &quot;ppp&quot;,    &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln51">      {  33,  false, &quot;pp&quot;,     &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln52">      {  49,  false, &quot;p&quot;,      &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln53">      {  64,  false, &quot;mp&quot;,     &quot;&lt;sym&gt;dynamicMezzo&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln54">      {  80,  false, &quot;mf&quot;,     &quot;&lt;sym&gt;dynamicMezzo&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln55">      {  96,  false, &quot;f&quot;,      &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln56">      { 112,  false, &quot;ff&quot;,     &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln57">      { 126,  false, &quot;fff&quot;,    &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln58">      { 127,  false, &quot;ffff&quot;,   &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln59">      { 127,  false, &quot;fffff&quot;,  &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln60">      { 127,  false, &quot;ffffff&quot;, &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln61"> </a>
+<a name="ln62">      // accents:</a>
+<a name="ln63">      {  96,  true,  &quot;fp&quot;,     &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, -47 },</a>
+<a name="ln64">      {  49,  true,  &quot;pf&quot;,     &quot;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, 47 },</a>
+<a name="ln65">      {  112, true,  &quot;sf&quot;,     &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln66">      {  112, true,  &quot;sfz&quot;,    &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicZ&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln67">      {  126, true,  &quot;sff&quot;,    &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln68">      {  126, true,  &quot;sffz&quot;,   &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicZ&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln69">      {  112, true,  &quot;sfp&quot;,    &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, -47 },</a>
+<a name="ln70">      {  112, true,  &quot;sfpp&quot;,   &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&lt;sym&gt;dynamicPiano&lt;/sym&gt;&quot;, -79 },</a>
+<a name="ln71">      {  112, true,  &quot;rfz&quot;,    &quot;&lt;sym&gt;dynamicRinforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicZ&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln72">      {  112, true,  &quot;rf&quot;,     &quot;&lt;sym&gt;dynamicRinforzando&lt;/sym&gt;&lt;sym&gt;dynamicForte&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln73">      {  112, true,  &quot;fz&quot;,     &quot;&lt;sym&gt;dynamicForte&lt;/sym&gt;&lt;sym&gt;dynamicZ&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln74">      {  96,  true,  &quot;m&quot;,      &quot;&lt;sym&gt;dynamicMezzo&lt;/sym&gt;&quot;, -16 },</a>
+<a name="ln75">      {  112, true,  &quot;r&quot;,      &quot;&lt;sym&gt;dynamicRinforzando&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln76">      {  112, true,  &quot;s&quot;,      &quot;&lt;sym&gt;dynamicSforzando&lt;/sym&gt;&quot;, -18 },</a>
+<a name="ln77">      {  80,  true,  &quot;z&quot;,      &quot;&lt;sym&gt;dynamicZ&lt;/sym&gt;&quot;, 0 },</a>
+<a name="ln78">      {  49,  true,  &quot;n&quot;,      &quot;&lt;sym&gt;dynamicNiente&lt;/sym&gt;&quot;, -48 }</a>
+<a name="ln79">      };</a>
+<a name="ln80"> </a>
+<a name="ln81">//---------------------------------------------------------</a>
+<a name="ln82">//   dynamicsStyle</a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84"> </a>
+<a name="ln85">static const ElementStyle dynamicsStyle {</a>
+<a name="ln86">      { Sid::dynamicsPlacement, Pid::PLACEMENT },</a>
+<a name="ln87">      { Sid::dynamicsMinDistance, Pid::MIN_DISTANCE },</a>
+<a name="ln88">      };</a>
+<a name="ln89"> </a>
+<a name="ln90">//---------------------------------------------------------</a>
+<a name="ln91">//   changeSpeedTable</a>
+<a name="ln92">//---------------------------------------------------------</a>
+<a name="ln93"> </a>
+<a name="ln94">const std::vector&lt;Dynamic::ChangeSpeedItem&gt; Dynamic::changeSpeedTable {</a>
+<a name="ln95">      { Dynamic::Speed::NORMAL,           &quot;normal&quot; },</a>
+<a name="ln96">      { Dynamic::Speed::SLOW,             &quot;slow&quot;   },</a>
+<a name="ln97">      { Dynamic::Speed::FAST,             &quot;fast&quot;   },</a>
+<a name="ln98">      };</a>
+<a name="ln99"> </a>
+<a name="ln100">//---------------------------------------------------------</a>
+<a name="ln101">//   Dynamic</a>
+<a name="ln102">//---------------------------------------------------------</a>
+<a name="ln103"> </a>
+<a name="ln104">Dynamic::Dynamic(Score* s)</a>
+<a name="ln105">   : TextBase(s, Tid::DYNAMICS, ElementFlag::MOVABLE | ElementFlag::ON_STAFF)</a>
+<a name="ln106">      {</a>
+<a name="ln107">      initElementStyle(&amp;dynamicsStyle);</a>
+<a name="ln108">      _velocity    = -1;</a>
+<a name="ln109">      _dynRange    = Range::PART;</a>
+<a name="ln110">      _dynamicType = Type::OTHER;</a>
+<a name="ln111">      _changeInVelocity = 128;</a>
+<a name="ln112">      _velChangeSpeed = Speed::NORMAL;</a>
+<a name="ln113">      }</a>
+<a name="ln114"> </a>
+<a name="ln115">Dynamic::Dynamic(const Dynamic&amp; d)</a>
+<a name="ln116">   : TextBase(d)</a>
+<a name="ln117">      {</a>
+<a name="ln118">      _dynamicType = d._dynamicType;</a>
+<a name="ln119">      _velocity    = d._velocity;</a>
+<a name="ln120">      _dynRange    = d._dynRange;</a>
+<a name="ln121">      _changeInVelocity = d._changeInVelocity;</a>
+<a name="ln122">      _velChangeSpeed = d._velChangeSpeed;</a>
+<a name="ln123">      }</a>
+<a name="ln124"> </a>
+<a name="ln125">//---------------------------------------------------------</a>
+<a name="ln126">//   velocity</a>
+<a name="ln127">//---------------------------------------------------------</a>
+<a name="ln128"> </a>
+<a name="ln129">int Dynamic::velocity() const</a>
+<a name="ln130">      {</a>
+<a name="ln131">      return _velocity &lt;= 0 ? dynList[int(dynamicType())].velocity : _velocity;</a>
+<a name="ln132">      }</a>
+<a name="ln133"> </a>
+<a name="ln134">//---------------------------------------------------------</a>
+<a name="ln135">//   changeInVelocity</a>
+<a name="ln136">//---------------------------------------------------------</a>
+<a name="ln137"> </a>
+<a name="ln138">int Dynamic::changeInVelocity() const</a>
+<a name="ln139">      {</a>
+<a name="ln140">      return _changeInVelocity &gt;= 128 ? dynList[int(dynamicType())].changeInVelocity : _changeInVelocity;</a>
+<a name="ln141">      }</a>
+<a name="ln142"> </a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144">//   setChangeInVelocity</a>
+<a name="ln145">//---------------------------------------------------------</a>
+<a name="ln146"> </a>
+<a name="ln147">void Dynamic::setChangeInVelocity(int val)</a>
+<a name="ln148">      {</a>
+<a name="ln149">      if (dynList[int(dynamicType())].changeInVelocity == val)</a>
+<a name="ln150">            _changeInVelocity = 128;</a>
+<a name="ln151">      else</a>
+<a name="ln152">            _changeInVelocity = val;</a>
+<a name="ln153">      }</a>
+<a name="ln154"> </a>
+<a name="ln155">//---------------------------------------------------------</a>
+<a name="ln156">//   velocityChangeLength</a>
+<a name="ln157">//    the time over which the velocity change occurs</a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159"> </a>
+<a name="ln160">Fraction Dynamic::velocityChangeLength() const</a>
+<a name="ln161">      {</a>
+<a name="ln162">      if (changeInVelocity() == 0)</a>
+<a name="ln163">            return Fraction::fromTicks(0);</a>
+<a name="ln164"> </a>
+<a name="ln165">      double ratio = double(score()-&gt;tempomap()-&gt;tempo(segment()-&gt;tick().ticks())) / double(Score::defaultTempo());</a>
+<a name="ln166">      double speedMult;</a>
+<a name="ln167">      switch (velChangeSpeed()) {</a>
+<a name="ln168">            case Dynamic::Speed::SLOW:</a>
+<a name="ln169">                  speedMult = 1.3;</a>
+<a name="ln170">                  break;</a>
+<a name="ln171">            case Dynamic::Speed::FAST:</a>
+<a name="ln172">                  speedMult = 0.5;</a>
+<a name="ln173">                  break;</a>
+<a name="ln174">            case Dynamic::Speed::NORMAL:</a>
+<a name="ln175">            default:</a>
+<a name="ln176">                  speedMult = 0.8;</a>
+<a name="ln177">                  break;</a>
+<a name="ln178">            }</a>
+<a name="ln179"> </a>
+<a name="ln180">      return Fraction::fromTicks(int(ratio * (speedMult * double(MScore::division))));</a>
+<a name="ln181">      }</a>
+<a name="ln182"> </a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184">//   write</a>
+<a name="ln185">//---------------------------------------------------------</a>
+<a name="ln186"> </a>
+<a name="ln187">void Dynamic::write(XmlWriter&amp; xml) const</a>
+<a name="ln188">      {</a>
+<a name="ln189">      if (!xml.canWrite(this))</a>
+<a name="ln190">            return;</a>
+<a name="ln191">      xml.stag(this);</a>
+<a name="ln192">      writeProperty(xml, Pid::DYNAMIC_TYPE);</a>
+<a name="ln193">      writeProperty(xml, Pid::VELOCITY);</a>
+<a name="ln194">      writeProperty(xml, Pid::DYNAMIC_RANGE);</a>
+<a name="ln195">      writeProperty(xml, Pid::VELO_CHANGE);</a>
+<a name="ln196">      writeProperty(xml, Pid::VELO_CHANGE_SPEED);</a>
+<a name="ln197">      TextBase::writeProperties(xml, dynamicType() == Type::OTHER);</a>
+<a name="ln198">      xml.etag();</a>
+<a name="ln199">      }</a>
+<a name="ln200"> </a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202">//   read</a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204"> </a>
+<a name="ln205">void Dynamic::read(XmlReader&amp; e)</a>
+<a name="ln206">      {</a>
+<a name="ln207">      while (e.readNextStartElement()) {</a>
+<a name="ln208">            const QStringRef&amp; tag = e.name();</a>
+<a name="ln209">            if (tag == &quot;subtype&quot;)</a>
+<a name="ln210">                  setDynamicType(e.readElementText());</a>
+<a name="ln211">            else if (tag == &quot;velocity&quot;)</a>
+<a name="ln212">                  _velocity = e.readInt();</a>
+<a name="ln213">            else if (tag == &quot;dynType&quot;)</a>
+<a name="ln214">                  _dynRange = Range(e.readInt());</a>
+<a name="ln215">            else if (tag == &quot;veloChange&quot;)</a>
+<a name="ln216">                  _changeInVelocity = e.readInt();</a>
+<a name="ln217">            else if (tag == &quot;veloChangeSpeed&quot;)</a>
+<a name="ln218">                  _velChangeSpeed = nameToSpeed(e.readElementText());</a>
+<a name="ln219">            else if (!TextBase::readProperties(e))</a>
+<a name="ln220">                  e.unknown();</a>
+<a name="ln221">            }</a>
+<a name="ln222">      styleChanged();</a>
+<a name="ln223">      }</a>
+<a name="ln224"> </a>
+<a name="ln225">//---------------------------------------------------------</a>
+<a name="ln226">//   layout</a>
+<a name="ln227">//---------------------------------------------------------</a>
+<a name="ln228"> </a>
+<a name="ln229">void Dynamic::layout()</a>
+<a name="ln230">      {</a>
+<a name="ln231">      TextBase::layout();</a>
+<a name="ln232"> </a>
+<a name="ln233">      Segment* s = segment();</a>
+<a name="ln234">      if (s) {</a>
+<a name="ln235">            int t = track() &amp; ~0x3;</a>
+<a name="ln236">            for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln237">                  Element* e = s-&gt;element(t + voice);</a>
+<a name="ln238">                  if (!e)</a>
+<a name="ln239">                        continue;</a>
+<a name="ln240">                  if (e-&gt;isChord() &amp;&amp; (align() &amp; Align::HCENTER)) {</a>
+<a name="ln241">                        Chord* c = toChord(e);</a>
+<a name="ln242">                        qreal noteHeadWidth = score()-&gt;noteHeadWidth() * c-&gt;mag();</a>
+<a name="ln243">                        if (c-&gt;stem() &amp;&amp; !c-&gt;up())  // stem down</a>
+<a name="ln244">                              rxpos() += noteHeadWidth * .25;  // center on stem + optical correction</a>
+<a name="ln245">                        else</a>
+<a name="ln246">                              rxpos() += noteHeadWidth * .5;   // center on notehead</a>
+<a name="ln247">                        }</a>
+<a name="ln248">                  else</a>
+<a name="ln249">                        rxpos() += e-&gt;width() * .5;</a>
+<a name="ln250">                  break;</a>
+<a name="ln251">                  }</a>
+<a name="ln252">            }</a>
+<a name="ln253">      else</a>
+<a name="ln254">            setPos(QPointF());      // for palette</a>
+<a name="ln255">      }</a>
+<a name="ln256"> </a>
+<a name="ln257">//-------------------------------------------------------------------</a>
+<a name="ln258">//   doAutoplace</a>
+<a name="ln259">//</a>
+<a name="ln260">//    Move Dynamic up or down to avoid collisions with other elements.</a>
+<a name="ln261">//-------------------------------------------------------------------</a>
+<a name="ln262"> </a>
+<a name="ln263">void Dynamic::doAutoplace()</a>
+<a name="ln264">      {</a>
+<a name="ln265">      Segment* s = segment();</a>
+<a name="ln266">      if (!(s &amp;&amp; autoplace()))</a>
+<a name="ln267">            return;</a>
+<a name="ln268"> </a>
+<a name="ln269">      qreal minDistance = score()-&gt;styleS(Sid::dynamicsMinDistance).val() * spatium();</a>
+<a name="ln270">      QRectF r          = bbox().translated(pos() + s-&gt;pos() + s-&gt;measure()-&gt;pos());</a>
+<a name="ln271">      qreal yOff = offset().y() - propertyDefault(Pid::OFFSET).toPointF().y();</a>
+<a name="ln272">      r.translate(0.0, -yOff);</a>
+<a name="ln273"> </a>
+<a name="ln274">      Skyline&amp; sl       = s-&gt;measure()-&gt;system()-&gt;staff(staffIdx())-&gt;skyline();</a>
+<a name="ln275">      SkylineLine sk(!placeAbove());</a>
+<a name="ln276">      sk.add(r);</a>
+<a name="ln277"> </a>
+<a name="ln278">      if (placeAbove()) {</a>
+<a name="ln279">            qreal d = sk.minDistance(sl.north());</a>
+<a name="ln280">            if (d &gt; -minDistance)</a>
+<a name="ln281">                  rypos() += -(d + minDistance);</a>
+<a name="ln282">            }</a>
+<a name="ln283">      else {</a>
+<a name="ln284">            qreal d = sl.south().minDistance(sk);</a>
+<a name="ln285">            if (d &gt; -minDistance)</a>
+<a name="ln286">                  rypos() += d + minDistance;</a>
+<a name="ln287">            }</a>
+<a name="ln288">      }</a>
+<a name="ln289"> </a>
+<a name="ln290">//---------------------------------------------------------</a>
+<a name="ln291">//   setDynamicType</a>
+<a name="ln292">//---------------------------------------------------------</a>
+<a name="ln293"> </a>
+<a name="ln294">void Dynamic::setDynamicType(const QString&amp; tag)</a>
+<a name="ln295">      {</a>
+<a name="ln296">      int n = sizeof(dynList)/sizeof(*dynList);</a>
+<a name="ln297">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln298">            if (dynList[i].tag == tag || dynList[i].text == tag) {</a>
+<a name="ln299">                  setDynamicType(Type(i));</a>
+<a name="ln300">                  setXmlText(QString::fromUtf8(dynList[i].text));</a>
+<a name="ln301">                  return;</a>
+<a name="ln302">                  }</a>
+<a name="ln303">            }</a>
+<a name="ln304">      qDebug(&quot;setDynamicType: other &lt;%s&gt;&quot;, qPrintable(tag));</a>
+<a name="ln305">      setDynamicType(Type::OTHER);</a>
+<a name="ln306">      setXmlText(tag);</a>
+<a name="ln307">      }</a>
+<a name="ln308"> </a>
+<a name="ln309">//---------------------------------------------------------</a>
+<a name="ln310">//   dynamicTypeName</a>
+<a name="ln311">//---------------------------------------------------------</a>
+<a name="ln312"> </a>
+<a name="ln313">QString Dynamic::dynamicTypeName(Dynamic::Type type)</a>
+<a name="ln314">      {</a>
+<a name="ln315">      return dynList[int(type)].tag;</a>
+<a name="ln316">      }</a>
+<a name="ln317"> </a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319">//   startEdit</a>
+<a name="ln320">//---------------------------------------------------------</a>
+<a name="ln321"> </a>
+<a name="ln322">void Dynamic::startEdit(EditData&amp; ed)</a>
+<a name="ln323">      {</a>
+<a name="ln324">      TextBase::startEdit(ed);</a>
+<a name="ln325">      }</a>
+<a name="ln326"> </a>
+<a name="ln327">//---------------------------------------------------------</a>
+<a name="ln328">//   endEdit</a>
+<a name="ln329">//---------------------------------------------------------</a>
+<a name="ln330"> </a>
+<a name="ln331">void Dynamic::endEdit(EditData&amp; ed)</a>
+<a name="ln332">      {</a>
+<a name="ln333">      TextBase::endEdit(ed);</a>
+<a name="ln334">      if (xmlText() != QString::fromUtf8(dynList[int(_dynamicType)].text))</a>
+<a name="ln335">            _dynamicType = Type::OTHER;</a>
+<a name="ln336">      }</a>
+<a name="ln337"> </a>
+<a name="ln338">//---------------------------------------------------------</a>
+<a name="ln339">//   reset</a>
+<a name="ln340">//---------------------------------------------------------</a>
+<a name="ln341"> </a>
+<a name="ln342">void Dynamic::reset()</a>
+<a name="ln343">      {</a>
+<a name="ln344">      TextBase::reset();</a>
+<a name="ln345">      }</a>
+<a name="ln346"> </a>
+<a name="ln347">//---------------------------------------------------------</a>
+<a name="ln348">//   drag</a>
+<a name="ln349">//---------------------------------------------------------</a>
+<a name="ln350"> </a>
+<a name="ln351">QRectF Dynamic::drag(EditData&amp; ed)</a>
+<a name="ln352">      {</a>
+<a name="ln353">      QRectF f = Element::drag(ed);</a>
+<a name="ln354"> </a>
+<a name="ln355">      //</a>
+<a name="ln356">      // move anchor</a>
+<a name="ln357">      //</a>
+<a name="ln358">      Qt::KeyboardModifiers km = qApp-&gt;keyboardModifiers();</a>
+<a name="ln359">      if (km != (Qt::ShiftModifier | Qt::ControlModifier)) {</a>
+<a name="ln360">            int si       = staffIdx();</a>
+<a name="ln361">            Segment* seg = segment();</a>
+<a name="ln362">            score()-&gt;dragPosition(ed.pos, &amp;si, &amp;seg);</a>
+<a name="ln363">            if (seg != segment() || staffIdx() != si) {</a>
+<a name="ln364">                  QPointF pos1(canvasPos());</a>
+<a name="ln365">                  score()-&gt;undo(new ChangeParent(this, seg, si));</a>
+<a name="ln366">                  setOffset(QPointF());</a>
+<a name="ln367">                  layout();</a>
+<a name="ln368">                  QPointF pos2(canvasPos());</a>
+<a name="ln369">                  setOffset(pos1 - pos2);</a>
+<a name="ln370">                  ed.startMove = pos2;</a>
+<a name="ln371">                  }</a>
+<a name="ln372">            }</a>
+<a name="ln373">      return f;</a>
+<a name="ln374">      }</a>
+<a name="ln375"> </a>
+<a name="ln376">//---------------------------------------------------------</a>
+<a name="ln377">//   undoSetDynRange</a>
+<a name="ln378">//---------------------------------------------------------</a>
+<a name="ln379"> </a>
+<a name="ln380">void Dynamic::undoSetDynRange(Range v)</a>
+<a name="ln381">      {</a>
+<a name="ln382">      undoChangeProperty(Pid::DYNAMIC_RANGE, int(v));</a>
+<a name="ln383">      }</a>
+<a name="ln384"> </a>
+<a name="ln385">//---------------------------------------------------------</a>
+<a name="ln386">//   speedToName</a>
+<a name="ln387">//---------------------------------------------------------</a>
+<a name="ln388"> </a>
+<a name="ln389">QString Dynamic::speedToName(Speed speed)</a>
+<a name="ln390">      {</a>
+<a name="ln391">      for (auto i : Dynamic::changeSpeedTable) {</a>
+<a name="ln392">            if (i.speed == speed)</a>
+<a name="ln393">                  return i.name;</a>
+<a name="ln394">            }</a>
+<a name="ln395">      qFatal(&quot;Unrecognised change speed!&quot;);</a>
+<a name="ln396">      return &quot;none&quot;; // silence a compiler warning</a>
+<a name="ln397">      }</a>
+<a name="ln398"> </a>
+<a name="ln399"> </a>
+<a name="ln400">//---------------------------------------------------------</a>
+<a name="ln401">//   nameToSpeed</a>
+<a name="ln402">//---------------------------------------------------------</a>
+<a name="ln403"> </a>
+<a name="ln404">Dynamic::Speed Dynamic::nameToSpeed(QString name)</a>
+<a name="ln405">      {</a>
+<a name="ln406">      for (auto i : Dynamic::changeSpeedTable) {</a>
+<a name="ln407">            if (i.name == name)</a>
+<a name="ln408">                  return i.speed;</a>
+<a name="ln409">            }</a>
+<a name="ln410">      return Speed::NORMAL;   // default</a>
+<a name="ln411">      }</a>
+<a name="ln412"> </a>
+<a name="ln413">//---------------------------------------------------------</a>
+<a name="ln414">//   getProperty</a>
+<a name="ln415">//---------------------------------------------------------</a>
+<a name="ln416"> </a>
+<a name="ln417">QVariant Dynamic::getProperty(Pid propertyId) const</a>
+<a name="ln418">      {</a>
+<a name="ln419">      switch (propertyId) {</a>
+<a name="ln420">            case Pid::DYNAMIC_TYPE:</a>
+<a name="ln421">                  return QVariant::fromValue(_dynamicType);</a>
+<a name="ln422">            case Pid::DYNAMIC_RANGE:</a>
+<a name="ln423">                  return int(_dynRange);</a>
+<a name="ln424">            case Pid::VELOCITY:</a>
+<a name="ln425">                  return velocity();</a>
+<a name="ln426">            case Pid::SUBTYPE:</a>
+<a name="ln427">                  return int(_dynamicType);</a>
+<a name="ln428">            case Pid::VELO_CHANGE:</a>
+<a name="ln429">                  return changeInVelocity();</a>
+<a name="ln430">            case Pid::VELO_CHANGE_SPEED:</a>
+<a name="ln431">                  return int(_velChangeSpeed);</a>
+<a name="ln432">            default:</a>
+<a name="ln433">                  return TextBase::getProperty(propertyId);</a>
+<a name="ln434">            }</a>
+<a name="ln435">      }</a>
+<a name="ln436"> </a>
+<a name="ln437">//---------------------------------------------------------</a>
+<a name="ln438">//   setProperty</a>
+<a name="ln439">//---------------------------------------------------------</a>
+<a name="ln440"> </a>
+<a name="ln441">bool Dynamic::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln442">      {</a>
+<a name="ln443">      switch (propertyId) {</a>
+<a name="ln444">            case Pid::DYNAMIC_TYPE:</a>
+<a name="ln445">                  _dynamicType = v.value&lt;Dynamic::Type&gt;();</a>
+<a name="ln446">                  break;</a>
+<a name="ln447">            case Pid::DYNAMIC_RANGE:</a>
+<a name="ln448">                  _dynRange = Range(v.toInt());</a>
+<a name="ln449">                  break;</a>
+<a name="ln450">            case Pid::VELOCITY:</a>
+<a name="ln451">                  _velocity = v.toInt();</a>
+<a name="ln452">                  break;</a>
+<a name="ln453">            case Pid::SUBTYPE:</a>
+<a name="ln454">                  _dynamicType = Type(v.toInt());</a>
+<a name="ln455">                  break;</a>
+<a name="ln456">            case Pid::VELO_CHANGE:</a>
+<a name="ln457">                  setChangeInVelocity(v.toInt());</a>
+<a name="ln458">                  break;</a>
+<a name="ln459">            case Pid::VELO_CHANGE_SPEED:</a>
+<a name="ln460">                  _velChangeSpeed = Speed(v.toInt());</a>
+<a name="ln461">                  break;</a>
+<a name="ln462">            default:</a>
+<a name="ln463">                  if (!TextBase::setProperty(propertyId, v))</a>
+<a name="ln464">                        return false;</a>
+<a name="ln465">                  break;</a>
+<a name="ln466">            }</a>
+<a name="ln467">      triggerLayout();</a>
+<a name="ln468">      return true;</a>
+<a name="ln469">      }</a>
+<a name="ln470"> </a>
+<a name="ln471">//---------------------------------------------------------</a>
+<a name="ln472">//   propertyDefault</a>
+<a name="ln473">//---------------------------------------------------------</a>
+<a name="ln474"> </a>
+<a name="ln475">QVariant Dynamic::propertyDefault(Pid id) const</a>
+<a name="ln476">      {</a>
+<a name="ln477">      switch(id) {</a>
+<a name="ln478">            case Pid::SUB_STYLE:</a>
+<a name="ln479">                  return int(Tid::DYNAMICS);</a>
+<a name="ln480">            case Pid::DYNAMIC_RANGE:</a>
+<a name="ln481">                  return int(Range::PART);</a>
+<a name="ln482">            case Pid::VELOCITY:</a>
+<a name="ln483">                  return -1;</a>
+<a name="ln484">            case Pid::VELO_CHANGE:</a>
+<a name="ln485">                  return dynList[int(dynamicType())].changeInVelocity;</a>
+<a name="ln486">            case Pid::VELO_CHANGE_SPEED:</a>
+<a name="ln487">                  return int(Speed::NORMAL);</a>
+<a name="ln488">            default:</a>
+<a name="ln489">                  return TextBase::propertyDefault(id);</a>
+<a name="ln490">            }</a>
+<a name="ln491">      }</a>
+<a name="ln492"> </a>
+<a name="ln493">//---------------------------------------------------------</a>
+<a name="ln494">//   propertyId</a>
+<a name="ln495">//---------------------------------------------------------</a>
+<a name="ln496"> </a>
+<a name="ln497">Pid Dynamic::propertyId(const QStringRef&amp; name) const</a>
+<a name="ln498">      {</a>
+<a name="ln499">      if (name == propertyName(Pid::DYNAMIC_TYPE))</a>
+<a name="ln500">            return Pid::DYNAMIC_TYPE;</a>
+<a name="ln501">      return TextBase::propertyId(name);</a>
+<a name="ln502">      }</a>
+<a name="ln503"> </a>
+<a name="ln504">//---------------------------------------------------------</a>
+<a name="ln505">//   propertyUserValue</a>
+<a name="ln506">//---------------------------------------------------------</a>
+<a name="ln507"> </a>
+<a name="ln508">QString Dynamic::propertyUserValue(Pid pid) const</a>
+<a name="ln509">      {</a>
+<a name="ln510">      switch(pid) {</a>
+<a name="ln511">            case Pid::DYNAMIC_TYPE:</a>
+<a name="ln512">                  return dynamicTypeName();</a>
+<a name="ln513">            default:</a>
+<a name="ln514">                  break;</a>
+<a name="ln515">            }</a>
+<a name="ln516">      return TextBase::propertyUserValue(pid);</a>
+<a name="ln517">      }</a>
+<a name="ln518"> </a>
+<a name="ln519">//---------------------------------------------------------</a>
+<a name="ln520">//   getPropertyStyle</a>
+<a name="ln521">//---------------------------------------------------------</a>
+<a name="ln522"> </a>
+<a name="ln523">Sid Dynamic::getPropertyStyle(Pid pid) const</a>
+<a name="ln524">      {</a>
+<a name="ln525">      if (pid == Pid::OFFSET)</a>
+<a name="ln526">            return placeAbove() ? Sid::dynamicsPosAbove : Sid::dynamicsPosBelow;</a>
+<a name="ln527">      return TextBase::getPropertyStyle(pid);</a>
+<a name="ln528">      }</a>
+<a name="ln529"> </a>
+<a name="ln530">//---------------------------------------------------------</a>
+<a name="ln531">//   accessibleInfo</a>
+<a name="ln532">//---------------------------------------------------------</a>
+<a name="ln533"> </a>
+<a name="ln534">QString Dynamic::accessibleInfo() const</a>
+<a name="ln535">      {</a>
+<a name="ln536">      QString s;</a>
+<a name="ln537"> </a>
+<a name="ln538">      if (dynamicType() == Dynamic::Type::OTHER) {</a>
+<a name="ln539">            s = plainText().simplified();</a>
+<a name="ln540">            if (s.length() &gt; 20) {</a>
+<a name="ln541">                  s.truncate(20);</a>
+<a name="ln542">                  s += &quot;…&quot;;</a>
+<a name="ln543">                  }</a>
+<a name="ln544">            }</a>
+<a name="ln545">      else {</a>
+<a name="ln546">            s = dynamicTypeName();</a>
+<a name="ln547">            }</a>
+<a name="ln548">      return QString(&quot;%1: %2&quot;).arg(Element::accessibleInfo()).arg(s);</a>
+<a name="ln549">      }</a>
+<a name="ln550"> </a>
+<a name="ln551">//---------------------------------------------------------</a>
+<a name="ln552">//   screenReaderInfo</a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554"> </a>
+<a name="ln555">QString Dynamic::screenReaderInfo() const</a>
+<a name="ln556">      {</a>
+<a name="ln557">      QString s;</a>
+<a name="ln558"> </a>
+<a name="ln559">      if (dynamicType() == Dynamic::Type::OTHER)</a>
+<a name="ln560">            s = plainText().simplified();</a>
+<a name="ln561">      else {</a>
+<a name="ln562">            s = dynamicTypeName();</a>
+<a name="ln563">            }</a>
+<a name="ln564">      return QString(&quot;%1: %2&quot;).arg(Element::accessibleInfo()).arg(s);</a>
+<a name="ln565">      }</a>
+<a name="ln566">}</a>
+<a name="ln567"> </a>
+
+</code></pre>
+<div class="balloon" rel="304"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1507 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>scorediff.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2018 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;scorediff.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;duration.h&quot;</a>
+<a name="ln16">#include &quot;measure.h&quot;</a>
+<a name="ln17">#include &quot;score.h&quot;</a>
+<a name="ln18">#include &quot;staff.h&quot;</a>
+<a name="ln19">#include &quot;xml.h&quot;</a>
+<a name="ln20"> </a>
+<a name="ln21">#include &quot;dtl/dtl.hpp&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">#include &lt;algorithm&gt;</a>
+<a name="ln24">#include &lt;utility&gt;</a>
+<a name="ln25"> </a>
+<a name="ln26">namespace Ms {</a>
+<a name="ln27"> </a>
+<a name="ln28">//---------------------------------------------------------</a>
+<a name="ln29">//   MscxModeDiff</a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31"> </a>
+<a name="ln32">class MscxModeDiff {</a>
+<a name="ln33">      static constexpr const char* tagRegExpStr = &quot;&lt;/?(?&lt;name&gt;[A-z_][A-z_0-9\\-.:]*)( [A-z_0-9\\-.:\\s=\&quot;]*)?/?&gt;&quot;;</a>
+<a name="ln34">      const QRegularExpression tagRegExp;</a>
+<a name="ln35"> </a>
+<a name="ln36">      enum TagType { START_TAG, END_TAG };</a>
+<a name="ln37">      struct Tag {</a>
+<a name="ln38">            int line;</a>
+<a name="ln39">            TagType type;</a>
+<a name="ln40">            QString name;</a>
+<a name="ln41"> </a>
+<a name="ln42">            Tag(int l, TagType t, const QString&amp; n) : line(l), type(t), name(n) {}</a>
+<a name="ln43">            };</a>
+<a name="ln44"> </a>
+<a name="ln45">      static DiffType fromDtlDiffType(dtl::edit_t dtlType);</a>
+<a name="ln46"> </a>
+<a name="ln47">      void adjustSemanticsMscx(std::vector&lt;TextDiff&gt;&amp;);</a>
+<a name="ln48">      int adjustSemanticsMscxOneDiff(std::vector&lt;TextDiff&gt;&amp; diffs, int index);</a>
+<a name="ln49">      int nextDiffOnShiftIndex(const std::vector&lt;TextDiff&gt;&amp; diffs, int index, bool down);</a>
+<a name="ln50">      static QString getOuterLines(const QString&amp; str, int lines, bool start);</a>
+<a name="ln51">      bool assessShiftDiff(const std::vector&lt;TextDiff&gt;&amp;, const std::vector&lt;Tag&gt;&amp; extraTags, int index, int lines);</a>
+<a name="ln52">      int performShiftDiff(std::vector&lt;TextDiff&gt;&amp;, int index, int lines);</a>
+<a name="ln53">      void readMscx(const QString&amp; xml, std::vector&lt;Tag&gt;&amp; extraTags);</a>
+<a name="ln54">      void handleTag(int line, TagType type, const QString&amp; name, std::vector&lt;Tag&gt;&amp; extraTags);</a>
+<a name="ln55"> </a>
+<a name="ln56">   public:</a>
+<a name="ln57">      MscxModeDiff();</a>
+<a name="ln58"> </a>
+<a name="ln59">      std::vector&lt;TextDiff&gt; lineModeDiff(const QString&amp; s1, const QString&amp; s2);</a>
+<a name="ln60">      std::vector&lt;TextDiff&gt; mscxModeDiff(const QString&amp; s1, const QString&amp; s2);</a>
+<a name="ln61">      };</a>
+<a name="ln62"> </a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64">//   TextDiffParser</a>
+<a name="ln65">//    Used by ScoreDiff class during parsing MSCX text diff</a>
+<a name="ln66">//---------------------------------------------------------</a>
+<a name="ln67"> </a>
+<a name="ln68">class TextDiffParser {</a>
+<a name="ln69">      const int iScore;</a>
+<a name="ln70">      const int iOtherScore;</a>
+<a name="ln71"> </a>
+<a name="ln72">      int tagLevel = 0;</a>
+<a name="ln73">      int currentDiffTagLevel = 0;</a>
+<a name="ln74">      std::vector&lt;const ScoreElement*&gt; contextsStack;</a>
+<a name="ln75">      std::vector&lt;bool&gt; tagIsElement;</a>
+<a name="ln76">      const ScoreElement* lastElementEnded = nullptr;</a>
+<a name="ln77">      QString markupContext;</a>
+<a name="ln78"> </a>
+<a name="ln79">      BaseDiff* handleToken(const QXmlStreamReader&amp; r, const ScoreElement* newElement, bool saveDiff);</a>
+<a name="ln80">      bool insideDiffTag() const { return currentDiffTagLevel != 0; }</a>
+<a name="ln81"> </a>
+<a name="ln82">   public:</a>
+<a name="ln83">      TextDiffParser(int iScore);</a>
+<a name="ln84"> </a>
+<a name="ln85">      void makeDiffs(const QString&amp; mscx, const std::vector&lt;std::pair&lt;const ScoreElement*, QString&gt;&gt;&amp; elements, const std::vector&lt;TextDiff&gt;&amp; textDiffs, std::vector&lt;BaseDiff*&gt;&amp; diffs);</a>
+<a name="ln86">      };</a>
+<a name="ln87"> </a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89">//   MscxModeDiff::MscxModeDiff</a>
+<a name="ln90">//---------------------------------------------------------</a>
+<a name="ln91"> </a>
+<a name="ln92">MscxModeDiff::MscxModeDiff()</a>
+<a name="ln93">   : tagRegExp(tagRegExpStr)</a>
+<a name="ln94">      {}</a>
+<a name="ln95"> </a>
+<a name="ln96">//---------------------------------------------------------</a>
+<a name="ln97">//   MscxModeDiff::fromDtlDiffType</a>
+<a name="ln98">//---------------------------------------------------------</a>
+<a name="ln99"> </a>
+<a name="ln100">DiffType MscxModeDiff::fromDtlDiffType(dtl::edit_t dtlType)</a>
+<a name="ln101">      {</a>
+<a name="ln102">      switch(dtlType) {</a>
+<a name="ln103">            case dtl::SES_DELETE:</a>
+<a name="ln104">                  return DiffType::DELETE;</a>
+<a name="ln105">            case dtl::SES_COMMON:</a>
+<a name="ln106">                  return DiffType::EQUAL;</a>
+<a name="ln107">            case dtl::SES_ADD:</a>
+<a name="ln108">                  return DiffType::INSERT;</a>
+<a name="ln109">            }</a>
+<a name="ln110">      Q_ASSERT(false); // dtlType must have one of the values handled above.</a>
+<a name="ln111">      return DiffType::EQUAL;</a>
+<a name="ln112">      }</a>
+<a name="ln113"> </a>
+<a name="ln114">//---------------------------------------------------------</a>
+<a name="ln115">//   MscxModeDiff::lineModeDiff</a>
+<a name="ln116">//---------------------------------------------------------</a>
+<a name="ln117"> </a>
+<a name="ln118">std::vector&lt;TextDiff&gt; MscxModeDiff::lineModeDiff(const QString&amp; s1, const QString&amp; s2)</a>
+<a name="ln119">      {</a>
+<a name="ln120">      // type declarations for dtl library</a>
+<a name="ln121">      typedef QStringRef elem;</a>
+<a name="ln122">      typedef std::pair&lt;elem, dtl::elemInfo&gt; sesElem;</a>
+<a name="ln123">      typedef std::vector&lt;sesElem&gt; sesElemVec;</a>
+<a name="ln124"> </a>
+<a name="ln125">      // QVector does not contain range constructor used inside dtl</a>
+<a name="ln126">      // so we have to convert to std::vector.</a>
+<a name="ln127">      std::vector&lt;QStringRef&gt; lines1 = s1.splitRef('\n').toStdVector();</a>
+<a name="ln128">      std::vector&lt;QStringRef&gt; lines2 = s2.splitRef('\n').toStdVector();</a>
+<a name="ln129">      dtl::Diff&lt;QStringRef, std::vector&lt;QStringRef&gt;&gt; diff(lines1, lines2);</a>
+<a name="ln130"> </a>
+<a name="ln131">      diff.compose();</a>
+<a name="ln132"> </a>
+<a name="ln133">      const sesElemVec changes = diff.getSes().getSequence();</a>
+<a name="ln134">      std::vector&lt;TextDiff&gt; diffs;</a>
+<a name="ln135">      int line[2][2] {{1, 1}, {1, 1}}; // for correct assigning line numbers to</a>
+<a name="ln136">                                       // DELETE and INSERT diffs we need to</a>
+<a name="ln137">                                       // count lines separately for these diff</a>
+<a name="ln138">                                       // types (EQUAL can use both counters).</a>
+<a name="ln139"> </a>
+<a name="ln140">      for (const sesElem&amp; ch : changes) {</a>
+<a name="ln141">            DiffType type = fromDtlDiffType(ch.second.type);</a>
+<a name="ln142">            const int iThis = (type == DiffType::DELETE) ? 0 : 1; // for EQUAL doesn't matter</a>
+<a name="ln143"> </a>
+<a name="ln144">            if (diffs.empty() || diffs.back().type != type) {</a>
+<a name="ln145">                  if (!diffs.empty()) {</a>
+<a name="ln146">                        // sync line numbers</a>
+<a name="ln147">                        DiffType prevType = diffs.back().type;</a>
+<a name="ln148">                        const int prevThis = (prevType == DiffType::DELETE) ? 0 : 1;</a>
+<a name="ln149">                        const int prevOther = (prevThis == 1) ? 0 : 1;</a>
+<a name="ln150">                        if (prevType == DiffType::EQUAL)</a>
+<a name="ln151">                              std::copy_n(line[prevThis], 2, line[prevOther]);</a>
+<a name="ln152">                        else</a>
+<a name="ln153">                              line[prevThis][prevOther] = line[prevOther][prevOther];</a>
+<a name="ln154"> </a>
+<a name="ln155">                        if (type == DiffType::EQUAL) {</a>
+<a name="ln156">                              const int iOther = (iThis == 1) ? 0 : 1;</a>
+<a name="ln157">                              line[iThis][iOther] = line[iOther][iOther];</a>
+<a name="ln158">                              }</a>
+<a name="ln159">                        }</a>
+<a name="ln160"> </a>
+<a name="ln161">                  diffs.emplace_back();</a>
+<a name="ln162">                  TextDiff&amp; d = diffs.back();</a>
+<a name="ln163">                  d.type = type;</a>
+<a name="ln164">                  std::copy_n(line[iThis], 2, d.start);</a>
+<a name="ln165">                  d.end[0] = line[iThis][0] - 1; // equal line numbers would mean an actual change in that line.</a>
+<a name="ln166">                  d.end[1] = line[iThis][1] - 1;</a>
+<a name="ln167">                  }</a>
+<a name="ln168"> </a>
+<a name="ln169">            TextDiff&amp; d = diffs.back();</a>
+<a name="ln170">            d.end[iThis] = (line[iThis][iThis]++);</a>
+<a name="ln171">            d.text[iThis].append(ch.first).append('\n');</a>
+<a name="ln172">            if (type == DiffType::EQUAL) {</a>
+<a name="ln173">                  const int iOther = (iThis == 1) ? 0 : 1;</a>
+<a name="ln174">                  d.end[iOther] = (line[iThis][iOther]++);</a>
+<a name="ln175">                  d.text[iOther].append(ch.first).append('\n');</a>
+<a name="ln176">                  }</a>
+<a name="ln177">            }</a>
+<a name="ln178"> </a>
+<a name="ln179">      return diffs;</a>
+<a name="ln180">      }</a>
+<a name="ln181"> </a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183">//   MscxModeDiff::mscxModeDiff</a>
+<a name="ln184">//---------------------------------------------------------</a>
+<a name="ln185"> </a>
+<a name="ln186">std::vector&lt;TextDiff&gt; MscxModeDiff::mscxModeDiff(const QString&amp; s1, const QString&amp; s2)</a>
+<a name="ln187">      {</a>
+<a name="ln188">      std::vector&lt;TextDiff&gt; diffs = lineModeDiff(s1, s2);</a>
+<a name="ln189">      adjustSemanticsMscx(diffs);</a>
+<a name="ln190">      return diffs;</a>
+<a name="ln191">      }</a>
+<a name="ln192"> </a>
+<a name="ln193">//---------------------------------------------------------</a>
+<a name="ln194">//   MscxModeDiff::adjustSemanticsMscx</a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196"> </a>
+<a name="ln197">void MscxModeDiff::adjustSemanticsMscx(std::vector&lt;TextDiff&gt;&amp; diffs)</a>
+<a name="ln198">      {</a>
+<a name="ln199">      for (unsigned i = 0; i &lt; diffs.size(); ++i)</a>
+<a name="ln200">            i = adjustSemanticsMscxOneDiff(diffs, i);</a>
+<a name="ln201">      }</a>
+<a name="ln202"> </a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204">//   MscxModeDiff::adjustSemanticsMscx</a>
+<a name="ln205">//    Returns new index of the given diff</a>
+<a name="ln206">//---------------------------------------------------------</a>
+<a name="ln207"> </a>
+<a name="ln208">int MscxModeDiff::adjustSemanticsMscxOneDiff(std::vector&lt;TextDiff&gt;&amp; diffs, int index)</a>
+<a name="ln209">      {</a>
+<a name="ln210">      TextDiff* diff = &amp;diffs[index];</a>
+<a name="ln211">      int iScore;</a>
+<a name="ln212">      switch(diff-&gt;type) {</a>
+<a name="ln213">            case DiffType::EQUAL:</a>
+<a name="ln214">            case DiffType::REPLACE:</a>
+<a name="ln215">                  // TODO: split a REPLACE diff, though they should not be here</a>
+<a name="ln216">                  return index;</a>
+<a name="ln217">            case DiffType::INSERT:</a>
+<a name="ln218">                  iScore = 1;</a>
+<a name="ln219">                  break;</a>
+<a name="ln220">            case DiffType::DELETE:</a>
+<a name="ln221">            default:</a>
+<a name="ln222">                  iScore = 0;</a>
+<a name="ln223">                  break;</a>
+<a name="ln224">            }</a>
+<a name="ln225"> </a>
+<a name="ln226">      std::vector&lt;Tag&gt; extraTags;</a>
+<a name="ln227">      readMscx(diff-&gt;text[iScore], extraTags);</a>
+<a name="ln228"> </a>
+<a name="ln229">      if (extraTags.empty())</a>
+<a name="ln230">            return index; // good, nothing to adjust</a>
+<a name="ln231"> </a>
+<a name="ln232">      auto firstStartExtra = extraTags.begin();</a>
+<a name="ln233">      auto lastStartExtra = extraTags.begin();</a>
+<a name="ln234">      auto firstEndExtra = extraTags.begin();</a>
+<a name="ln235">      auto lastEndExtra = extraTags.begin();</a>
+<a name="ln236">      for (auto tag = extraTags.begin(); tag != extraTags.end(); ++tag) {</a>
+<a name="ln237">            TagType type = tag-&gt;type;</a>
+<a name="ln238">            switch(type) {</a>
+<a name="ln239">                  case START_TAG:</a>
+<a name="ln240">                        if (firstStartExtra-&gt;type != START_TAG)</a>
+<a name="ln241">                              firstStartExtra = tag;</a>
+<a name="ln242">                        lastStartExtra = tag;</a>
+<a name="ln243">                        break;</a>
+<a name="ln244">                  case END_TAG:</a>
+<a name="ln245">                        if (firstStartExtra-&gt;type != END_TAG)</a>
+<a name="ln246">                              firstEndExtra = tag;</a>
+<a name="ln247">                        lastEndExtra = tag;</a>
+<a name="ln248">                        break;</a>
+<a name="ln249">                  default:</a>
+<a name="ln250">                        break;</a>
+<a name="ln251">                  }</a>
+<a name="ln252">            }</a>
+<a name="ln253"> </a>
+<a name="ln254">      // Try to shift current diff up and down and see whether this helps</a>
+<a name="ln255">      int lines = lastEndExtra-&gt;line - firstEndExtra-&gt;line + 1;</a>
+<a name="ln256">      if (assessShiftDiff(diffs, extraTags, index, lines))</a>
+<a name="ln257">            return performShiftDiff(diffs, index, lines);</a>
+<a name="ln258">      else {</a>
+<a name="ln259">            lines = - (lastStartExtra-&gt;line - firstStartExtra-&gt;line + 1);</a>
+<a name="ln260">            if (assessShiftDiff(diffs, extraTags, index, lines))</a>
+<a name="ln261">                  return performShiftDiff(diffs, index, lines);</a>
+<a name="ln262">            }</a>
+<a name="ln263"> </a>
+<a name="ln264">      return index;</a>
+<a name="ln265">      }</a>
+<a name="ln266"> </a>
+<a name="ln267">//---------------------------------------------------------</a>
+<a name="ln268">//   MscxModeDiff::assessShiftDiff</a>
+<a name="ln269">//    Returns true if shift of the diff with the given</a>
+<a name="ln270">//    index is possible and there would be no extra tags</a>
+<a name="ln271">//    left after such a shift.</a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273"> </a>
+<a name="ln274">bool MscxModeDiff::assessShiftDiff(const std::vector&lt;TextDiff&gt;&amp; diffs, const std::vector&lt;Tag&gt;&amp; origExtraTags, int index, int lines)</a>
+<a name="ln275">      {</a>
+<a name="ln276">      if (lines == 0)</a>
+<a name="ln277">            return diffs.empty();</a>
+<a name="ln278">      const bool down = (lines &gt; 0);</a>
+<a name="ln279">      const int nextDiffIdx = nextDiffOnShiftIndex(diffs, index, down);</a>
+<a name="ln280">      if (nextDiffIdx == index)</a>
+<a name="ln281">            return false;</a>
+<a name="ln282"> </a>
+<a name="ln283">      const TextDiff&amp; diff = diffs[index];</a>
+<a name="ln284">      const TextDiff&amp; nextDiff = diffs[nextDiffIdx];</a>
+<a name="ln285"> </a>
+<a name="ln286">      Q_ASSERT(diff.type == DiffType::DELETE || diff.type == DiffType::INSERT);</a>
+<a name="ln287">      const int iScore = (diff.type == DiffType::DELETE ? 0 : 1);</a>
+<a name="ln288"> </a>
+<a name="ln289">      const QString&amp; diffTxt = diff.text[iScore];</a>
+<a name="ln290">      const QString&amp; nextTxt = nextDiff.text[iScore];</a>
+<a name="ln291">      const QString diffChunk = getOuterLines(diffTxt, lines, down);</a>
+<a name="ln292">      const QString nextChunk = getOuterLines(nextTxt, lines, down);</a>
+<a name="ln293"> </a>
+<a name="ln294">      if (diffChunk == nextChunk) {</a>
+<a name="ln295">            std::vector&lt;Tag&gt; extraTags(origExtraTags);</a>
+<a name="ln296">            std::vector&lt;Tag&gt; diffExtraTags;</a>
+<a name="ln297">            readMscx(diffChunk, diffExtraTags);</a>
+<a name="ln298"> </a>
+<a name="ln299">            // merge diff chunk reading result with the result</a>
+<a name="ln300">            // for the whole chunk</a>
+<a name="ln301">            while (!diffExtraTags.empty()) {</a>
+<a name="ln302">                  auto tag = down ? diffExtraTags.begin() : (diffExtraTags.end() - 1);</a>
+<a name="ln303"> </a>
+<a name="ln304">                  if (extraTags.size() &lt; 2) // would normally erase 2 tags</a>
+<a name="ln305">                        return false;</a>
+<a name="ln306"> </a>
+<a name="ln307">                  auto firstExtra = extraTags.begin();</a>
+<a name="ln308">                  if ((firstExtra-&gt;type == END_TAG)</a>
+<a name="ln309">                        &amp;&amp; (firstExtra-&gt;name == tag-&gt;name))</a>
+<a name="ln310">                        extraTags.erase(firstExtra);</a>
+<a name="ln311">                  else</a>
+<a name="ln312">                        return false;</a>
+<a name="ln313">                  auto lastExtra = extraTags.end() - 1;</a>
+<a name="ln314">                  if ((lastExtra-&gt;type == START_TAG)</a>
+<a name="ln315">                        &amp;&amp; (lastExtra-&gt;name == tag-&gt;name))</a>
+<a name="ln316">                        extraTags.erase(lastExtra);</a>
+<a name="ln317">                  else</a>
+<a name="ln318">                        return false;</a>
+<a name="ln319"> </a>
+<a name="ln320">                  diffExtraTags.erase(tag);</a>
+<a name="ln321">                  }</a>
+<a name="ln322"> </a>
+<a name="ln323">            if (extraTags.empty()) {</a>
+<a name="ln324">                  // We have succeeded</a>
+<a name="ln325">                  return true;</a>
+<a name="ln326">                  }</a>
+<a name="ln327">            }</a>
+<a name="ln328">      return false;</a>
+<a name="ln329">      }</a>
+<a name="ln330"> </a>
+<a name="ln331">//---------------------------------------------------------</a>
+<a name="ln332">//   MscxModeDiff::performShiftDiff</a>
+<a name="ln333">//    Perform a shift of the diff with the given index and</a>
+<a name="ln334">//    return a new index of the diff.</a>
+<a name="ln335">//---------------------------------------------------------</a>
+<a name="ln336"> </a>
+<a name="ln337">int MscxModeDiff::performShiftDiff(std::vector&lt;TextDiff&gt;&amp; diffs, int index, int lines)</a>
+<a name="ln338">      {</a>
+<a name="ln339">      if (lines == 0)</a>
+<a name="ln340">            return index;</a>
+<a name="ln341">      const bool down = (lines &gt; 0);</a>
+<a name="ln342">      const int absLines = qAbs(lines);</a>
+<a name="ln343">      const int nextDiffIdx = nextDiffOnShiftIndex(diffs, index, down);</a>
+<a name="ln344">      if (nextDiffIdx == index)</a>
+<a name="ln345">            return index;</a>
+<a name="ln346"> </a>
+<a name="ln347">      TextDiff&amp; diff = diffs[index];</a>
+<a name="ln348">      TextDiff&amp; nextDiff = diffs[nextDiffIdx];</a>
+<a name="ln349"> </a>
+<a name="ln350">      Q_ASSERT(diff.type == DiffType::DELETE || diff.type == DiffType::INSERT);</a>
+<a name="ln351">      const int iScore = (diff.type == DiffType::DELETE ? 0 : 1);</a>
+<a name="ln352">      QString&amp; diffTxt = diff.text[iScore];</a>
+<a name="ln353"> </a>
+<a name="ln354">      const QString diffChunk = getOuterLines(diffTxt, absLines, down);</a>
+<a name="ln355"> </a>
+<a name="ln356">      Q_ASSERT(nextDiff.type == DiffType::EQUAL);</a>
+<a name="ln357">      int chunkStart[2]; // line numbers of diffChunk in two scores</a>
+<a name="ln358">      int chunkEnd[2];</a>
+<a name="ln359">      if (down) {</a>
+<a name="ln360">            std::copy(diff.start, diff.start + 2, chunkStart);</a>
+<a name="ln361">            chunkEnd[0] = diff.start[0] + absLines - 1;</a>
+<a name="ln362">            chunkEnd[1] = diff.start[1] + absLines - 1;</a>
+<a name="ln363">            }</a>
+<a name="ln364">      else {</a>
+<a name="ln365">            chunkStart[0] = diff.end[0] - (absLines - 1);</a>
+<a name="ln366">            chunkStart[1] = diff.end[1] - (absLines - 1);</a>
+<a name="ln367">            std::copy(diff.end, diff.end + 2, chunkEnd);</a>
+<a name="ln368">            }</a>
+<a name="ln369"> </a>
+<a name="ln370">      if (down) {</a>
+<a name="ln371">            diffTxt.remove(0, diffChunk.size());</a>
+<a name="ln372">            diffTxt.append(diffChunk);</a>
+<a name="ln373">            nextDiff.text[0].remove(0, diffChunk.size());</a>
+<a name="ln374">            nextDiff.text[1].remove(0, diffChunk.size());</a>
+<a name="ln375">            }</a>
+<a name="ln376">      else {</a>
+<a name="ln377">            diffTxt.chop(diffChunk.size());</a>
+<a name="ln378">            diffTxt.prepend(diffChunk);</a>
+<a name="ln379">            nextDiff.text[0].chop(diffChunk.size());</a>
+<a name="ln380">            nextDiff.text[1].chop(diffChunk.size());</a>
+<a name="ln381">            }</a>
+<a name="ln382">      // shift line numbers: needed both for shifted diff and for diffs</a>
+<a name="ln383">      // between the shifted diff and nextDiff</a>
+<a name="ln384">      const int inc = down ? 1 : -1;</a>
+<a name="ln385">      for (int i = index; i != nextDiffIdx; i += inc) {</a>
+<a name="ln386">            TextDiff&amp; d = diffs[i];</a>
+<a name="ln387">            Q_UNUSED(d);</a>
+<a name="ln388">            Q_ASSERT(d.type != DiffType::EQUAL); // nextDiff should be the first EQUAL diff in that direction</a>
+<a name="ln389">            diff.start[0] += lines;</a>
+<a name="ln390">            diff.end[0] += lines;</a>
+<a name="ln391">            diff.start[1] += lines;</a>
+<a name="ln392">            diff.end[1] += lines;</a>
+<a name="ln393">            }</a>
+<a name="ln394">      int* nextChunkLines = down ? nextDiff.start : nextDiff.end;</a>
+<a name="ln395">      nextChunkLines[0] += lines;</a>
+<a name="ln396">      nextChunkLines[1] += lines;</a>
+<a name="ln397"> </a>
+<a name="ln398">      TextDiff eqDiff;</a>
+<a name="ln399">      eqDiff.type = DiffType::EQUAL;</a>
+<a name="ln400">      eqDiff.text[0] = diffChunk;</a>
+<a name="ln401">      eqDiff.text[1] = diffChunk;</a>
+<a name="ln402">      std::copy(chunkStart, chunkStart + 2, eqDiff.start);</a>
+<a name="ln403">      std::copy(chunkEnd, chunkEnd + 2, eqDiff.end);</a>
+<a name="ln404"> </a>
+<a name="ln405">      const int prevDiffIdx = index + (down ? -1 : 1);</a>
+<a name="ln406">      bool merged = false;</a>
+<a name="ln407">      if (diffs[prevDiffIdx].type == DiffType::EQUAL)</a>
+<a name="ln408">            merged = diffs[prevDiffIdx].merge(eqDiff);</a>
+<a name="ln409"> </a>
+<a name="ln410">      if (!merged) {</a>
+<a name="ln411">            const int insertIdx = down ? index : (index + 1);</a>
+<a name="ln412">            diffs.insert(diffs.begin() + insertIdx, eqDiff);</a>
+<a name="ln413">            if (down)</a>
+<a name="ln414">                  ++index;</a>
+<a name="ln415">            }</a>
+<a name="ln416"> </a>
+<a name="ln417">      return index;</a>
+<a name="ln418">      }</a>
+<a name="ln419"> </a>
+<a name="ln420">//---------------------------------------------------------</a>
+<a name="ln421">//   MscxModeDiff::getOuterLines</a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423"> </a>
+<a name="ln424">QString MscxModeDiff::getOuterLines(const QString&amp; str, int lines, bool start) {</a>
+<a name="ln425">      lines = qAbs(lines);</a>
+<a name="ln426">      const int secIdxStart = start ? 0 : (-1 - (lines - 1));</a>
+<a name="ln427">      const int secIdxEnd = start ? (lines - 1) : -1;</a>
+<a name="ln428">      constexpr auto secFlags = QString::SectionIncludeTrailingSep | QString::SectionSkipEmpty;</a>
+<a name="ln429">      return str.section('\n', secIdxStart, secIdxEnd, secFlags);</a>
+<a name="ln430">      }</a>
+<a name="ln431"> </a>
+<a name="ln432">//---------------------------------------------------------</a>
+<a name="ln433">//   MscxModeDiff::nextDiffOnShiftIndex</a>
+<a name="ln434">//---------------------------------------------------------</a>
+<a name="ln435"> </a>
+<a name="ln436">int MscxModeDiff::nextDiffOnShiftIndex(const std::vector&lt;TextDiff&gt;&amp; diffs, int index, bool down)</a>
+<a name="ln437">      {</a>
+<a name="ln438">      const DiffType diffType = diffs[index].type;</a>
+<a name="ln439">      Q_ASSERT(diffType == DiffType::DELETE || diffType == DiffType::INSERT);</a>
+<a name="ln440">      int nextDiffIdx = index + (down ? 1 : -1);</a>
+<a name="ln441">      while (nextDiffIdx &gt;= 0 &amp;&amp; nextDiffIdx &lt; int(diffs.size())) {</a>
+<a name="ln442">            const TextDiff&amp; d = diffs[nextDiffIdx];</a>
+<a name="ln443">            if (d.type == diffType) {</a>
+<a name="ln444">                  // Two INSERT or DELETE diffs in a row, probably shouldn't happen</a>
+<a name="ln445">                  return index;</a>
+<a name="ln446">                  }</a>
+<a name="ln447">            if (d.type == DiffType::EQUAL)</a>
+<a name="ln448">                  return nextDiffIdx;</a>
+<a name="ln449">            // REPLACE is not here, the other type can be skipped</a>
+<a name="ln450">            Q_ASSERT(d.type != DiffType::REPLACE);</a>
+<a name="ln451">            nextDiffIdx += (down ? 1 : -1);</a>
+<a name="ln452">            }</a>
+<a name="ln453">      return index;</a>
+<a name="ln454">      }</a>
+<a name="ln455"> </a>
+<a name="ln456">//---------------------------------------------------------</a>
+<a name="ln457">//   MscxModeDiff::readMscx</a>
+<a name="ln458">//---------------------------------------------------------</a>
+<a name="ln459"> </a>
+<a name="ln460">void MscxModeDiff::readMscx(const QString&amp; xml, std::vector&lt;Tag&gt;&amp; extraTags)</a>
+<a name="ln461">      {</a>
+<a name="ln462">      int line = 0;</a>
+<a name="ln463">      int nextLineIndex = xml.indexOf('\n');</a>
+<a name="ln464">      QRegularExpressionMatchIterator m = tagRegExp.globalMatch(xml);</a>
+<a name="ln465">      while (m.hasNext()) {</a>
+<a name="ln466">            QRegularExpressionMatch match = m.next();</a>
+<a name="ln467">            QStringRef tag(match.capturedRef(&quot;name&quot;));</a>
+<a name="ln468">            while ((match.capturedStart(&quot;name&quot;) &gt; nextLineIndex) &amp;&amp; (nextLineIndex &gt; 0)) {</a>
+<a name="ln469">                  ++line;</a>
+<a name="ln470">                  nextLineIndex = xml.indexOf('\n', nextLineIndex + 1);</a>
+<a name="ln471">                  }</a>
+<a name="ln472">            if (match.capturedRef().startsWith(&quot;&lt;/&quot;)) {</a>
+<a name="ln473">                  // end element</a>
+<a name="ln474">                  handleTag(line, END_TAG, tag.toString(), extraTags);</a>
+<a name="ln475">                  if (tag == &quot;Tuplet&quot;) {</a>
+<a name="ln476">                        // special case: &lt;Tuplet&gt; / &lt;endTuplet/&gt; pair</a>
+<a name="ln477">                        handleTag(line, START_TAG, &quot;__tupletBound&quot;, extraTags);</a>
+<a name="ln478">                        }</a>
+<a name="ln479">                  }</a>
+<a name="ln480">            else if (match.capturedRef().endsWith(&quot;/&gt;&quot;)) {</a>
+<a name="ln481">                  // empty element: do nothing</a>
+<a name="ln482">                  if (tag == &quot;endTuplet&quot;) {</a>
+<a name="ln483">                        // special case: &lt;Tuplet&gt; / &lt;endTuplet/&gt; pair</a>
+<a name="ln484">                        handleTag(line, END_TAG, &quot;__tupletBound&quot;, extraTags);</a>
+<a name="ln485">                        }</a>
+<a name="ln486">                  }</a>
+<a name="ln487">            else {</a>
+<a name="ln488">                  // start element</a>
+<a name="ln489">                  handleTag(line, START_TAG, tag.toString(), extraTags);</a>
+<a name="ln490">                  }</a>
+<a name="ln491">            }</a>
+<a name="ln492">      }</a>
+<a name="ln493"> </a>
+<a name="ln494">//---------------------------------------------------------</a>
+<a name="ln495">//   MscxModeDiff::handleTag</a>
+<a name="ln496">//---------------------------------------------------------</a>
+<a name="ln497"> </a>
+<a name="ln498">void MscxModeDiff::handleTag(int line, TagType type, const QString&amp; name, std::vector&lt;Tag&gt;&amp; extraTags)</a>
+<a name="ln499">      {</a>
+<a name="ln500">      switch(type) {</a>
+<a name="ln501">            case START_TAG:</a>
+<a name="ln502">                  extraTags.emplace_back(line, type, name);</a>
+<a name="ln503">                  break;</a>
+<a name="ln504">            case END_TAG:</a>
+<a name="ln505">                  {</a>
+<a name="ln506">                  auto lastTag = extraTags.empty() ? nullptr : &amp;extraTags.back();</a>
+<a name="ln507">                  if (lastTag</a>
+<a name="ln508">                     &amp;&amp; lastTag-&gt;type == START_TAG &amp;&amp; lastTag-&gt;name == name)</a>
+<a name="ln509">                        extraTags.pop_back();</a>
+<a name="ln510">                  else</a>
+<a name="ln511">                        extraTags.emplace_back(line, type, name);</a>
+<a name="ln512">                  }</a>
+<a name="ln513">                  break;</a>
+<a name="ln514">            }</a>
+<a name="ln515">      }</a>
+<a name="ln516"> </a>
+<a name="ln517">//---------------------------------------------------------</a>
+<a name="ln518">//   TextDiffParser</a>
+<a name="ln519">//---------------------------------------------------------</a>
+<a name="ln520"> </a>
+<a name="ln521">TextDiffParser::TextDiffParser(int iScore)</a>
+<a name="ln522">   : iScore(iScore), iOtherScore(iScore == 1 ? 0 : 1)</a>
+<a name="ln523">      {</a>
+<a name="ln524">      contextsStack.push_back(nullptr);</a>
+<a name="ln525">      }</a>
+<a name="ln526"> </a>
+<a name="ln527">//---------------------------------------------------------</a>
+<a name="ln528">//   TextDiffParser::makeDiffs</a>
+<a name="ln529">//---------------------------------------------------------</a>
+<a name="ln530"> </a>
+<a name="ln531">void TextDiffParser::makeDiffs(const QString&amp; mscx, const std::vector&lt;std::pair&lt;const ScoreElement*, QString&gt;&gt;&amp; elements, const std::vector&lt;TextDiff&gt;&amp; textDiffs, std::vector&lt;BaseDiff*&gt;&amp; diffs)</a>
+<a name="ln532">      {</a>
+<a name="ln533">      QXmlStreamReader r(mscx);</a>
+<a name="ln534">      r.readNext(); // read first tag</a>
+<a name="ln535">      auto textDiff = textDiffs.begin();</a>
+<a name="ln536">      auto textDiffEnd = textDiffs.end();</a>
+<a name="ln537">      auto nextElement = elements.begin();</a>
+<a name="ln538">      auto nextElementEnd = elements.end();</a>
+<a name="ln539">      while (!r.atEnd()) {</a>
+<a name="ln540">            // Scroll to the correct diff to be handled now</a>
+<a name="ln541">            while (textDiff != textDiffEnd</a>
+<a name="ln542">               &amp;&amp; textDiff-&gt;end[iScore] &lt; r.lineNumber()) {</a>
+<a name="ln543">                  // Save ContextChange when leaving equal chunk</a>
+<a name="ln544">                  if (textDiff-&gt;type == DiffType::EQUAL) {</a>
+<a name="ln545">                        ContextChange* c = new ContextChange;</a>
+<a name="ln546">                        c-&gt;type = textDiff-&gt;type;</a>
+<a name="ln547">                        c-&gt;textDiff = &amp;(*textDiff);</a>
+<a name="ln548">                        c-&gt;ctx[iScore] = contextsStack.back();</a>
+<a name="ln549">                        c-&gt;ctx[iOtherScore] = nullptr;</a>
+<a name="ln550">                        c-&gt;before[iScore] = lastElementEnded;</a>
+<a name="ln551">                        c-&gt;before[iOtherScore] = nullptr;</a>
+<a name="ln552">                        diffs.push_back(c);</a>
+<a name="ln553">                        }</a>
+<a name="ln554"> </a>
+<a name="ln555">                  ++textDiff;</a>
+<a name="ln556">                  }</a>
+<a name="ln557">            if (textDiff == textDiffEnd)</a>
+<a name="ln558">                  break;</a>
+<a name="ln559"> </a>
+<a name="ln560">            bool saveDiff = false;</a>
+<a name="ln561">            if (!insideDiffTag()</a>
+<a name="ln562">               &amp;&amp; (textDiff-&gt;type == DiffType::DELETE || textDiff-&gt;type == DiffType::INSERT)</a>
+<a name="ln563">               ) {</a>
+<a name="ln564">                  const int iDiffScore = (textDiff-&gt;type == DiffType::DELETE) ? 0 : 1;</a>
+<a name="ln565">                  if (iScore == iDiffScore)</a>
+<a name="ln566">                        saveDiff = true;</a>
+<a name="ln567">                  }</a>
+<a name="ln568"> </a>
+<a name="ln569">            const ScoreElement* newElement = nullptr;</a>
+<a name="ln570">            if (r.isStartElement()) {</a>
+<a name="ln571">                  if (nextElement != nextElementEnd</a>
+<a name="ln572">                     &amp;&amp; nextElement-&gt;second == r.name())</a>
+<a name="ln573">                        newElement = (nextElement++)-&gt;first;</a>
+<a name="ln574"> </a>
+<a name="ln575">                  ++tagLevel;</a>
+<a name="ln576">                  tagIsElement.push_back(newElement);</a>
+<a name="ln577">                  }</a>
+<a name="ln578"> </a>
+<a name="ln579">            BaseDiff* diff = handleToken(r, newElement, saveDiff);</a>
+<a name="ln580"> </a>
+<a name="ln581">            if (diff) {</a>
+<a name="ln582">                  diff-&gt;type = textDiff-&gt;type;</a>
+<a name="ln583">                  diff-&gt;textDiff = &amp;(*textDiff);</a>
+<a name="ln584">                  diff-&gt;before[iScore] = lastElementEnded;</a>
+<a name="ln585">                  diff-&gt;before[iOtherScore] = nullptr;</a>
+<a name="ln586">                  diffs.push_back(diff);</a>
+<a name="ln587"> </a>
+<a name="ln588">                  if (saveDiff) {</a>
+<a name="ln589">                        // It is assumed that diff items are created in handleToken</a>
+<a name="ln590">                        // only for start tags</a>
+<a name="ln591">                        Q_ASSERT(r.isStartElement());</a>
+<a name="ln592">                        ItemType type = diff-&gt;itemType();</a>
+<a name="ln593">                        if (type == ItemType::ELEMENT || type == ItemType::PROPERTY) {</a>
+<a name="ln594">                              currentDiffTagLevel = tagLevel;</a>
+<a name="ln595">                              if (type == ItemType::ELEMENT &amp;&amp; contextsStack.back()-&gt;isSpanner()) {</a>
+<a name="ln596">                                    // Consider &lt;Spanner&gt; tag as the current differing tag</a>
+<a name="ln597">                                    --currentDiffTagLevel;</a>
+<a name="ln598">                                    }</a>
+<a name="ln599">                              }</a>
+<a name="ln600">                        }</a>
+<a name="ln601">                  }</a>
+<a name="ln602"> </a>
+<a name="ln603">            if (r.isEndElement()) {</a>
+<a name="ln604">                  if (currentDiffTagLevel == tagLevel)</a>
+<a name="ln605">                        currentDiffTagLevel = 0;</a>
+<a name="ln606">                  --tagLevel;</a>
+<a name="ln607">                  tagIsElement.pop_back();</a>
+<a name="ln608">                  }</a>
+<a name="ln609"> </a>
+<a name="ln610">            r.readNext();</a>
+<a name="ln611">            }</a>
+<a name="ln612">      if (r.hasError())</a>
+<a name="ln613">            qWarning(&quot;TextDiffParser::makeDiffs: error while reading MSCX output: %s&quot;, r.errorString().toLatin1().constData());</a>
+<a name="ln614">      }</a>
+<a name="ln615"> </a>
+<a name="ln616">//---------------------------------------------------------</a>
+<a name="ln617">//   TextDiffParser::handleToken</a>
+<a name="ln618">//    Returns nullptr or a newly allocated BaseDiff with</a>
+<a name="ln619">//    properly filled context and fields that are unique to</a>
+<a name="ln620">//    descendants of BaseDiff (e.g. el[2] for ElementDiff).</a>
+<a name="ln621">//    Type and textDiff are left unfilled.</a>
+<a name="ln622">//---------------------------------------------------------</a>
+<a name="ln623"> </a>
+<a name="ln624">BaseDiff* TextDiffParser::handleToken(const QXmlStreamReader&amp; r, const ScoreElement* newElement, bool saveDiff)</a>
+<a name="ln625">      {</a>
+<a name="ln626">      if (!r.isStartElement() &amp;&amp; !r.isEndElement())</a>
+<a name="ln627">            return nullptr;</a>
+<a name="ln628">      BaseDiff* diff = nullptr;</a>
+<a name="ln629">      const QStringRef tag(r.name());</a>
+<a name="ln630"> </a>
+<a name="ln631">      if (r.isStartElement()) {</a>
+<a name="ln632">            if (newElement) {</a>
+<a name="ln633">                  if (saveDiff) {</a>
+<a name="ln634">                        ElementDiff* d = new ElementDiff;</a>
+<a name="ln635">                        diff = d;</a>
+<a name="ln636">                        d-&gt;ctx[iScore] = contextsStack.back();</a>
+<a name="ln637">                        d-&gt;el[iScore] = newElement;</a>
+<a name="ln638">                        d-&gt;el[iOtherScore] = nullptr;</a>
+<a name="ln639">                        }</a>
+<a name="ln640">                  contextsStack.push_back(newElement);</a>
+<a name="ln641">                  }</a>
+<a name="ln642">            else if (tag == &quot;Spanner&quot;)</a>
+<a name="ln643">                  markupContext = tag.toString();</a>
+<a name="ln644">            else if (saveDiff) {</a>
+<a name="ln645">                  const ScoreElement* ctx = contextsStack.back();</a>
+<a name="ln646">                  if (markupContext == &quot;Spanner&quot; &amp;&amp; !(ctx &amp;&amp; ctx-&gt;isSpanner())) {</a>
+<a name="ln647">                        // some property inside the end of a spanner</a>
+<a name="ln648">                        }</a>
+<a name="ln649">                  else if (tag == &quot;prev&quot; || tag == &quot;next&quot;) {</a>
+<a name="ln650">                        // Ignore these tags</a>
+<a name="ln651">                        }</a>
+<a name="ln652">                  else if (tag == &quot;location&quot; || tag == &quot;voice&quot;) {</a>
+<a name="ln653">                        if (ctx &amp;&amp; ctx-&gt;isMeasure()) {</a>
+<a name="ln654">                              MarkupDiff* d = new MarkupDiff;</a>
+<a name="ln655">                              diff = d;</a>
+<a name="ln656">                              d-&gt;ctx[iScore] = ctx;</a>
+<a name="ln657">                              d-&gt;name = tag.toString();</a>
+<a name="ln658">                              const ScoreElement* widerCtx = *(contextsStack.end() - 2);</a>
+<a name="ln659">                              if (widerCtx &amp;&amp; widerCtx-&gt;isStaff())</a>
+<a name="ln660">                                    d-&gt;info = toStaff(widerCtx)-&gt;idx();</a>
+<a name="ln661">                              }</a>
+<a name="ln662">                        }</a>
+<a name="ln663">                  else {</a>
+<a name="ln664">                        Pid propId = ctx ? ctx-&gt;propertyId(tag) : Pid::END;</a>
+<a name="ln665">                        if (propId != Pid::END) {</a>
+<a name="ln666">                              PropertyDiff* d = new PropertyDiff;</a>
+<a name="ln667">                              diff = d;</a>
+<a name="ln668">                              d-&gt;ctx[iScore] = contextsStack.back();</a>
+<a name="ln669">                              d-&gt;pid = propId;</a>
+<a name="ln670">                              }</a>
+<a name="ln671">                        else {</a>
+<a name="ln672">                              MarkupDiff* d = new MarkupDiff;</a>
+<a name="ln673">                              diff = d;</a>
+<a name="ln674">                              d-&gt;ctx[iScore] = contextsStack.back();</a>
+<a name="ln675">                              d-&gt;name = tag.toString();</a>
+<a name="ln676">                              if (tag == &quot;metaTag&quot;)</a>
+<a name="ln677">                                    d-&gt;info = r.attributes().value(&quot;name&quot;).toString();</a>
+<a name="ln678">                              }</a>
+<a name="ln679">                        }</a>
+<a name="ln680">                  }</a>
+<a name="ln681">            }</a>
+<a name="ln682">      else { // end element</a>
+<a name="ln683">            if ((tagIsElement.back() &amp;&amp; !contextsStack.back()-&gt;isSpanner())</a>
+<a name="ln684">               || (tag == &quot;Spanner&quot; &amp;&amp; contextsStack.back()-&gt;isSpanner())</a>
+<a name="ln685">               ) {</a>
+<a name="ln686">                  lastElementEnded = contextsStack.back();</a>
+<a name="ln687">                  contextsStack.pop_back();</a>
+<a name="ln688">                  }</a>
+<a name="ln689">            if (!markupContext.isEmpty() &amp;&amp; tag == markupContext)</a>
+<a name="ln690">                  markupContext.clear();</a>
+<a name="ln691">            }</a>
+<a name="ln692"> </a>
+<a name="ln693">      if (diff)</a>
+<a name="ln694">            diff-&gt;ctx[iOtherScore] = nullptr;</a>
+<a name="ln695">      return diff;</a>
+<a name="ln696">      }</a>
+<a name="ln697"> </a>
+<a name="ln698">//---------------------------------------------------------</a>
+<a name="ln699">//   lineNumberSort</a>
+<a name="ln700">//---------------------------------------------------------</a>
+<a name="ln701"> </a>
+<a name="ln702">static bool lineNumberSort(BaseDiff* d1, BaseDiff* d2)</a>
+<a name="ln703">      {</a>
+<a name="ln704">      const TextDiff* t1 = d1-&gt;textDiff;</a>
+<a name="ln705">      const TextDiff* t2 = d2-&gt;textDiff;</a>
+<a name="ln706">      return ((t1-&gt;end[0] &lt; t2-&gt;end[0]) || (t1-&gt;end[1] &lt; t2-&gt;end[1]));</a>
+<a name="ln707">      }</a>
+<a name="ln708"> </a>
+<a name="ln709">//---------------------------------------------------------</a>
+<a name="ln710">//   positionSort</a>
+<a name="ln711">//---------------------------------------------------------</a>
+<a name="ln712"> </a>
+<a name="ln713">static bool positionSort(BaseDiff* d1, BaseDiff* d2)</a>
+<a name="ln714">      {</a>
+<a name="ln715">      return (d1-&gt;afrac(0) &lt; d2-&gt;afrac(0) || d1-&gt;afrac(1) &lt; d2-&gt;afrac(1));</a>
+<a name="ln716">      }</a>
+<a name="ln717"> </a>
+<a name="ln718">//---------------------------------------------------------</a>
+<a name="ln719">//   scoreToMscx</a>
+<a name="ln720">//---------------------------------------------------------</a>
+<a name="ln721"> </a>
+<a name="ln722">static QString scoreToMscx(Score* s, XmlWriter&amp; xml)</a>
+<a name="ln723">      {</a>
+<a name="ln724">      QString mscx;</a>
+<a name="ln725">      xml.setString(&amp;mscx, QIODevice::WriteOnly);</a>
+<a name="ln726">      xml.setRecordElements(true);</a>
+<a name="ln727">      s-&gt;write(xml, /* onlySelection */ false);</a>
+<a name="ln728">      xml.flush();</a>
+<a name="ln729">      return mscx;</a>
+<a name="ln730">      }</a>
+<a name="ln731"> </a>
+<a name="ln732">//---------------------------------------------------------</a>
+<a name="ln733">//   ScoreDiff</a>
+<a name="ln734">//    s1, s2 are scores to compare.</a>
+<a name="ln735">//    ScoreDiff does NOT take ownership of the scores.</a>
+<a name="ln736">//---------------------------------------------------------</a>
+<a name="ln737"> </a>
+<a name="ln738">ScoreDiff::ScoreDiff(Score* s1, Score* s2, bool textDiffOnly)</a>
+<a name="ln739">   : _s1(s1), _s2(s2), _textDiffOnly(textDiffOnly)</a>
+<a name="ln740">      {</a>
+<a name="ln741">      update();</a>
+<a name="ln742">      }</a>
+<a name="ln743"> </a>
+<a name="ln744">//---------------------------------------------------------</a>
+<a name="ln745">//   makeDiffs</a>
+<a name="ln746">//---------------------------------------------------------</a>
+<a name="ln747"> </a>
+<a name="ln748">static void makeDiffs(const QString&amp; mscx1, const QString&amp; mscx2, const XmlWriter&amp; xml1, const XmlWriter&amp; xml2, const std::vector&lt;TextDiff&gt;&amp; textDiffs, std::vector&lt;BaseDiff*&gt;&amp; diffs)</a>
+<a name="ln749">      {</a>
+<a name="ln750">      TextDiffParser p1(0);</a>
+<a name="ln751">      p1.makeDiffs(mscx1, xml1.elements(), textDiffs, diffs);</a>
+<a name="ln752">      TextDiffParser p2(1);</a>
+<a name="ln753">      p2.makeDiffs(mscx2, xml2.elements(), textDiffs, diffs);</a>
+<a name="ln754"> </a>
+<a name="ln755">      std::stable_sort(diffs.begin(), diffs.end(), lineNumberSort);</a>
+<a name="ln756"> </a>
+<a name="ln757">      // Fill correct contexts for diffs</a>
+<a name="ln758">      const ScoreElement* lastCtx[2] {};</a>
+<a name="ln759">      const ScoreElement* lastBefore[2] {};</a>
+<a name="ln760">      for (BaseDiff* diff : diffs) {</a>
+<a name="ln761">            for (int i = 0; i &lt; 2; ++i) {</a>
+<a name="ln762">                  if (diff-&gt;ctx[i])</a>
+<a name="ln763">                        lastCtx[i] = diff-&gt;ctx[i];</a>
+<a name="ln764">                  else</a>
+<a name="ln765">                        diff-&gt;ctx[i] = lastCtx[i];</a>
+<a name="ln766"> </a>
+<a name="ln767">                  if (diff-&gt;before[i])</a>
+<a name="ln768">                        lastBefore[i] = diff-&gt;before[i];</a>
+<a name="ln769">                  else</a>
+<a name="ln770">                        diff-&gt;before[i] = lastBefore[i];</a>
+<a name="ln771">                  }</a>
+<a name="ln772">            }</a>
+<a name="ln773"> </a>
+<a name="ln774">      // Filter out EQUAL diffs and dummy ContextChange items</a>
+<a name="ln775">      std::vector&lt;BaseDiff*&gt; filteredDiffs;</a>
+<a name="ln776">      for (BaseDiff* diff : diffs) {</a>
+<a name="ln777">            if ((diff-&gt;itemType() == ItemType::CONTEXTCHANGE)</a>
+<a name="ln778">               || (diff-&gt;type == DiffType::EQUAL))</a>
+<a name="ln779">                  delete diff;</a>
+<a name="ln780">            else</a>
+<a name="ln781">                  filteredDiffs.push_back(diff);</a>
+<a name="ln782">            }</a>
+<a name="ln783">      std::swap(diffs, filteredDiffs);</a>
+<a name="ln784">      }</a>
+<a name="ln785"> </a>
+<a name="ln786">//---------------------------------------------------------</a>
+<a name="ln787">//   ScoreDiff::update</a>
+<a name="ln788">//    Updates the diff according to the current state of</a>
+<a name="ln789">//    the compared scores.</a>
+<a name="ln790">//---------------------------------------------------------</a>
+<a name="ln791"> </a>
+<a name="ln792">void ScoreDiff::update()</a>
+<a name="ln793">      {</a>
+<a name="ln794">      if (updated())</a>
+<a name="ln795">            return;</a>
+<a name="ln796"> </a>
+<a name="ln797">      qDeleteAll(_diffs);</a>
+<a name="ln798">      _diffs.clear();</a>
+<a name="ln799">      _textDiffs.clear();</a>
+<a name="ln800">      qDeleteAll(_mergedTextDiffs);</a>
+<a name="ln801">      _mergedTextDiffs.clear();</a>
+<a name="ln802"> </a>
+<a name="ln803">      XmlWriter xml1(_s1);</a>
+<a name="ln804">      XmlWriter xml2(_s2);</a>
+<a name="ln805">      QString mscx1(scoreToMscx(_s1, xml1));</a>
+<a name="ln806">      QString mscx2(scoreToMscx(_s2, xml2));</a>
+<a name="ln807"> </a>
+<a name="ln808">      _textDiffs = MscxModeDiff().mscxModeDiff(mscx1, mscx2);</a>
+<a name="ln809"> </a>
+<a name="ln810">      if (!_textDiffOnly) {</a>
+<a name="ln811">            makeDiffs(mscx1, mscx2, xml1, xml2, _textDiffs, _diffs);</a>
+<a name="ln812"> </a>
+<a name="ln813">            processMarkupDiffs();</a>
+<a name="ln814">            mergeInsertDeleteDiffs();</a>
+<a name="ln815">            mergeElementDiffs();</a>
+<a name="ln816">            editPropertyDiffs();</a>
+<a name="ln817"> </a>
+<a name="ln818">            std::stable_sort(_diffs.begin(), _diffs.end(), positionSort);</a>
+<a name="ln819">            }</a>
+<a name="ln820"> </a>
+<a name="ln821">      _scoreState1 = _s1-&gt;state();</a>
+<a name="ln822">      _scoreState2 = _s2-&gt;state();</a>
+<a name="ln823">      }</a>
+<a name="ln824"> </a>
+<a name="ln825">//---------------------------------------------------------</a>
+<a name="ln826">//   ~ScoreDiff</a>
+<a name="ln827">//---------------------------------------------------------</a>
+<a name="ln828"> </a>
+<a name="ln829">ScoreDiff::~ScoreDiff()</a>
+<a name="ln830">      {</a>
+<a name="ln831">      qDeleteAll(_mergedTextDiffs);</a>
+<a name="ln832">      qDeleteAll(_diffs);</a>
+<a name="ln833">      }</a>
+<a name="ln834"> </a>
+<a name="ln835">//---------------------------------------------------------</a>
+<a name="ln836">//   deleteDiffs</a>
+<a name="ln837">//---------------------------------------------------------</a>
+<a name="ln838"> </a>
+<a name="ln839">static void deleteDiffs(std::vector&lt;BaseDiff*&gt;&amp; diffsList, const std::vector&lt;BaseDiff*&gt;&amp; toDelete)</a>
+<a name="ln840">      {</a>
+<a name="ln841">      for (BaseDiff* diff : toDelete) {</a>
+<a name="ln842">            for (auto it = diffsList.begin(); it != diffsList.end(); ++it) {</a>
+<a name="ln843">                  if (*it == diff) {</a>
+<a name="ln844">                        diffsList.erase(it);</a>
+<a name="ln845">                        break;</a>
+<a name="ln846">                        }</a>
+<a name="ln847">                  }</a>
+<a name="ln848">            delete diff;</a>
+<a name="ln849">            }</a>
+<a name="ln850">      }</a>
+<a name="ln851"> </a>
+<a name="ln852">//---------------------------------------------------------</a>
+<a name="ln853">//   measureToMscx</a>
+<a name="ln854">//---------------------------------------------------------</a>
+<a name="ln855"> </a>
+<a name="ln856">static QString measureToMscx(const Measure* m, XmlWriter&amp; xml, int staff)</a>
+<a name="ln857">      {</a>
+<a name="ln858">      QString mscx;</a>
+<a name="ln859">      xml.setString(&amp;mscx, QIODevice::WriteOnly);</a>
+<a name="ln860">      xml.setRecordElements(true);</a>
+<a name="ln861">      m-&gt;write(xml, staff, false, false);</a>
+<a name="ln862">      xml.flush();</a>
+<a name="ln863">      return mscx;</a>
+<a name="ln864">      }</a>
+<a name="ln865"> </a>
+<a name="ln866">//---------------------------------------------------------</a>
+<a name="ln867">//   measureInfo</a>
+<a name="ln868">//---------------------------------------------------------</a>
+<a name="ln869"> </a>
+<a name="ln870">struct MeasureInfo {</a>
+<a name="ln871">      const Measure* m1;</a>
+<a name="ln872">      const Measure* m2;</a>
+<a name="ln873">      int staff;</a>
+<a name="ln874"> </a>
+<a name="ln875">      MeasureInfo(const Measure* m1, const Measure* m2, int staff) : m1(m1), m2(m2), staff(staff) {}</a>
+<a name="ln876"> </a>
+<a name="ln877">      bool operator==(const MeasureInfo&amp; other) { return m1 == other.m1 &amp;&amp; m2 == other.m2 &amp;&amp; staff == other.staff; }</a>
+<a name="ln878">      bool operator!=(const MeasureInfo&amp; other) { return !(*this == other); }</a>
+<a name="ln879">      };</a>
+<a name="ln880"> </a>
+<a name="ln881">//---------------------------------------------------------</a>
+<a name="ln882">//   ScoreDiff::processMarkupDiffs</a>
+<a name="ln883">//    Find MarkupDiffs and convert them to the appropriate</a>
+<a name="ln884">//    diffs of other types if needed.</a>
+<a name="ln885">//---------------------------------------------------------</a>
+<a name="ln886"> </a>
+<a name="ln887">void ScoreDiff::processMarkupDiffs()</a>
+<a name="ln888">      {</a>
+<a name="ln889">      std::vector&lt;BaseDiff*&gt; abandonedDiffs;</a>
+<a name="ln890">      std::vector&lt;MeasureInfo&gt; measuresToProcess;</a>
+<a name="ln891">      Pid pids[] { Pid::TRACK, Pid::POSITION }; // list of pids to be accepted on measures processing</a>
+<a name="ln892">      for (BaseDiff* diff : _diffs) {</a>
+<a name="ln893">            if (diff-&gt;itemType() != ItemType::MARKUP)</a>
+<a name="ln894">                  continue;</a>
+<a name="ln895"> </a>
+<a name="ln896">            MarkupDiff* d = static_cast&lt;MarkupDiff*&gt;(diff);</a>
+<a name="ln897">            const QString&amp; name = d-&gt;name;</a>
+<a name="ln898"> </a>
+<a name="ln899">            if (name == &quot;voice&quot; || name == &quot;location&quot;) {</a>
+<a name="ln900">                  if (d-&gt;ctx[0]-&gt;isMeasure() &amp;&amp; d-&gt;ctx[1]-&gt;isMeasure()) {</a>
+<a name="ln901">                        MeasureInfo m(toMeasure(d-&gt;ctx[0]), toMeasure(d-&gt;ctx[1]), d-&gt;info.toInt());</a>
+<a name="ln902">                        bool add = true;</a>
+<a name="ln903">                        for (auto&amp; mScheduled : measuresToProcess) {</a>
+<a name="ln904">                              if (mScheduled == m) {</a>
+<a name="ln905">                                    add = false;</a>
+<a name="ln906">                                    break;</a>
+<a name="ln907">                                    }</a>
+<a name="ln908">                              }</a>
+<a name="ln909">                        if (add)</a>
+<a name="ln910">                              measuresToProcess.push_back(m);</a>
+<a name="ln911">                        abandonedDiffs.push_back(d);</a>
+<a name="ln912">                        }</a>
+<a name="ln913">                  }</a>
+<a name="ln914">            }</a>
+<a name="ln915"> </a>
+<a name="ln916">      std::vector&lt;BaseDiff*&gt; newDiffs;</a>
+<a name="ln917">      for (auto&amp; m : measuresToProcess) {</a>
+<a name="ln918">            XmlWriter xml1(m.m1-&gt;score());</a>
+<a name="ln919">            xml1.setWriteTrack(true);</a>
+<a name="ln920">            xml1.setWritePosition(true);</a>
+<a name="ln921">            QString mscx1 = measureToMscx(m.m1, xml1, m.staff);</a>
+<a name="ln922"> </a>
+<a name="ln923">            XmlWriter xml2(m.m2-&gt;score());</a>
+<a name="ln924">            xml2.setWriteTrack(true);</a>
+<a name="ln925">            xml2.setWritePosition(true);</a>
+<a name="ln926">            QString mscx2 = measureToMscx(m.m2, xml2, m.staff);</a>
+<a name="ln927"> </a>
+<a name="ln928">            std::vector&lt;TextDiff&gt; textDiffs = MscxModeDiff().mscxModeDiff(mscx1, mscx2);</a>
+<a name="ln929">            makeDiffs(mscx1, mscx2, xml1, xml2, textDiffs, newDiffs);</a>
+<a name="ln930">            }</a>
+<a name="ln931"> </a>
+<a name="ln932">      for (BaseDiff* newDiff : newDiffs) {</a>
+<a name="ln933">            bool save = false;</a>
+<a name="ln934">            if (newDiff-&gt;itemType() == ItemType::PROPERTY) {</a>
+<a name="ln935">                  PropertyDiff* pDiff = static_cast&lt;PropertyDiff*&gt;(newDiff);</a>
+<a name="ln936">                  for (Pid pid : pids) {</a>
+<a name="ln937">                        if (pDiff-&gt;pid == pid) {</a>
+<a name="ln938">                              save = true;</a>
+<a name="ln939">                              break;</a>
+<a name="ln940">                              }</a>
+<a name="ln941">                        }</a>
+<a name="ln942">                  if (pDiff-&gt;pid == Pid::TRACK)</a>
+<a name="ln943">                        pDiff-&gt;pid = Pid::VOICE;</a>
+<a name="ln944"> </a>
+<a name="ln945">                  if (pDiff-&gt;ctx[0]-&gt;isMeasure() || pDiff-&gt;ctx[1]-&gt;isMeasure())</a>
+<a name="ln946">                        save = false;</a>
+<a name="ln947">                  }</a>
+<a name="ln948"> </a>
+<a name="ln949"> </a>
+<a name="ln950">            if (save) {</a>
+<a name="ln951">                  newDiff-&gt;textDiff = nullptr;</a>
+<a name="ln952">                  _diffs.push_back(newDiff);</a>
+<a name="ln953">                  }</a>
+<a name="ln954">            else</a>
+<a name="ln955">                  delete newDiff;</a>
+<a name="ln956">            }</a>
+<a name="ln957"> </a>
+<a name="ln958">      deleteDiffs(_diffs, abandonedDiffs);</a>
+<a name="ln959">      }</a>
+<a name="ln960"> </a>
+<a name="ln961">//---------------------------------------------------------</a>
+<a name="ln962">//   ScoreDiff::mergeInsertDeleteDiffs</a>
+<a name="ln963">//    Merge INSERT and DELETE diffs to REPLACE diffs where</a>
+<a name="ln964">//    possible.</a>
+<a name="ln965">//---------------------------------------------------------</a>
+<a name="ln966"> </a>
+<a name="ln967">void ScoreDiff::mergeInsertDeleteDiffs()</a>
+<a name="ln968">      {</a>
+<a name="ln969">      const ScoreElement* lastCtx1 = _s1;</a>
+<a name="ln970">      const ScoreElement* lastCtx2 = _s2;</a>
+<a name="ln971">      std::vector&lt;BaseDiff*&gt; diffsToMerge;</a>
+<a name="ln972">      std::vector&lt;BaseDiff*&gt; abandonedDiffs;</a>
+<a name="ln973">      for (BaseDiff* diff : _diffs) {</a>
+<a name="ln974">            if ((diff-&gt;ctx[0] != lastCtx1) || (diff-&gt;ctx[1] != lastCtx2)) {</a>
+<a name="ln975">                  diffsToMerge.clear();</a>
+<a name="ln976">                  lastCtx1 = diff-&gt;ctx[0];</a>
+<a name="ln977">                  lastCtx2 = diff-&gt;ctx[1];</a>
+<a name="ln978">                  }</a>
+<a name="ln979">            bool merge = false;</a>
+<a name="ln980">            for (auto diff2It = diffsToMerge.begin(); diff2It != diffsToMerge.end(); ++diff2It) {</a>
+<a name="ln981">                  BaseDiff* diff2 = (*diff2It);</a>
+<a name="ln982">                  if (diff-&gt;type == DiffType::DELETE) {</a>
+<a name="ln983">                        if ((diff2-&gt;type == DiffType::INSERT) &amp;&amp; diff-&gt;sameItem(*diff2))</a>
+<a name="ln984">                              merge = true;</a>
+<a name="ln985">                        }</a>
+<a name="ln986">                  else if (diff-&gt;type == DiffType::INSERT) {</a>
+<a name="ln987">                        if ((diff2-&gt;type == DiffType::DELETE) &amp;&amp; diff-&gt;sameItem(*diff2))</a>
+<a name="ln988">                              merge = true;</a>
+<a name="ln989">                        }</a>
+<a name="ln990"> </a>
+<a name="ln991">                  if (merge) {</a>
+<a name="ln992">                        // To preserve the correct order of diffs, we should</a>
+<a name="ln993">                        // leave diff2 in place since it appeared earlier in</a>
+<a name="ln994">                        // the _diffs list.</a>
+<a name="ln995">                        diff2-&gt;type = DiffType::REPLACE;</a>
+<a name="ln996"> </a>
+<a name="ln997">                        if (diff-&gt;textDiff &amp;&amp; diff2-&gt;textDiff) {</a>
+<a name="ln998">                              TextDiff* mergedTextDiff = new TextDiff(*diff2-&gt;textDiff);</a>
+<a name="ln999">                              mergedTextDiff-&gt;merge(*diff-&gt;textDiff);</a>
+<a name="ln1000">                              _mergedTextDiffs.push_back(mergedTextDiff);</a>
+<a name="ln1001">                              diff2-&gt;textDiff = mergedTextDiff;</a>
+<a name="ln1002">                              }</a>
+<a name="ln1003">                        else if (!diff2-&gt;textDiff)</a>
+<a name="ln1004">                              diff2-&gt;textDiff = diff-&gt;textDiff;</a>
+<a name="ln1005"> </a>
+<a name="ln1006">                        int idx1 = (diff-&gt;type == DiffType::DELETE) ? 0 : 1;</a>
+<a name="ln1007">                        switch(diff2-&gt;itemType()) {</a>
+<a name="ln1008">                              case ItemType::ELEMENT:</a>
+<a name="ln1009">                                    {</a>
+<a name="ln1010">                                    ElementDiff* d = static_cast&lt;ElementDiff*&gt;(diff);</a>
+<a name="ln1011">                                    ElementDiff* d2 = static_cast&lt;ElementDiff*&gt;(diff2);</a>
+<a name="ln1012">                                    // d2-&gt;el[idx2] is already filled</a>
+<a name="ln1013">                                    d2-&gt;el[idx1] = d-&gt;el[idx1];</a>
+<a name="ln1014">                                    }</a>
+<a name="ln1015">                                    break;</a>
+<a name="ln1016">                              case ItemType::PROPERTY:</a>
+<a name="ln1017">                              case ItemType::MARKUP:</a>
+<a name="ln1018">                                    // nothing to fill</a>
+<a name="ln1019">                                    break;</a>
+<a name="ln1020">                              case ItemType::CONTEXTCHANGE:</a>
+<a name="ln1021">                                    break;</a>
+<a name="ln1022">                              }</a>
+<a name="ln1023"> </a>
+<a name="ln1024">                        abandonedDiffs.push_back(diff);</a>
+<a name="ln1025">                        diffsToMerge.erase(diff2It);</a>
+<a name="ln1026">                        break; // loop on diffsToMerge</a>
+<a name="ln1027">                        }</a>
+<a name="ln1028">                  }</a>
+<a name="ln1029"> </a>
+<a name="ln1030">            if (!merge)</a>
+<a name="ln1031">                  diffsToMerge.push_back(diff);</a>
+<a name="ln1032">            }</a>
+<a name="ln1033"> </a>
+<a name="ln1034">      deleteDiffs(_diffs, abandonedDiffs);</a>
+<a name="ln1035">      }</a>
+<a name="ln1036"> </a>
+<a name="ln1037">//---------------------------------------------------------</a>
+<a name="ln1038">//   ScoreDiff::mergeElementDiffs</a>
+<a name="ln1039">//    Merge element diffs with equal elements</a>
+<a name="ln1040">//---------------------------------------------------------</a>
+<a name="ln1041"> </a>
+<a name="ln1042">void ScoreDiff::mergeElementDiffs()</a>
+<a name="ln1043">      {</a>
+<a name="ln1044">      std::map&lt;const ScoreElement*, ElementDiff*&gt; elementDiffs;</a>
+<a name="ln1045">      std::vector&lt;BaseDiff*&gt; abandonedDiffs;</a>
+<a name="ln1046">      for (BaseDiff* diff : _diffs) {</a>
+<a name="ln1047">            if (diff-&gt;itemType() != ItemType::ELEMENT)</a>
+<a name="ln1048">                  continue;</a>
+<a name="ln1049"> </a>
+<a name="ln1050">            ElementDiff* elDiff = static_cast&lt;ElementDiff*&gt;(diff);</a>
+<a name="ln1051">            auto foundDiffIt1 = elementDiffs.find(elDiff-&gt;el[0]);</a>
+<a name="ln1052">            auto foundDiffIt2 = elementDiffs.find(elDiff-&gt;el[1]);</a>
+<a name="ln1053">            ElementDiff* foundDiff = nullptr;</a>
+<a name="ln1054">            if (foundDiffIt1 != elementDiffs.end())</a>
+<a name="ln1055">                  foundDiff = foundDiffIt1-&gt;second;</a>
+<a name="ln1056">            else if (foundDiffIt2 != elementDiffs.end())</a>
+<a name="ln1057">                  foundDiff = foundDiffIt2-&gt;second;</a>
+<a name="ln1058"> </a>
+<a name="ln1059">            if (foundDiff &amp;&amp; foundDiff-&gt;type == elDiff-&gt;type</a>
+<a name="ln1060">               &amp;&amp; foundDiff-&gt;el[0] == elDiff-&gt;el[0]</a>
+<a name="ln1061">               &amp;&amp; foundDiff-&gt;el[1] == elDiff-&gt;el[1]) {</a>
+<a name="ln1062">                  for (int i = 0; i &lt; 2; ++i) {</a>
+<a name="ln1063">                        const ScoreElement* se = foundDiff-&gt;el[i];</a>
+<a name="ln1064">                        if (!se)</a>
+<a name="ln1065">                              continue;</a>
+<a name="ln1066">                        if (!se-&gt;isMeasure() &amp;&amp; se-&gt;isElement()) {</a>
+<a name="ln1067">                              const Element* m = toElement(se)-&gt;findMeasure();</a>
+<a name="ln1068">                              if (m)</a>
+<a name="ln1069">                                    foundDiff-&gt;ctx[i] = m;</a>
+<a name="ln1070">                              else</a>
+<a name="ln1071">                                    foundDiff-&gt;ctx[i] = se-&gt;score();</a>
+<a name="ln1072">                              }</a>
+<a name="ln1073">                        else</a>
+<a name="ln1074">                              foundDiff-&gt;ctx[i] = se-&gt;score();</a>
+<a name="ln1075">                        }</a>
+<a name="ln1076">                  abandonedDiffs.push_back(elDiff);</a>
+<a name="ln1077">                  }</a>
+<a name="ln1078">            else {</a>
+<a name="ln1079">                  for (int i = 0; i &lt; 2; ++i) {</a>
+<a name="ln1080">                        if (const ScoreElement* se = elDiff-&gt;el[i])</a>
+<a name="ln1081">                              elementDiffs[se] = elDiff;</a>
+<a name="ln1082">                        }</a>
+<a name="ln1083">                  }</a>
+<a name="ln1084">            }</a>
+<a name="ln1085"> </a>
+<a name="ln1086">      deleteDiffs(_diffs, abandonedDiffs);</a>
+<a name="ln1087">      }</a>
+<a name="ln1088"> </a>
+<a name="ln1089">//---------------------------------------------------------</a>
+<a name="ln1090">//   ScoreDiff::editPropertyDiffs</a>
+<a name="ln1091">//    Merge property diffs with equal elements, edit some</a>
+<a name="ln1092">//    diffs if necessary</a>
+<a name="ln1093">//---------------------------------------------------------</a>
+<a name="ln1094"> </a>
+<a name="ln1095">void ScoreDiff::editPropertyDiffs()</a>
+<a name="ln1096">      {</a>
+<a name="ln1097">      std::multimap&lt;const ScoreElement*, PropertyDiff*&gt; propertyDiffs;</a>
+<a name="ln1098">      std::vector&lt;BaseDiff*&gt; abandonedDiffs;</a>
+<a name="ln1099">      for (BaseDiff* diff : _diffs) {</a>
+<a name="ln1100">            if (diff-&gt;itemType() != ItemType::PROPERTY)</a>
+<a name="ln1101">                  continue;</a>
+<a name="ln1102"> </a>
+<a name="ln1103">            PropertyDiff* pDiff = static_cast&lt;PropertyDiff*&gt;(diff);</a>
+<a name="ln1104"> </a>
+<a name="ln1105">            if (pDiff-&gt;pid == Pid::TPC1 || pDiff-&gt;pid == Pid::TPC2) {</a>
+<a name="ln1106">                  // Special case: &quot;tpc&quot; and &quot;pitch&quot; properties are partially</a>
+<a name="ln1107">                  // overlapped so we will mark tpc changes as pitch changes</a>
+<a name="ln1108">                  pDiff-&gt;pid = Pid::PITCH;</a>
+<a name="ln1109">                  }</a>
+<a name="ln1110"> </a>
+<a name="ln1111">            auto foundRange = propertyDiffs.equal_range(pDiff-&gt;ctx[0]);</a>
+<a name="ln1112">            bool merged = false;</a>
+<a name="ln1113">            for (auto it = foundRange.first; it != foundRange.second; ++it) {</a>
+<a name="ln1114">                  PropertyDiff* foundDiff = it-&gt;second;</a>
+<a name="ln1115">                  if (foundDiff &amp;&amp; foundDiff-&gt;type == pDiff-&gt;type</a>
+<a name="ln1116">                     &amp;&amp; foundDiff-&gt;ctx[0] == pDiff-&gt;ctx[0]</a>
+<a name="ln1117">                     &amp;&amp; foundDiff-&gt;ctx[1] == pDiff-&gt;ctx[1]</a>
+<a name="ln1118">                     &amp;&amp; foundDiff-&gt;pid == pDiff-&gt;pid</a>
+<a name="ln1119">                     ) {</a>
+<a name="ln1120">                        abandonedDiffs.push_back(pDiff);</a>
+<a name="ln1121">                        merged = true;</a>
+<a name="ln1122">                        break;</a>
+<a name="ln1123">                        }</a>
+<a name="ln1124">                  }</a>
+<a name="ln1125"> </a>
+<a name="ln1126">            if (!merged)</a>
+<a name="ln1127">                  propertyDiffs.emplace(pDiff-&gt;ctx[0], pDiff);</a>
+<a name="ln1128">            }</a>
+<a name="ln1129"> </a>
+<a name="ln1130">      deleteDiffs(_diffs, abandonedDiffs);</a>
+<a name="ln1131">      }</a>
+<a name="ln1132"> </a>
+<a name="ln1133">//---------------------------------------------------------</a>
+<a name="ln1134">//   ScoreDiff::equal</a>
+<a name="ln1135">//---------------------------------------------------------</a>
+<a name="ln1136"> </a>
+<a name="ln1137">bool ScoreDiff::equal() const</a>
+<a name="ln1138">      {</a>
+<a name="ln1139">      for (const TextDiff&amp; td : _textDiffs) {</a>
+<a name="ln1140">            if (td.type != DiffType::EQUAL)</a>
+<a name="ln1141">                  return false;</a>
+<a name="ln1142">            }</a>
+<a name="ln1143">      return true;</a>
+<a name="ln1144">      }</a>
+<a name="ln1145"> </a>
+<a name="ln1146">//---------------------------------------------------------</a>
+<a name="ln1147">//   ScoreDiff::rawDiff</a>
+<a name="ln1148">//---------------------------------------------------------</a>
+<a name="ln1149"> </a>
+<a name="ln1150">QString ScoreDiff::rawDiff(bool skipEqual) const</a>
+<a name="ln1151">      {</a>
+<a name="ln1152">      QStringList list;</a>
+<a name="ln1153">      for (const TextDiff&amp; td : _textDiffs) {</a>
+<a name="ln1154">            if (!skipEqual || td.type != DiffType::EQUAL)</a>
+<a name="ln1155">                  list.push_back(td.toString(true));</a>
+<a name="ln1156">            }</a>
+<a name="ln1157">      return list.join('\n');</a>
+<a name="ln1158">      }</a>
+<a name="ln1159"> </a>
+<a name="ln1160">//---------------------------------------------------------</a>
+<a name="ln1161">//   ScoreDiff::userDiff</a>
+<a name="ln1162">//---------------------------------------------------------</a>
+<a name="ln1163"> </a>
+<a name="ln1164">QString ScoreDiff::userDiff() const</a>
+<a name="ln1165">      {</a>
+<a name="ln1166">      QStringList list;</a>
+<a name="ln1167">      for (const BaseDiff* d : _diffs)</a>
+<a name="ln1168">            list.push_back(d-&gt;toString());</a>
+<a name="ln1169">      return list.join('\n');</a>
+<a name="ln1170">      }</a>
+<a name="ln1171"> </a>
+<a name="ln1172">//---------------------------------------------------------</a>
+<a name="ln1173">//   TextDiff::merge</a>
+<a name="ln1174">//---------------------------------------------------------</a>
+<a name="ln1175"> </a>
+<a name="ln1176">bool TextDiff::merge(const TextDiff&amp; other)</a>
+<a name="ln1177">      {</a>
+<a name="ln1178">      if (type == other.type) {</a>
+<a name="ln1179">            if (other.end[0] == (start[0] - 1) &amp;&amp; other.end[1] == (start[1] - 1)) {</a>
+<a name="ln1180">                  start[0] = other.start[0];</a>
+<a name="ln1181">                  start[1] = other.start[1];</a>
+<a name="ln1182">                  text[0].prepend(other.text[0]);</a>
+<a name="ln1183">                  text[1].prepend(other.text[1]);</a>
+<a name="ln1184">                  }</a>
+<a name="ln1185">            else if ((end[0] + 1) == other.start[0] &amp;&amp; (end[1] + 1) == other.start[1]) {</a>
+<a name="ln1186">                  end[0] = other.end[0];</a>
+<a name="ln1187">                  end[1] = other.end[1];</a>
+<a name="ln1188">                  text[0].append(other.text[0]);</a>
+<a name="ln1189">                  text[1].append(other.text[1]);</a>
+<a name="ln1190">                  }</a>
+<a name="ln1191">            else {</a>
+<a name="ln1192">                  qWarning(&quot;TextDiff:merge: invalid argument: wrong line numbers&quot;);</a>
+<a name="ln1193">                  return false;</a>
+<a name="ln1194">                  }</a>
+<a name="ln1195">            }</a>
+<a name="ln1196">      else if ((type == DiffType::INSERT &amp;&amp; other.type == DiffType::DELETE)</a>
+<a name="ln1197">         || (type == DiffType::DELETE &amp;&amp; other.type == DiffType::INSERT)</a>
+<a name="ln1198">         ) {</a>
+<a name="ln1199">            type = DiffType::REPLACE;</a>
+<a name="ln1200">            const int iOther = (other.type == DiffType::DELETE) ? 0 : 1;</a>
+<a name="ln1201">            start[iOther] = other.start[iOther];</a>
+<a name="ln1202">            end[iOther] = other.end[iOther];</a>
+<a name="ln1203">            text[iOther] = other.text[iOther];</a>
+<a name="ln1204">            }</a>
+<a name="ln1205">      else {</a>
+<a name="ln1206">            qWarning(&quot;TextDiff:merge: invalid argument: wrong types&quot;);</a>
+<a name="ln1207">            return false;</a>
+<a name="ln1208">            }</a>
+<a name="ln1209"> </a>
+<a name="ln1210">      return true;</a>
+<a name="ln1211">      }</a>
+<a name="ln1212"> </a>
+<a name="ln1213">//---------------------------------------------------------</a>
+<a name="ln1214">//   addLinePrefix</a>
+<a name="ln1215">//---------------------------------------------------------</a>
+<a name="ln1216"> </a>
+<a name="ln1217">static QString addLinePrefix(const QString&amp; str, const QString&amp; prefix)</a>
+<a name="ln1218">      {</a>
+<a name="ln1219">      if (prefix.isEmpty())</a>
+<a name="ln1220">            return str;</a>
+<a name="ln1221">      QVector&lt;QStringRef&gt; lines = str.splitRef('\n');</a>
+<a name="ln1222">      if (lines.back().isEmpty())</a>
+<a name="ln1223">            lines.pop_back();</a>
+<a name="ln1224">      QStringList processedLines;</a>
+<a name="ln1225">      for (QStringRef&amp; line : lines)</a>
+<a name="ln1226">            processedLines.push_back(QString(prefix).append(line));</a>
+<a name="ln1227">      return processedLines.join('\n');</a>
+<a name="ln1228">      }</a>
+<a name="ln1229"> </a>
+<a name="ln1230">//---------------------------------------------------------</a>
+<a name="ln1231">//   TextDiff::toString</a>
+<a name="ln1232">//    type argument allows to define which part of diff</a>
+<a name="ln1233">//    should be printed. For example, it allows to print</a>
+<a name="ln1234">//    only deleted chunk for REPLACE diff item.</a>
+<a name="ln1235">//---------------------------------------------------------</a>
+<a name="ln1236"> </a>
+<a name="ln1237">QString TextDiff::toString(DiffType dt, bool prefixLines) const</a>
+<a name="ln1238">      {</a>
+<a name="ln1239">      if (dt == DiffType::REPLACE) {</a>
+<a name="ln1240">            QStringList l;</a>
+<a name="ln1241">            l.push_back(toString(DiffType::DELETE, prefixLines));</a>
+<a name="ln1242">            l.push_back(toString(DiffType::INSERT, prefixLines));</a>
+<a name="ln1243">            return l.join('\n');</a>
+<a name="ln1244">            }</a>
+<a name="ln1245"> </a>
+<a name="ln1246">      int idx = (dt == DiffType::INSERT) ? 1 : 0;</a>
+<a name="ln1247">      const char* prefix = (dt == DiffType::INSERT) ? &quot;&gt;&quot; : &quot;&lt;&quot;;</a>
+<a name="ln1248"> </a>
+<a name="ln1249">      QString lines[2];</a>
+<a name="ln1250">      for (int i = 0; i &lt; 2; ++i) {</a>
+<a name="ln1251">            if ((i != idx &amp;&amp; dt != DiffType::EQUAL)</a>
+<a name="ln1252">                  || end[i] &lt;= start[i]</a>
+<a name="ln1253">                  ) {</a>
+<a name="ln1254">                  lines[i] = QString::number(start[i]);</a>
+<a name="ln1255">                  }</a>
+<a name="ln1256">            else</a>
+<a name="ln1257">                  lines[i] = QString(&quot;%1--%2&quot;)</a>
+<a name="ln1258">                        .arg(start[i]).arg(end[i]);</a>
+<a name="ln1259">            }</a>
+<a name="ln1260"> </a>
+<a name="ln1261">      return QString(&quot;@%1;%2\n%3&quot;)</a>
+<a name="ln1262">            .arg(lines[0]).arg(lines[1])</a>
+<a name="ln1263">            .arg(prefixLines ? addLinePrefix(text[idx], prefix) : text[idx]);</a>
+<a name="ln1264">      }</a>
+<a name="ln1265"> </a>
+<a name="ln1266">//---------------------------------------------------------</a>
+<a name="ln1267">//   BaseDiff::sameItem</a>
+<a name="ln1268">//---------------------------------------------------------</a>
+<a name="ln1269"> </a>
+<a name="ln1270">bool BaseDiff::sameItem(const BaseDiff&amp; other) const</a>
+<a name="ln1271">      {</a>
+<a name="ln1272">      if (itemType() != other.itemType()</a>
+<a name="ln1273">         || ctx[0] != other.ctx[0] || ctx[1] != other.ctx[1])</a>
+<a name="ln1274">            return false;</a>
+<a name="ln1275">      if (textDiff == other.textDiff)</a>
+<a name="ln1276">            return true;</a>
+<a name="ln1277">      else if (!textDiff || !other.textDiff)</a>
+<a name="ln1278">            return false;</a>
+<a name="ln1279">      return (textDiff-&gt;start[0] == other.textDiff-&gt;start[0]</a>
+<a name="ln1280">         &amp;&amp; textDiff-&gt;start[1] == other.textDiff-&gt;start[1]</a>
+<a name="ln1281">         );</a>
+<a name="ln1282">      }</a>
+<a name="ln1283"> </a>
+<a name="ln1284">//---------------------------------------------------------</a>
+<a name="ln1285">//   BaseDiff::afrac</a>
+<a name="ln1286">//    Returns position of the changed chunk</a>
+<a name="ln1287">//---------------------------------------------------------</a>
+<a name="ln1288"> </a>
+<a name="ln1289">Fraction BaseDiff::afrac(int score) const</a>
+<a name="ln1290">      {</a>
+<a name="ln1291">      Q_ASSERT(score == 0 || score == 1);</a>
+<a name="ln1292">      if (ctx[score] &amp;&amp; ctx[score]-&gt;isElement())</a>
+<a name="ln1293">            return toElement(ctx[score])-&gt;tick();</a>
+<a name="ln1294">      if (before[score] &amp;&amp; before[score]-&gt;isElement()) {</a>
+<a name="ln1295">            const Element* bef = toElement(before[score]);</a>
+<a name="ln1296">            Fraction f = bef-&gt;tick();</a>
+<a name="ln1297">            if (bef-&gt;isDurationElement()) {</a>
+<a name="ln1298">                  const DurationElement* de = toDurationElement(bef);</a>
+<a name="ln1299">                  return f + de-&gt;actualTicks();</a>
+<a name="ln1300">                  }</a>
+<a name="ln1301">            return f;</a>
+<a name="ln1302">            }</a>
+<a name="ln1303">      return Fraction(0,1);</a>
+<a name="ln1304">      }</a>
+<a name="ln1305"> </a>
+<a name="ln1306">//---------------------------------------------------------</a>
+<a name="ln1307">//   describeContext</a>
+<a name="ln1308">//---------------------------------------------------------</a>
+<a name="ln1309"> </a>
+<a name="ln1310">static QString describeContext(const ScoreElement* ctx)</a>
+<a name="ln1311">      {</a>
+<a name="ln1312">      if (!ctx)</a>
+<a name="ln1313">            return QString(&quot;no context&quot;);</a>
+<a name="ln1314">      QString descr;</a>
+<a name="ln1315">      if (ctx-&gt;isElement()) {</a>
+<a name="ln1316">            const Element* e = toElement(ctx);</a>
+<a name="ln1317">            if (const Measure* m = toMeasure(e-&gt;findMeasure()))</a>
+<a name="ln1318">                  descr += QString(&quot;%1 %2&quot;).arg(m-&gt;userName()).arg(m-&gt;no() + 1);</a>
+<a name="ln1319">            }</a>
+<a name="ln1320">      if (!ctx-&gt;isMeasure()) {</a>
+<a name="ln1321">            if (!descr.isEmpty())</a>
+<a name="ln1322">                  descr += &quot;: &quot;;</a>
+<a name="ln1323">            descr += ctx-&gt;userName();</a>
+<a name="ln1324">            // TODO: add more info</a>
+<a name="ln1325">            }</a>
+<a name="ln1326">      return descr;</a>
+<a name="ln1327">      }</a>
+<a name="ln1328"> </a>
+<a name="ln1329">//---------------------------------------------------------</a>
+<a name="ln1330">//   ContextChange::toString</a>
+<a name="ln1331">//    ContextChange elements are not intended to be shown</a>
+<a name="ln1332">//    to user, this function is for debugging purposes.</a>
+<a name="ln1333">//---------------------------------------------------------</a>
+<a name="ln1334"> </a>
+<a name="ln1335">QString ContextChange::toString() const</a>
+<a name="ln1336">      {</a>
+<a name="ln1337">      return QString(&quot;Context change: ctx1 (%1), ctx2(%2)&quot;).arg(describeContext(ctx[0])).arg(describeContext(ctx[1]));</a>
+<a name="ln1338">      }</a>
+<a name="ln1339"> </a>
+<a name="ln1340">//---------------------------------------------------------</a>
+<a name="ln1341">//   ElementDiff::sameItem</a>
+<a name="ln1342">//---------------------------------------------------------</a>
+<a name="ln1343"> </a>
+<a name="ln1344">bool ElementDiff::sameItem(const BaseDiff&amp; other) const</a>
+<a name="ln1345">      {</a>
+<a name="ln1346">      return BaseDiff::sameItem(other);</a>
+<a name="ln1347">      }</a>
+<a name="ln1348"> </a>
+<a name="ln1349">//---------------------------------------------------------</a>
+<a name="ln1350">//   ElementDiff::afrac</a>
+<a name="ln1351">//    Returns position of the changed chunk</a>
+<a name="ln1352">//---------------------------------------------------------</a>
+<a name="ln1353"> </a>
+<a name="ln1354">Fraction ElementDiff::afrac(int score) const</a>
+<a name="ln1355">      {</a>
+<a name="ln1356">      Q_ASSERT(score == 0 || score == 1);</a>
+<a name="ln1357">      const ScoreElement* se = el[score];</a>
+<a name="ln1358">      if (se &amp;&amp; se-&gt;isElement())</a>
+<a name="ln1359">            return toElement(se)-&gt;tick();</a>
+<a name="ln1360">      return BaseDiff::afrac(score);</a>
+<a name="ln1361">      }</a>
+<a name="ln1362"> </a>
+<a name="ln1363">//---------------------------------------------------------</a>
+<a name="ln1364">//   ElementDiff::toString</a>
+<a name="ln1365">//---------------------------------------------------------</a>
+<a name="ln1366"> </a>
+<a name="ln1367">QString ElementDiff::toString() const</a>
+<a name="ln1368">      {</a>
+<a name="ln1369">      QString ctxDescr = describeContext(ctx[0]);</a>
+<a name="ln1370">      switch(type) {</a>
+<a name="ln1371">            case DiffType::DELETE:</a>
+<a name="ln1372">                  return QObject::tr(&quot;%1: removed element %2&quot;, &quot;scorediff&quot;).arg(ctxDescr).arg(el[0]-&gt;userName());</a>
+<a name="ln1373">            case DiffType::INSERT:</a>
+<a name="ln1374">                  return QObject::tr(&quot;%1: inserted element %2&quot;, &quot;scorediff&quot;).arg(ctxDescr).arg(el[1]-&gt;userName());</a>
+<a name="ln1375">            case DiffType::REPLACE:</a>
+<a name="ln1376">                  return QObject::tr(&quot;%1: replaced element %2 with element %3&quot;, &quot;scorediff&quot;).arg(ctxDescr).arg(el[0]-&gt;userName()).arg(el[1]-&gt;userName());</a>
+<a name="ln1377">            case DiffType::EQUAL:</a>
+<a name="ln1378">                  Q_ASSERT(el[0]-&gt;type() == el[1]-&gt;type());</a>
+<a name="ln1379">                  return QObject::tr(&quot;%1: equal element %2&quot;, &quot;scorediff&quot;).arg(ctxDescr).arg(el[0]-&gt;userName());</a>
+<a name="ln1380">            }</a>
+<a name="ln1381">      return ctxDescr;</a>
+<a name="ln1382">      }</a>
+<a name="ln1383"> </a>
+<a name="ln1384">//---------------------------------------------------------</a>
+<a name="ln1385">//   PropertyDiff::sameItem</a>
+<a name="ln1386">//---------------------------------------------------------</a>
+<a name="ln1387"> </a>
+<a name="ln1388">bool PropertyDiff::sameItem(const BaseDiff&amp; otherBase) const</a>
+<a name="ln1389">      {</a>
+<a name="ln1390">      if (!BaseDiff::sameItem(otherBase))</a>
+<a name="ln1391">            return false;</a>
+<a name="ln1392">      if (itemType() != otherBase.itemType())</a>
+<a name="ln1393">            return false;</a>
+<a name="ln1394">      const PropertyDiff&amp; other = static_cast&lt;const PropertyDiff&amp;&gt;(otherBase);</a>
+<a name="ln1395">      return (pid == other.pid);</a>
+<a name="ln1396">      }</a>
+<a name="ln1397"> </a>
+<a name="ln1398">//---------------------------------------------------------</a>
+<a name="ln1399">//   PropertyDiff::toString</a>
+<a name="ln1400">//---------------------------------------------------------</a>
+<a name="ln1401"> </a>
+<a name="ln1402">QString PropertyDiff::toString() const</a>
+<a name="ln1403">      {</a>
+<a name="ln1404">      QString ctxDescr = describeContext(ctx[0]);</a>
+<a name="ln1405">      QString propName = propertyUserName(pid);</a>
+<a name="ln1406">      switch(propertyType(pid)) {</a>
+<a name="ln1407">            case P_TYPE::BOOL:</a>
+<a name="ln1408">                  {</a>
+<a name="ln1409">                  bool b1 = ctx[0]-&gt;getProperty(pid).toBool();</a>
+<a name="ln1410">                  Q_ASSERT(b1 != ctx[1]-&gt;getProperty(pid).toBool());</a>
+<a name="ln1411">                  QString t;</a>
+<a name="ln1412">                  if (b1)</a>
+<a name="ln1413">                        t = QObject::tr(&quot;%1: property %2 is turned off&quot;, &quot;scorediff&quot;);</a>
+<a name="ln1414">                  else</a>
+<a name="ln1415">                        t = QObject::tr(&quot;%1: property %2 is turned on&quot;, &quot;scorediff&quot;);</a>
+<a name="ln1416">                  return t.arg(ctxDescr).arg(propName);</a>
+<a name="ln1417">                  }</a>
+<a name="ln1418">            default:</a>
+<a name="ln1419">                  {</a>
+<a name="ln1420">                  QString val1 = ctx[0]-&gt;propertyUserValue(pid);</a>
+<a name="ln1421">                  QString val2 = ctx[1]-&gt;propertyUserValue(pid);</a>
+<a name="ln1422">                  QString t = QObject::tr(&quot;%1: property %2 changed from %3 to %4&quot;, &quot;scorediff&quot;);</a>
+<a name="ln1423">                  return t.arg(ctxDescr).arg(propName).arg(val1).arg(val2);</a>
+<a name="ln1424">                  }</a>
+<a name="ln1425">            }</a>
+<a name="ln1426">      }</a>
+<a name="ln1427"> </a>
+<a name="ln1428">//---------------------------------------------------------</a>
+<a name="ln1429">//   MarkupDiff::sameItem</a>
+<a name="ln1430">//---------------------------------------------------------</a>
+<a name="ln1431"> </a>
+<a name="ln1432">bool MarkupDiff::sameItem(const BaseDiff&amp; otherBase) const</a>
+<a name="ln1433">      {</a>
+<a name="ln1434">      if (!BaseDiff::sameItem(otherBase))</a>
+<a name="ln1435">            return false;</a>
+<a name="ln1436">      if (itemType() != otherBase.itemType())</a>
+<a name="ln1437">            return false;</a>
+<a name="ln1438">      const MarkupDiff&amp; other = static_cast&lt;const MarkupDiff&amp;&gt;(otherBase);</a>
+<a name="ln1439">      return (name == other.name);</a>
+<a name="ln1440">      }</a>
+<a name="ln1441"> </a>
+<a name="ln1442">//---------------------------------------------------------</a>
+<a name="ln1443">//   MarkupDiff::toString</a>
+<a name="ln1444">//---------------------------------------------------------</a>
+<a name="ln1445"> </a>
+<a name="ln1446">QString MarkupDiff::toString() const</a>
+<a name="ln1447">      {</a>
+<a name="ln1448">      QString ctxDescr = describeContext(ctx[0]);</a>
+<a name="ln1449">      if (name == &quot;metaTag&quot;) {</a>
+<a name="ln1450">            QString tagName = info.toString();</a>
+<a name="ln1451">            return QObject::tr(&quot;%1: %2 changed from %3 to %4&quot;, &quot;scorediff&quot;)</a>
+<a name="ln1452">               .arg(ctxDescr).arg(tagName)</a>
+<a name="ln1453">               .arg(ctx[0]-&gt;score()-&gt;metaTag(tagName))</a>
+<a name="ln1454">               .arg(ctx[1]-&gt;score()-&gt;metaTag(tagName));</a>
+<a name="ln1455">            }</a>
+<a name="ln1456">      return QObject::tr(&quot;%1: markup changes: %2&quot;, &quot;scorediff&quot;)</a>
+<a name="ln1457">         .arg(ctxDescr).arg(name);</a>
+<a name="ln1458">      }</a>
+<a name="ln1459">}</a>
+<a name="ln1460"> </a>
+
+</code></pre>
+<div class="balloon" rel="613"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,557 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ftsmooth.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ftsmooth.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Anti-aliasing renderer interface (body).                             */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2000-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln21">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln22">#include FT_OUTLINE_H</a>
+<a name="ln23">#include &quot;ftsmooth.h&quot;</a>
+<a name="ln24">#include &quot;ftgrays.h&quot;</a>
+<a name="ln25">#include &quot;ftspic.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;ftsmerrs.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29"> </a>
+<a name="ln30">  /* initialize renderer -- init its raster */</a>
+<a name="ln31">  static FT_Error</a>
+<a name="ln32">  ft_smooth_init( FT_Renderer  render )</a>
+<a name="ln33">  {</a>
+<a name="ln34">    FT_Library  library = FT_MODULE_LIBRARY( render );</a>
+<a name="ln35"> </a>
+<a name="ln36"> </a>
+<a name="ln37">    render-&gt;clazz-&gt;raster_class-&gt;raster_reset( render-&gt;raster,</a>
+<a name="ln38">                                               library-&gt;raster_pool,</a>
+<a name="ln39">                                               library-&gt;raster_pool_size );</a>
+<a name="ln40"> </a>
+<a name="ln41">    return 0;</a>
+<a name="ln42">  }</a>
+<a name="ln43"> </a>
+<a name="ln44"> </a>
+<a name="ln45">  /* sets render-specific mode */</a>
+<a name="ln46">  static FT_Error</a>
+<a name="ln47">  ft_smooth_set_mode( FT_Renderer  render,</a>
+<a name="ln48">                      FT_ULong     mode_tag,</a>
+<a name="ln49">                      FT_Pointer   data )</a>
+<a name="ln50">  {</a>
+<a name="ln51">    /* we simply pass it to the raster */</a>
+<a name="ln52">    return render-&gt;clazz-&gt;raster_class-&gt;raster_set_mode( render-&gt;raster,</a>
+<a name="ln53">                                                         mode_tag,</a>
+<a name="ln54">                                                         data );</a>
+<a name="ln55">  }</a>
+<a name="ln56"> </a>
+<a name="ln57">  /* transform a given glyph image */</a>
+<a name="ln58">  static FT_Error</a>
+<a name="ln59">  ft_smooth_transform( FT_Renderer       render,</a>
+<a name="ln60">                       FT_GlyphSlot      slot,</a>
+<a name="ln61">                       const FT_Matrix*  matrix,</a>
+<a name="ln62">                       const FT_Vector*  delta )</a>
+<a name="ln63">  {</a>
+<a name="ln64">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln65"> </a>
+<a name="ln66"> </a>
+<a name="ln67">    if ( slot-&gt;format != render-&gt;glyph_format )</a>
+<a name="ln68">    {</a>
+<a name="ln69">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln70">      goto Exit;</a>
+<a name="ln71">    }</a>
+<a name="ln72"> </a>
+<a name="ln73">    if ( matrix )</a>
+<a name="ln74">      FT_Outline_Transform( &amp;slot-&gt;outline, matrix );</a>
+<a name="ln75"> </a>
+<a name="ln76">    if ( delta )</a>
+<a name="ln77">      FT_Outline_Translate( &amp;slot-&gt;outline, delta-&gt;x, delta-&gt;y );</a>
+<a name="ln78"> </a>
+<a name="ln79">  Exit:</a>
+<a name="ln80">    return error;</a>
+<a name="ln81">  }</a>
+<a name="ln82"> </a>
+<a name="ln83"> </a>
+<a name="ln84">  /* return the glyph's control box */</a>
+<a name="ln85">  static void</a>
+<a name="ln86">  ft_smooth_get_cbox( FT_Renderer   render,</a>
+<a name="ln87">                      FT_GlyphSlot  slot,</a>
+<a name="ln88">                      FT_BBox*      cbox )</a>
+<a name="ln89">  {</a>
+<a name="ln90">    FT_MEM_ZERO( cbox, sizeof ( *cbox ) );</a>
+<a name="ln91"> </a>
+<a name="ln92">    if ( slot-&gt;format == render-&gt;glyph_format )</a>
+<a name="ln93">      FT_Outline_Get_CBox( &amp;slot-&gt;outline, cbox );</a>
+<a name="ln94">  }</a>
+<a name="ln95"> </a>
+<a name="ln96"> </a>
+<a name="ln97">  /* convert a slot's glyph image into a bitmap */</a>
+<a name="ln98">  static FT_Error</a>
+<a name="ln99">  ft_smooth_render_generic( FT_Renderer       render,</a>
+<a name="ln100">                            FT_GlyphSlot      slot,</a>
+<a name="ln101">                            FT_Render_Mode    mode,</a>
+<a name="ln102">                            const FT_Vector*  origin,</a>
+<a name="ln103">                            FT_Render_Mode    required_mode )</a>
+<a name="ln104">  {</a>
+<a name="ln105">    FT_Error     error;</a>
+<a name="ln106">    FT_Outline*  outline = &amp;slot-&gt;outline;</a>
+<a name="ln107">    FT_Bitmap*   bitmap  = &amp;slot-&gt;bitmap;</a>
+<a name="ln108">    FT_Memory    memory  = render-&gt;root.memory;</a>
+<a name="ln109">    FT_BBox      cbox;</a>
+<a name="ln110">    FT_Pos       x_shift = 0;</a>
+<a name="ln111">    FT_Pos       y_shift = 0;</a>
+<a name="ln112">    FT_Pos       x_left, y_top;</a>
+<a name="ln113">    FT_Pos       width, height, pitch;</a>
+<a name="ln114">#ifndef FT_CONFIG_OPTION_SUBPIXEL_RENDERING</a>
+<a name="ln115">    FT_Pos       height_org, width_org;</a>
+<a name="ln116">#endif</a>
+<a name="ln117">    FT_Int       hmul    = mode == FT_RENDER_MODE_LCD;</a>
+<a name="ln118">    FT_Int       vmul    = mode == FT_RENDER_MODE_LCD_V;</a>
+<a name="ln119"> </a>
+<a name="ln120">    FT_Raster_Params  params;</a>
+<a name="ln121"> </a>
+<a name="ln122">    FT_Bool  have_outline_shifted = FALSE;</a>
+<a name="ln123">    FT_Bool  have_buffer          = FALSE;</a>
+<a name="ln124"> </a>
+<a name="ln125"> </a>
+<a name="ln126">    /* check glyph image format */</a>
+<a name="ln127">    if ( slot-&gt;format != render-&gt;glyph_format )</a>
+<a name="ln128">    {</a>
+<a name="ln129">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln130">      goto Exit;</a>
+<a name="ln131">    }</a>
+<a name="ln132"> </a>
+<a name="ln133">    /* check mode */</a>
+<a name="ln134">    if ( mode != required_mode )</a>
+<a name="ln135">    {</a>
+<a name="ln136">      error = FT_THROW( Cannot_Render_Glyph );</a>
+<a name="ln137">      goto Exit;</a>
+<a name="ln138">    }</a>
+<a name="ln139"> </a>
+<a name="ln140">    if ( origin )</a>
+<a name="ln141">    {</a>
+<a name="ln142">      x_shift = origin-&gt;x;</a>
+<a name="ln143">      y_shift = origin-&gt;y;</a>
+<a name="ln144">    }</a>
+<a name="ln145"> </a>
+<a name="ln146">    /* compute the control box, and grid fit it */</a>
+<a name="ln147">    /* taking into account the origin shift     */</a>
+<a name="ln148">    FT_Outline_Get_CBox( outline, &amp;cbox );</a>
+<a name="ln149"> </a>
+<a name="ln150">    cbox.xMin = FT_PIX_FLOOR( cbox.xMin + x_shift );</a>
+<a name="ln151">    cbox.yMin = FT_PIX_FLOOR( cbox.yMin + y_shift );</a>
+<a name="ln152">    cbox.xMax = FT_PIX_CEIL( cbox.xMax + x_shift );</a>
+<a name="ln153">    cbox.yMax = FT_PIX_CEIL( cbox.yMax + y_shift );</a>
+<a name="ln154"> </a>
+<a name="ln155">    x_shift -= cbox.xMin;</a>
+<a name="ln156">    y_shift -= cbox.yMin;</a>
+<a name="ln157"> </a>
+<a name="ln158">    x_left  = cbox.xMin &gt;&gt; 6;</a>
+<a name="ln159">    y_top   = cbox.yMax &gt;&gt; 6;</a>
+<a name="ln160"> </a>
+<a name="ln161">    width  = (FT_ULong)( cbox.xMax - cbox.xMin ) &gt;&gt; 6;</a>
+<a name="ln162">    height = (FT_ULong)( cbox.yMax - cbox.yMin ) &gt;&gt; 6;</a>
+<a name="ln163"> </a>
+<a name="ln164">#ifndef FT_CONFIG_OPTION_SUBPIXEL_RENDERING</a>
+<a name="ln165">    width_org  = width;</a>
+<a name="ln166">    height_org = height;</a>
+<a name="ln167">#endif</a>
+<a name="ln168"> </a>
+<a name="ln169">    pitch = width;</a>
+<a name="ln170">    if ( hmul )</a>
+<a name="ln171">    {</a>
+<a name="ln172">      width *= 3;</a>
+<a name="ln173">      pitch  = FT_PAD_CEIL( width, 4 );</a>
+<a name="ln174">    }</a>
+<a name="ln175"> </a>
+<a name="ln176">    if ( vmul )</a>
+<a name="ln177">      height *= 3;</a>
+<a name="ln178"> </a>
+<a name="ln179">#ifdef FT_CONFIG_OPTION_SUBPIXEL_RENDERING</a>
+<a name="ln180"> </a>
+<a name="ln181">    if ( slot-&gt;library-&gt;lcd_filter_func )</a>
+<a name="ln182">    {</a>
+<a name="ln183">      FT_Int  extra = slot-&gt;library-&gt;lcd_extra;</a>
+<a name="ln184"> </a>
+<a name="ln185"> </a>
+<a name="ln186">      if ( hmul )</a>
+<a name="ln187">      {</a>
+<a name="ln188">        x_shift += 64 * ( extra &gt;&gt; 1 );</a>
+<a name="ln189">        x_left  -= extra &gt;&gt; 1;</a>
+<a name="ln190">        width   += 3 * extra;</a>
+<a name="ln191">        pitch    = FT_PAD_CEIL( width, 4 );</a>
+<a name="ln192">      }</a>
+<a name="ln193"> </a>
+<a name="ln194">      if ( vmul )</a>
+<a name="ln195">      {</a>
+<a name="ln196">        y_shift += 64 * ( extra &gt;&gt; 1 );</a>
+<a name="ln197">        y_top   += extra &gt;&gt; 1;</a>
+<a name="ln198">        height  += 3 * extra;</a>
+<a name="ln199">      }</a>
+<a name="ln200">    }</a>
+<a name="ln201"> </a>
+<a name="ln202">#endif</a>
+<a name="ln203"> </a>
+<a name="ln204">    /*</a>
+<a name="ln205">     * XXX: on 16bit system, we return an error for huge bitmap</a>
+<a name="ln206">     * to prevent an overflow.</a>
+<a name="ln207">     */</a>
+<a name="ln208">    if ( x_left &gt; FT_INT_MAX || y_top &gt; FT_INT_MAX ||</a>
+<a name="ln209">         x_left &lt; FT_INT_MIN || y_top &lt; FT_INT_MIN )</a>
+<a name="ln210">    {</a>
+<a name="ln211">      error = FT_THROW( Invalid_Pixel_Size );</a>
+<a name="ln212">      goto Exit;</a>
+<a name="ln213">    }</a>
+<a name="ln214"> </a>
+<a name="ln215">    /* Required check is (pitch * height &lt; FT_ULONG_MAX),        */</a>
+<a name="ln216">    /* but we care realistic cases only.  Always pitch &lt;= width. */</a>
+<a name="ln217">    if ( width &gt; 0x7FFF || height &gt; 0x7FFF )</a>
+<a name="ln218">    {</a>
+<a name="ln219">      FT_ERROR(( &quot;ft_smooth_render_generic: glyph too large: %u x %u\n&quot;,</a>
+<a name="ln220">                 width, height ));</a>
+<a name="ln221">      error = FT_THROW( Raster_Overflow );</a>
+<a name="ln222">      goto Exit;</a>
+<a name="ln223">    }</a>
+<a name="ln224"> </a>
+<a name="ln225">    /* release old bitmap buffer */</a>
+<a name="ln226">    if ( slot-&gt;internal-&gt;flags &amp; FT_GLYPH_OWN_BITMAP )</a>
+<a name="ln227">    {</a>
+<a name="ln228">      FT_FREE( bitmap-&gt;buffer );</a>
+<a name="ln229">      slot-&gt;internal-&gt;flags &amp;= ~FT_GLYPH_OWN_BITMAP;</a>
+<a name="ln230">    }</a>
+<a name="ln231"> </a>
+<a name="ln232">    /* allocate new one */</a>
+<a name="ln233">    if ( FT_ALLOC( bitmap-&gt;buffer, (FT_ULong)( pitch * height ) ) )</a>
+<a name="ln234">      goto Exit;</a>
+<a name="ln235">    else</a>
+<a name="ln236">      have_buffer = TRUE;</a>
+<a name="ln237"> </a>
+<a name="ln238">    slot-&gt;internal-&gt;flags |= FT_GLYPH_OWN_BITMAP;</a>
+<a name="ln239"> </a>
+<a name="ln240">    slot-&gt;format      = FT_GLYPH_FORMAT_BITMAP;</a>
+<a name="ln241">    slot-&gt;bitmap_left = (FT_Int)x_left;</a>
+<a name="ln242">    slot-&gt;bitmap_top  = (FT_Int)y_top;</a>
+<a name="ln243"> </a>
+<a name="ln244">    bitmap-&gt;pixel_mode = FT_PIXEL_MODE_GRAY;</a>
+<a name="ln245">    bitmap-&gt;num_grays  = 256;</a>
+<a name="ln246">    bitmap-&gt;width      = (unsigned int)width;</a>
+<a name="ln247">    bitmap-&gt;rows       = (unsigned int)height;</a>
+<a name="ln248">    bitmap-&gt;pitch      = pitch;</a>
+<a name="ln249"> </a>
+<a name="ln250">    /* translate outline to render it into the bitmap */</a>
+<a name="ln251">    if ( x_shift || y_shift )</a>
+<a name="ln252">    {</a>
+<a name="ln253">      FT_Outline_Translate( outline, x_shift, y_shift );</a>
+<a name="ln254">      have_outline_shifted = TRUE;</a>
+<a name="ln255">    }</a>
+<a name="ln256"> </a>
+<a name="ln257">    /* set up parameters */</a>
+<a name="ln258">    params.target = bitmap;</a>
+<a name="ln259">    params.source = outline;</a>
+<a name="ln260">    params.flags  = FT_RASTER_FLAG_AA;</a>
+<a name="ln261"> </a>
+<a name="ln262">#ifdef FT_CONFIG_OPTION_SUBPIXEL_RENDERING</a>
+<a name="ln263"> </a>
+<a name="ln264">    /* implode outline if needed */</a>
+<a name="ln265">    {</a>
+<a name="ln266">      FT_Vector*  points     = outline-&gt;points;</a>
+<a name="ln267">      FT_Vector*  points_end = points + outline-&gt;n_points;</a>
+<a name="ln268">      FT_Vector*  vec;</a>
+<a name="ln269"> </a>
+<a name="ln270"> </a>
+<a name="ln271">      if ( hmul )</a>
+<a name="ln272">        for ( vec = points; vec &lt; points_end; vec++ )</a>
+<a name="ln273">          vec-&gt;x *= 3;</a>
+<a name="ln274"> </a>
+<a name="ln275">      if ( vmul )</a>
+<a name="ln276">        for ( vec = points; vec &lt; points_end; vec++ )</a>
+<a name="ln277">          vec-&gt;y *= 3;</a>
+<a name="ln278">    }</a>
+<a name="ln279"> </a>
+<a name="ln280">    /* render outline into the bitmap */</a>
+<a name="ln281">    error = render-&gt;raster_render( render-&gt;raster, &amp;params );</a>
+<a name="ln282"> </a>
+<a name="ln283">    /* deflate outline if needed */</a>
+<a name="ln284">    {</a>
+<a name="ln285">      FT_Vector*  points     = outline-&gt;points;</a>
+<a name="ln286">      FT_Vector*  points_end = points + outline-&gt;n_points;</a>
+<a name="ln287">      FT_Vector*  vec;</a>
+<a name="ln288"> </a>
+<a name="ln289"> </a>
+<a name="ln290">      if ( hmul )</a>
+<a name="ln291">        for ( vec = points; vec &lt; points_end; vec++ )</a>
+<a name="ln292">          vec-&gt;x /= 3;</a>
+<a name="ln293"> </a>
+<a name="ln294">      if ( vmul )</a>
+<a name="ln295">        for ( vec = points; vec &lt; points_end; vec++ )</a>
+<a name="ln296">          vec-&gt;y /= 3;</a>
+<a name="ln297">    }</a>
+<a name="ln298"> </a>
+<a name="ln299">    if ( error )</a>
+<a name="ln300">      goto Exit;</a>
+<a name="ln301"> </a>
+<a name="ln302">    if ( slot-&gt;library-&gt;lcd_filter_func )</a>
+<a name="ln303">      slot-&gt;library-&gt;lcd_filter_func( bitmap, mode, slot-&gt;library );</a>
+<a name="ln304"> </a>
+<a name="ln305">#else /* !FT_CONFIG_OPTION_SUBPIXEL_RENDERING */</a>
+<a name="ln306"> </a>
+<a name="ln307">    /* render outline into bitmap */</a>
+<a name="ln308">    error = render-&gt;raster_render( render-&gt;raster, &amp;params );</a>
+<a name="ln309">    if ( error )</a>
+<a name="ln310">      goto Exit;</a>
+<a name="ln311"> </a>
+<a name="ln312">    /* expand it horizontally */</a>
+<a name="ln313">    if ( hmul )</a>
+<a name="ln314">    {</a>
+<a name="ln315">      FT_Byte*  line = bitmap-&gt;buffer;</a>
+<a name="ln316">      FT_UInt   hh;</a>
+<a name="ln317"> </a>
+<a name="ln318"> </a>
+<a name="ln319">      for ( hh = height_org; hh &gt; 0; hh--, line += pitch )</a>
+<a name="ln320">      {</a>
+<a name="ln321">        FT_UInt   xx;</a>
+<a name="ln322">        FT_Byte*  end = line + width;</a>
+<a name="ln323"> </a>
+<a name="ln324"> </a>
+<a name="ln325">        for ( xx = width_org; xx &gt; 0; xx-- )</a>
+<a name="ln326">        {</a>
+<a name="ln327">          FT_UInt  pixel = line[xx-1];</a>
+<a name="ln328"> </a>
+<a name="ln329"> </a>
+<a name="ln330">          end[-3] = (FT_Byte)pixel;</a>
+<a name="ln331">          end[-2] = (FT_Byte)pixel;</a>
+<a name="ln332">          end[-1] = (FT_Byte)pixel;</a>
+<a name="ln333">          end    -= 3;</a>
+<a name="ln334">        }</a>
+<a name="ln335">      }</a>
+<a name="ln336">    }</a>
+<a name="ln337"> </a>
+<a name="ln338">    /* expand it vertically */</a>
+<a name="ln339">    if ( vmul )</a>
+<a name="ln340">    {</a>
+<a name="ln341">      FT_Byte*  read  = bitmap-&gt;buffer + ( height - height_org ) * pitch;</a>
+<a name="ln342">      FT_Byte*  write = bitmap-&gt;buffer;</a>
+<a name="ln343">      FT_UInt   hh;</a>
+<a name="ln344"> </a>
+<a name="ln345"> </a>
+<a name="ln346">      for ( hh = height_org; hh &gt; 0; hh-- )</a>
+<a name="ln347">      {</a>
+<a name="ln348">        ft_memcpy( write, read, pitch );</a>
+<a name="ln349">        write += pitch;</a>
+<a name="ln350"> </a>
+<a name="ln351">        ft_memcpy( write, read, pitch );</a>
+<a name="ln352">        write += pitch;</a>
+<a name="ln353"> </a>
+<a name="ln354">        ft_memcpy( write, read, pitch );</a>
+<a name="ln355">        write += pitch;</a>
+<a name="ln356">        read  += pitch;</a>
+<a name="ln357">      }</a>
+<a name="ln358">    }</a>
+<a name="ln359"> </a>
+<a name="ln360">#endif /* !FT_CONFIG_OPTION_SUBPIXEL_RENDERING */</a>
+<a name="ln361"> </a>
+<a name="ln362">    /* everything is fine; don't deallocate buffer */</a>
+<a name="ln363">    have_buffer = FALSE;</a>
+<a name="ln364"> </a>
+<a name="ln365">    error = FT_Err_Ok;</a>
+<a name="ln366"> </a>
+<a name="ln367">  Exit:</a>
+<a name="ln368">    if ( have_outline_shifted )</a>
+<a name="ln369">      FT_Outline_Translate( outline, -x_shift, -y_shift );</a>
+<a name="ln370">    if ( have_buffer )</a>
+<a name="ln371">    {</a>
+<a name="ln372">      FT_FREE( bitmap-&gt;buffer );</a>
+<a name="ln373">      slot-&gt;internal-&gt;flags &amp;= ~FT_GLYPH_OWN_BITMAP;</a>
+<a name="ln374">    }</a>
+<a name="ln375"> </a>
+<a name="ln376">    return error;</a>
+<a name="ln377">  }</a>
+<a name="ln378"> </a>
+<a name="ln379"> </a>
+<a name="ln380">  /* convert a slot's glyph image into a bitmap */</a>
+<a name="ln381">  static FT_Error</a>
+<a name="ln382">  ft_smooth_render( FT_Renderer       render,</a>
+<a name="ln383">                    FT_GlyphSlot      slot,</a>
+<a name="ln384">                    FT_Render_Mode    mode,</a>
+<a name="ln385">                    const FT_Vector*  origin )</a>
+<a name="ln386">  {</a>
+<a name="ln387">    if ( mode == FT_RENDER_MODE_LIGHT )</a>
+<a name="ln388">      mode = FT_RENDER_MODE_NORMAL;</a>
+<a name="ln389"> </a>
+<a name="ln390">    return ft_smooth_render_generic( render, slot, mode, origin,</a>
+<a name="ln391">                                     FT_RENDER_MODE_NORMAL );</a>
+<a name="ln392">  }</a>
+<a name="ln393"> </a>
+<a name="ln394"> </a>
+<a name="ln395">  /* convert a slot's glyph image into a horizontal LCD bitmap */</a>
+<a name="ln396">  static FT_Error</a>
+<a name="ln397">  ft_smooth_render_lcd( FT_Renderer       render,</a>
+<a name="ln398">                        FT_GlyphSlot      slot,</a>
+<a name="ln399">                        FT_Render_Mode    mode,</a>
+<a name="ln400">                        const FT_Vector*  origin )</a>
+<a name="ln401">  {</a>
+<a name="ln402">    FT_Error  error;</a>
+<a name="ln403"> </a>
+<a name="ln404">    error = ft_smooth_render_generic( render, slot, mode, origin,</a>
+<a name="ln405">                                      FT_RENDER_MODE_LCD );</a>
+<a name="ln406">    if ( !error )</a>
+<a name="ln407">      slot-&gt;bitmap.pixel_mode = FT_PIXEL_MODE_LCD;</a>
+<a name="ln408"> </a>
+<a name="ln409">    return error;</a>
+<a name="ln410">  }</a>
+<a name="ln411"> </a>
+<a name="ln412"> </a>
+<a name="ln413">  /* convert a slot's glyph image into a vertical LCD bitmap */</a>
+<a name="ln414">  static FT_Error</a>
+<a name="ln415">  ft_smooth_render_lcd_v( FT_Renderer       render,</a>
+<a name="ln416">                          FT_GlyphSlot      slot,</a>
+<a name="ln417">                          FT_Render_Mode    mode,</a>
+<a name="ln418">                          const FT_Vector*  origin )</a>
+<a name="ln419">  {</a>
+<a name="ln420">    FT_Error  error;</a>
+<a name="ln421"> </a>
+<a name="ln422">    error = ft_smooth_render_generic( render, slot, mode, origin,</a>
+<a name="ln423">                                      FT_RENDER_MODE_LCD_V );</a>
+<a name="ln424">    if ( !error )</a>
+<a name="ln425">      slot-&gt;bitmap.pixel_mode = FT_PIXEL_MODE_LCD_V;</a>
+<a name="ln426"> </a>
+<a name="ln427">    return error;</a>
+<a name="ln428">  }</a>
+<a name="ln429"> </a>
+<a name="ln430"> </a>
+<a name="ln431">  FT_DEFINE_RENDERER( ft_smooth_renderer_class,</a>
+<a name="ln432"> </a>
+<a name="ln433">      FT_MODULE_RENDERER,</a>
+<a name="ln434">      sizeof ( FT_RendererRec ),</a>
+<a name="ln435"> </a>
+<a name="ln436">      &quot;smooth&quot;,</a>
+<a name="ln437">      0x10000L,</a>
+<a name="ln438">      0x20000L,</a>
+<a name="ln439"> </a>
+<a name="ln440">      0,    /* module specific interface */</a>
+<a name="ln441"> </a>
+<a name="ln442">      (FT_Module_Constructor)ft_smooth_init,</a>
+<a name="ln443">      (FT_Module_Destructor) 0,</a>
+<a name="ln444">      (FT_Module_Requester)  0</a>
+<a name="ln445">    ,</a>
+<a name="ln446"> </a>
+<a name="ln447">    FT_GLYPH_FORMAT_OUTLINE,</a>
+<a name="ln448"> </a>
+<a name="ln449">    (FT_Renderer_RenderFunc)   ft_smooth_render,</a>
+<a name="ln450">    (FT_Renderer_TransformFunc)ft_smooth_transform,</a>
+<a name="ln451">    (FT_Renderer_GetCBoxFunc)  ft_smooth_get_cbox,</a>
+<a name="ln452">    (FT_Renderer_SetModeFunc)  ft_smooth_set_mode,</a>
+<a name="ln453"> </a>
+<a name="ln454">    (FT_Raster_Funcs*)    &amp;FT_GRAYS_RASTER_GET</a>
+<a name="ln455">  )</a>
+<a name="ln456"> </a>
+<a name="ln457"> </a>
+<a name="ln458">  FT_DEFINE_RENDERER( ft_smooth_lcd_renderer_class,</a>
+<a name="ln459"> </a>
+<a name="ln460">      FT_MODULE_RENDERER,</a>
+<a name="ln461">      sizeof ( FT_RendererRec ),</a>
+<a name="ln462"> </a>
+<a name="ln463">      &quot;smooth-lcd&quot;,</a>
+<a name="ln464">      0x10000L,</a>
+<a name="ln465">      0x20000L,</a>
+<a name="ln466"> </a>
+<a name="ln467">      0,    /* module specific interface */</a>
+<a name="ln468"> </a>
+<a name="ln469">      (FT_Module_Constructor)ft_smooth_init,</a>
+<a name="ln470">      (FT_Module_Destructor) 0,</a>
+<a name="ln471">      (FT_Module_Requester)  0</a>
+<a name="ln472">    ,</a>
+<a name="ln473"> </a>
+<a name="ln474">    FT_GLYPH_FORMAT_OUTLINE,</a>
+<a name="ln475"> </a>
+<a name="ln476">    (FT_Renderer_RenderFunc)   ft_smooth_render_lcd,</a>
+<a name="ln477">    (FT_Renderer_TransformFunc)ft_smooth_transform,</a>
+<a name="ln478">    (FT_Renderer_GetCBoxFunc)  ft_smooth_get_cbox,</a>
+<a name="ln479">    (FT_Renderer_SetModeFunc)  ft_smooth_set_mode,</a>
+<a name="ln480"> </a>
+<a name="ln481">    (FT_Raster_Funcs*)    &amp;FT_GRAYS_RASTER_GET</a>
+<a name="ln482">  )</a>
+<a name="ln483"> </a>
+<a name="ln484">  FT_DEFINE_RENDERER( ft_smooth_lcdv_renderer_class,</a>
+<a name="ln485"> </a>
+<a name="ln486">      FT_MODULE_RENDERER,</a>
+<a name="ln487">      sizeof ( FT_RendererRec ),</a>
+<a name="ln488"> </a>
+<a name="ln489">      &quot;smooth-lcdv&quot;,</a>
+<a name="ln490">      0x10000L,</a>
+<a name="ln491">      0x20000L,</a>
+<a name="ln492"> </a>
+<a name="ln493">      0,    /* module specific interface */</a>
+<a name="ln494"> </a>
+<a name="ln495">      (FT_Module_Constructor)ft_smooth_init,</a>
+<a name="ln496">      (FT_Module_Destructor) 0,</a>
+<a name="ln497">      (FT_Module_Requester)  0</a>
+<a name="ln498">    ,</a>
+<a name="ln499"> </a>
+<a name="ln500">    FT_GLYPH_FORMAT_OUTLINE,</a>
+<a name="ln501"> </a>
+<a name="ln502">    (FT_Renderer_RenderFunc)   ft_smooth_render_lcd_v,</a>
+<a name="ln503">    (FT_Renderer_TransformFunc)ft_smooth_transform,</a>
+<a name="ln504">    (FT_Renderer_GetCBoxFunc)  ft_smooth_get_cbox,</a>
+<a name="ln505">    (FT_Renderer_SetModeFunc)  ft_smooth_set_mode,</a>
+<a name="ln506"> </a>
+<a name="ln507">    (FT_Raster_Funcs*)    &amp;FT_GRAYS_RASTER_GET</a>
+<a name="ln508">  )</a>
+<a name="ln509"> </a>
+<a name="ln510"> </a>
+<a name="ln511">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="365"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

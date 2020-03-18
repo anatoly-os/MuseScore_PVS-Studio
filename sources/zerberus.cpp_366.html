@@ -1,0 +1,553 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>zerberus.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  Zerberus</a>
+<a name="ln3">//  Zample player</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;mscore/preferences.h&quot;</a>
+<a name="ln14">#include &quot;synthesizer/event.h&quot;</a>
+<a name="ln15">#include &quot;synthesizer/midipatch.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &quot;zerberus.h&quot;</a>
+<a name="ln18">#include &quot;zerberusgui.h&quot;</a>
+<a name="ln19">#include &quot;voice.h&quot;</a>
+<a name="ln20">#include &quot;channel.h&quot;</a>
+<a name="ln21">#include &quot;instrument.h&quot;</a>
+<a name="ln22">#include &quot;zone.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &lt;stdio.h&gt;</a>
+<a name="ln25"> </a>
+<a name="ln26">bool Zerberus::initialized = false;</a>
+<a name="ln27">// instruments can be shared between several zerberus instances</a>
+<a name="ln28">std::list&lt;ZInstrument*&gt; Zerberus::globalInstruments;</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   createZerberus</a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">Ms::Synthesizer* createZerberus()</a>
+<a name="ln35">      {</a>
+<a name="ln36">      return new Zerberus();</a>
+<a name="ln37">      }</a>
+<a name="ln38"> </a>
+<a name="ln39">//---------------------------------------------------------</a>
+<a name="ln40">//   Zerberus</a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42"> </a>
+<a name="ln43">Zerberus::Zerberus()</a>
+<a name="ln44">   : Synthesizer()</a>
+<a name="ln45">      {</a>
+<a name="ln46">      if (!initialized) {</a>
+<a name="ln47">            initialized = true;</a>
+<a name="ln48">            Voice::init();</a>
+<a name="ln49">            }</a>
+<a name="ln50">      </a>
+<a name="ln51">      freeVoices.init(this);</a>
+<a name="ln52">      for (int i = 0; i &lt; MAX_CHANNELS; ++i)</a>
+<a name="ln53">            _channel[i] = new Channel(this, i);</a>
+<a name="ln54">      busy = true;      // no sf loaded yet</a>
+<a name="ln55">      }</a>
+<a name="ln56"> </a>
+<a name="ln57">//---------------------------------------------------------</a>
+<a name="ln58">//   ~Zerberus</a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60"> </a>
+<a name="ln61">Zerberus::~Zerberus()</a>
+<a name="ln62">      {</a>
+<a name="ln63">      busy = true;</a>
+<a name="ln64">      while (!instruments.empty()) {</a>
+<a name="ln65">            auto i  = instruments.front();</a>
+<a name="ln66">            auto it = instruments.begin();</a>
+<a name="ln67">            instruments.erase(it);</a>
+<a name="ln68"> </a>
+<a name="ln69">            i-&gt;setRefCount(i-&gt;refCount() - 1);</a>
+<a name="ln70">            if (i-&gt;refCount() &lt;= 0) {</a>
+<a name="ln71">                  delete i;</a>
+<a name="ln72">                  auto it1 = find(globalInstruments.begin(), globalInstruments.end(), i);</a>
+<a name="ln73">                  if (it1 != globalInstruments.end())</a>
+<a name="ln74">                        globalInstruments.erase(it1);</a>
+<a name="ln75">                  }</a>
+<a name="ln76">            }</a>
+<a name="ln77">      for (Channel* c : _channel)</a>
+<a name="ln78">            delete c;</a>
+<a name="ln79">      </a>
+<a name="ln80">      qDeleteAll(patches);</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84">//   programChange</a>
+<a name="ln85">//---------------------------------------------------------</a>
+<a name="ln86"> </a>
+<a name="ln87">void Zerberus::programChange(int channel, int program)</a>
+<a name="ln88">      {</a>
+<a name="ln89">      qDebug(&quot;Zerberus programChange %d %d&quot;, channel, program);</a>
+<a name="ln90">      }</a>
+<a name="ln91"> </a>
+<a name="ln92">//---------------------------------------------------------</a>
+<a name="ln93">//   trigger</a>
+<a name="ln94">//    gui</a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96"> </a>
+<a name="ln97">void Zerberus::trigger(Channel* channel, int key, int velo, Trigger trigger, int cc, int ccVal, double durSinceNoteOn)</a>
+<a name="ln98">      {</a>
+<a name="ln99">      ZInstrument* i = channel-&gt;instrument();</a>
+<a name="ln100">      double random = (double) rand() / (double) RAND_MAX;</a>
+<a name="ln101">      for (Zone* z : i-&gt;zones()) {</a>
+<a name="ln102">            if (z-&gt;match(channel, key, velo, trigger, random, cc, ccVal)) {</a>
+<a name="ln103">                  //</a>
+<a name="ln104">                  // handle offBy voices</a>
+<a name="ln105">                  //</a>
+<a name="ln106">                  if (z-&gt;group) {</a>
+<a name="ln107">                        for (Voice* v = activeVoices; v; v = v-&gt;next()) {</a>
+<a name="ln108">                              if (v-&gt;offBy() == z-&gt;group) {</a>
+<a name="ln109">                                    if (v-&gt;offMode() == OffMode::FAST)</a>
+<a name="ln110">                                          v-&gt;stop(1);</a>
+<a name="ln111">                                    else</a>
+<a name="ln112">                                          v-&gt;stop();</a>
+<a name="ln113">                                    }</a>
+<a name="ln114">                              }</a>
+<a name="ln115">                        }</a>
+<a name="ln116"> </a>
+<a name="ln117">                  if (freeVoices.empty()) {</a>
+<a name="ln118">                        qDebug(&quot;Zerberus: out of voices...&quot;);</a>
+<a name="ln119">                        return;</a>
+<a name="ln120">                        }</a>
+<a name="ln121"> </a>
+<a name="ln122">                  Voice* voice = freeVoices.pop();</a>
+<a name="ln123">                  Q_ASSERT(voice-&gt;isOff());</a>
+<a name="ln124">                  voice-&gt;start(channel, key, velo, z, durSinceNoteOn);</a>
+<a name="ln125">                  voice-&gt;setNext(activeVoices);</a>
+<a name="ln126">                  activeVoices = voice;</a>
+<a name="ln127">                  }</a>
+<a name="ln128">            }</a>
+<a name="ln129">      }</a>
+<a name="ln130"> </a>
+<a name="ln131">//---------------------------------------------------------</a>
+<a name="ln132">//   processNoteOff</a>
+<a name="ln133">//---------------------------------------------------------</a>
+<a name="ln134"> </a>
+<a name="ln135">void Zerberus::processNoteOff(Channel* cp, int key)</a>
+<a name="ln136">      {</a>
+<a name="ln137">      for (Voice* v = activeVoices; v; v = v-&gt;next()) {</a>
+<a name="ln138">            if ((v-&gt;channel() == cp)</a>
+<a name="ln139">               &amp;&amp; (v-&gt;key() == key)</a>
+<a name="ln140">               &amp;&amp; (v-&gt;loopMode() != LoopMode::ONE_SHOT)</a>
+<a name="ln141">               ) {</a>
+<a name="ln142">                  if (cp-&gt;sustain() &lt; 0x40 &amp;&amp; !v-&gt;isStopped()) {</a>
+<a name="ln143">                        v-&gt;stop();</a>
+<a name="ln144">                        double durSinceNoteOn = v-&gt;getSamplesSinceStart() / sampleRate();</a>
+<a name="ln145">                        trigger(cp, key, v-&gt;velocity(), Trigger::RELEASE, -1, -1, durSinceNoteOn);</a>
+<a name="ln146">                        }</a>
+<a name="ln147">                  else {</a>
+<a name="ln148">                        if (v-&gt;isPlaying())</a>
+<a name="ln149">                              v-&gt;sustained();</a>
+<a name="ln150">                        }</a>
+<a name="ln151">                  }</a>
+<a name="ln152">            }</a>
+<a name="ln153">      }</a>
+<a name="ln154"> </a>
+<a name="ln155">//---------------------------------------------------------</a>
+<a name="ln156">//   processNoteOn</a>
+<a name="ln157">//---------------------------------------------------------</a>
+<a name="ln158"> </a>
+<a name="ln159">void Zerberus::processNoteOn(Channel* cp, int key, int velo)</a>
+<a name="ln160">      {</a>
+<a name="ln161">      for (Voice* v = activeVoices; v; v = v-&gt;next()) {</a>
+<a name="ln162">            if (v-&gt;channel() == cp &amp;&amp; v-&gt;key() == key) {</a>
+<a name="ln163">                  if (v-&gt;isSustained()) {</a>
+<a name="ln164">//if (v-&gt;isPlaying())</a>
+<a name="ln165">//printf(&quot;retrigger (stop) %p\n&quot;, v);</a>
+<a name="ln166">                        v-&gt;stop(100);     // fast stop</a>
+<a name="ln167">                        }</a>
+<a name="ln168">                  }</a>
+<a name="ln169">            }</a>
+<a name="ln170">      trigger(cp, key, velo, Trigger::ATTACK, -1, -1, 0);</a>
+<a name="ln171">      }</a>
+<a name="ln172"> </a>
+<a name="ln173">//---------------------------------------------------------</a>
+<a name="ln174">//   process</a>
+<a name="ln175">//---------------------------------------------------------</a>
+<a name="ln176"> </a>
+<a name="ln177">void Zerberus::play(const Ms::PlayEvent&amp; event)</a>
+<a name="ln178">      {</a>
+<a name="ln179">      if (busy)</a>
+<a name="ln180">            return;</a>
+<a name="ln181">      static_assert(MAX_CHANNELS - 1 &gt;= std::numeric_limits&lt;decltype(event.channel())&gt;::max(), &quot;need to add a check for a channel number range&quot;);</a>
+<a name="ln182">      //if (event.channel() &gt;= MAX_CHANNELS)</a>
+<a name="ln183">      //      return;</a>
+<a name="ln184">      Channel* cp = _channel[event.channel()];</a>
+<a name="ln185">      if (cp-&gt;instrument() == 0) {</a>
+<a name="ln186">            // qDebug(&quot;Zerberus::play(): no instrument for channel %d&quot;, event.channel());</a>
+<a name="ln187">            return;</a>
+<a name="ln188">            }</a>
+<a name="ln189"> </a>
+<a name="ln190">      switch(event.type()) {</a>
+<a name="ln191">            case Ms::ME_NOTEOFF:</a>
+<a name="ln192">                  processNoteOff(cp, event.dataA());</a>
+<a name="ln193">                  break;</a>
+<a name="ln194"> </a>
+<a name="ln195">            case Ms::ME_NOTEON: {</a>
+<a name="ln196">                  int key = event.dataA();</a>
+<a name="ln197">                  int vel = event.dataB();</a>
+<a name="ln198">                  if (vel)</a>
+<a name="ln199">                        processNoteOn(cp, key, vel);</a>
+<a name="ln200">                  else</a>
+<a name="ln201">                        processNoteOff(cp, key);</a>
+<a name="ln202">                  }</a>
+<a name="ln203">                  break;</a>
+<a name="ln204"> </a>
+<a name="ln205">            case Ms::ME_CONTROLLER:</a>
+<a name="ln206">                  cp-&gt;controller(event.dataA(), event.dataB());</a>
+<a name="ln207">                  trigger(cp, -1, -1, Trigger::CC, event.dataA(), event.dataB(), 0);</a>
+<a name="ln208">                  break;</a>
+<a name="ln209"> </a>
+<a name="ln210">            default:</a>
+<a name="ln211">                  qDebug(&quot;Zerberus: event type 0x%02x&quot;, event.type());</a>
+<a name="ln212">                  break;</a>
+<a name="ln213">            }</a>
+<a name="ln214">      }</a>
+<a name="ln215"> </a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217">//   process</a>
+<a name="ln218">//    realtime</a>
+<a name="ln219">//---------------------------------------------------------</a>
+<a name="ln220"> </a>
+<a name="ln221">void Zerberus::process(unsigned frames, float* p, float*, float*)</a>
+<a name="ln222">      {</a>
+<a name="ln223">      if (busy)</a>
+<a name="ln224">            return;</a>
+<a name="ln225">      Voice* v = activeVoices;</a>
+<a name="ln226">      Voice* pv = 0;</a>
+<a name="ln227">      while (v) {</a>
+<a name="ln228">            v-&gt;process(frames, p);</a>
+<a name="ln229">            if (v-&gt;isOff()) {</a>
+<a name="ln230">                  if (pv)</a>
+<a name="ln231">                        pv-&gt;setNext(v-&gt;next());</a>
+<a name="ln232">                  else</a>
+<a name="ln233">                        activeVoices = v-&gt;next();</a>
+<a name="ln234">                  freeVoices.push(v);</a>
+<a name="ln235">                  }</a>
+<a name="ln236">            else</a>
+<a name="ln237">                  pv = v;</a>
+<a name="ln238">            v = v-&gt;next();</a>
+<a name="ln239">            }</a>
+<a name="ln240">      }</a>
+<a name="ln241"> </a>
+<a name="ln242">//---------------------------------------------------------</a>
+<a name="ln243">//   name</a>
+<a name="ln244">//---------------------------------------------------------</a>
+<a name="ln245"> </a>
+<a name="ln246">const char* Zerberus::name() const</a>
+<a name="ln247">      {</a>
+<a name="ln248">      return &quot;Zerberus&quot;;</a>
+<a name="ln249">      }</a>
+<a name="ln250"> </a>
+<a name="ln251">//---------------------------------------------------------</a>
+<a name="ln252">//   getPatchInfo</a>
+<a name="ln253">//---------------------------------------------------------</a>
+<a name="ln254"> </a>
+<a name="ln255">void Zerberus::updatePatchList()</a>
+<a name="ln256">      {</a>
+<a name="ln257">      qDeleteAll(patches);</a>
+<a name="ln258">      patches.clear();</a>
+<a name="ln259">      int idx = 0;</a>
+<a name="ln260">      for (ZInstrument* i : instruments) {</a>
+<a name="ln261">            Ms::MidiPatch* p = new Ms::MidiPatch { false, name(), 0, idx, 0, i-&gt;name() };</a>
+<a name="ln262">            patches.append(p);</a>
+<a name="ln263">            ++idx;</a>
+<a name="ln264">            }</a>
+<a name="ln265">      }</a>
+<a name="ln266"> </a>
+<a name="ln267">//---------------------------------------------------------</a>
+<a name="ln268">//   allSoundsOff</a>
+<a name="ln269">//---------------------------------------------------------</a>
+<a name="ln270"> </a>
+<a name="ln271">void Zerberus::allSoundsOff(int channel)</a>
+<a name="ln272">      {</a>
+<a name="ln273">      allNotesOff(channel);</a>
+<a name="ln274">      }</a>
+<a name="ln275"> </a>
+<a name="ln276">//---------------------------------------------------------</a>
+<a name="ln277">//   allNotesOff</a>
+<a name="ln278">//---------------------------------------------------------</a>
+<a name="ln279"> </a>
+<a name="ln280">void Zerberus::allNotesOff(int channel)</a>
+<a name="ln281">      {</a>
+<a name="ln282">      busy = true;</a>
+<a name="ln283">      for (Voice* v = activeVoices; v; v = v-&gt;next()) {</a>
+<a name="ln284">            if (channel == -1 || (v-&gt;channel()-&gt;idx() == channel))</a>
+<a name="ln285">                  v-&gt;stop();</a>
+<a name="ln286">            }</a>
+<a name="ln287">      busy = false;</a>
+<a name="ln288">      }</a>
+<a name="ln289"> </a>
+<a name="ln290">//---------------------------------------------------------</a>
+<a name="ln291">//   loadSoundFonts</a>
+<a name="ln292">//---------------------------------------------------------</a>
+<a name="ln293"> </a>
+<a name="ln294">bool Zerberus::loadSoundFonts(const QStringList&amp; sl)</a>
+<a name="ln295">      {</a>
+<a name="ln296">      foreach (const QString&amp; s, sl) {</a>
+<a name="ln297">            if (!loadInstrument(s))</a>
+<a name="ln298">                  return false;</a>
+<a name="ln299">            }</a>
+<a name="ln300">      updatePatchList();</a>
+<a name="ln301">      return true;</a>
+<a name="ln302">      }</a>
+<a name="ln303"> </a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305">//   removeSoundFonts</a>
+<a name="ln306">//---------------------------------------------------------</a>
+<a name="ln307"> </a>
+<a name="ln308">bool Zerberus::removeSoundFonts(const QStringList&amp; fileNames)</a>
+<a name="ln309">      {</a>
+<a name="ln310">      for (auto fileName : fileNames) {</a>
+<a name="ln311">            if (!removeSoundFont(QFileInfo(fileName).absoluteFilePath()))</a>
+<a name="ln312">                  return false;</a>
+<a name="ln313">            }</a>
+<a name="ln314">      updatePatchList();</a>
+<a name="ln315">      return true;</a>
+<a name="ln316">      }</a>
+<a name="ln317"> </a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319">//   soundFonts</a>
+<a name="ln320">//---------------------------------------------------------</a>
+<a name="ln321"> </a>
+<a name="ln322">QStringList Zerberus::soundFonts() const</a>
+<a name="ln323">      {</a>
+<a name="ln324">      QStringList sl;</a>
+<a name="ln325">      for (ZInstrument* i : instruments)</a>
+<a name="ln326">            sl.append(i-&gt;path());</a>
+<a name="ln327">      return sl;</a>
+<a name="ln328">      }</a>
+<a name="ln329"> </a>
+<a name="ln330">//---------------------------------------------------------</a>
+<a name="ln331">//   soundFontsInfo</a>
+<a name="ln332">//---------------------------------------------------------</a>
+<a name="ln333"> </a>
+<a name="ln334">std::vector&lt;Ms::SoundFontInfo&gt; Zerberus::soundFontsInfo() const</a>
+<a name="ln335">      {</a>
+<a name="ln336">      std::vector&lt;Ms::SoundFontInfo&gt; sl;</a>
+<a name="ln337">      sl.reserve(instruments.size());</a>
+<a name="ln338">      for (ZInstrument* i : instruments)</a>
+<a name="ln339">            sl.emplace_back(i-&gt;path());</a>
+<a name="ln340">      return sl;</a>
+<a name="ln341">      }</a>
+<a name="ln342"> </a>
+<a name="ln343">//---------------------------------------------------------</a>
+<a name="ln344">//   addSoundFont</a>
+<a name="ln345">//---------------------------------------------------------</a>
+<a name="ln346"> </a>
+<a name="ln347">bool Zerberus::addSoundFont(const QString&amp; s)</a>
+<a name="ln348">      {</a>
+<a name="ln349">      QMutexLocker locker(&amp;mutex);</a>
+<a name="ln350">      bool res = loadInstrument(s);</a>
+<a name="ln351">      updatePatchList();</a>
+<a name="ln352">      return res;</a>
+<a name="ln353">      }</a>
+<a name="ln354"> </a>
+<a name="ln355">//---------------------------------------------------------</a>
+<a name="ln356">//   removeSoundFont</a>
+<a name="ln357">//---------------------------------------------------------</a>
+<a name="ln358"> </a>
+<a name="ln359">bool Zerberus::removeSoundFont(const QString&amp; s)</a>
+<a name="ln360">      {</a>
+<a name="ln361">      for (ZInstrument* i : instruments) {</a>
+<a name="ln362">            if (i-&gt;path() == s) {</a>
+<a name="ln363">                  auto it = find(instruments.begin(), instruments.end(), i);</a>
+<a name="ln364">                  if (it == instruments.end())</a>
+<a name="ln365">                        return false;</a>
+<a name="ln366">                  instruments.erase(it);</a>
+<a name="ln367">                  for (int k = 0; k &lt; MAX_CHANNELS; ++k) {</a>
+<a name="ln368">                        if (_channel[k]-&gt;instrument() == i)</a>
+<a name="ln369">                              _channel[k]-&gt;setInstrument(0);</a>
+<a name="ln370">                        }</a>
+<a name="ln371">                  if (!instruments.empty()) {</a>
+<a name="ln372">                        for (int ii = 0; ii &lt; MAX_CHANNELS; ++ii) {</a>
+<a name="ln373">                              if (_channel[ii]-&gt;instrument() == 0)</a>
+<a name="ln374">                                    _channel[ii]-&gt;setInstrument(instruments.front());</a>
+<a name="ln375">                              }</a>
+<a name="ln376">                        }</a>
+<a name="ln377">                  i-&gt;setRefCount(i-&gt;refCount() - 1);</a>
+<a name="ln378">                  if (i-&gt;refCount() &lt;= 0) {</a>
+<a name="ln379">                        auto it1 = find(globalInstruments.begin(), globalInstruments.end(), i);</a>
+<a name="ln380">                        if (it1 == globalInstruments.end())</a>
+<a name="ln381">                              return false;</a>
+<a name="ln382">                        globalInstruments.erase(it1);</a>
+<a name="ln383">                        delete i;</a>
+<a name="ln384">                        }</a>
+<a name="ln385">                  </a>
+<a name="ln386">                  updatePatchList();</a>
+<a name="ln387">                  return true;</a>
+<a name="ln388">                  }</a>
+<a name="ln389">            }</a>
+<a name="ln390">      </a>
+<a name="ln391">      updatePatchList();</a>
+<a name="ln392">      return false;</a>
+<a name="ln393">      }</a>
+<a name="ln394"> </a>
+<a name="ln395">//---------------------------------------------------------</a>
+<a name="ln396">//   state</a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398"> </a>
+<a name="ln399">Ms::SynthesizerGroup Zerberus::state() const</a>
+<a name="ln400">      {</a>
+<a name="ln401">      Ms::SynthesizerGroup g;</a>
+<a name="ln402">      g.setName(name());</a>
+<a name="ln403"> </a>
+<a name="ln404">      QStringList sfl = soundFonts();</a>
+<a name="ln405">      foreach(QString sf, sfl)</a>
+<a name="ln406">            g.push_back(Ms::IdValue(0, sf));</a>
+<a name="ln407">      return g;</a>
+<a name="ln408">      }</a>
+<a name="ln409"> </a>
+<a name="ln410">//---------------------------------------------------------</a>
+<a name="ln411">//   setState</a>
+<a name="ln412">//---------------------------------------------------------</a>
+<a name="ln413"> </a>
+<a name="ln414">bool Zerberus::setState(const Ms::SynthesizerGroup&amp; sp)</a>
+<a name="ln415">      {</a>
+<a name="ln416">      QStringList sfs;</a>
+<a name="ln417">      for (const Ms::IdValue&amp; v : sp)</a>
+<a name="ln418">            sfs.append(v.data);</a>
+<a name="ln419">      return loadSoundFonts(sfs);</a>
+<a name="ln420">      }</a>
+<a name="ln421"> </a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423">//   instrument</a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425"> </a>
+<a name="ln426">ZInstrument* Zerberus::instrument(int n) const</a>
+<a name="ln427">      {</a>
+<a name="ln428">      int idx = 0;</a>
+<a name="ln429">      for (auto i = instruments.begin(); i != instruments.end(); ++i) {</a>
+<a name="ln430">            if (idx == n)</a>
+<a name="ln431">                  return *i;</a>
+<a name="ln432">            ++idx;</a>
+<a name="ln433">            }</a>
+<a name="ln434">      return 0;</a>
+<a name="ln435">      }</a>
+<a name="ln436"> </a>
+<a name="ln437">//---------------------------------------------------------</a>
+<a name="ln438">//   loadInstrument</a>
+<a name="ln439">//    return true on success</a>
+<a name="ln440">//---------------------------------------------------------</a>
+<a name="ln441"> </a>
+<a name="ln442">bool Zerberus::loadInstrument(const QString&amp; s)</a>
+<a name="ln443">      {</a>
+<a name="ln444">      if (s.isEmpty())</a>
+<a name="ln445">            return false;</a>
+<a name="ln446">      QFileInfo fis(s);</a>
+<a name="ln447">      QString fileName = fis.fileName();</a>
+<a name="ln448">      for (ZInstrument* instr : instruments) {</a>
+<a name="ln449">            if (QFileInfo(instr-&gt;path()).fileName() == fileName) {   // already loaded?</a>
+<a name="ln450">                  return true;</a>
+<a name="ln451">                  }</a>
+<a name="ln452">            }</a>
+<a name="ln453">      for (ZInstrument* instr : globalInstruments) {</a>
+<a name="ln454">            if (QFileInfo(instr-&gt;path()).fileName() == fileName) {</a>
+<a name="ln455">                  instruments.push_back(instr);</a>
+<a name="ln456">                  instr-&gt;setRefCount(instr-&gt;refCount() + 1);</a>
+<a name="ln457">                  if (instruments.size() == 1) {</a>
+<a name="ln458">                        for (int i = 0; i &lt; MAX_CHANNELS; ++i)</a>
+<a name="ln459">                              _channel[i]-&gt;setInstrument(instr);</a>
+<a name="ln460">                        }</a>
+<a name="ln461">                  busy = false;</a>
+<a name="ln462">                  return true;</a>
+<a name="ln463">                  }</a>
+<a name="ln464">            }</a>
+<a name="ln465"> </a>
+<a name="ln466">      QFileInfoList l = Zerberus::sfzFiles();</a>
+<a name="ln467">      QString path;</a>
+<a name="ln468">      foreach (const QFileInfo&amp; fi, l) {</a>
+<a name="ln469">            if (fi.fileName() == fileName) {</a>
+<a name="ln470">                  path = fi.absoluteFilePath();</a>
+<a name="ln471">                  break;</a>
+<a name="ln472">                  }</a>
+<a name="ln473">            }</a>
+<a name="ln474">      busy = true;</a>
+<a name="ln475">      ZInstrument* instr = new ZInstrument(this);</a>
+<a name="ln476"> </a>
+<a name="ln477">      try {</a>
+<a name="ln478">            if (instr-&gt;load(path)) {</a>
+<a name="ln479">                  globalInstruments.push_back(instr);</a>
+<a name="ln480">                  instruments.push_back(instr);</a>
+<a name="ln481">                  instr-&gt;setRefCount(1);</a>
+<a name="ln482">                  //</a>
+<a name="ln483">                  // set default instrument for all channels:</a>
+<a name="ln484">                  //</a>
+<a name="ln485">                  if (instruments.size() == 1) {</a>
+<a name="ln486">                        for (int i = 0; i &lt; MAX_CHANNELS; ++i)</a>
+<a name="ln487">                              _channel[i]-&gt;setInstrument(instr);</a>
+<a name="ln488">                        }</a>
+<a name="ln489">                  busy = false;</a>
+<a name="ln490">                  return true;</a>
+<a name="ln491">                  }</a>
+<a name="ln492">            }</a>
+<a name="ln493">      catch (std::bad_alloc&amp; a) {</a>
+<a name="ln494">            qDebug(&quot;Unable to allocate memory when loading Zerberus soundfont %s&quot;, qPrintable(s));</a>
+<a name="ln495"> </a>
+<a name="ln496">            // Prevent &quot;Unreferenced local variable&quot; warning for a</a>
+<a name="ln497">            Q_UNUSED(a);</a>
+<a name="ln498">            }</a>
+<a name="ln499">      catch (...) {</a>
+<a name="ln500">            }</a>
+<a name="ln501">      qDebug(&quot;Zerberus::loadInstrument failed&quot;);</a>
+<a name="ln502">      busy = false;</a>
+<a name="ln503">      delete instr;</a>
+<a name="ln504">      return false;</a>
+<a name="ln505">      }</a>
+<a name="ln506"> </a>
+
+</code></pre>
+<div class="balloon" rel="494"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

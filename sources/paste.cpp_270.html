@@ -1,0 +1,1167 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>paste.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;score.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;rest.h&quot;</a>
+<a name="ln16">#include &quot;staff.h&quot;</a>
+<a name="ln17">#include &quot;measure.h&quot;</a>
+<a name="ln18">#include &quot;harmony.h&quot;</a>
+<a name="ln19">#include &quot;fret.h&quot;</a>
+<a name="ln20">#include &quot;breath.h&quot;</a>
+<a name="ln21">#include &quot;beam.h&quot;</a>
+<a name="ln22">#include &quot;figuredbass.h&quot;</a>
+<a name="ln23">#include &quot;ottava.h&quot;</a>
+<a name="ln24">#include &quot;part.h&quot;</a>
+<a name="ln25">#include &quot;lyrics.h&quot;</a>
+<a name="ln26">#include &quot;hairpin.h&quot;</a>
+<a name="ln27">#include &quot;tie.h&quot;</a>
+<a name="ln28">#include &quot;tuplet.h&quot;</a>
+<a name="ln29">#include &quot;utils.h&quot;</a>
+<a name="ln30">#include &quot;xml.h&quot;</a>
+<a name="ln31">#include &quot;image.h&quot;</a>
+<a name="ln32">#include &quot;repeat.h&quot;</a>
+<a name="ln33">#include &quot;chord.h&quot;</a>
+<a name="ln34">#include &quot;tremolo.h&quot;</a>
+<a name="ln35">#include &quot;slur.h&quot;</a>
+<a name="ln36">#include &quot;articulation.h&quot;</a>
+<a name="ln37">#include &quot;sig.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">namespace Ms {</a>
+<a name="ln40"> </a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42">//   transposeChord</a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44"> </a>
+<a name="ln45">static void transposeChord(Chord* c, Interval srcTranspose, const Fraction&amp; tick)</a>
+<a name="ln46">      {</a>
+<a name="ln47">      // set note track</a>
+<a name="ln48">      // check if staffMove moves a note to a</a>
+<a name="ln49">      // nonexistent staff</a>
+<a name="ln50">      //</a>
+<a name="ln51">      int track  = c-&gt;track();</a>
+<a name="ln52">      int nn     = (track / VOICES) + c-&gt;staffMove();</a>
+<a name="ln53">      if (nn &lt; 0 || nn &gt;= c-&gt;score()-&gt;nstaves())</a>
+<a name="ln54">            c-&gt;setStaffMove(0);</a>
+<a name="ln55">      Part* part = c-&gt;part();</a>
+<a name="ln56">      Interval dstTranspose = part-&gt;instrument(tick)-&gt;transpose();</a>
+<a name="ln57"> </a>
+<a name="ln58">      if (srcTranspose != dstTranspose) {</a>
+<a name="ln59">            if (!dstTranspose.isZero()) {</a>
+<a name="ln60">                  dstTranspose.flip();</a>
+<a name="ln61">                  for (Note* n : c-&gt;notes()) {</a>
+<a name="ln62">                        int npitch;</a>
+<a name="ln63">                        int ntpc;</a>
+<a name="ln64">                        transposeInterval(n-&gt;pitch(), n-&gt;tpc1(), &amp;npitch, &amp;ntpc, dstTranspose, true);</a>
+<a name="ln65">                        n-&gt;setTpc2(ntpc);</a>
+<a name="ln66">                        }</a>
+<a name="ln67">                  }</a>
+<a name="ln68">            else {</a>
+<a name="ln69">                  for (Note* n : c-&gt;notes())</a>
+<a name="ln70">                        n-&gt;setTpc2(n-&gt;tpc1());</a>
+<a name="ln71">                  }</a>
+<a name="ln72">            }</a>
+<a name="ln73">      }</a>
+<a name="ln74"> </a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76">//   pasteStaff</a>
+<a name="ln77">//    return false if paste fails</a>
+<a name="ln78">//---------------------------------------------------------</a>
+<a name="ln79"> </a>
+<a name="ln80">bool Score::pasteStaff(XmlReader&amp; e, Segment* dst, int dstStaff, Fraction scale)</a>
+<a name="ln81">      {</a>
+<a name="ln82">      Q_ASSERT(dst-&gt;isChordRestType());</a>
+<a name="ln83"> </a>
+<a name="ln84">      std::vector&lt;Harmony*&gt; pastedHarmony;</a>
+<a name="ln85">      QList&lt;Chord*&gt; graceNotes;</a>
+<a name="ln86">      Beam* startingBeam = nullptr;</a>
+<a name="ln87">      Tuplet* tuplet = nullptr;</a>
+<a name="ln88">      Fraction dstTick = dst-&gt;tick();</a>
+<a name="ln89">      bool pasted = false;</a>
+<a name="ln90">      Fraction tickLen = Fraction(0,1);</a>
+<a name="ln91">      int staves  = 0;</a>
+<a name="ln92">      bool done   = false;</a>
+<a name="ln93">      bool doScale = (scale != Fraction(1, 1));</a>
+<a name="ln94"> </a>
+<a name="ln95">      while (e.readNextStartElement()) {</a>
+<a name="ln96">            if (done)</a>
+<a name="ln97">                  break;</a>
+<a name="ln98">            if (e.name() != &quot;StaffList&quot;) {</a>
+<a name="ln99">                  e.unknown();</a>
+<a name="ln100">                  break;</a>
+<a name="ln101">                  }</a>
+<a name="ln102">            QString version = e.attribute(&quot;version&quot;, &quot;NONE&quot;);</a>
+<a name="ln103">            if (!MScore::testMode) {</a>
+<a name="ln104">                  if (version != MSC_VERSION) {</a>
+<a name="ln105">                        qDebug(&quot;pasteStaff: bad version&quot;);</a>
+<a name="ln106">                        break;</a>
+<a name="ln107">                        }</a>
+<a name="ln108">                  }</a>
+<a name="ln109">            Fraction tickStart = Fraction::fromTicks(e.intAttribute(&quot;tick&quot;, 0));</a>
+<a name="ln110">                tickLen       =  Fraction::fromTicks(e.intAttribute(&quot;len&quot;, 0));</a>
+<a name="ln111">            Fraction oTickLen =  tickLen;</a>
+<a name="ln112">                tickLen       *= scale;</a>
+<a name="ln113">            int staffStart    = e.intAttribute(&quot;staff&quot;, 0);</a>
+<a name="ln114">                staves        = e.intAttribute(&quot;staves&quot;, 0);</a>
+<a name="ln115"> </a>
+<a name="ln116">            Fraction oEndTick = dstTick + oTickLen;</a>
+<a name="ln117">            auto oSpanner = spannerMap().findContained(dstTick.ticks(), oEndTick.ticks());</a>
+<a name="ln118">            bool spannerFound = false;</a>
+<a name="ln119"> </a>
+<a name="ln120">            e.setTickOffset(dstTick - tickStart);</a>
+<a name="ln121">            e.setTick(Fraction(0,1));</a>
+<a name="ln122"> </a>
+<a name="ln123">            while (e.readNextStartElement()) {</a>
+<a name="ln124">                  if (done)</a>
+<a name="ln125">                        break;</a>
+<a name="ln126">                  if (e.name() != &quot;Staff&quot;) {</a>
+<a name="ln127">                        e.unknown();</a>
+<a name="ln128">                        break;</a>
+<a name="ln129">                        }</a>
+<a name="ln130">                  e.setTransposeChromatic(0);</a>
+<a name="ln131">                  e.setTransposeDiatonic(0);</a>
+<a name="ln132"> </a>
+<a name="ln133">                  int srcStaffIdx = e.attribute(&quot;id&quot;, &quot;0&quot;).toInt();</a>
+<a name="ln134">                  e.setTrack(srcStaffIdx * VOICES);</a>
+<a name="ln135">                  e.setTrackOffset((dstStaff - staffStart) * VOICES);</a>
+<a name="ln136">                  int dstStaffIdx = e.track() / VOICES;</a>
+<a name="ln137">                  if (dstStaffIdx &gt;= dst-&gt;score()-&gt;nstaves()) {</a>
+<a name="ln138">                        qDebug(&quot;paste beyond staves&quot;);</a>
+<a name="ln139">                        done = true;</a>
+<a name="ln140">                        break;</a>
+<a name="ln141">                        }</a>
+<a name="ln142"> </a>
+<a name="ln143">                  while (e.readNextStartElement()) {</a>
+<a name="ln144">                        pasted = true;</a>
+<a name="ln145">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln146"> </a>
+<a name="ln147">                        if (tag == &quot;transposeChromatic&quot;)</a>
+<a name="ln148">                              e.setTransposeChromatic(e.readInt());</a>
+<a name="ln149">                        else if (tag == &quot;transposeDiatonic&quot;)</a>
+<a name="ln150">                              e.setTransposeDiatonic(e.readInt());</a>
+<a name="ln151">                        else if (tag == &quot;voiceOffset&quot;) {</a>
+<a name="ln152">                              int voiceOffset[VOICES];</a>
+<a name="ln153">                              std::fill(voiceOffset, voiceOffset+VOICES, -1);</a>
+<a name="ln154">                              while (e.readNextStartElement()) {</a>
+<a name="ln155">                                    if (e.name() != &quot;voice&quot;)</a>
+<a name="ln156">                                          e.unknown();</a>
+<a name="ln157">                                    int voiceId = e.attribute(&quot;id&quot;, &quot;-1&quot;).toInt();</a>
+<a name="ln158">                                    Q_ASSERT(voiceId &gt;= 0 &amp;&amp; voiceId &lt; VOICES);</a>
+<a name="ln159">                                    voiceOffset[voiceId] = e.readInt();</a>
+<a name="ln160">                                    }</a>
+<a name="ln161">                              e.readNext();</a>
+<a name="ln162">                              if (!makeGap1(dstTick, dstStaffIdx, tickLen, voiceOffset)) {</a>
+<a name="ln163">                                    qDebug(&quot;cannot make gap in staff %d at tick %d&quot;, dstStaffIdx, dstTick.ticks());</a>
+<a name="ln164">                                    done = true; // break main loop, cannot make gap</a>
+<a name="ln165">                                    break;</a>
+<a name="ln166">                                    }</a>
+<a name="ln167">                              }</a>
+<a name="ln168">                        else if (tag == &quot;location&quot;) {</a>
+<a name="ln169">                              Location loc = Location::relative();</a>
+<a name="ln170">                              loc.read(e);</a>
+<a name="ln171">                              e.setLocation(loc);</a>
+<a name="ln172">                              }</a>
+<a name="ln173">                        else if (tag == &quot;Tuplet&quot;) {</a>
+<a name="ln174">                              Tuplet* oldTuplet = tuplet;</a>
+<a name="ln175">                              Fraction tick = doScale ? (e.tick() - dstTick) * scale + dstTick : e.tick();</a>
+<a name="ln176">                              // no paste into local time signature</a>
+<a name="ln177">                              if (staff(dstStaffIdx)-&gt;isLocalTimeSignature(tick)) {</a>
+<a name="ln178">                                    MScore::setError(DEST_LOCAL_TIME_SIGNATURE);</a>
+<a name="ln179">                                    if (oldTuplet &amp;&amp; oldTuplet-&gt;elements().empty())</a>
+<a name="ln180">                                          delete oldTuplet;</a>
+<a name="ln181">                                    return false;</a>
+<a name="ln182">                                    }</a>
+<a name="ln183">                              tuplet = new Tuplet(this);</a>
+<a name="ln184">                              tuplet-&gt;setTrack(e.track());</a>
+<a name="ln185">                              tuplet-&gt;read(e);</a>
+<a name="ln186">                              if (doScale) {</a>
+<a name="ln187">                                    tuplet-&gt;setTicks(tuplet-&gt;ticks() * scale);</a>
+<a name="ln188">                                    tuplet-&gt;setBaseLen(tuplet-&gt;baseLen().fraction() * scale);</a>
+<a name="ln189">                                    }</a>
+<a name="ln190">                              Measure* measure = tick2measure(tick);</a>
+<a name="ln191">                              tuplet-&gt;setParent(measure);</a>
+<a name="ln192">                              tuplet-&gt;setTick(tick);</a>
+<a name="ln193">                              tuplet-&gt;setTuplet(oldTuplet);</a>
+<a name="ln194">                              if (tuplet-&gt;rtick() + tuplet-&gt;actualTicks() &gt; measure-&gt;ticks()) {</a>
+<a name="ln195">                                    delete tuplet;</a>
+<a name="ln196">                                    if (oldTuplet &amp;&amp; oldTuplet-&gt;elements().empty())</a>
+<a name="ln197">                                          delete oldTuplet;</a>
+<a name="ln198">                                    MScore::setError(TUPLET_CROSSES_BAR);</a>
+<a name="ln199">                                    return false;</a>
+<a name="ln200">                                    }</a>
+<a name="ln201">                              if (oldTuplet)</a>
+<a name="ln202">                                    tuplet-&gt;readAddTuplet(oldTuplet);</a>
+<a name="ln203">                              }</a>
+<a name="ln204">                        else if (tag == &quot;endTuplet&quot;) {</a>
+<a name="ln205">                              if (!tuplet) {</a>
+<a name="ln206">                                    qDebug(&quot;Score::pasteStaff: encountered &lt;endTuplet/&gt; when no tuplet was started&quot;);</a>
+<a name="ln207">                                    e.skipCurrentElement();</a>
+<a name="ln208">                                    continue;</a>
+<a name="ln209">                                    }</a>
+<a name="ln210">                              Tuplet* oldTuplet = tuplet;</a>
+<a name="ln211">                              tuplet = tuplet-&gt;tuplet();</a>
+<a name="ln212">                              if (oldTuplet-&gt;elements().empty()) {</a>
+<a name="ln213">                                    qDebug(&quot;Score::pasteStaff: ended tuplet is empty&quot;);</a>
+<a name="ln214">                                    if (tuplet)</a>
+<a name="ln215">                                          tuplet-&gt;remove(oldTuplet);</a>
+<a name="ln216">                                    delete oldTuplet;</a>
+<a name="ln217">                                    }</a>
+<a name="ln218">                              else</a>
+<a name="ln219">                                    oldTuplet-&gt;sortElements();</a>
+<a name="ln220">                              e.readNext();</a>
+<a name="ln221">                              }</a>
+<a name="ln222">                        else if (tag == &quot;Chord&quot; || tag == &quot;Rest&quot; || tag == &quot;RepeatMeasure&quot;) {</a>
+<a name="ln223">                              ChordRest* cr = toChordRest(Element::name2Element(tag, this));</a>
+<a name="ln224">                              cr-&gt;setTrack(e.track());</a>
+<a name="ln225">                              cr-&gt;read(e);</a>
+<a name="ln226">                              cr-&gt;setSelected(false);</a>
+<a name="ln227">                              Fraction tick = doScale ? (e.tick() - dstTick) * scale + dstTick : e.tick();</a>
+<a name="ln228">                              // no paste into local time signature</a>
+<a name="ln229">                              if (staff(dstStaffIdx)-&gt;isLocalTimeSignature(tick)) {</a>
+<a name="ln230">                                    MScore::setError(DEST_LOCAL_TIME_SIGNATURE);</a>
+<a name="ln231">                                    return false;</a>
+<a name="ln232">                                    }</a>
+<a name="ln233">                              if (startingBeam) {</a>
+<a name="ln234">                                    startingBeam-&gt;add(cr); // also calls cr-&gt;setBeam(startingBeam)</a>
+<a name="ln235">                                    startingBeam = nullptr;</a>
+<a name="ln236">                                    }</a>
+<a name="ln237">                              if (cr-&gt;isGrace())</a>
+<a name="ln238">                                    graceNotes.push_back(toChord(cr));</a>
+<a name="ln239">                              else {</a>
+<a name="ln240">                                    if (tuplet)</a>
+<a name="ln241">                                          cr-&gt;readAddTuplet(tuplet);</a>
+<a name="ln242">                                    e.incTick(cr-&gt;actualTicks());</a>
+<a name="ln243">                                    if (doScale) {</a>
+<a name="ln244">                                          Fraction d = cr-&gt;durationTypeTicks();</a>
+<a name="ln245">                                          cr-&gt;setTicks(cr-&gt;ticks() * scale);</a>
+<a name="ln246">                                          cr-&gt;setDurationType(d * scale);</a>
+<a name="ln247">                                          for (Lyrics* l : cr-&gt;lyrics())</a>
+<a name="ln248">                                                l-&gt;setTicks(l-&gt;ticks() * scale);</a>
+<a name="ln249">                                          }</a>
+<a name="ln250">                                    if (cr-&gt;isChord()) {</a>
+<a name="ln251">                                          Chord* chord = toChord(cr);</a>
+<a name="ln252">                                          // disallow tie across barline within two-note tremolo</a>
+<a name="ln253">                                          // tremolos can potentially still straddle the barline if no tie is required</a>
+<a name="ln254">                                          // but these will be removed later</a>
+<a name="ln255">                                          Tremolo* t = chord-&gt;tremolo();</a>
+<a name="ln256">                                          if (t &amp;&amp; t-&gt;twoNotes()) {</a>
+<a name="ln257">                                                if (doScale) {</a>
+<a name="ln258">                                                      Fraction d = t-&gt;durationType().ticks();</a>
+<a name="ln259">                                                      t-&gt;setDurationType(d * scale);</a>
+<a name="ln260">                                                      }</a>
+<a name="ln261">                                                Measure* m = tick2measure(tick);</a>
+<a name="ln262">                                                Fraction ticks = cr-&gt;actualTicks();</a>
+<a name="ln263">                                                Fraction rticks = m-&gt;endTick() - tick;</a>
+<a name="ln264">                                                if (rticks &lt; ticks || (rticks != ticks &amp;&amp; rticks &lt; ticks * 2)) {</a>
+<a name="ln265">                                                      MScore::setError(DEST_TREMOLO);</a>
+<a name="ln266">                                                      return false;</a>
+<a name="ln267">                                                      }</a>
+<a name="ln268">                                                }</a>
+<a name="ln269">                                          for (int i = 0; i &lt; graceNotes.size(); ++i) {</a>
+<a name="ln270">                                                Chord* gc = graceNotes[i];</a>
+<a name="ln271">                                                gc-&gt;setGraceIndex(i);</a>
+<a name="ln272">                                                transposeChord(gc, e.transpose(), tick);</a>
+<a name="ln273">                                                chord-&gt;add(gc);</a>
+<a name="ln274">                                                }</a>
+<a name="ln275">                                          graceNotes.clear();</a>
+<a name="ln276">                                          }</a>
+<a name="ln277">                                    // delete pending ties, they are not selected when copy</a>
+<a name="ln278">                                    if ((tick - dstTick) + cr-&gt;actualTicks() &gt;= tickLen) {</a>
+<a name="ln279">                                          if (cr-&gt;isChord()) {</a>
+<a name="ln280">                                                Chord* c = toChord(cr);</a>
+<a name="ln281">                                                for (Note* note: c-&gt;notes()) {</a>
+<a name="ln282">                                                      Tie* tie = note-&gt;tieFor();</a>
+<a name="ln283">                                                      if (tie) {</a>
+<a name="ln284">                                                            note-&gt;setTieFor(0);</a>
+<a name="ln285">                                                            delete tie;</a>
+<a name="ln286">                                                            }</a>
+<a name="ln287">                                                      }</a>
+<a name="ln288">                                                }</a>
+<a name="ln289">                                          }</a>
+<a name="ln290">                                    // shorten last cr to fit in the space made by makeGap</a>
+<a name="ln291">                                    if ((tick - dstTick) + cr-&gt;actualTicks() &gt; tickLen) {</a>
+<a name="ln292">                                          Fraction newLength = tickLen - (tick - dstTick);</a>
+<a name="ln293">                                          // check previous CR on same track, if it has tremolo, delete the tremolo</a>
+<a name="ln294">                                          // we don't want a tremolo and two different chord durations</a>
+<a name="ln295">                                          if (cr-&gt;isChord()) {</a>
+<a name="ln296">                                                Segment* s = tick2leftSegment(tick - Fraction::fromTicks(1));</a>
+<a name="ln297">                                                if (s) {</a>
+<a name="ln298">                                                      ChordRest* crt = toChordRest(s-&gt;element(cr-&gt;track()));</a>
+<a name="ln299">                                                      if (!crt)</a>
+<a name="ln300">                                                            crt = s-&gt;nextChordRest(cr-&gt;track(), true);</a>
+<a name="ln301">                                                      if (crt &amp;&amp; crt-&gt;isChord()) {</a>
+<a name="ln302">                                                            Chord* chrt = toChord(crt);</a>
+<a name="ln303">                                                            Tremolo* tr = chrt-&gt;tremolo();</a>
+<a name="ln304">                                                            if (tr) {</a>
+<a name="ln305">                                                                  tr-&gt;setChords(chrt, toChord(cr));</a>
+<a name="ln306">                                                                  chrt-&gt;remove(tr);</a>
+<a name="ln307">                                                                  delete tr;</a>
+<a name="ln308">                                                                  }</a>
+<a name="ln309">                                                            }</a>
+<a name="ln310">                                                      }</a>
+<a name="ln311">                                                }</a>
+<a name="ln312">                                          if (!cr-&gt;tuplet()) {</a>
+<a name="ln313">                                                // shorten duration</a>
+<a name="ln314">                                                // exempt notes in tuplets, since we don't allow copy of partial tuplet anyhow</a>
+<a name="ln315">                                                // TODO: figure out a reasonable fudge factor to make sure shorten tuplets appropriately if we do ever copy a partial tuplet</a>
+<a name="ln316">                                                cr-&gt;setTicks(newLength);</a>
+<a name="ln317">                                                cr-&gt;setDurationType(newLength);</a>
+<a name="ln318">                                                }</a>
+<a name="ln319">                                          }</a>
+<a name="ln320">                                    pasteChordRest(cr, tick, e.transpose());</a>
+<a name="ln321">                                    }</a>
+<a name="ln322">                              }</a>
+<a name="ln323">                        else if (tag == &quot;Spanner&quot;) {</a>
+<a name="ln324">                              Spanner::readSpanner(e, this, e.track());</a>
+<a name="ln325">                              spannerFound = true;</a>
+<a name="ln326">                              }</a>
+<a name="ln327">                        else if (tag == &quot;Harmony&quot;) {</a>
+<a name="ln328">                              Harmony* harmony = new Harmony(this);</a>
+<a name="ln329">                              harmony-&gt;setTrack(e.track());</a>
+<a name="ln330">                              harmony-&gt;read(e);</a>
+<a name="ln331">                              harmony-&gt;setTrack(e.track());</a>
+<a name="ln332">                              // transpose</a>
+<a name="ln333">                              Fraction tick = doScale ? (e.tick() - dstTick) * scale + dstTick : e.tick();</a>
+<a name="ln334">                              Part* partDest = staff(e.track() / VOICES)-&gt;part();</a>
+<a name="ln335">                              Interval interval = partDest-&gt;instrument(tick)-&gt;transpose();</a>
+<a name="ln336">                              if (!styleB(Sid::concertPitch) &amp;&amp; !interval.isZero()) {</a>
+<a name="ln337">                                    interval.flip();</a>
+<a name="ln338">                                    int rootTpc = transposeTpc(harmony-&gt;rootTpc(), interval, true);</a>
+<a name="ln339">                                    int baseTpc = transposeTpc(harmony-&gt;baseTpc(), interval, true);</a>
+<a name="ln340">                                    undoTransposeHarmony(harmony, rootTpc, baseTpc);</a>
+<a name="ln341">                                    }</a>
+<a name="ln342"> </a>
+<a name="ln343">                              Measure* m = tick2measure(tick);</a>
+<a name="ln344">                              Segment* seg = m-&gt;undoGetSegment(SegmentType::ChordRest, tick);</a>
+<a name="ln345">                              // remove pre-existing chords on this track</a>
+<a name="ln346">                              // but be sure not to remove any we just added</a>
+<a name="ln347">                              for (Element* el : seg-&gt;findAnnotations(ElementType::HARMONY, e.track(), e.track())) {</a>
+<a name="ln348">                                    if (std::find(pastedHarmony.begin(), pastedHarmony.end(), el) == pastedHarmony.end())</a>
+<a name="ln349">                                          undoRemoveElement(el);</a>
+<a name="ln350">                                    }</a>
+<a name="ln351">                              harmony-&gt;setParent(seg);</a>
+<a name="ln352">                              undoAddElement(harmony);</a>
+<a name="ln353">                              pastedHarmony.push_back(harmony);</a>
+<a name="ln354">                              }</a>
+<a name="ln355">                        else if (tag == &quot;Dynamic&quot;</a>
+<a name="ln356">                           || tag == &quot;Symbol&quot;</a>
+<a name="ln357">                           || tag == &quot;FretDiagram&quot;</a>
+<a name="ln358">                           || tag == &quot;TremoloBar&quot;</a>
+<a name="ln359">                           || tag == &quot;Marker&quot;</a>
+<a name="ln360">                           || tag == &quot;Jump&quot;</a>
+<a name="ln361">                           || tag == &quot;Image&quot;</a>
+<a name="ln362">                           || tag == &quot;Text&quot;</a>
+<a name="ln363">                           || tag == &quot;StaffText&quot;</a>
+<a name="ln364">                           || tag == &quot;TempoText&quot;</a>
+<a name="ln365">                           || tag == &quot;FiguredBass&quot;</a>
+<a name="ln366">                           || tag == &quot;Fermata&quot;</a>
+<a name="ln367">                           ) {</a>
+<a name="ln368">                              Element* el = Element::name2Element(tag, this);</a>
+<a name="ln369">                              el-&gt;setTrack(e.track());      // a valid track might be necessary for el-&gt;read() to work</a>
+<a name="ln370">                              if (el-&gt;isFermata())</a>
+<a name="ln371">                                    el-&gt;setPlacement(el-&gt;track() &amp; 1 ? Placement::BELOW : Placement::ABOVE);</a>
+<a name="ln372">                              el-&gt;read(e);</a>
+<a name="ln373"> </a>
+<a name="ln374">                              Fraction tick = doScale ? (e.tick() - dstTick) * scale + dstTick : e.tick();</a>
+<a name="ln375">                              Measure* m = tick2measure(tick);</a>
+<a name="ln376">                              Segment* seg = m-&gt;undoGetSegment(SegmentType::ChordRest, tick);</a>
+<a name="ln377">                              el-&gt;setParent(seg);</a>
+<a name="ln378"> </a>
+<a name="ln379">                              // be sure to paste the element in the destination track;</a>
+<a name="ln380">                              // setting track needs to be repeated, as it might have been overwritten by el-&gt;read()</a>
+<a name="ln381">                              // preserve *voice* from source, though</a>
+<a name="ln382">                              el-&gt;setTrack((e.track() / VOICES) * VOICES + el-&gt;voice());</a>
+<a name="ln383"> </a>
+<a name="ln384">                              undoAddElement(el);</a>
+<a name="ln385">                              }</a>
+<a name="ln386">                        else if (tag == &quot;Clef&quot;) {</a>
+<a name="ln387">                              Clef* clef = new Clef(this);</a>
+<a name="ln388">                              clef-&gt;read(e);</a>
+<a name="ln389">                              clef-&gt;setTrack(e.track());</a>
+<a name="ln390">                              Fraction tick = doScale ? (e.tick() - dstTick) * scale + dstTick : e.tick();</a>
+<a name="ln391">                              Measure* m = tick2measure(tick);</a>
+<a name="ln392">                              if (m-&gt;tick().isNotZero() &amp;&amp; m-&gt;tick() == tick)</a>
+<a name="ln393">                                    m = m-&gt;prevMeasure();</a>
+<a name="ln394">                              Segment* segment = m-&gt;undoGetSegment(SegmentType::Clef, tick);</a>
+<a name="ln395">                              clef-&gt;setParent(segment);</a>
+<a name="ln396">                              undoChangeElement(segment-&gt;element(e.track()), clef);</a>
+<a name="ln397">                              }</a>
+<a name="ln398">                        else if (tag == &quot;Breath&quot;) {</a>
+<a name="ln399">                              Breath* breath = new Breath(this);</a>
+<a name="ln400">                              breath-&gt;read(e);</a>
+<a name="ln401">                              breath-&gt;setTrack(e.track());</a>
+<a name="ln402">                              Fraction tick = doScale ? (e.tick() - dstTick) * scale + dstTick : e.tick();</a>
+<a name="ln403">                              Measure* m = tick2measure(tick);</a>
+<a name="ln404">                              if (m-&gt;tick() == tick)</a>
+<a name="ln405">                                    m = m-&gt;prevMeasure();</a>
+<a name="ln406">                              Segment* segment = m-&gt;undoGetSegment(SegmentType::Breath, tick);</a>
+<a name="ln407">                              breath-&gt;setParent(segment);</a>
+<a name="ln408">                              undoChangeElement(segment-&gt;element(e.track()), breath);</a>
+<a name="ln409">                              }</a>
+<a name="ln410">                        else if (tag == &quot;Beam&quot;) {</a>
+<a name="ln411">                              Beam* beam = new Beam(this);</a>
+<a name="ln412">                              beam-&gt;setTrack(e.track());</a>
+<a name="ln413">                              beam-&gt;read(e);</a>
+<a name="ln414">                              beam-&gt;setParent(0);</a>
+<a name="ln415">                              if (startingBeam) {</a>
+<a name="ln416">                                    qDebug(&quot;The read beam was not used&quot;);</a>
+<a name="ln417">                                    delete startingBeam;</a>
+<a name="ln418">                                    }</a>
+<a name="ln419">                              startingBeam = beam;</a>
+<a name="ln420">                              }</a>
+<a name="ln421">                        else if (tag == &quot;BarLine&quot;) {</a>
+<a name="ln422">                              e.skipCurrentElement();    // ignore bar line</a>
+<a name="ln423">                              }</a>
+<a name="ln424">                        else {</a>
+<a name="ln425">                              qDebug(&quot;PasteStaff: element %s not handled&quot;, tag.toUtf8().data());</a>
+<a name="ln426">                              e.skipCurrentElement();    // ignore</a>
+<a name="ln427">                              }</a>
+<a name="ln428">                        }</a>
+<a name="ln429"> </a>
+<a name="ln430">                  e.checkConnectors();</a>
+<a name="ln431">                  if (startingBeam) {</a>
+<a name="ln432">                        qDebug(&quot;The read beam was not used&quot;);</a>
+<a name="ln433">                        delete startingBeam;</a>
+<a name="ln434">                        }</a>
+<a name="ln435">                  if (tuplet) {</a>
+<a name="ln436">                        qDebug(&quot;&lt;endTuplet/&gt; not found&quot;);</a>
+<a name="ln437">                        if (tuplet-&gt;elements().empty()) {</a>
+<a name="ln438">                              if (tuplet-&gt;tuplet())</a>
+<a name="ln439">                                    tuplet-&gt;tuplet()-&gt;remove(tuplet);</a>
+<a name="ln440">                              delete tuplet;</a>
+<a name="ln441">                              }</a>
+<a name="ln442">                        }</a>
+<a name="ln443">                  }</a>
+<a name="ln444">            // fix up spanners</a>
+<a name="ln445">            if (doScale &amp;&amp; spannerFound) {</a>
+<a name="ln446">                  // build list of original spanners</a>
+<a name="ln447">                  std::vector&lt;Spanner*&gt; oSpannerList;</a>
+<a name="ln448">                  for (auto interval : oSpanner) {</a>
+<a name="ln449">                        Spanner* sp = interval.value;</a>
+<a name="ln450">                        oSpannerList.push_back(sp);</a>
+<a name="ln451">                        }</a>
+<a name="ln452">                  auto nSpanner = spannerMap().findContained(dstTick.ticks(), oEndTick.ticks());</a>
+<a name="ln453">                  for (auto interval : nSpanner) {</a>
+<a name="ln454">                        Spanner* sp = interval.value;</a>
+<a name="ln455">                        // skip if not in this staff list</a>
+<a name="ln456">                        if (sp-&gt;staffIdx() &lt; dstStaff || sp-&gt;staffIdx() &gt;= dstStaff + staves)</a>
+<a name="ln457">                              continue;</a>
+<a name="ln458">                        // CHORD and NOTE spanners are normally handled already</a>
+<a name="ln459">                        if (sp-&gt;anchor() == Spanner::Anchor::CHORD || sp-&gt;anchor() == Spanner::Anchor::NOTE)</a>
+<a name="ln460">                              continue;</a>
+<a name="ln461">                        // skip if present oiginally</a>
+<a name="ln462">                        auto i = std::find(oSpannerList.begin(), oSpannerList.end(), sp);</a>
+<a name="ln463">                        if (i != oSpannerList.end())</a>
+<a name="ln464">                              continue;</a>
+<a name="ln465">                        Fraction tick = (sp-&gt;tick() - dstTick) * scale + dstTick;</a>
+<a name="ln466">                        sp-&gt;undoChangeProperty(Pid::SPANNER_TICK, tick);</a>
+<a name="ln467">                        sp-&gt;undoChangeProperty(Pid::SPANNER_TICKS, sp-&gt;ticks() * scale);</a>
+<a name="ln468">                        }</a>
+<a name="ln469">                  }</a>
+<a name="ln470">            }</a>
+<a name="ln471"> </a>
+<a name="ln472">      for (Score* s : scoreList())     // for all parts</a>
+<a name="ln473">            s-&gt;connectTies();</a>
+<a name="ln474"> </a>
+<a name="ln475">      if (pasted) {                       //select only if we pasted something</a>
+<a name="ln476">            int endStaff = dstStaff + staves;</a>
+<a name="ln477">            if (endStaff &gt; nstaves())</a>
+<a name="ln478">                  endStaff = nstaves();</a>
+<a name="ln479">            //check and add truly invisible rests instead of gaps</a>
+<a name="ln480">            //TODO: look if this could be done different</a>
+<a name="ln481">            Measure* dstM = tick2measure(dstTick);</a>
+<a name="ln482">            Measure* endM = tick2measure(dstTick + tickLen);</a>
+<a name="ln483">            for (int i = dstStaff; i &lt; endStaff; i++) {</a>
+<a name="ln484">                  for (Measure* m = dstM; m &amp;&amp; m != endM-&gt;nextMeasure(); m = m-&gt;nextMeasure())</a>
+<a name="ln485">                        m-&gt;checkMeasure(i);</a>
+<a name="ln486">                  }</a>
+<a name="ln487">            _selection.setRangeTicks(dstTick, dstTick + tickLen, dstStaff, endStaff);</a>
+<a name="ln488"> </a>
+<a name="ln489">            //finding the first element that has a track</a>
+<a name="ln490">            //the canvas position will be set to this element</a>
+<a name="ln491">            Element* el = 0;</a>
+<a name="ln492">            Segment* s = tick2segmentMM(dstTick);</a>
+<a name="ln493">            Segment* s2 = tick2segmentMM(dstTick + tickLen);</a>
+<a name="ln494">            bool found = false;</a>
+<a name="ln495">            if (s2)</a>
+<a name="ln496">                  s2 = s2-&gt;next1MM();</a>
+<a name="ln497">            while (!found &amp;&amp; s != s2) {</a>
+<a name="ln498">                  for (int i = dstStaff * VOICES; i &lt; (endStaff + 1) * VOICES; i++) {</a>
+<a name="ln499">                        el = s-&gt;element(i);</a>
+<a name="ln500">                        if (el) {</a>
+<a name="ln501">                              found = true;</a>
+<a name="ln502">                              break;</a>
+<a name="ln503">                              }</a>
+<a name="ln504">                        }</a>
+<a name="ln505">                  s = s-&gt;next1MM();</a>
+<a name="ln506">                  }</a>
+<a name="ln507"> </a>
+<a name="ln508">            for (MuseScoreView* v : viewer)</a>
+<a name="ln509">                  v-&gt;adjustCanvasPosition(el, false);</a>
+<a name="ln510">            if (!selection().isRange())</a>
+<a name="ln511">                  _selection.setState(SelState::RANGE);</a>
+<a name="ln512">            }</a>
+<a name="ln513">      return true;</a>
+<a name="ln514">      }</a>
+<a name="ln515"> </a>
+<a name="ln516">//---------------------------------------------------------</a>
+<a name="ln517">//   Score::readAddConnector</a>
+<a name="ln518">//---------------------------------------------------------</a>
+<a name="ln519"> </a>
+<a name="ln520">void Score::readAddConnector(ConnectorInfoReader* info, bool pasteMode)</a>
+<a name="ln521">      {</a>
+<a name="ln522">      if (!pasteMode) {</a>
+<a name="ln523">            // How did we get there?</a>
+<a name="ln524">            qDebug(&quot;Score::readAddConnector is called not in paste mode.&quot;);</a>
+<a name="ln525">            return;</a>
+<a name="ln526">            }</a>
+<a name="ln527">      const ElementType type = info-&gt;type();</a>
+<a name="ln528">      switch(type) {</a>
+<a name="ln529">            case ElementType::HAIRPIN:</a>
+<a name="ln530">            case ElementType::PEDAL:</a>
+<a name="ln531">            case ElementType::OTTAVA:</a>
+<a name="ln532">            case ElementType::TRILL:</a>
+<a name="ln533">            case ElementType::TEXTLINE:</a>
+<a name="ln534">            case ElementType::VOLTA:</a>
+<a name="ln535">                  {</a>
+<a name="ln536">                  Spanner* sp = toSpanner(info-&gt;connector());</a>
+<a name="ln537">                  const Location&amp; l = info-&gt;location();</a>
+<a name="ln538">                  if (info-&gt;isStart()) {</a>
+<a name="ln539">                        sp-&gt;setAnchor(Spanner::Anchor::SEGMENT);</a>
+<a name="ln540">                        sp-&gt;setTrack(l.track());</a>
+<a name="ln541">                        sp-&gt;setTrack2(l.track());</a>
+<a name="ln542">                        sp-&gt;setTick(l.frac());</a>
+<a name="ln543">                        }</a>
+<a name="ln544">                  else if (info-&gt;isEnd()) {</a>
+<a name="ln545">                        sp-&gt;setTick2(l.frac());</a>
+<a name="ln546">                        undoAddElement(sp);</a>
+<a name="ln547">                        if (sp-&gt;isOttava())</a>
+<a name="ln548">                              sp-&gt;staff()-&gt;updateOttava();</a>
+<a name="ln549">                        }</a>
+<a name="ln550">                  }</a>
+<a name="ln551">                  break;</a>
+<a name="ln552">            default:</a>
+<a name="ln553">                  break;</a>
+<a name="ln554">            }</a>
+<a name="ln555">      }</a>
+<a name="ln556"> </a>
+<a name="ln557">//---------------------------------------------------------</a>
+<a name="ln558">//   pasteChordRest</a>
+<a name="ln559">//---------------------------------------------------------</a>
+<a name="ln560"> </a>
+<a name="ln561">void Score::pasteChordRest(ChordRest* cr, const Fraction&amp; t, const Interval&amp; srcTranspose)</a>
+<a name="ln562">      {</a>
+<a name="ln563">      Fraction tick(t);</a>
+<a name="ln564">// qDebug(&quot;pasteChordRest %s at %d, len %d/%d&quot;, cr-&gt;name(), tick, cr-&gt;ticks().numerator(), cr-&gt;ticks().denominator() );</a>
+<a name="ln565">      if (cr-&gt;isChord())</a>
+<a name="ln566">            transposeChord(toChord(cr), srcTranspose, tick);</a>
+<a name="ln567"> </a>
+<a name="ln568">      Measure* measure = tick2measure(tick);</a>
+<a name="ln569">      if (!measure)</a>
+<a name="ln570">            return;</a>
+<a name="ln571"> </a>
+<a name="ln572">      // we can paste a measure rest as such only at start of measure</a>
+<a name="ln573">      // and only if the lengths of the rest and measure match</a>
+<a name="ln574">      // otherwise, we need to convert to duration rest(s)</a>
+<a name="ln575">      // and potentially split the rest up (eg, 5/4 =&gt; whole + quarter)</a>
+<a name="ln576">      bool convertMeasureRest = cr-&gt;isRest() &amp;&amp; cr-&gt;durationType().type() == TDuration::DurationType::V_MEASURE</a>
+<a name="ln577">         &amp;&amp; (tick != measure-&gt;tick() || cr-&gt;ticks() != measure-&gt;ticks());</a>
+<a name="ln578"> </a>
+<a name="ln579">      Fraction measureEnd = measure-&gt;endTick();</a>
+<a name="ln580">      bool isGrace = cr-&gt;isChord() &amp;&amp; toChord(cr)-&gt;noteType() != NoteType::NORMAL;</a>
+<a name="ln581"> </a>
+<a name="ln582">      // find out if the chordrest was only partially contained in the copied range</a>
+<a name="ln583">      bool partialCopy = false;</a>
+<a name="ln584">      if (cr-&gt;isRepeatMeasure())</a>
+<a name="ln585">            partialCopy = toRepeatMeasure(cr)-&gt;actualTicks() != measure-&gt;ticks();</a>
+<a name="ln586">      else if (!isGrace &amp;&amp; !cr-&gt;tuplet())</a>
+<a name="ln587">            partialCopy = cr-&gt;durationTypeTicks() != cr-&gt;actualTicks();</a>
+<a name="ln588"> </a>
+<a name="ln589">      // if note is too long to fit in measure, split it up with a tie across the barline</a>
+<a name="ln590">      // exclude tuplets from consideration</a>
+<a name="ln591">      // we have already disallowed a tuplet from crossing the barline, so there is no problem here</a>
+<a name="ln592">      // but due to rounding, it might appear from actualTicks() that the last note is too long by a couple of ticks</a>
+<a name="ln593"> </a>
+<a name="ln594">      if (!isGrace &amp;&amp; !cr-&gt;tuplet() &amp;&amp; (tick + cr-&gt;actualTicks() &gt; measureEnd || partialCopy || convertMeasureRest)) {</a>
+<a name="ln595">            if (cr-&gt;isChord()) {</a>
+<a name="ln596">                  // split Chord</a>
+<a name="ln597">                  Chord* c = toChord(cr);</a>
+<a name="ln598">                  Fraction rest = c-&gt;actualTicks();</a>
+<a name="ln599">                  bool firstpart = true;</a>
+<a name="ln600">                  while (rest.isNotZero()) {</a>
+<a name="ln601">                        measure = tick2measure(tick);</a>
+<a name="ln602">                        Chord* c2 = firstpart ? c : toChord(c-&gt;clone());</a>
+<a name="ln603">                        if (!firstpart)</a>
+<a name="ln604">                              c2-&gt;removeMarkings(true);</a>
+<a name="ln605">                        Fraction mlen = measure-&gt;tick() + measure-&gt;ticks() - tick;</a>
+<a name="ln606">                        Fraction len = mlen &gt; rest ? rest : mlen;</a>
+<a name="ln607">                        std::vector&lt;TDuration&gt; dl = toRhythmicDurationList(len, false, tick - measure-&gt;tick(), sigmap()-&gt;timesig(tick).nominal(), measure, MAX_DOTS);</a>
+<a name="ln608">                        TDuration d = dl[0];</a>
+<a name="ln609">                        c2-&gt;setDurationType(d);</a>
+<a name="ln610">                        c2-&gt;setTicks(d.fraction());</a>
+<a name="ln611">                        rest -= c2-&gt;actualTicks();</a>
+<a name="ln612">                        undoAddCR(c2, measure, tick);</a>
+<a name="ln613"> </a>
+<a name="ln614">                        std::vector&lt;Note*&gt; nl1 = c-&gt;notes();</a>
+<a name="ln615">                        std::vector&lt;Note*&gt; nl2 = c2-&gt;notes();</a>
+<a name="ln616"> </a>
+<a name="ln617">                        if (!firstpart)</a>
+<a name="ln618">                             for (unsigned i = 0; i &lt; nl1.size(); ++i) {</a>
+<a name="ln619">                                    Tie* tie = new Tie(this);</a>
+<a name="ln620">                                    tie-&gt;setStartNote(nl1[i]);</a>
+<a name="ln621">                                    tie-&gt;setEndNote(nl2[i]);</a>
+<a name="ln622">                                    tie-&gt;setTrack(c-&gt;track());</a>
+<a name="ln623">                                    Tie* tie2 = nl1[i]-&gt;tieFor();</a>
+<a name="ln624">                                    if (tie2) {</a>
+<a name="ln625">                                          nl2[i]-&gt;setTieFor(nl1[i]-&gt;tieFor());</a>
+<a name="ln626">                                          tie2-&gt;setStartNote(nl2[i]);</a>
+<a name="ln627">                                          }</a>
+<a name="ln628">                                    nl1[i]-&gt;setTieFor(tie);</a>
+<a name="ln629">                                    nl2[i]-&gt;setTieBack(tie);</a>
+<a name="ln630">                                    }</a>
+<a name="ln631">                        c = c2;</a>
+<a name="ln632">                        firstpart = false;</a>
+<a name="ln633">                        tick += c-&gt;actualTicks();</a>
+<a name="ln634">                        }</a>
+<a name="ln635">                  }</a>
+<a name="ln636">            else if (cr-&gt;isRest()) {</a>
+<a name="ln637">                  // split Rest</a>
+<a name="ln638">                  Rest* r       = toRest(cr);</a>
+<a name="ln639">                  Fraction rest = r-&gt;ticks();</a>
+<a name="ln640"> </a>
+<a name="ln641">                  bool firstpart = true;</a>
+<a name="ln642">                  while (!rest.isZero()) {</a>
+<a name="ln643">                        Rest* r2      = firstpart ? r : toRest(r-&gt;clone());</a>
+<a name="ln644">                        measure       = tick2measure(tick);</a>
+<a name="ln645">                        Fraction mlen = measure-&gt;tick() + measure-&gt;ticks() - tick;</a>
+<a name="ln646">                        Fraction len  = rest &gt; mlen ? mlen : rest;</a>
+<a name="ln647">                        std::vector&lt;TDuration&gt; dl = toRhythmicDurationList(len, true, tick - measure-&gt;tick(), sigmap()-&gt;timesig(tick).nominal(), measure, MAX_DOTS);</a>
+<a name="ln648">                        TDuration d = dl[0];</a>
+<a name="ln649">                        r2-&gt;setDurationType(d);</a>
+<a name="ln650">                        r2-&gt;setTicks(d.isMeasure() ? measure-&gt;ticks() : d.fraction());</a>
+<a name="ln651">                        undoAddCR(r2, measure, tick);</a>
+<a name="ln652">                        rest -= r2-&gt;ticks();</a>
+<a name="ln653">                        tick += r2-&gt;actualTicks();</a>
+<a name="ln654">                        firstpart = false;</a>
+<a name="ln655">                        }</a>
+<a name="ln656">                  }</a>
+<a name="ln657">            else if (cr-&gt;isRepeatMeasure()) {</a>
+<a name="ln658">                  RepeatMeasure* rm = toRepeatMeasure(cr);</a>
+<a name="ln659">                  std::vector&lt;TDuration&gt; list = toDurationList(rm-&gt;actualTicks(), true);</a>
+<a name="ln660">                  for (auto dur : list) {</a>
+<a name="ln661">                        Rest* r = new Rest(this, dur);</a>
+<a name="ln662">                        r-&gt;setTrack(cr-&gt;track());</a>
+<a name="ln663">                        Fraction rest = r-&gt;ticks();</a>
+<a name="ln664">                        while (!rest.isZero()) {</a>
+<a name="ln665">                              Rest* r2      = toRest(r-&gt;clone());</a>
+<a name="ln666">                              measure       = tick2measure(tick);</a>
+<a name="ln667">                              Fraction mlen = measure-&gt;tick() + measure-&gt;ticks() - tick;</a>
+<a name="ln668">                              Fraction len  = rest &gt; mlen ? mlen : rest;</a>
+<a name="ln669">                              std::vector&lt;TDuration&gt; dl = toDurationList(len, false);</a>
+<a name="ln670">                              TDuration d = dl[0];</a>
+<a name="ln671">                              r2-&gt;setTicks(d.fraction());</a>
+<a name="ln672">                              r2-&gt;setDurationType(d);</a>
+<a name="ln673">                              undoAddCR(r2, measure, tick);</a>
+<a name="ln674">                              rest -= d.fraction();</a>
+<a name="ln675">                              tick += r2-&gt;actualTicks();</a>
+<a name="ln676">                              }</a>
+<a name="ln677">                        delete r;</a>
+<a name="ln678">                        }</a>
+<a name="ln679">                  delete cr;</a>
+<a name="ln680">                  }</a>
+<a name="ln681">            }</a>
+<a name="ln682">      else {</a>
+<a name="ln683">            undoAddCR(cr, measure, tick);</a>
+<a name="ln684">            }</a>
+<a name="ln685">      }</a>
+<a name="ln686"> </a>
+<a name="ln687"> </a>
+<a name="ln688">//---------------------------------------------------------</a>
+<a name="ln689">//   pasteSymbols</a>
+<a name="ln690">//</a>
+<a name="ln691">//    pastes a list of symbols into cr and following ChordRest's</a>
+<a name="ln692">//</a>
+<a name="ln693">//    (Note: info about delta ticks is currently ignored)</a>
+<a name="ln694">//---------------------------------------------------------</a>
+<a name="ln695"> </a>
+<a name="ln696">void Score::pasteSymbols(XmlReader&amp; e, ChordRest* dst)</a>
+<a name="ln697">      {</a>
+<a name="ln698">      e.setPasteMode(true); // ensure the reader is in paste mode</a>
+<a name="ln699">      Segment* currSegm = dst-&gt;segment();</a>
+<a name="ln700">      Fraction destTick = Fraction(0,1);              // the tick and track to place the pasted element at</a>
+<a name="ln701">      int   destTrack   = 0;</a>
+<a name="ln702">      bool  done        = false;</a>
+<a name="ln703">      int   segDelta    = 0;</a>
+<a name="ln704">      Segment* startSegm= currSegm;</a>
+<a name="ln705">      Fraction   startTick   = dst-&gt;tick();    // the initial tick and track where to start pasting</a>
+<a name="ln706">      int   startTrack  = dst-&gt;track();</a>
+<a name="ln707">      int   maxTrack    = ntracks();</a>
+<a name="ln708">      Fraction lastTick = lastSegment()-&gt;tick();</a>
+<a name="ln709"> </a>
+<a name="ln710">      while (e.readNextStartElement()) {</a>
+<a name="ln711">            if (done)</a>
+<a name="ln712">                  break;</a>
+<a name="ln713">            if (e.name() != &quot;SymbolList&quot;) {</a>
+<a name="ln714">                  e.unknown();</a>
+<a name="ln715">                  break;</a>
+<a name="ln716">                  }</a>
+<a name="ln717">            QString version = e.attribute(&quot;version&quot;, &quot;NONE&quot;);</a>
+<a name="ln718">            if (version != MSC_VERSION)</a>
+<a name="ln719">                  break;</a>
+<a name="ln720"> </a>
+<a name="ln721">            while (e.readNextStartElement()) {</a>
+<a name="ln722">                  if (done)</a>
+<a name="ln723">                        break;</a>
+<a name="ln724">                  const QStringRef&amp; tag(e.name());</a>
+<a name="ln725"> </a>
+<a name="ln726">                  if (tag == &quot;trackOffset&quot;) {</a>
+<a name="ln727">                        destTrack = startTrack + e.readInt();</a>
+<a name="ln728">                        currSegm  = startSegm;</a>
+<a name="ln729">                        }</a>
+<a name="ln730">                  else if (tag == &quot;tickOffset&quot;)</a>
+<a name="ln731">                        destTick = startTick + Fraction::fromTicks(e.readInt());</a>
+<a name="ln732">                  else if (tag == &quot;segDelta&quot;)</a>
+<a name="ln733">                        segDelta = e.readInt();</a>
+<a name="ln734">                  else {</a>
+<a name="ln735"> </a>
+<a name="ln736">                        if (tag == &quot;Harmony&quot; || tag == &quot;FretDiagram&quot;) {</a>
+<a name="ln737">                              //</a>
+<a name="ln738">                              // Harmony elements (= chord symbols) are positioned respecting</a>
+<a name="ln739">                              // the original tickOffset: advance to destTick (or near)</a>
+<a name="ln740">                              // same for FretDiagram elements</a>
+<a name="ln741">                              //</a>
+<a name="ln742">                              Segment* harmSegm;</a>
+<a name="ln743">                              for (harmSegm = startSegm; harmSegm &amp;&amp; (harmSegm-&gt;tick() &lt; destTick);</a>
+<a name="ln744">                                          harmSegm = harmSegm-&gt;nextCR())</a>
+<a name="ln745">                                    ;</a>
+<a name="ln746">                              // if destTick overshot, no dest. segment: create one</a>
+<a name="ln747">                              if (destTick &gt;= lastTick) {</a>
+<a name="ln748">                                    harmSegm = nullptr;</a>
+<a name="ln749">                                    }</a>
+<a name="ln750">                              else if (!harmSegm || harmSegm-&gt;tick() &gt; destTick) {</a>
+<a name="ln751">                                    Measure* meas     = tick2measure(destTick);</a>
+<a name="ln752">                                    harmSegm          = meas ? meas-&gt;undoGetSegment(SegmentType::ChordRest, destTick) : nullptr;</a>
+<a name="ln753">                              }</a>
+<a name="ln754">                              if (destTrack &gt;= maxTrack || harmSegm == nullptr) {</a>
+<a name="ln755">                                    qDebug(&quot;PasteSymbols: no track or segment for %s&quot;, tag.toUtf8().data());</a>
+<a name="ln756">                                    e.skipCurrentElement();       // ignore</a>
+<a name="ln757">                                    continue;</a>
+<a name="ln758">                                    }</a>
+<a name="ln759">                              if (tag == &quot;Harmony&quot;) {</a>
+<a name="ln760">                                    Harmony* el = new Harmony(this);</a>
+<a name="ln761">                                    el-&gt;setTrack(trackZeroVoice(destTrack));</a>
+<a name="ln762">                                    el-&gt;read(e);</a>
+<a name="ln763">                                    el-&gt;setTrack(trackZeroVoice(destTrack));</a>
+<a name="ln764">                                    // transpose</a>
+<a name="ln765">                                    Part* partDest = staff(track2staff(destTrack))-&gt;part();</a>
+<a name="ln766">                                    Interval interval = partDest-&gt;instrument(destTick)-&gt;transpose();</a>
+<a name="ln767">                                    if (!styleB(Sid::concertPitch) &amp;&amp; !interval.isZero()) {</a>
+<a name="ln768">                                          interval.flip();</a>
+<a name="ln769">                                          int rootTpc = transposeTpc(el-&gt;rootTpc(), interval, true);</a>
+<a name="ln770">                                          int baseTpc = transposeTpc(el-&gt;baseTpc(), interval, true);</a>
+<a name="ln771">                                          undoTransposeHarmony(el, rootTpc, baseTpc);</a>
+<a name="ln772">                                          }</a>
+<a name="ln773">                                    el-&gt;setParent(harmSegm);</a>
+<a name="ln774">                                    undoAddElement(el);</a>
+<a name="ln775">                                    }</a>
+<a name="ln776">                              else {</a>
+<a name="ln777">                                    FretDiagram* el = new FretDiagram(this);</a>
+<a name="ln778">                                    el-&gt;setTrack(trackZeroVoice(destTrack));</a>
+<a name="ln779">                                    el-&gt;read(e);</a>
+<a name="ln780">                                    el-&gt;setTrack(trackZeroVoice(destTrack));</a>
+<a name="ln781">                                    el-&gt;setParent(harmSegm);</a>
+<a name="ln782">                                    undoAddElement(el);</a>
+<a name="ln783">                                    }</a>
+<a name="ln784">                              }</a>
+<a name="ln785">                        else if (tag == &quot;Dynamic&quot;) {</a>
+<a name="ln786">                              ChordRest* destCR = findCR(destTick, destTrack);</a>
+<a name="ln787">                              if (!destCR) {</a>
+<a name="ln788">                                    e.skipCurrentElement();</a>
+<a name="ln789">                                    continue;</a>
+<a name="ln790">                                    }</a>
+<a name="ln791">                              Dynamic* d = new Dynamic(this);</a>
+<a name="ln792">                              d-&gt;setTrack(destTrack);</a>
+<a name="ln793">                              d-&gt;read(e);</a>
+<a name="ln794">                              d-&gt;setTrack(destTrack);</a>
+<a name="ln795">                              d-&gt;setParent(destCR-&gt;segment());</a>
+<a name="ln796">                              undoAddElement(d);</a>
+<a name="ln797">                              }</a>
+<a name="ln798">                        else if (tag == &quot;HairPin&quot;) {</a>
+<a name="ln799">                              Hairpin* h = new Hairpin(this);</a>
+<a name="ln800">                              h-&gt;setTrack(destTrack);</a>
+<a name="ln801">                              h-&gt;read(e);</a>
+<a name="ln802">                              h-&gt;setTrack(destTrack);</a>
+<a name="ln803">                              h-&gt;setTrack2(destTrack);</a>
+<a name="ln804">                              h-&gt;setTick(destTick);</a>
+<a name="ln805">                              undoAddElement(h);</a>
+<a name="ln806">                              }</a>
+<a name="ln807">                        else {</a>
+<a name="ln808">                              //</a>
+<a name="ln809">                              // All other elements are positioned respecting the distance in chords</a>
+<a name="ln810">                              //</a>
+<a name="ln811">                              for ( ; currSegm &amp;&amp; segDelta &gt; 0; segDelta--)</a>
+<a name="ln812">                                    currSegm = currSegm-&gt;nextCR(destTrack);</a>
+<a name="ln813">                              // check the intended dest. track and segment exist</a>
+<a name="ln814">                              if (destTrack &gt;= maxTrack || currSegm == nullptr) {</a>
+<a name="ln815">                                    qDebug(&quot;PasteSymbols: no track or segment for %s&quot;, tag.toUtf8().data());</a>
+<a name="ln816">                                    e.skipCurrentElement();       // ignore</a>
+<a name="ln817">                                    continue;</a>
+<a name="ln818">                                    }</a>
+<a name="ln819">                              // check there is a segment element in the required track</a>
+<a name="ln820">                              if (currSegm-&gt;element(destTrack) == nullptr) {</a>
+<a name="ln821">                                    qDebug(&quot;PasteSymbols: no track element for %s&quot;, tag.toUtf8().data());</a>
+<a name="ln822">                                    e.skipCurrentElement();</a>
+<a name="ln823">                                    continue;</a>
+<a name="ln824">                                    }</a>
+<a name="ln825">                              ChordRest* cr = toChordRest(currSegm-&gt;element(destTrack));</a>
+<a name="ln826"> </a>
+<a name="ln827">                              if (tag == &quot;Articulation&quot;) {</a>
+<a name="ln828">                                    Articulation* el = new Articulation(this);</a>
+<a name="ln829">                                    el-&gt;read(e);</a>
+<a name="ln830">                                    el-&gt;setTrack(destTrack);</a>
+<a name="ln831">                                    el-&gt;setParent(cr);</a>
+<a name="ln832">                                    if (!el-&gt;isFermata() &amp;&amp; cr-&gt;isRest())</a>
+<a name="ln833">                                          delete el;</a>
+<a name="ln834">                                    else</a>
+<a name="ln835">                                          undoAddElement(el);</a>
+<a name="ln836">                                    }</a>
+<a name="ln837">                              else if (tag == &quot;FiguredBass&quot;) {</a>
+<a name="ln838">                                    // FiguredBass always belongs to first staff voice</a>
+<a name="ln839">                                    destTrack = trackZeroVoice(destTrack);</a>
+<a name="ln840">                                    Fraction ticks;</a>
+<a name="ln841">                                    FiguredBass* el = new FiguredBass(this);</a>
+<a name="ln842">                                    el-&gt;setTrack(destTrack);</a>
+<a name="ln843">                                    el-&gt;read(e);</a>
+<a name="ln844">                                    el-&gt;setTrack(destTrack);</a>
+<a name="ln845">                                    // if f.b. is off-note, we have to locate a place before currSegm</a>
+<a name="ln846">                                    // where an on-note f.b. element could (potentially) be</a>
+<a name="ln847">                                    // (while having an off-note f.b. without an on-note one before it</a>
+<a name="ln848">                                    // is un-idiomatic, possible mismatch in rhythmic patterns between</a>
+<a name="ln849">                                    // copy source and paste destination does not allow to be too picky)</a>
+<a name="ln850">                                    if (!el-&gt;onNote()) {</a>
+<a name="ln851">                                          FiguredBass* onNoteFB = nullptr;</a>
+<a name="ln852">                                          Segment*     prevSegm = currSegm;</a>
+<a name="ln853">                                          bool         done1    = false;</a>
+<a name="ln854">                                          while (prevSegm) {</a>
+<a name="ln855">                                                if (done1)</a>
+<a name="ln856">                                                      break;</a>
+<a name="ln857">                                                prevSegm = prevSegm-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln858">                                                // if there is a ChordRest in the dest. track</a>
+<a name="ln859">                                                // this segment is a (potential) f.b. location</a>
+<a name="ln860">                                                if (prevSegm-&gt;element(destTrack) != nullptr) {</a>
+<a name="ln861">                                                      done1 = true;</a>
+<a name="ln862">                                                      }</a>
+<a name="ln863">                                                // in any case, look for a f.b. in annotations:</a>
+<a name="ln864">                                                // if there is a f.b. element in the right track,</a>
+<a name="ln865">                                                // this is an (actual) f.b. location</a>
+<a name="ln866">                                                foreach (Element* a, prevSegm-&gt;annotations()) {</a>
+<a name="ln867">                                                      if (a-&gt;isFiguredBass() &amp;&amp; a-&gt;track() == destTrack) {</a>
+<a name="ln868">                                                            onNoteFB = toFiguredBass(a);</a>
+<a name="ln869">                                                            done1 = true;</a>
+<a name="ln870">                                                            }</a>
+<a name="ln871">                                                      }</a>
+<a name="ln872">                                                }</a>
+<a name="ln873">                                          if (!prevSegm) {</a>
+<a name="ln874">                                                qDebug(&quot;PasteSymbols: can't place off-note FiguredBass&quot;);</a>
+<a name="ln875">                                                delete el;</a>
+<a name="ln876">                                                continue;</a>
+<a name="ln877">                                                }</a>
+<a name="ln878">                                          // by default, split on-note duration in half: half on-note and half off-note</a>
+<a name="ln879">                                          Fraction totTicks  = currSegm-&gt;tick() - prevSegm-&gt;tick();</a>
+<a name="ln880">                                          Fraction destTick1 = prevSegm-&gt;tick() + (totTicks * Fraction(1,2));</a>
+<a name="ln881">                                          ticks         = totTicks * Fraction(1, 2);</a>
+<a name="ln882">                                          if (onNoteFB)</a>
+<a name="ln883">                                                onNoteFB-&gt;setTicks(totTicks * Fraction(1,2));</a>
+<a name="ln884">                                          // look for a segment at this tick; if none, create one</a>
+<a name="ln885">                                          Segment * nextSegm = prevSegm;</a>
+<a name="ln886">                                          while (nextSegm &amp;&amp; nextSegm-&gt;tick() &lt; destTick1)</a>
+<a name="ln887">                                                nextSegm = nextSegm-&gt;next1(SegmentType::ChordRest);</a>
+<a name="ln888">                                          if (!nextSegm || nextSegm-&gt;tick() &gt; destTick1) {      // no ChordRest segm at this tick</a>
+<a name="ln889">                                                nextSegm = new Segment(prevSegm-&gt;measure(), SegmentType::ChordRest, destTick1);</a>
+<a name="ln890">                                                if (!nextSegm) {</a>
+<a name="ln891">                                                      qDebug(&quot;PasteSymbols: can't find or create destination segment for FiguredBass&quot;);</a>
+<a name="ln892">                                                      delete el;</a>
+<a name="ln893">                                                      continue;</a>
+<a name="ln894">                                                      }</a>
+<a name="ln895">                                                undoAddElement(nextSegm);</a>
+<a name="ln896">                                                }</a>
+<a name="ln897">                                          currSegm = nextSegm;</a>
+<a name="ln898">                                          }</a>
+<a name="ln899">                                    else</a>
+<a name="ln900">                                          // by default, assign to FiguredBass element the duration of the chord it refers to</a>
+<a name="ln901">                                          ticks = toChordRest(currSegm-&gt;element(destTrack))-&gt;ticks();</a>
+<a name="ln902">                                    // in both cases, look for an existing f.b. element in segment and remove it, if found</a>
+<a name="ln903">                                    FiguredBass* oldFB = nullptr;</a>
+<a name="ln904">                                    foreach (Element* a, currSegm-&gt;annotations()) {</a>
+<a name="ln905">                                          if (a-&gt;isFiguredBass() &amp;&amp; a-&gt;track() == destTrack) {</a>
+<a name="ln906">                                                oldFB = toFiguredBass(a);</a>
+<a name="ln907">                                                break;</a>
+<a name="ln908">                                                }</a>
+<a name="ln909">                                          }</a>
+<a name="ln910">                                    if (oldFB)</a>
+<a name="ln911">                                          undoRemoveElement(oldFB);</a>
+<a name="ln912">                                    el-&gt;setParent(currSegm);</a>
+<a name="ln913">                                    el-&gt;setTicks(ticks);</a>
+<a name="ln914">                                    undoAddElement(el);</a>
+<a name="ln915">                                    }</a>
+<a name="ln916">                              else if (tag == &quot;Lyrics&quot;) {</a>
+<a name="ln917">                                    // with lyrics, skip rests</a>
+<a name="ln918">                                    while (!cr-&gt;isChord() &amp;&amp; currSegm) {</a>
+<a name="ln919">                                          currSegm = currSegm-&gt;nextCR(destTrack);</a>
+<a name="ln920">                                          if (currSegm)</a>
+<a name="ln921">                                                cr = toChordRest(currSegm-&gt;element(destTrack));</a>
+<a name="ln922">                                          else</a>
+<a name="ln923">                                                break;</a>
+<a name="ln924">                                          }</a>
+<a name="ln925">                                    if (currSegm == nullptr) {</a>
+<a name="ln926">                                          qDebug(&quot;PasteSymbols: no segment for Lyrics&quot;);</a>
+<a name="ln927">                                          e.skipCurrentElement();</a>
+<a name="ln928">                                          continue;</a>
+<a name="ln929">                                          }</a>
+<a name="ln930">                                    if (!cr-&gt;isChord()) {</a>
+<a name="ln931">                                          qDebug(&quot;PasteSymbols: can't paste Lyrics to rest&quot;);</a>
+<a name="ln932">                                          e.skipCurrentElement();</a>
+<a name="ln933">                                          continue;</a>
+<a name="ln934">                                          }</a>
+<a name="ln935">                                    Lyrics* el = new Lyrics(this);</a>
+<a name="ln936">                                    el-&gt;setTrack(destTrack);</a>
+<a name="ln937">                                    el-&gt;read(e);</a>
+<a name="ln938">                                    el-&gt;setTrack(destTrack);</a>
+<a name="ln939">                                    el-&gt;setParent(cr);</a>
+<a name="ln940">                                    undoAddElement(el);</a>
+<a name="ln941">                                    }</a>
+<a name="ln942">                              else {</a>
+<a name="ln943">                                    qDebug(&quot;PasteSymbols: element %s not handled&quot;, tag.toUtf8().data());</a>
+<a name="ln944">                                    e.skipCurrentElement();    // ignore</a>
+<a name="ln945">                                    }</a>
+<a name="ln946">                              }           // if !Harmony</a>
+<a name="ln947">                        }                 // if element</a>
+<a name="ln948">                  }                       // outer while readNextstartElement()</a>
+<a name="ln949">            }                             // inner while readNextstartElement()</a>
+<a name="ln950">      }                                   // pasteSymbolList()</a>
+<a name="ln951"> </a>
+<a name="ln952">//---------------------------------------------------------</a>
+<a name="ln953">//   cmdPaste</a>
+<a name="ln954">//---------------------------------------------------------</a>
+<a name="ln955"> </a>
+<a name="ln956">void Score::cmdPaste(const QMimeData* ms, MuseScoreView* view, Fraction scale)</a>
+<a name="ln957">      {</a>
+<a name="ln958">      if (ms == 0) {</a>
+<a name="ln959">            qDebug(&quot;no application mime data&quot;);</a>
+<a name="ln960">            MScore::setError(NO_MIME);</a>
+<a name="ln961">            return;</a>
+<a name="ln962">            }</a>
+<a name="ln963">      if ((_selection.isSingle() || _selection.isList()) &amp;&amp; ms-&gt;hasFormat(mimeSymbolFormat)) {</a>
+<a name="ln964">            QByteArray data(ms-&gt;data(mimeSymbolFormat));</a>
+<a name="ln965"> </a>
+<a name="ln966">            QPointF dragOffset;</a>
+<a name="ln967">            Fraction duration(1, 4);</a>
+<a name="ln968">            std::unique_ptr&lt;Element&gt; el(Element::readMimeData(this, data, &amp;dragOffset, &amp;duration));</a>
+<a name="ln969"> </a>
+<a name="ln970">            if (!el)</a>
+<a name="ln971">                  return;</a>
+<a name="ln972"> </a>
+<a name="ln973">            QList&lt;Element*&gt; els;</a>
+<a name="ln974">            if (_selection.isSingle())</a>
+<a name="ln975">                  els.append(_selection.element());</a>
+<a name="ln976">            else</a>
+<a name="ln977">                  els.append(_selection.elements());</a>
+<a name="ln978"> </a>
+<a name="ln979">            for (Element* target : els) {</a>
+<a name="ln980">                  el-&gt;setTrack(target-&gt;track());</a>
+<a name="ln981">                  Element* nel = el-&gt;clone();</a>
+<a name="ln982">                  addRefresh(target-&gt;abbox());   // layout() ?!</a>
+<a name="ln983">                  EditData ddata(view);</a>
+<a name="ln984">                  ddata.view        = view;</a>
+<a name="ln985">                  ddata.dropElement = nel;</a>
+<a name="ln986">                  if (target-&gt;acceptDrop(ddata)) {</a>
+<a name="ln987">                        if (el-&gt;isNote()) {</a>
+<a name="ln988">                              // dropping a note replaces and invalidates the target,</a>
+<a name="ln989">                              // so we need to deselect it</a>
+<a name="ln990">                              ElementType targetType = target-&gt;type();</a>
+<a name="ln991">                              deselect(target);</a>
+<a name="ln992"> </a>
+<a name="ln993">                              // perform the drop</a>
+<a name="ln994">                              target-&gt;drop(ddata);</a>
+<a name="ln995"> </a>
+<a name="ln996">                              // if the target is a rest rather than a note,</a>
+<a name="ln997">                              // a new note is generated, and nel becomes invalid as well</a>
+<a name="ln998">                              // (ChordRest::drop() will select it for us)</a>
+<a name="ln999">                              if (targetType == ElementType::NOTE)</a>
+<a name="ln1000">                                    select(nel);</a>
+<a name="ln1001">                              }</a>
+<a name="ln1002">                        else {</a>
+<a name="ln1003">                              target-&gt;drop(ddata);</a>
+<a name="ln1004">                              }</a>
+<a name="ln1005">                        if (_selection.element())</a>
+<a name="ln1006">                              addRefresh(_selection.element()-&gt;abbox());</a>
+<a name="ln1007">                        }</a>
+<a name="ln1008">                  else</a>
+<a name="ln1009">                        delete nel;</a>
+<a name="ln1010">                  }</a>
+<a name="ln1011">            }</a>
+<a name="ln1012">      else if ((_selection.isRange() || _selection.isList()) &amp;&amp; ms-&gt;hasFormat(mimeStaffListFormat)) {</a>
+<a name="ln1013">            ChordRest* cr = 0;</a>
+<a name="ln1014">            if (_selection.isRange())</a>
+<a name="ln1015">                  cr = _selection.firstChordRest();</a>
+<a name="ln1016">            else if (_selection.isSingle()) {</a>
+<a name="ln1017">                  Element* e = _selection.element();</a>
+<a name="ln1018">                  if (!e-&gt;isNote() &amp;&amp; !e-&gt;isChordRest()) {</a>
+<a name="ln1019">                        qDebug(&quot;cannot paste to %s&quot;, e-&gt;name());</a>
+<a name="ln1020">                        MScore::setError(DEST_NO_CR);</a>
+<a name="ln1021">                        return;</a>
+<a name="ln1022">                        }</a>
+<a name="ln1023">                  if (e-&gt;isNote())</a>
+<a name="ln1024">                        e = toNote(e)-&gt;chord();</a>
+<a name="ln1025">                  cr  = toChordRest(e);</a>
+<a name="ln1026">                  }</a>
+<a name="ln1027">            if (cr == 0) {</a>
+<a name="ln1028">                  MScore::setError(NO_DEST);</a>
+<a name="ln1029">                  return;</a>
+<a name="ln1030">                  }</a>
+<a name="ln1031">            else if (cr-&gt;tuplet() &amp;&amp; cr-&gt;tick() != cr-&gt;topTuplet()-&gt;tick()) {</a>
+<a name="ln1032">                  MScore::setError(DEST_TUPLET);</a>
+<a name="ln1033">                  return;</a>
+<a name="ln1034">                  }</a>
+<a name="ln1035">            else {</a>
+<a name="ln1036">                  QByteArray data(ms-&gt;data(mimeStaffListFormat));</a>
+<a name="ln1037">                  if (MScore::debugMode)</a>
+<a name="ln1038">                        qDebug(&quot;paste &lt;%s&gt;&quot;, data.data());</a>
+<a name="ln1039">                  XmlReader e(data);</a>
+<a name="ln1040">                  e.setPasteMode(true);</a>
+<a name="ln1041">                  if (!pasteStaff(e, cr-&gt;segment(), cr-&gt;staffIdx(), scale))</a>
+<a name="ln1042">                        return;</a>
+<a name="ln1043">                  }</a>
+<a name="ln1044">            }</a>
+<a name="ln1045">      else if (ms-&gt;hasFormat(mimeSymbolListFormat)) {</a>
+<a name="ln1046">            ChordRest* cr = 0;</a>
+<a name="ln1047">            if (_selection.isRange())</a>
+<a name="ln1048">                  cr = _selection.firstChordRest();</a>
+<a name="ln1049">            else if (_selection.isSingle()) {</a>
+<a name="ln1050">                  Element* e = _selection.element();</a>
+<a name="ln1051">                  if (!e-&gt;isNote() &amp;&amp; !e-&gt;isRest() &amp;&amp; !e-&gt;isChord()) {</a>
+<a name="ln1052">                        qDebug(&quot;cannot paste to %s&quot;, e-&gt;name());</a>
+<a name="ln1053">                        MScore::setError(DEST_NO_CR);</a>
+<a name="ln1054">                        return;</a>
+<a name="ln1055">                        }</a>
+<a name="ln1056">                  if (e-&gt;isNote())</a>
+<a name="ln1057">                        e = toNote(e)-&gt;chord();</a>
+<a name="ln1058">                  cr  = toChordRest(e);</a>
+<a name="ln1059">                  }</a>
+<a name="ln1060">            if (cr == 0) {</a>
+<a name="ln1061">                  MScore::setError(NO_DEST);</a>
+<a name="ln1062">                  return;</a>
+<a name="ln1063">                  }</a>
+<a name="ln1064">            else {</a>
+<a name="ln1065">                  QByteArray data(ms-&gt;data(mimeSymbolListFormat));</a>
+<a name="ln1066">                  if (MScore::debugMode)</a>
+<a name="ln1067">                        qDebug(&quot;paste &lt;%s&gt;&quot;, data.data());</a>
+<a name="ln1068">                  XmlReader e(data);</a>
+<a name="ln1069">                  pasteSymbols(e, cr);</a>
+<a name="ln1070">                  }</a>
+<a name="ln1071">            }</a>
+<a name="ln1072">      else if (ms-&gt;hasImage()) {</a>
+<a name="ln1073">            QImage im = qvariant_cast&lt;QImage&gt;(ms-&gt;imageData());</a>
+<a name="ln1074">            QByteArray ba;</a>
+<a name="ln1075">            QBuffer buffer(&amp;ba);</a>
+<a name="ln1076">            buffer.open(QIODevice::WriteOnly);</a>
+<a name="ln1077">            im.save(&amp;buffer, &quot;PNG&quot;);</a>
+<a name="ln1078"> </a>
+<a name="ln1079">            Image* image = new Image(this);</a>
+<a name="ln1080">            image-&gt;setImageType(ImageType::RASTER);</a>
+<a name="ln1081">            image-&gt;loadFromData(&quot;dragdrop&quot;, ba);</a>
+<a name="ln1082"> </a>
+<a name="ln1083">            QList&lt;Element*&gt; els;</a>
+<a name="ln1084">            if (_selection.isSingle())</a>
+<a name="ln1085">                  els.append(_selection.element());</a>
+<a name="ln1086">            else</a>
+<a name="ln1087">                  els.append(_selection.elements());</a>
+<a name="ln1088"> </a>
+<a name="ln1089">            for (Element* target : els) {</a>
+<a name="ln1090">                  Element* nel = image-&gt;clone();</a>
+<a name="ln1091">                  addRefresh(target-&gt;abbox());   // layout() ?!</a>
+<a name="ln1092">                  EditData ddata(view);</a>
+<a name="ln1093">                  ddata.view       = view;</a>
+<a name="ln1094">                  ddata.dropElement    = nel;</a>
+<a name="ln1095">                  target-&gt;drop(ddata);</a>
+<a name="ln1096">                  if (_selection.element())</a>
+<a name="ln1097">                        addRefresh(_selection.element()-&gt;abbox());</a>
+<a name="ln1098">                  }</a>
+<a name="ln1099">            delete image;</a>
+<a name="ln1100">            }</a>
+<a name="ln1101">      else {</a>
+<a name="ln1102">            qDebug(&quot;cannot paste selState %d staffList %s&quot;,</a>
+<a name="ln1103">               int(_selection.state()), (ms-&gt;hasFormat(mimeStaffListFormat))? &quot;true&quot; : &quot;false&quot;);</a>
+<a name="ln1104">            for (const QString&amp; s : ms-&gt;formats())</a>
+<a name="ln1105">                  qDebug(&quot;  format %s&quot;, qPrintable(s));</a>
+<a name="ln1106">            }</a>
+<a name="ln1107">      }</a>
+<a name="ln1108">}</a>
+
+</code></pre>
+<div class="balloon" rel="425"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="711"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'done' is always false.</p></div>
+<div class="balloon" rel="722"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'done' is always false.</p></div>
+<div class="balloon" rel="755"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="815"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="821"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="890"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the 'nextSegm' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+<div class="balloon" rel="943"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1019"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1038"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1052"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1067"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1105"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

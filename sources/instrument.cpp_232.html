@@ -1,0 +1,1566 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>instrument.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2008-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;instrument.h&quot;</a>
+<a name="ln14">#include &quot;xml.h&quot;</a>
+<a name="ln15">#include &quot;drumset.h&quot;</a>
+<a name="ln16">#include &quot;articulation.h&quot;</a>
+<a name="ln17">#include &quot;utils.h&quot;</a>
+<a name="ln18">#include &quot;stringdata.h&quot;</a>
+<a name="ln19">#include &quot;instrtemplate.h&quot;</a>
+<a name="ln20">#include &quot;mscore.h&quot;</a>
+<a name="ln21">#include &quot;part.h&quot;</a>
+<a name="ln22">#include &quot;score.h&quot;</a>
+<a name="ln23">#include &quot;synthesizer/synthesizer.h&quot;</a>
+<a name="ln24">#include &quot;synthesizer/midipatch.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">namespace Ms {</a>
+<a name="ln27"> </a>
+<a name="ln28">Instrument InstrumentList::defaultInstrument;</a>
+<a name="ln29">const std::initializer_list&lt;Channel::Prop&gt; PartChannelSettingsLink::excerptProperties {</a>
+<a name="ln30">      Channel::Prop::SOLOMUTE,</a>
+<a name="ln31">      Channel::Prop::SOLO,</a>
+<a name="ln32">      Channel::Prop::MUTE,</a>
+<a name="ln33">      };</a>
+<a name="ln34"> </a>
+<a name="ln35">//---------------------------------------------------------</a>
+<a name="ln36">//   write</a>
+<a name="ln37">//---------------------------------------------------------</a>
+<a name="ln38"> </a>
+<a name="ln39">void NamedEventList::write(XmlWriter&amp; xml, const QString&amp; n) const</a>
+<a name="ln40">      {</a>
+<a name="ln41">      xml.stag(QString(&quot;%1 name=\&quot;%2\&quot;&quot;).arg(n).arg(name));</a>
+<a name="ln42">      if (!descr.isEmpty())</a>
+<a name="ln43">            xml.tag(&quot;descr&quot;, descr);</a>
+<a name="ln44">      for (const MidiCoreEvent&amp; e : events)</a>
+<a name="ln45">            e.write(xml);</a>
+<a name="ln46">      xml.etag();</a>
+<a name="ln47">      }</a>
+<a name="ln48"> </a>
+<a name="ln49">//---------------------------------------------------------</a>
+<a name="ln50">//   read</a>
+<a name="ln51">//---------------------------------------------------------</a>
+<a name="ln52"> </a>
+<a name="ln53">void NamedEventList::read(XmlReader&amp; e)</a>
+<a name="ln54">      {</a>
+<a name="ln55">      name = e.attribute(&quot;name&quot;);</a>
+<a name="ln56">      while (e.readNextStartElement()) {</a>
+<a name="ln57">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln58">            if (tag == &quot;program&quot;) {</a>
+<a name="ln59">                  MidiCoreEvent ev(ME_CONTROLLER, 0, CTRL_PROGRAM, e.intAttribute(&quot;value&quot;, 0));</a>
+<a name="ln60">                  events.push_back(ev);</a>
+<a name="ln61">                  e.skipCurrentElement();</a>
+<a name="ln62">                  }</a>
+<a name="ln63">            else if (tag == &quot;controller&quot;) {</a>
+<a name="ln64">                  MidiCoreEvent ev;</a>
+<a name="ln65">                  ev.setType(ME_CONTROLLER);</a>
+<a name="ln66">                  ev.setDataA(e.intAttribute(&quot;ctrl&quot;, 0));</a>
+<a name="ln67">                  ev.setDataB(e.intAttribute(&quot;value&quot;, 0));</a>
+<a name="ln68">                  events.push_back(ev);</a>
+<a name="ln69">                  e.skipCurrentElement();</a>
+<a name="ln70">                  }</a>
+<a name="ln71">            else if (tag == &quot;descr&quot;)</a>
+<a name="ln72">                  descr = e.readElementText();</a>
+<a name="ln73">            else</a>
+<a name="ln74">                  e.unknown();</a>
+<a name="ln75">            }</a>
+<a name="ln76">      }</a>
+<a name="ln77"> </a>
+<a name="ln78">//---------------------------------------------------------</a>
+<a name="ln79">//   operator</a>
+<a name="ln80">//---------------------------------------------------------</a>
+<a name="ln81"> </a>
+<a name="ln82">bool MidiArticulation::operator==(const MidiArticulation&amp; i) const</a>
+<a name="ln83">      {</a>
+<a name="ln84">      return (i.name == name) &amp;&amp; (i.velocity == velocity) &amp;&amp; (i.gateTime == gateTime);</a>
+<a name="ln85">      }</a>
+<a name="ln86"> </a>
+<a name="ln87">//---------------------------------------------------------</a>
+<a name="ln88">//   Instrument</a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90"> </a>
+<a name="ln91">Instrument::Instrument()</a>
+<a name="ln92">      {</a>
+<a name="ln93">      Channel* a = new Channel;</a>
+<a name="ln94">      a-&gt;setName(Channel::DEFAULT_NAME);</a>
+<a name="ln95">      _channel.append(a);</a>
+<a name="ln96"> </a>
+<a name="ln97">      _minPitchA   = 0;</a>
+<a name="ln98">      _maxPitchA   = 127;</a>
+<a name="ln99">      _minPitchP   = 0;</a>
+<a name="ln100">      _maxPitchP   = 127;</a>
+<a name="ln101">      _useDrumset  = false;</a>
+<a name="ln102">      _drumset     = 0;</a>
+<a name="ln103">      _singleNoteDynamics = true;</a>
+<a name="ln104">      }</a>
+<a name="ln105"> </a>
+<a name="ln106">Instrument::Instrument(const Instrument&amp; i)</a>
+<a name="ln107">      {</a>
+<a name="ln108">      _longNames    = i._longNames;</a>
+<a name="ln109">      _shortNames   = i._shortNames;</a>
+<a name="ln110">      _trackName    = i._trackName;</a>
+<a name="ln111">      _minPitchA    = i._minPitchA;</a>
+<a name="ln112">      _maxPitchA    = i._maxPitchA;</a>
+<a name="ln113">      _minPitchP    = i._minPitchP;</a>
+<a name="ln114">      _maxPitchP    = i._maxPitchP;</a>
+<a name="ln115">      _transpose    = i._transpose;</a>
+<a name="ln116">      _instrumentId = i._instrumentId;</a>
+<a name="ln117">      _stringData   = i._stringData;</a>
+<a name="ln118">      _drumset      = 0;</a>
+<a name="ln119">      setDrumset(i._drumset);</a>
+<a name="ln120">      _useDrumset   = i._useDrumset;</a>
+<a name="ln121">      _stringData   = i._stringData;</a>
+<a name="ln122">      _midiActions  = i._midiActions;</a>
+<a name="ln123">      _articulation = i._articulation;</a>
+<a name="ln124">      _singleNoteDynamics = i._singleNoteDynamics;</a>
+<a name="ln125">      for (Channel* c : i._channel)</a>
+<a name="ln126">            _channel.append(new Channel(*c));</a>
+<a name="ln127">      _clefType     = i._clefType;</a>
+<a name="ln128">      }</a>
+<a name="ln129"> </a>
+<a name="ln130">void Instrument::operator=(const Instrument&amp; i)</a>
+<a name="ln131">      {</a>
+<a name="ln132">      qDeleteAll(_channel);</a>
+<a name="ln133">      _channel.clear();</a>
+<a name="ln134">      delete _drumset;</a>
+<a name="ln135"> </a>
+<a name="ln136">      _longNames    = i._longNames;</a>
+<a name="ln137">      _shortNames   = i._shortNames;</a>
+<a name="ln138">      _trackName    = i._trackName;</a>
+<a name="ln139">      _minPitchA    = i._minPitchA;</a>
+<a name="ln140">      _maxPitchA    = i._maxPitchA;</a>
+<a name="ln141">      _minPitchP    = i._minPitchP;</a>
+<a name="ln142">      _maxPitchP    = i._maxPitchP;</a>
+<a name="ln143">      _transpose    = i._transpose;</a>
+<a name="ln144">      _instrumentId = i._instrumentId;</a>
+<a name="ln145">      _stringData   = i._stringData;</a>
+<a name="ln146">      _drumset      = 0;</a>
+<a name="ln147">      setDrumset(i._drumset);</a>
+<a name="ln148">      _useDrumset   = i._useDrumset;</a>
+<a name="ln149">      _stringData   = i._stringData;</a>
+<a name="ln150">      _midiActions  = i._midiActions;</a>
+<a name="ln151">      _articulation = i._articulation;</a>
+<a name="ln152">      _singleNoteDynamics = i._singleNoteDynamics;</a>
+<a name="ln153">      for (Channel* c : i._channel)</a>
+<a name="ln154">            _channel.append(new Channel(*c));</a>
+<a name="ln155">      _clefType     = i._clefType;</a>
+<a name="ln156">      }</a>
+<a name="ln157"> </a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159">//   ~Instrument</a>
+<a name="ln160">//---------------------------------------------------------</a>
+<a name="ln161"> </a>
+<a name="ln162">Instrument::~Instrument()</a>
+<a name="ln163">      {</a>
+<a name="ln164">      qDeleteAll(_channel);</a>
+<a name="ln165">      delete _drumset;</a>
+<a name="ln166">      }</a>
+<a name="ln167"> </a>
+<a name="ln168">//---------------------------------------------------------</a>
+<a name="ln169">//   StaffName</a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171"> </a>
+<a name="ln172">StaffName::StaffName(const QString&amp; s, int p) : _name(s), _pos(p)</a>
+<a name="ln173">      {</a>
+<a name="ln174">      Text::validateText(_name); // enforce HTML encoding</a>
+<a name="ln175">      }</a>
+<a name="ln176"> </a>
+<a name="ln177">//---------------------------------------------------------</a>
+<a name="ln178">//   StaffName::write</a>
+<a name="ln179">//---------------------------------------------------------</a>
+<a name="ln180"> </a>
+<a name="ln181">void StaffName::write(XmlWriter&amp; xml, const char* tag) const</a>
+<a name="ln182">      {</a>
+<a name="ln183">      if (!name().isEmpty()) {</a>
+<a name="ln184">            if (pos() == 0)</a>
+<a name="ln185">                  xml.writeXml(QString(&quot;%1&quot;).arg(tag), name());</a>
+<a name="ln186">            else</a>
+<a name="ln187">                  xml.writeXml(QString(&quot;%1 pos=\&quot;%2\&quot;&quot;).arg(tag).arg(pos()), name());</a>
+<a name="ln188">            }</a>
+<a name="ln189">      }</a>
+<a name="ln190"> </a>
+<a name="ln191">//---------------------------------------------------------</a>
+<a name="ln192">//   read</a>
+<a name="ln193">//---------------------------------------------------------</a>
+<a name="ln194"> </a>
+<a name="ln195">void StaffName::read(XmlReader&amp; e)</a>
+<a name="ln196">      {</a>
+<a name="ln197">      _pos  = e.intAttribute(&quot;pos&quot;, 0);</a>
+<a name="ln198">      _name = e.readXml();</a>
+<a name="ln199">      if (_name.startsWith(&quot;&lt;html&gt;&quot;)) {</a>
+<a name="ln200">            // compatibility to old html implementation:</a>
+<a name="ln201">            _name = QTextDocumentFragment::fromHtml(_name).toPlainText();</a>
+<a name="ln202">            }</a>
+<a name="ln203">      }</a>
+<a name="ln204"> </a>
+<a name="ln205">//---------------------------------------------------------</a>
+<a name="ln206">//   Instrument::write</a>
+<a name="ln207">//---------------------------------------------------------</a>
+<a name="ln208"> </a>
+<a name="ln209">void Instrument::write(XmlWriter&amp; xml, const Part* part) const</a>
+<a name="ln210">      {</a>
+<a name="ln211">      xml.stag(&quot;Instrument&quot;);</a>
+<a name="ln212">      _longNames.write(xml, &quot;longName&quot;);</a>
+<a name="ln213">      _shortNames.write(xml, &quot;shortName&quot;);</a>
+<a name="ln214">//      if (!_trackName.empty())</a>
+<a name="ln215">            xml.tag(&quot;trackName&quot;, _trackName);</a>
+<a name="ln216">      if (_minPitchP &gt; 0)</a>
+<a name="ln217">            xml.tag(&quot;minPitchP&quot;, _minPitchP);</a>
+<a name="ln218">      if (_maxPitchP &lt; 127)</a>
+<a name="ln219">            xml.tag(&quot;maxPitchP&quot;, _maxPitchP);</a>
+<a name="ln220">      if (_minPitchA &gt; 0)</a>
+<a name="ln221">            xml.tag(&quot;minPitchA&quot;, _minPitchA);</a>
+<a name="ln222">      if (_maxPitchA &lt; 127)</a>
+<a name="ln223">            xml.tag(&quot;maxPitchA&quot;, _maxPitchA);</a>
+<a name="ln224">      if (_transpose.diatonic)</a>
+<a name="ln225">            xml.tag(&quot;transposeDiatonic&quot;, _transpose.diatonic);</a>
+<a name="ln226">      if (_transpose.chromatic)</a>
+<a name="ln227">            xml.tag(&quot;transposeChromatic&quot;, _transpose.chromatic);</a>
+<a name="ln228">      if (!_instrumentId.isEmpty())</a>
+<a name="ln229">            xml.tag(&quot;instrumentId&quot;, _instrumentId);</a>
+<a name="ln230">      if (_useDrumset) {</a>
+<a name="ln231">            xml.tag(&quot;useDrumset&quot;, _useDrumset);</a>
+<a name="ln232">            _drumset-&gt;save(xml);</a>
+<a name="ln233">            }</a>
+<a name="ln234">      for (int i = 0; i &lt; _clefType.size(); ++i) {</a>
+<a name="ln235">            ClefTypeList ct = _clefType[i];</a>
+<a name="ln236">            if (ct._concertClef == ct._transposingClef) {</a>
+<a name="ln237">                  if (ct._concertClef != ClefType::G) {</a>
+<a name="ln238">                        QString tag = ClefInfo::tag(ct._concertClef);</a>
+<a name="ln239">                        if (i)</a>
+<a name="ln240">                              xml.tag(QString(&quot;clef staff=\&quot;%1\&quot;&quot;).arg(i+1), tag);</a>
+<a name="ln241">                        else</a>
+<a name="ln242">                              xml.tag(&quot;clef&quot;, tag);</a>
+<a name="ln243">                        }</a>
+<a name="ln244">                  }</a>
+<a name="ln245">            else {</a>
+<a name="ln246">                  QString tag1 = ClefInfo::tag(ct._concertClef);</a>
+<a name="ln247">                  QString tag2 = ClefInfo::tag(ct._transposingClef);</a>
+<a name="ln248">                  if (i) {</a>
+<a name="ln249">                        xml.tag(QString(&quot;concertClef staff=\&quot;%1\&quot;&quot;).arg(i+1), tag1);</a>
+<a name="ln250">                        xml.tag(QString(&quot;transposingClef staff=\&quot;%1\&quot;&quot;).arg(i+1), tag2);</a>
+<a name="ln251">                        }</a>
+<a name="ln252">                  else {</a>
+<a name="ln253">                        xml.tag(&quot;concertClef&quot;, tag1);</a>
+<a name="ln254">                        xml.tag(&quot;transposingClef&quot;, tag2);</a>
+<a name="ln255">                        }</a>
+<a name="ln256">                  }</a>
+<a name="ln257">            }</a>
+<a name="ln258"> </a>
+<a name="ln259">      if (_singleNoteDynamics != getSingleNoteDynamicsFromTemplate())</a>
+<a name="ln260">            xml.tag(&quot;singleNoteDynamics&quot;, _singleNoteDynamics);</a>
+<a name="ln261"> </a>
+<a name="ln262">      if (!(_stringData == StringData()))</a>
+<a name="ln263">            _stringData.write(xml);</a>
+<a name="ln264">      for (const NamedEventList&amp; a : _midiActions)</a>
+<a name="ln265">            a.write(xml, &quot;MidiAction&quot;);</a>
+<a name="ln266">      for (const MidiArticulation&amp; a : _articulation)</a>
+<a name="ln267">            a.write(xml);</a>
+<a name="ln268">      for (const Channel* a : _channel)</a>
+<a name="ln269">            a-&gt;write(xml, part);</a>
+<a name="ln270">      xml.etag();</a>
+<a name="ln271">      }</a>
+<a name="ln272"> </a>
+<a name="ln273">//---------------------------------------------------------</a>
+<a name="ln274">//   Instrument::read</a>
+<a name="ln275">//---------------------------------------------------------</a>
+<a name="ln276"> </a>
+<a name="ln277">void Instrument::read(XmlReader&amp; e, Part* part)</a>
+<a name="ln278">      {</a>
+<a name="ln279">      bool customDrumset = false;</a>
+<a name="ln280">      bool readSingleNoteDynamics = false;</a>
+<a name="ln281"> </a>
+<a name="ln282">      _channel.clear();       // remove default channel</a>
+<a name="ln283">      while (e.readNextStartElement()) {</a>
+<a name="ln284">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln285">            if (tag == &quot;singleNoteDynamics&quot;) {</a>
+<a name="ln286">                  _singleNoteDynamics = e.readBool();</a>
+<a name="ln287">                  readSingleNoteDynamics = true;</a>
+<a name="ln288">                  }</a>
+<a name="ln289">            else if (!readProperties(e, part, &amp;customDrumset))</a>
+<a name="ln290">                  e.unknown();</a>
+<a name="ln291">            }</a>
+<a name="ln292"> </a>
+<a name="ln293">      if (!readSingleNoteDynamics)</a>
+<a name="ln294">            setSingleNoteDynamicsFromTemplate();</a>
+<a name="ln295"> </a>
+<a name="ln296">      if (_useDrumset) {</a>
+<a name="ln297">            if (_channel[0]-&gt;bank() == 0 &amp;&amp; _channel[0]-&gt;synti().toLower() != &quot;zerberus&quot;)</a>
+<a name="ln298">                  _channel[0]-&gt;setBank(128);</a>
+<a name="ln299">            }</a>
+<a name="ln300">      }</a>
+<a name="ln301"> </a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303">//   Instrument::readProperties</a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305"> </a>
+<a name="ln306">bool Instrument::readProperties(XmlReader&amp; e, Part* part, bool* customDrumset)</a>
+<a name="ln307">      {</a>
+<a name="ln308">      const QStringRef&amp; tag(e.name());</a>
+<a name="ln309">      if (tag == &quot;longName&quot;) {</a>
+<a name="ln310">            StaffName name;</a>
+<a name="ln311">            name.read(e);</a>
+<a name="ln312">            _longNames.append(name);</a>
+<a name="ln313">            }</a>
+<a name="ln314">      else if (tag == &quot;shortName&quot;) {</a>
+<a name="ln315">            StaffName name;</a>
+<a name="ln316">            name.read(e);</a>
+<a name="ln317">            _shortNames.append(name);</a>
+<a name="ln318">            }</a>
+<a name="ln319">      else if (tag == &quot;trackName&quot;)</a>
+<a name="ln320">            _trackName = e.readElementText();</a>
+<a name="ln321">      else if (tag == &quot;minPitch&quot;) {      // obsolete</a>
+<a name="ln322">            _minPitchP = _minPitchA = e.readInt();</a>
+<a name="ln323">            }</a>
+<a name="ln324">      else if (tag == &quot;maxPitch&quot;) {       // obsolete</a>
+<a name="ln325">            _maxPitchP = _maxPitchA = e.readInt();</a>
+<a name="ln326">            }</a>
+<a name="ln327">      else if (tag == &quot;minPitchA&quot;)</a>
+<a name="ln328">            _minPitchA = e.readInt();</a>
+<a name="ln329">      else if (tag == &quot;minPitchP&quot;)</a>
+<a name="ln330">            _minPitchP = e.readInt();</a>
+<a name="ln331">      else if (tag == &quot;maxPitchA&quot;)</a>
+<a name="ln332">            _maxPitchA = e.readInt();</a>
+<a name="ln333">      else if (tag == &quot;maxPitchP&quot;)</a>
+<a name="ln334">            _maxPitchP = e.readInt();</a>
+<a name="ln335">      else if (tag == &quot;transposition&quot;) {    // obsolete</a>
+<a name="ln336">            _transpose.chromatic = e.readInt();</a>
+<a name="ln337">            _transpose.diatonic = chromatic2diatonic(_transpose.chromatic);</a>
+<a name="ln338">            }</a>
+<a name="ln339">      else if (tag == &quot;transposeChromatic&quot;)</a>
+<a name="ln340">            _transpose.chromatic = e.readInt();</a>
+<a name="ln341">      else if (tag == &quot;transposeDiatonic&quot;)</a>
+<a name="ln342">            _transpose.diatonic = e.readInt();</a>
+<a name="ln343">      else if (tag == &quot;instrumentId&quot;)</a>
+<a name="ln344">            _instrumentId = e.readElementText();</a>
+<a name="ln345">      else if (tag == &quot;useDrumset&quot;) {</a>
+<a name="ln346">            _useDrumset = e.readInt();</a>
+<a name="ln347">            if (_useDrumset) {</a>
+<a name="ln348">                  delete _drumset;</a>
+<a name="ln349">                  _drumset = new Drumset(*smDrumset);</a>
+<a name="ln350">                  }</a>
+<a name="ln351">            }</a>
+<a name="ln352">      else if (tag == &quot;Drum&quot;) {</a>
+<a name="ln353">            // if we see on of this tags, a custom drumset will</a>
+<a name="ln354">            // be created</a>
+<a name="ln355">            if (!_drumset)</a>
+<a name="ln356">                  _drumset = new Drumset(*smDrumset);</a>
+<a name="ln357">            if (!(*customDrumset)) {</a>
+<a name="ln358">                  const_cast&lt;Drumset*&gt;(_drumset)-&gt;clear();</a>
+<a name="ln359">                  *customDrumset = true;</a>
+<a name="ln360">                  }</a>
+<a name="ln361">            const_cast&lt;Drumset*&gt;(_drumset)-&gt;load(e);</a>
+<a name="ln362">            }</a>
+<a name="ln363">      // support tag &quot;Tablature&quot; for a while for compatibility with existent 2.0 scores</a>
+<a name="ln364">      else if (tag == &quot;Tablature&quot; || tag == &quot;StringData&quot;)</a>
+<a name="ln365">            _stringData.read(e);</a>
+<a name="ln366">      else if (tag == &quot;MidiAction&quot;) {</a>
+<a name="ln367">            NamedEventList a;</a>
+<a name="ln368">            a.read(e);</a>
+<a name="ln369">            _midiActions.append(a);</a>
+<a name="ln370">            }</a>
+<a name="ln371">      else if (tag == &quot;Articulation&quot;) {</a>
+<a name="ln372">            MidiArticulation a;</a>
+<a name="ln373">            a.read(e);</a>
+<a name="ln374">            _articulation.append(a);</a>
+<a name="ln375">            }</a>
+<a name="ln376">      else if (tag == &quot;Channel&quot; || tag == &quot;channel&quot;) {</a>
+<a name="ln377">            Channel* a = new Channel;</a>
+<a name="ln378">            a-&gt;read(e, part);</a>
+<a name="ln379">            _channel.append(a);</a>
+<a name="ln380">            }</a>
+<a name="ln381">      else if (tag == &quot;clef&quot;) {           // sets both transposing and concert clef</a>
+<a name="ln382">            int idx = e.intAttribute(&quot;staff&quot;, 1) - 1;</a>
+<a name="ln383">            QString val(e.readElementText());</a>
+<a name="ln384">            ClefType ct = Clef::clefType(val);</a>
+<a name="ln385">            setClefType(idx, ClefTypeList(ct, ct));</a>
+<a name="ln386">            }</a>
+<a name="ln387">      else if (tag == &quot;concertClef&quot;) {</a>
+<a name="ln388">            int idx = e.intAttribute(&quot;staff&quot;, 1) - 1;</a>
+<a name="ln389">            QString val(e.readElementText());</a>
+<a name="ln390">            setClefType(idx, ClefTypeList(Clef::clefType(val), clefType(idx)._transposingClef));</a>
+<a name="ln391">            }</a>
+<a name="ln392">      else if (tag == &quot;transposingClef&quot;) {</a>
+<a name="ln393">            int idx = e.intAttribute(&quot;staff&quot;, 1) - 1;</a>
+<a name="ln394">            QString val(e.readElementText());</a>
+<a name="ln395">            setClefType(idx, ClefTypeList(clefType(idx)._concertClef, Clef::clefType(val)));</a>
+<a name="ln396">            }</a>
+<a name="ln397">      else</a>
+<a name="ln398">            return false;</a>
+<a name="ln399"> </a>
+<a name="ln400">      return true;</a>
+<a name="ln401">      }</a>
+<a name="ln402"> </a>
+<a name="ln403">//---------------------------------------------------------</a>
+<a name="ln404">//   action</a>
+<a name="ln405">//---------------------------------------------------------</a>
+<a name="ln406"> </a>
+<a name="ln407">NamedEventList* Instrument::midiAction(const QString&amp; s, int channelIdx) const</a>
+<a name="ln408">      {</a>
+<a name="ln409">      // first look in channel list</a>
+<a name="ln410"> </a>
+<a name="ln411">      foreach(const NamedEventList&amp; a, _channel[channelIdx]-&gt;midiActions) {</a>
+<a name="ln412">            if (s == a.name)</a>
+<a name="ln413">                  return const_cast&lt;NamedEventList*&gt;(&amp;a);</a>
+<a name="ln414">            }</a>
+<a name="ln415"> </a>
+<a name="ln416">      foreach(const NamedEventList&amp; a, _midiActions) {</a>
+<a name="ln417">            if (s == a.name)</a>
+<a name="ln418">                  return const_cast&lt;NamedEventList*&gt;(&amp;a);</a>
+<a name="ln419">            }</a>
+<a name="ln420">      return 0;</a>
+<a name="ln421">      }</a>
+<a name="ln422"> </a>
+<a name="ln423"> </a>
+<a name="ln424">const char *Channel::DEFAULT_NAME = &quot;normal&quot;;</a>
+<a name="ln425"> </a>
+<a name="ln426"> </a>
+<a name="ln427">//---------------------------------------------------------</a>
+<a name="ln428">//   Channel</a>
+<a name="ln429">//---------------------------------------------------------</a>
+<a name="ln430"> </a>
+<a name="ln431">Channel::Channel()</a>
+<a name="ln432">      {</a>
+<a name="ln433">      for(int i = 0; i &lt; int(A::INIT_COUNT); ++i)</a>
+<a name="ln434">            _init.push_back(MidiCoreEvent());</a>
+<a name="ln435">      _synti    = &quot;Fluid&quot;;     // default synthesizer</a>
+<a name="ln436">      _channel  = -1;</a>
+<a name="ln437">      _program  = -1;</a>
+<a name="ln438">      _bank     = 0;</a>
+<a name="ln439">      _volume   = defaultVolume;</a>
+<a name="ln440">      _pan      = 64; // actually 63.5 for center</a>
+<a name="ln441">      _chorus   = 0;</a>
+<a name="ln442">      _reverb   = 0;</a>
+<a name="ln443">      _color = DEFAULT_COLOR;</a>
+<a name="ln444"> </a>
+<a name="ln445">      _mute     = false;</a>
+<a name="ln446">      _solo     = false;</a>
+<a name="ln447">      _soloMute = false;</a>
+<a name="ln448"> </a>
+<a name="ln449">//      qDebug(&quot;construct Channel &quot;);</a>
+<a name="ln450">      }</a>
+<a name="ln451"> </a>
+<a name="ln452">//---------------------------------------------------------</a>
+<a name="ln453">//   initList</a>
+<a name="ln454">//---------------------------------------------------------</a>
+<a name="ln455"> </a>
+<a name="ln456">std::vector&lt;MidiCoreEvent&gt;&amp; Channel::initList() const</a>
+<a name="ln457">      {</a>
+<a name="ln458">      if (_mustUpdateInit) {</a>
+<a name="ln459">            updateInitList();</a>
+<a name="ln460">            _mustUpdateInit = false;</a>
+<a name="ln461">            }</a>
+<a name="ln462">      return _init;</a>
+<a name="ln463">      }</a>
+<a name="ln464"> </a>
+<a name="ln465">//---------------------------------------------------------</a>
+<a name="ln466">//   setVolume</a>
+<a name="ln467">//---------------------------------------------------------</a>
+<a name="ln468"> </a>
+<a name="ln469">void Channel::setVolume(char value)</a>
+<a name="ln470">      {</a>
+<a name="ln471">      if (_volume != value) {</a>
+<a name="ln472">            _volume = value;</a>
+<a name="ln473">            firePropertyChanged(Prop::VOLUME);</a>
+<a name="ln474">            }</a>
+<a name="ln475">      _mustUpdateInit = true;</a>
+<a name="ln476">      }</a>
+<a name="ln477"> </a>
+<a name="ln478">//---------------------------------------------------------</a>
+<a name="ln479">//   setPan</a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481"> </a>
+<a name="ln482">void Channel::setPan(char value)</a>
+<a name="ln483">      {</a>
+<a name="ln484">      if (_pan != value) {</a>
+<a name="ln485">            _pan = value;</a>
+<a name="ln486">            firePropertyChanged(Prop::PAN);</a>
+<a name="ln487">            }</a>
+<a name="ln488">      _mustUpdateInit = true;</a>
+<a name="ln489">      }</a>
+<a name="ln490"> </a>
+<a name="ln491">//---------------------------------------------------------</a>
+<a name="ln492">//   setChorus</a>
+<a name="ln493">//---------------------------------------------------------</a>
+<a name="ln494"> </a>
+<a name="ln495">void Channel::setChorus(char value)</a>
+<a name="ln496">      {</a>
+<a name="ln497">      if (_chorus != value) {</a>
+<a name="ln498">            _chorus = value;</a>
+<a name="ln499">            firePropertyChanged(Prop::CHORUS);</a>
+<a name="ln500">            }</a>
+<a name="ln501">      _mustUpdateInit = true;</a>
+<a name="ln502">      }</a>
+<a name="ln503"> </a>
+<a name="ln504">//---------------------------------------------------------</a>
+<a name="ln505">//   setReverb</a>
+<a name="ln506">//---------------------------------------------------------</a>
+<a name="ln507"> </a>
+<a name="ln508">void Channel::setReverb(char value)</a>
+<a name="ln509">      {</a>
+<a name="ln510">      if (_reverb != value) {</a>
+<a name="ln511">            _reverb = value;</a>
+<a name="ln512">            firePropertyChanged(Prop::REVERB);</a>
+<a name="ln513">            }</a>
+<a name="ln514">      _mustUpdateInit = true;</a>
+<a name="ln515">      }</a>
+<a name="ln516"> </a>
+<a name="ln517">//---------------------------------------------------------</a>
+<a name="ln518">//   setName</a>
+<a name="ln519">//---------------------------------------------------------</a>
+<a name="ln520"> </a>
+<a name="ln521">void Channel::setName(const QString&amp; value)</a>
+<a name="ln522">      {</a>
+<a name="ln523">      if (_name != value) {</a>
+<a name="ln524">            _name = value;</a>
+<a name="ln525">            firePropertyChanged(Prop::NAME);</a>
+<a name="ln526">            }</a>
+<a name="ln527">      }</a>
+<a name="ln528"> </a>
+<a name="ln529">//---------------------------------------------------------</a>
+<a name="ln530">//   setDescr</a>
+<a name="ln531">//---------------------------------------------------------</a>
+<a name="ln532"> </a>
+<a name="ln533">void Channel::setDescr(const QString&amp; value)</a>
+<a name="ln534">      {</a>
+<a name="ln535">      if (_descr != value) {</a>
+<a name="ln536">            _descr = value;</a>
+<a name="ln537">            firePropertyChanged(Prop::DESCR);</a>
+<a name="ln538">            }</a>
+<a name="ln539">      }</a>
+<a name="ln540"> </a>
+<a name="ln541">//---------------------------------------------------------</a>
+<a name="ln542">//   setSynti</a>
+<a name="ln543">//---------------------------------------------------------</a>
+<a name="ln544"> </a>
+<a name="ln545">void Channel::setSynti(const QString&amp; value)</a>
+<a name="ln546">      {</a>
+<a name="ln547">      if (_synti != value) {</a>
+<a name="ln548">            _synti = value;</a>
+<a name="ln549">            firePropertyChanged(Prop::SYNTI);</a>
+<a name="ln550">            }</a>
+<a name="ln551">      }</a>
+<a name="ln552"> </a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554">//   setColor</a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556"> </a>
+<a name="ln557">void Channel::setColor(int value)</a>
+<a name="ln558">      {</a>
+<a name="ln559">      if (_color != value) {</a>
+<a name="ln560">            _color = value;</a>
+<a name="ln561">            firePropertyChanged(Prop::COLOR);</a>
+<a name="ln562">            }</a>
+<a name="ln563">      }</a>
+<a name="ln564"> </a>
+<a name="ln565">//---------------------------------------------------------</a>
+<a name="ln566">//   setProgram</a>
+<a name="ln567">//---------------------------------------------------------</a>
+<a name="ln568"> </a>
+<a name="ln569">void Channel::setProgram(int value)</a>
+<a name="ln570">      {</a>
+<a name="ln571">      if (_program != value) {</a>
+<a name="ln572">            _program = value;</a>
+<a name="ln573">            firePropertyChanged(Prop::PROGRAM);</a>
+<a name="ln574">            }</a>
+<a name="ln575">      _mustUpdateInit = true;</a>
+<a name="ln576">      }</a>
+<a name="ln577"> </a>
+<a name="ln578">//---------------------------------------------------------</a>
+<a name="ln579">//   setBank</a>
+<a name="ln580">//---------------------------------------------------------</a>
+<a name="ln581"> </a>
+<a name="ln582">void Channel::setBank(int value)</a>
+<a name="ln583">      {</a>
+<a name="ln584">      if (_bank != value) {</a>
+<a name="ln585">            _bank = value;</a>
+<a name="ln586">            firePropertyChanged(Prop::BANK);</a>
+<a name="ln587">            }</a>
+<a name="ln588">      _mustUpdateInit = true;</a>
+<a name="ln589">      }</a>
+<a name="ln590"> </a>
+<a name="ln591">//---------------------------------------------------------</a>
+<a name="ln592">//   setChannel</a>
+<a name="ln593">//---------------------------------------------------------</a>
+<a name="ln594"> </a>
+<a name="ln595">void Channel::setChannel(int value)</a>
+<a name="ln596">      {</a>
+<a name="ln597">      if (_channel != value) {</a>
+<a name="ln598">            _channel = value;</a>
+<a name="ln599">            firePropertyChanged(Prop::CHANNEL);</a>
+<a name="ln600">            }</a>
+<a name="ln601">      }</a>
+<a name="ln602"> </a>
+<a name="ln603">//---------------------------------------------------------</a>
+<a name="ln604">//   setSoloMute</a>
+<a name="ln605">//---------------------------------------------------------</a>
+<a name="ln606"> </a>
+<a name="ln607">void Channel::setSoloMute(bool value)</a>
+<a name="ln608">      {</a>
+<a name="ln609">      if (_soloMute != value) {</a>
+<a name="ln610">            _soloMute = value;</a>
+<a name="ln611">            firePropertyChanged(Prop::SOLOMUTE);</a>
+<a name="ln612">            }</a>
+<a name="ln613">      }</a>
+<a name="ln614"> </a>
+<a name="ln615">//---------------------------------------------------------</a>
+<a name="ln616">//   setMute</a>
+<a name="ln617">//---------------------------------------------------------</a>
+<a name="ln618"> </a>
+<a name="ln619">void Channel::setMute(bool value)</a>
+<a name="ln620">      {</a>
+<a name="ln621">      if (_mute != value) {</a>
+<a name="ln622">            _mute = value;</a>
+<a name="ln623">            firePropertyChanged(Prop::MUTE);</a>
+<a name="ln624">            }</a>
+<a name="ln625">      }</a>
+<a name="ln626"> </a>
+<a name="ln627">//---------------------------------------------------------</a>
+<a name="ln628">//   setSolo</a>
+<a name="ln629">//---------------------------------------------------------</a>
+<a name="ln630"> </a>
+<a name="ln631">void Channel::setSolo(bool value)</a>
+<a name="ln632">      {</a>
+<a name="ln633">      if (_solo != value) {</a>
+<a name="ln634">            _solo = value;</a>
+<a name="ln635">            firePropertyChanged(Prop::SOLO);</a>
+<a name="ln636">            }</a>
+<a name="ln637">      }</a>
+<a name="ln638"> </a>
+<a name="ln639">//---------------------------------------------------------</a>
+<a name="ln640">//   setUserBankController</a>
+<a name="ln641">//---------------------------------------------------------</a>
+<a name="ln642"> </a>
+<a name="ln643">void Channel::setUserBankController(bool val)</a>
+<a name="ln644">      {</a>
+<a name="ln645">      if (_userBankController != val) {</a>
+<a name="ln646">            _userBankController = val;</a>
+<a name="ln647">            firePropertyChanged(Prop::USER_BANK_CONTROL);</a>
+<a name="ln648">            }</a>
+<a name="ln649">      }</a>
+<a name="ln650"> </a>
+<a name="ln651">//---------------------------------------------------------</a>
+<a name="ln652">//   write</a>
+<a name="ln653">//---------------------------------------------------------</a>
+<a name="ln654"> </a>
+<a name="ln655">void Channel::write(XmlWriter&amp; xml, const Part* part) const</a>
+<a name="ln656">      {</a>
+<a name="ln657">      if (_name.isEmpty() || _name == DEFAULT_NAME)</a>
+<a name="ln658">            xml.stag(&quot;Channel&quot;);</a>
+<a name="ln659">      else</a>
+<a name="ln660">            xml.stag(QString(&quot;Channel name=\&quot;%1\&quot;&quot;).arg(_name));</a>
+<a name="ln661">      if (!_descr.isEmpty())</a>
+<a name="ln662">            xml.tag(&quot;descr&quot;, _descr);</a>
+<a name="ln663">      if (_color != DEFAULT_COLOR)</a>
+<a name="ln664">            xml.tag(&quot;color&quot;, _color);</a>
+<a name="ln665"> </a>
+<a name="ln666">      for (const MidiCoreEvent&amp; e : initList()) {</a>
+<a name="ln667">            if (e.type() == ME_INVALID)</a>
+<a name="ln668">                  continue;</a>
+<a name="ln669">            if (e.type() == ME_CONTROLLER) {</a>
+<a name="ln670">                  // Don't write bank if automatically switched, but always write if switched by the user</a>
+<a name="ln671">                  if (e.dataA() == CTRL_HBANK &amp;&amp; e.dataB() == 0 &amp;&amp; !_userBankController)</a>
+<a name="ln672">                        continue;</a>
+<a name="ln673">                  if (e.dataA() == CTRL_LBANK &amp;&amp; e.dataB() == 0 &amp;&amp; !_userBankController)</a>
+<a name="ln674">                        continue;</a>
+<a name="ln675">                  if (e.dataA() == CTRL_VOLUME &amp;&amp; e.dataB() == 100)</a>
+<a name="ln676">                        continue;</a>
+<a name="ln677">                  if (e.dataA() == CTRL_PANPOT &amp;&amp; e.dataB() == 64)</a>
+<a name="ln678">                        continue;</a>
+<a name="ln679">                  if (e.dataA() == CTRL_REVERB_SEND &amp;&amp; e.dataB() == 0)</a>
+<a name="ln680">                        continue;</a>
+<a name="ln681">                  if (e.dataA() == CTRL_CHORUS_SEND &amp;&amp; e.dataB() == 0)</a>
+<a name="ln682">                        continue;</a>
+<a name="ln683">                  }</a>
+<a name="ln684"> </a>
+<a name="ln685">            e.write(xml);</a>
+<a name="ln686">            }</a>
+<a name="ln687">      if (!MScore::testMode)</a>
+<a name="ln688">            // xml.tag(&quot;synti&quot;, ::synti-&gt;name(synti));</a>
+<a name="ln689">            xml.tag(&quot;synti&quot;, _synti);</a>
+<a name="ln690">      if (_mute)</a>
+<a name="ln691">            xml.tag(&quot;mute&quot;, _mute);</a>
+<a name="ln692">      if (_solo)</a>
+<a name="ln693">            xml.tag(&quot;solo&quot;, _solo);</a>
+<a name="ln694"> </a>
+<a name="ln695">      if (part &amp;&amp; part-&gt;masterScore()-&gt;exportMidiMapping() &amp;&amp; part-&gt;score() == part-&gt;masterScore()) {</a>
+<a name="ln696">            xml.tag(&quot;midiPort&quot;,    part-&gt;masterScore()-&gt;midiMapping(_channel)-&gt;port());</a>
+<a name="ln697">            xml.tag(&quot;midiChannel&quot;, part-&gt;masterScore()-&gt;midiMapping(_channel)-&gt;channel());</a>
+<a name="ln698">            }</a>
+<a name="ln699">      for (const NamedEventList&amp; a : midiActions)</a>
+<a name="ln700">            a.write(xml, &quot;MidiAction&quot;);</a>
+<a name="ln701">      for (const MidiArticulation&amp; a : articulation)</a>
+<a name="ln702">            a.write(xml);</a>
+<a name="ln703">      xml.etag();</a>
+<a name="ln704">      }</a>
+<a name="ln705"> </a>
+<a name="ln706">//---------------------------------------------------------</a>
+<a name="ln707">//   read</a>
+<a name="ln708">//---------------------------------------------------------</a>
+<a name="ln709"> </a>
+<a name="ln710">void Channel::read(XmlReader&amp; e, Part* part)</a>
+<a name="ln711">      {</a>
+<a name="ln712">      // synti = 0;</a>
+<a name="ln713">      _name = e.attribute(&quot;name&quot;);</a>
+<a name="ln714">      if (_name == &quot;&quot;)</a>
+<a name="ln715">            _name = DEFAULT_NAME;</a>
+<a name="ln716"> </a>
+<a name="ln717">      int midiPort = -1;</a>
+<a name="ln718">      int midiChannel = -1;</a>
+<a name="ln719"> </a>
+<a name="ln720">      while (e.readNextStartElement()) {</a>
+<a name="ln721">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln722">            if (tag == &quot;program&quot;) {</a>
+<a name="ln723">                  _program = e.intAttribute(&quot;value&quot;, -1);</a>
+<a name="ln724">                  if (_program == -1)</a>
+<a name="ln725">                        _program = e.readInt();</a>
+<a name="ln726">                  else</a>
+<a name="ln727">                        e.readNext();</a>
+<a name="ln728">                  }</a>
+<a name="ln729">            else if (tag == &quot;controller&quot;) {</a>
+<a name="ln730">                  int value = e.intAttribute(&quot;value&quot;, 0);</a>
+<a name="ln731">                  int ctrl  = e.intAttribute(&quot;ctrl&quot;, 0);</a>
+<a name="ln732">                  switch (ctrl) {</a>
+<a name="ln733">                        case CTRL_HBANK:</a>
+<a name="ln734">                              _bank = (value &lt;&lt; 7) + (_bank &amp; 0x7f);</a>
+<a name="ln735">                              _userBankController = true;</a>
+<a name="ln736">                              break;</a>
+<a name="ln737">                        case CTRL_LBANK:</a>
+<a name="ln738">                              _bank = (_bank &amp; ~0x7f) + (value &amp; 0x7f);</a>
+<a name="ln739">                              _userBankController = true;</a>
+<a name="ln740">                              break;</a>
+<a name="ln741">                        case CTRL_VOLUME:</a>
+<a name="ln742">                              _volume = value;</a>
+<a name="ln743">                              break;</a>
+<a name="ln744">                        case CTRL_PANPOT:</a>
+<a name="ln745">                              _pan = value;</a>
+<a name="ln746">                              break;</a>
+<a name="ln747">                        case CTRL_CHORUS_SEND:</a>
+<a name="ln748">                              _chorus = value;</a>
+<a name="ln749">                              break;</a>
+<a name="ln750">                        case CTRL_REVERB_SEND:</a>
+<a name="ln751">                              _reverb = value;</a>
+<a name="ln752">                              break;</a>
+<a name="ln753">                        default:</a>
+<a name="ln754">                              {</a>
+<a name="ln755">                              Event ev(ME_CONTROLLER);</a>
+<a name="ln756">                              ev.setOntime(-1);</a>
+<a name="ln757">                              ev.setChannel(0);</a>
+<a name="ln758">                              ev.setDataA(ctrl);</a>
+<a name="ln759">                              ev.setDataB(value);</a>
+<a name="ln760">                              _init.push_back(ev);</a>
+<a name="ln761">                              }</a>
+<a name="ln762">                              break;</a>
+<a name="ln763">                        }</a>
+<a name="ln764">                  e.readNext();</a>
+<a name="ln765">                  }</a>
+<a name="ln766">            else if (tag == &quot;Articulation&quot;) {</a>
+<a name="ln767">                  MidiArticulation a;</a>
+<a name="ln768">                  a.read(e);</a>
+<a name="ln769">                  articulation.append(a);</a>
+<a name="ln770">                  }</a>
+<a name="ln771">            else if (tag == &quot;MidiAction&quot;) {</a>
+<a name="ln772">                  NamedEventList a;</a>
+<a name="ln773">                  a.read(e);</a>
+<a name="ln774">                  midiActions.append(a);</a>
+<a name="ln775">                  }</a>
+<a name="ln776">            else if (tag == &quot;synti&quot;)</a>
+<a name="ln777">                  _synti = e.readElementText();</a>
+<a name="ln778">            else if (tag == &quot;descr&quot;)</a>
+<a name="ln779">                  _descr = e.readElementText();</a>
+<a name="ln780">            else if (tag == &quot;color&quot;)</a>
+<a name="ln781">                  _color = e.readInt();</a>
+<a name="ln782">            else if (tag == &quot;mute&quot;)</a>
+<a name="ln783">                  _mute = e.readInt();</a>
+<a name="ln784">            else if (tag == &quot;solo&quot;)</a>
+<a name="ln785">                  _solo = e.readInt();</a>
+<a name="ln786">            else if (tag == &quot;midiPort&quot;) {</a>
+<a name="ln787">                  midiPort = e.readInt();</a>
+<a name="ln788">                  }</a>
+<a name="ln789">            else if (tag == &quot;midiChannel&quot;) {</a>
+<a name="ln790">                  midiChannel = e.readInt();</a>
+<a name="ln791">                  }</a>
+<a name="ln792">            else</a>
+<a name="ln793">                  e.unknown();</a>
+<a name="ln794">            }</a>
+<a name="ln795">      if (128 == _bank &amp;&amp; &quot;zerberus&quot; == _synti.toLower())</a>
+<a name="ln796">            _bank = 0;</a>
+<a name="ln797"> </a>
+<a name="ln798">      _mustUpdateInit = true;</a>
+<a name="ln799"> </a>
+<a name="ln800">      if ((midiPort != -1 || midiChannel != -1) &amp;&amp; part &amp;&amp; part-&gt;score()-&gt;isMaster())</a>
+<a name="ln801">            part-&gt;masterScore()-&gt;addMidiMapping(this, part, midiPort, midiChannel);</a>
+<a name="ln802">      }</a>
+<a name="ln803"> </a>
+<a name="ln804">//---------------------------------------------------------</a>
+<a name="ln805">//   switchExpressive</a>
+<a name="ln806">//    Switches channel from non-expressive to expressive patch or vice versa</a>
+<a name="ln807">//    This works only with MuseScore General soundfont</a>
+<a name="ln808">//---------------------------------------------------------</a>
+<a name="ln809"> </a>
+<a name="ln810">void Channel::switchExpressive(Synthesizer* synth, bool expressive, bool force /* = false */)</a>
+<a name="ln811">      {</a>
+<a name="ln812">      if ((_userBankController &amp;&amp; !force) || !synth)</a>
+<a name="ln813">            return;</a>
+<a name="ln814"> </a>
+<a name="ln815">      // Don't try to switch if we already have done so</a>
+<a name="ln816">      if (expressive == _switchedToExpressive)</a>
+<a name="ln817">            return;</a>
+<a name="ln818"> </a>
+<a name="ln819">      // Check that we're actually changing the MuseScore General soundfont</a>
+<a name="ln820">      const auto fontsInfo = synth-&gt;soundFontsInfo();</a>
+<a name="ln821">      if (fontsInfo.empty())</a>
+<a name="ln822">            return;</a>
+<a name="ln823">      const auto&amp; info = fontsInfo.front();</a>
+<a name="ln824">      if (!info.fontName.contains(&quot;MuseScore_General&quot;)) {</a>
+<a name="ln825">            qDebug().nospace() &lt;&lt; &quot;Soundfont '&quot; &lt;&lt; info.fontName &lt;&lt; &quot;' is not MuseScore General, cannot update expressive&quot;;</a>
+<a name="ln826">            return;</a>
+<a name="ln827">            }</a>
+<a name="ln828"> </a>
+<a name="ln829">      // Work out where the new expressive patch will be</a>
+<a name="ln830">      // All expressive instruments are +1 bank higher than the</a>
+<a name="ln831">      // normal counterparts, except on bank 0, where they are placed on bank 17</a>
+<a name="ln832">      // and on bank 8, which uses bank 18 instead.</a>
+<a name="ln833">      int searchBankNum;</a>
+<a name="ln834">      int newBankNum;</a>
+<a name="ln835">      if (expressive) {</a>
+<a name="ln836">            int relativeBank = bank() % 129;</a>
+<a name="ln837">            if (relativeBank == 0)</a>
+<a name="ln838">                  newBankNum = 17;</a>
+<a name="ln839">            else if (relativeBank == 8)</a>
+<a name="ln840">                  newBankNum = 18;</a>
+<a name="ln841">            else</a>
+<a name="ln842">                  newBankNum = relativeBank + 1;</a>
+<a name="ln843">            _switchedToExpressive = true;</a>
+<a name="ln844">            }</a>
+<a name="ln845">      else {</a>
+<a name="ln846">            int relativeBank = bank() % 129;</a>
+<a name="ln847">            if (relativeBank == 17)</a>
+<a name="ln848">                  newBankNum = 0;</a>
+<a name="ln849">            else if (relativeBank == 18)</a>
+<a name="ln850">                  newBankNum = 8;</a>
+<a name="ln851">            else</a>
+<a name="ln852">                  newBankNum = relativeBank - 1;</a>
+<a name="ln853">            _switchedToExpressive = false;</a>
+<a name="ln854">            }</a>
+<a name="ln855"> </a>
+<a name="ln856">      // Floor bank num to multiple of 129 and add new num to get bank num of new patch</a>
+<a name="ln857">      searchBankNum = (bank() / 129) * 129 + newBankNum;</a>
+<a name="ln858">      const auto&amp; pl = synth-&gt;getPatchInfo();</a>
+<a name="ln859">      for (const MidiPatch* p : pl) {</a>
+<a name="ln860">            if (p-&gt;synti == &quot;Fluid&quot;) {</a>
+<a name="ln861">                  if (searchBankNum == p-&gt;bank &amp;&amp; program() == p-&gt;prog) {</a>
+<a name="ln862">                        setBank(p-&gt;bank);</a>
+<a name="ln863">                        return;</a>
+<a name="ln864">                        }</a>
+<a name="ln865">                  }</a>
+<a name="ln866">            }</a>
+<a name="ln867">      }</a>
+<a name="ln868"> </a>
+<a name="ln869">//---------------------------------------------------------</a>
+<a name="ln870">//   updateInitList</a>
+<a name="ln871">//---------------------------------------------------------</a>
+<a name="ln872"> </a>
+<a name="ln873">void Channel::updateInitList() const</a>
+<a name="ln874">      {</a>
+<a name="ln875">      MidiCoreEvent e;</a>
+<a name="ln876">      if (_program != -1) {</a>
+<a name="ln877">            e.setType(ME_CONTROLLER);</a>
+<a name="ln878">            e.setDataA(CTRL_PROGRAM);</a>
+<a name="ln879">            e.setDataB(_program);</a>
+<a name="ln880">            _init[int(A::PROGRAM)] = e;</a>
+<a name="ln881">            }</a>
+<a name="ln882"> </a>
+<a name="ln883">      e.setData(ME_CONTROLLER, CTRL_HBANK, (_bank &gt;&gt; 7) &amp; 0x7f);</a>
+<a name="ln884">      _init[int(A::HBANK)] = e;</a>
+<a name="ln885"> </a>
+<a name="ln886">      e.setData(ME_CONTROLLER, CTRL_LBANK, _bank &amp; 0x7f);</a>
+<a name="ln887">      _init[int(A::LBANK)] = e;</a>
+<a name="ln888"> </a>
+<a name="ln889">      e.setData(ME_CONTROLLER, CTRL_VOLUME, volume());</a>
+<a name="ln890">      _init[int(A::VOLUME)] = e;</a>
+<a name="ln891"> </a>
+<a name="ln892">      e.setData(ME_CONTROLLER, CTRL_PANPOT, pan());</a>
+<a name="ln893">      _init[int(A::PAN)] = e;</a>
+<a name="ln894"> </a>
+<a name="ln895">      e.setData(ME_CONTROLLER, CTRL_CHORUS_SEND, chorus());</a>
+<a name="ln896">      _init[int(A::CHORUS)] = e;</a>
+<a name="ln897"> </a>
+<a name="ln898">      e.setData(ME_CONTROLLER, CTRL_REVERB_SEND, reverb());</a>
+<a name="ln899">      _init[int(A::REVERB)] = e;</a>
+<a name="ln900"> </a>
+<a name="ln901">      }</a>
+<a name="ln902"> </a>
+<a name="ln903">//---------------------------------------------------------</a>
+<a name="ln904">//   addListener</a>
+<a name="ln905">//---------------------------------------------------------</a>
+<a name="ln906"> </a>
+<a name="ln907">void Channel::addListener(ChannelListener* l)</a>
+<a name="ln908">      {</a>
+<a name="ln909">      _notifier.addListener(l);</a>
+<a name="ln910">      }</a>
+<a name="ln911"> </a>
+<a name="ln912">//---------------------------------------------------------</a>
+<a name="ln913">//   removeListener</a>
+<a name="ln914">//---------------------------------------------------------</a>
+<a name="ln915"> </a>
+<a name="ln916">void Channel::removeListener(ChannelListener* l)</a>
+<a name="ln917">      {</a>
+<a name="ln918">      _notifier.removeListener(l);</a>
+<a name="ln919">      }</a>
+<a name="ln920"> </a>
+<a name="ln921">//---------------------------------------------------------</a>
+<a name="ln922">//   PartChannelSettingsLink</a>
+<a name="ln923">//---------------------------------------------------------</a>
+<a name="ln924"> </a>
+<a name="ln925">PartChannelSettingsLink::PartChannelSettingsLink(Channel* main, Channel* bound, bool excerpt)</a>
+<a name="ln926">   : _main(main), _bound(bound), _excerpt(excerpt)</a>
+<a name="ln927">      {</a>
+<a name="ln928">      if (excerpt) {</a>
+<a name="ln929">            for (Channel::Prop p : excerptProperties)</a>
+<a name="ln930">                  applyProperty(p, /* from */ bound, /* to */ main);</a>
+<a name="ln931">            }</a>
+<a name="ln932">      // Maybe it would be good to assign common properties if the link</a>
+<a name="ln933">      // is constructed in non-excerpt mode. But it is not currently</a>
+<a name="ln934">      // necessary as playback channels are currently recreated on each</a>
+<a name="ln935">      // MIDI remapping.</a>
+<a name="ln936"> </a>
+<a name="ln937">      main-&gt;addListener(this);</a>
+<a name="ln938">      }</a>
+<a name="ln939"> </a>
+<a name="ln940">//---------------------------------------------------------</a>
+<a name="ln941">//   PartChannelSettingsLink</a>
+<a name="ln942">//---------------------------------------------------------</a>
+<a name="ln943"> </a>
+<a name="ln944">PartChannelSettingsLink::PartChannelSettingsLink(PartChannelSettingsLink&amp;&amp; other)</a>
+<a name="ln945">   : ChannelListener(), // swap() will set the notifier instead</a>
+<a name="ln946">   _main(nullptr), _bound(nullptr), _excerpt(false)</a>
+<a name="ln947">      {</a>
+<a name="ln948">      swap(*this, other);</a>
+<a name="ln949">      }</a>
+<a name="ln950"> </a>
+<a name="ln951">//---------------------------------------------------------</a>
+<a name="ln952">//   PartChannelSettingsLink::operator=</a>
+<a name="ln953">//---------------------------------------------------------</a>
+<a name="ln954"> </a>
+<a name="ln955">PartChannelSettingsLink&amp; PartChannelSettingsLink::operator=(PartChannelSettingsLink&amp;&amp; other)</a>
+<a name="ln956">      {</a>
+<a name="ln957">      if (this != &amp;other)</a>
+<a name="ln958">            swap(*this, other);</a>
+<a name="ln959">      return *this;</a>
+<a name="ln960">      }</a>
+<a name="ln961"> </a>
+<a name="ln962">//---------------------------------------------------------</a>
+<a name="ln963">//   swap</a>
+<a name="ln964">//---------------------------------------------------------</a>
+<a name="ln965"> </a>
+<a name="ln966">void swap(PartChannelSettingsLink&amp; l1, PartChannelSettingsLink&amp; l2)</a>
+<a name="ln967">      {</a>
+<a name="ln968">      Ms::swap(static_cast&lt;ChannelListener&amp;&gt;(l1), static_cast&lt;ChannelListener&amp;&gt;(l2));</a>
+<a name="ln969">      using std::swap;</a>
+<a name="ln970">      swap(l1._main, l2._main);</a>
+<a name="ln971">      swap(l1._bound, l2._bound);</a>
+<a name="ln972">      swap(l1._excerpt, l2._excerpt);</a>
+<a name="ln973">      }</a>
+<a name="ln974"> </a>
+<a name="ln975">//---------------------------------------------------------</a>
+<a name="ln976">//   PartChannelSettingsLink::applyProperty</a>
+<a name="ln977">//---------------------------------------------------------</a>
+<a name="ln978"> </a>
+<a name="ln979">void PartChannelSettingsLink::applyProperty(Channel::Prop p, const Channel* from, Channel* to)</a>
+<a name="ln980">      {</a>
+<a name="ln981">      switch (p) {</a>
+<a name="ln982">            case Channel::Prop::VOLUME:</a>
+<a name="ln983">                  to-&gt;setVolume(from-&gt;volume());</a>
+<a name="ln984">                  break;</a>
+<a name="ln985">            case Channel::Prop::PAN:</a>
+<a name="ln986">                  to-&gt;setPan(from-&gt;pan());</a>
+<a name="ln987">                  break;</a>
+<a name="ln988">            case Channel::Prop::CHORUS:</a>
+<a name="ln989">                  to-&gt;setChorus(from-&gt;chorus());</a>
+<a name="ln990">                  break;</a>
+<a name="ln991">            case Channel::Prop::REVERB:</a>
+<a name="ln992">                  to-&gt;setReverb(from-&gt;reverb());</a>
+<a name="ln993">                  break;</a>
+<a name="ln994">            case Channel::Prop::NAME:</a>
+<a name="ln995">                  to-&gt;setName(from-&gt;name());</a>
+<a name="ln996">                  break;</a>
+<a name="ln997">            case Channel::Prop::DESCR:</a>
+<a name="ln998">                  to-&gt;setDescr(from-&gt;descr());</a>
+<a name="ln999">                  break;</a>
+<a name="ln1000">            case Channel::Prop::PROGRAM:</a>
+<a name="ln1001">                  to-&gt;setProgram(from-&gt;program());</a>
+<a name="ln1002">                  break;</a>
+<a name="ln1003">            case Channel::Prop::BANK:</a>
+<a name="ln1004">                  to-&gt;setBank(from-&gt;bank());</a>
+<a name="ln1005">                  break;</a>
+<a name="ln1006">            case Channel::Prop::COLOR:</a>
+<a name="ln1007">                  to-&gt;setColor(from-&gt;color());</a>
+<a name="ln1008">                  break;</a>
+<a name="ln1009">            case Channel::Prop::SOLOMUTE:</a>
+<a name="ln1010">                  to-&gt;setSoloMute(from-&gt;soloMute());</a>
+<a name="ln1011">                  break;</a>
+<a name="ln1012">            case Channel::Prop::SOLO:</a>
+<a name="ln1013">                  to-&gt;setSolo(from-&gt;solo());</a>
+<a name="ln1014">                  break;</a>
+<a name="ln1015">            case Channel::Prop::MUTE:</a>
+<a name="ln1016">                  to-&gt;setMute(from-&gt;mute());</a>
+<a name="ln1017">                  break;</a>
+<a name="ln1018">            case Channel::Prop::SYNTI:</a>
+<a name="ln1019">                  to-&gt;setSynti(from-&gt;synti());</a>
+<a name="ln1020">                  break;</a>
+<a name="ln1021">            case Channel::Prop::CHANNEL:</a>
+<a name="ln1022">                  to-&gt;setChannel(from-&gt;channel());</a>
+<a name="ln1023">                  break;</a>
+<a name="ln1024">            case Channel::Prop::USER_BANK_CONTROL:</a>
+<a name="ln1025">                  to-&gt;setUserBankController(from-&gt;userBankController());</a>
+<a name="ln1026">                  break;</a>
+<a name="ln1027">            };</a>
+<a name="ln1028">      }</a>
+<a name="ln1029"> </a>
+<a name="ln1030">//---------------------------------------------------------</a>
+<a name="ln1031">//   PartChannelSettingsLink::propertyChanged</a>
+<a name="ln1032">//---------------------------------------------------------</a>
+<a name="ln1033"> </a>
+<a name="ln1034">void PartChannelSettingsLink::propertyChanged(Channel::Prop p)</a>
+<a name="ln1035">      {</a>
+<a name="ln1036">      if (isExcerptProperty(p) == _excerpt)</a>
+<a name="ln1037">            applyProperty(p, _main, _bound);</a>
+<a name="ln1038">      }</a>
+<a name="ln1039"> </a>
+<a name="ln1040">//---------------------------------------------------------</a>
+<a name="ln1041">//   channelIdx</a>
+<a name="ln1042">//---------------------------------------------------------</a>
+<a name="ln1043"> </a>
+<a name="ln1044">int Instrument::channelIdx(const QString&amp; s) const</a>
+<a name="ln1045">      {</a>
+<a name="ln1046">      int idx = 0;</a>
+<a name="ln1047">      for (const Channel* a : _channel) {</a>
+<a name="ln1048">            if (a-&gt;name().isEmpty() &amp;&amp; s == Channel::DEFAULT_NAME)</a>
+<a name="ln1049">                  return idx;</a>
+<a name="ln1050">            if (s == a-&gt;name())</a>
+<a name="ln1051">                  return idx;</a>
+<a name="ln1052">            ++idx;</a>
+<a name="ln1053">            }</a>
+<a name="ln1054">      return -1;</a>
+<a name="ln1055">      }</a>
+<a name="ln1056"> </a>
+<a name="ln1057">//---------------------------------------------------------</a>
+<a name="ln1058">//   write</a>
+<a name="ln1059">//---------------------------------------------------------</a>
+<a name="ln1060"> </a>
+<a name="ln1061">void MidiArticulation::write(XmlWriter&amp; xml) const</a>
+<a name="ln1062">      {</a>
+<a name="ln1063">      if (name.isEmpty())</a>
+<a name="ln1064">            xml.stag(&quot;Articulation&quot;);</a>
+<a name="ln1065">      else</a>
+<a name="ln1066">            xml.stag(QString(&quot;Articulation name=\&quot;%1\&quot;&quot;).arg(name));</a>
+<a name="ln1067">      if (!descr.isEmpty())</a>
+<a name="ln1068">            xml.tag(&quot;descr&quot;, descr);</a>
+<a name="ln1069">      xml.tag(&quot;velocity&quot;, velocity);</a>
+<a name="ln1070">      xml.tag(&quot;gateTime&quot;, gateTime);</a>
+<a name="ln1071">      xml.etag();</a>
+<a name="ln1072">      }</a>
+<a name="ln1073"> </a>
+<a name="ln1074">//---------------------------------------------------------</a>
+<a name="ln1075">//   read</a>
+<a name="ln1076">//---------------------------------------------------------</a>
+<a name="ln1077"> </a>
+<a name="ln1078">void MidiArticulation::read(XmlReader&amp; e)</a>
+<a name="ln1079">      {</a>
+<a name="ln1080">      name = e.attribute(&quot;name&quot;);</a>
+<a name="ln1081">      while (e.readNextStartElement()) {</a>
+<a name="ln1082">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1083">            if (tag == &quot;velocity&quot;) {</a>
+<a name="ln1084">                  QString text(e.readElementText());</a>
+<a name="ln1085">                  if (text.endsWith(&quot;%&quot;))</a>
+<a name="ln1086">                        text = text.left(text.size()-1);</a>
+<a name="ln1087">                  velocity = text.toInt();</a>
+<a name="ln1088">                  }</a>
+<a name="ln1089">            else if (tag == &quot;gateTime&quot;) {</a>
+<a name="ln1090">                  QString text(e.readElementText());</a>
+<a name="ln1091">                  if (text.endsWith(&quot;%&quot;))</a>
+<a name="ln1092">                        text = text.left(text.size()-1);</a>
+<a name="ln1093">                  gateTime = text.toInt();</a>
+<a name="ln1094">                  }</a>
+<a name="ln1095">            else if (tag == &quot;descr&quot;)</a>
+<a name="ln1096">                  descr = e.readElementText();</a>
+<a name="ln1097">            else</a>
+<a name="ln1098">                  e.unknown();</a>
+<a name="ln1099">            }</a>
+<a name="ln1100">      }</a>
+<a name="ln1101"> </a>
+<a name="ln1102">//---------------------------------------------------------</a>
+<a name="ln1103">//   updateVelocity</a>
+<a name="ln1104">//---------------------------------------------------------</a>
+<a name="ln1105"> </a>
+<a name="ln1106">void Instrument::updateVelocity(int* velocity, int /*channelIdx*/, const QString&amp; name)</a>
+<a name="ln1107">      {</a>
+<a name="ln1108">      *velocity *= getVelocityMultiplier(name);</a>
+<a name="ln1109">      }</a>
+<a name="ln1110"> </a>
+<a name="ln1111">//---------------------------------------------------------</a>
+<a name="ln1112">//   updateVelocity</a>
+<a name="ln1113">//---------------------------------------------------------</a>
+<a name="ln1114"> </a>
+<a name="ln1115">qreal Instrument::getVelocityMultiplier(const QString&amp; name)</a>
+<a name="ln1116">      {</a>
+<a name="ln1117">      for (const MidiArticulation&amp; a : _articulation) {</a>
+<a name="ln1118">            if (a.name == name) {</a>
+<a name="ln1119">                  return qreal(a.velocity) / 100;</a>
+<a name="ln1120">                  }</a>
+<a name="ln1121">            }</a>
+<a name="ln1122">      return 1;</a>
+<a name="ln1123">      }</a>
+<a name="ln1124"> </a>
+<a name="ln1125">//---------------------------------------------------------</a>
+<a name="ln1126">//   updateGateTime</a>
+<a name="ln1127">//---------------------------------------------------------</a>
+<a name="ln1128"> </a>
+<a name="ln1129">void Instrument::updateGateTime(int* gateTime, int /*channelIdx*/, const QString&amp; name)</a>
+<a name="ln1130">      {</a>
+<a name="ln1131">      for (const MidiArticulation&amp; a : _articulation) {</a>
+<a name="ln1132">            if (a.name == name) {</a>
+<a name="ln1133">                  *gateTime = a.gateTime;</a>
+<a name="ln1134">                  break;</a>
+<a name="ln1135">                  }</a>
+<a name="ln1136">            }</a>
+<a name="ln1137">      }</a>
+<a name="ln1138"> </a>
+<a name="ln1139"> </a>
+<a name="ln1140">//---------------------------------------------------------</a>
+<a name="ln1141">//   updateGateTime</a>
+<a name="ln1142">//---------------------------------------------------------</a>
+<a name="ln1143"> </a>
+<a name="ln1144">void Instrument::switchExpressive(MasterScore* score, Synthesizer* synth, bool expressive, bool force /* = false */)</a>
+<a name="ln1145">      {</a>
+<a name="ln1146">      // Only switch to expressive where necessary</a>
+<a name="ln1147">      if (!synth || (expressive &amp;&amp; !singleNoteDynamics()))</a>
+<a name="ln1148">            return;</a>
+<a name="ln1149"> </a>
+<a name="ln1150">      for (Channel* c : channel()) {</a>
+<a name="ln1151">            c-&gt;switchExpressive(synth, expressive, force);</a>
+<a name="ln1152">            if (score-&gt;playbackChannel(c))</a>
+<a name="ln1153">                  score-&gt;playbackChannel(c)-&gt;switchExpressive(synth, expressive, force);</a>
+<a name="ln1154">            }</a>
+<a name="ln1155">      }</a>
+<a name="ln1156"> </a>
+<a name="ln1157">//---------------------------------------------------------</a>
+<a name="ln1158">//   operator==</a>
+<a name="ln1159">//---------------------------------------------------------</a>
+<a name="ln1160"> </a>
+<a name="ln1161">bool Instrument::operator==(const Instrument&amp; i) const</a>
+<a name="ln1162">      {</a>
+<a name="ln1163">      int n = _longNames.size();</a>
+<a name="ln1164">      if (i._longNames.size() != n)</a>
+<a name="ln1165">            return false;</a>
+<a name="ln1166">      for (int k = 0; k &lt; n; ++k) {</a>
+<a name="ln1167">            if (!(i._longNames[k] == _longNames[k]))</a>
+<a name="ln1168">                  return false;</a>
+<a name="ln1169">            }</a>
+<a name="ln1170">      n = _shortNames.size();</a>
+<a name="ln1171">      if (i._shortNames.size() != n)</a>
+<a name="ln1172">            return false;</a>
+<a name="ln1173">      for (int k = 0; k &lt; n; ++k) {</a>
+<a name="ln1174">            if (!(i._shortNames[k] == _shortNames[k].name()))</a>
+<a name="ln1175">                  return false;</a>
+<a name="ln1176">            }</a>
+<a name="ln1177">      n = _channel.size();</a>
+<a name="ln1178">      if (i._channel.size() != n)</a>
+<a name="ln1179">            return false;</a>
+<a name="ln1180">      for (int k = 0; k &lt; n; ++k) {</a>
+<a name="ln1181">            if (!(*i._channel[k] == *_channel[k]))</a>
+<a name="ln1182">                  return false;</a>
+<a name="ln1183">            }</a>
+<a name="ln1184"> </a>
+<a name="ln1185">      return i._minPitchA == _minPitchA</a>
+<a name="ln1186">         &amp;&amp;  i._maxPitchA == _maxPitchA</a>
+<a name="ln1187">         &amp;&amp;  i._minPitchP == _minPitchP</a>
+<a name="ln1188">         &amp;&amp;  i._maxPitchP == _maxPitchP</a>
+<a name="ln1189">         &amp;&amp;  i._useDrumset == _useDrumset</a>
+<a name="ln1190">         &amp;&amp;  i._midiActions == _midiActions</a>
+<a name="ln1191">         &amp;&amp;  i._articulation == _articulation</a>
+<a name="ln1192">         &amp;&amp;  i._transpose.diatonic == _transpose.diatonic</a>
+<a name="ln1193">         &amp;&amp;  i._transpose.chromatic == _transpose.chromatic</a>
+<a name="ln1194">         &amp;&amp;  i._trackName == _trackName</a>
+<a name="ln1195">         &amp;&amp;  *i.stringData() == *stringData()</a>
+<a name="ln1196">         &amp;&amp;  i._singleNoteDynamics == _singleNoteDynamics;</a>
+<a name="ln1197">      }</a>
+<a name="ln1198"> </a>
+<a name="ln1199">//---------------------------------------------------------</a>
+<a name="ln1200">//   operator==</a>
+<a name="ln1201">//---------------------------------------------------------</a>
+<a name="ln1202"> </a>
+<a name="ln1203">bool StaffName::operator==(const StaffName&amp; i) const</a>
+<a name="ln1204">      {</a>
+<a name="ln1205">      return (i._pos == _pos) &amp;&amp; (i._name == _name);</a>
+<a name="ln1206">      }</a>
+<a name="ln1207"> </a>
+<a name="ln1208">//---------------------------------------------------------</a>
+<a name="ln1209">//   setUseDrumset</a>
+<a name="ln1210">//---------------------------------------------------------</a>
+<a name="ln1211"> </a>
+<a name="ln1212">void Instrument::setUseDrumset(bool val)</a>
+<a name="ln1213">      {</a>
+<a name="ln1214">      _useDrumset = val;</a>
+<a name="ln1215">      if (val &amp;&amp; !_drumset)</a>
+<a name="ln1216">            _drumset = new Drumset(*smDrumset);</a>
+<a name="ln1217">      }</a>
+<a name="ln1218"> </a>
+<a name="ln1219">//---------------------------------------------------------</a>
+<a name="ln1220">//   setDrumset</a>
+<a name="ln1221">//---------------------------------------------------------</a>
+<a name="ln1222"> </a>
+<a name="ln1223">void Instrument::setDrumset(const Drumset* ds)</a>
+<a name="ln1224">      {</a>
+<a name="ln1225">      delete _drumset;</a>
+<a name="ln1226">      if (ds) {</a>
+<a name="ln1227">            _useDrumset = true;</a>
+<a name="ln1228">            _drumset = new Drumset(*ds);</a>
+<a name="ln1229">            }</a>
+<a name="ln1230">      else {</a>
+<a name="ln1231">            _useDrumset = false;</a>
+<a name="ln1232">            _drumset = 0;</a>
+<a name="ln1233">            }</a>
+<a name="ln1234">      }</a>
+<a name="ln1235"> </a>
+<a name="ln1236">//---------------------------------------------------------</a>
+<a name="ln1237">//   setLongName</a>
+<a name="ln1238">//    f is in richtext format</a>
+<a name="ln1239">//---------------------------------------------------------</a>
+<a name="ln1240"> </a>
+<a name="ln1241">void Instrument::setLongName(const QString&amp; f)</a>
+<a name="ln1242">      {</a>
+<a name="ln1243">      _longNames.clear();</a>
+<a name="ln1244">      if (f.length() &gt; 0)</a>
+<a name="ln1245">            _longNames.append(StaffName(f, 0));</a>
+<a name="ln1246">      }</a>
+<a name="ln1247"> </a>
+<a name="ln1248">//---------------------------------------------------------</a>
+<a name="ln1249">//   setShortName</a>
+<a name="ln1250">//    f is in richtext format</a>
+<a name="ln1251">//---------------------------------------------------------</a>
+<a name="ln1252"> </a>
+<a name="ln1253">void Instrument::setShortName(const QString&amp; f)</a>
+<a name="ln1254">      {</a>
+<a name="ln1255">      _shortNames.clear();</a>
+<a name="ln1256">      if (f.length() &gt; 0)</a>
+<a name="ln1257">            _shortNames.append(StaffName(f, 0));</a>
+<a name="ln1258">      }</a>
+<a name="ln1259"> </a>
+<a name="ln1260">//---------------------------------------------------------</a>
+<a name="ln1261">//   addLongName</a>
+<a name="ln1262">//---------------------------------------------------------</a>
+<a name="ln1263"> </a>
+<a name="ln1264">void Instrument::addLongName(const StaffName&amp; f)</a>
+<a name="ln1265">      {</a>
+<a name="ln1266">      _longNames.append(f);</a>
+<a name="ln1267">      }</a>
+<a name="ln1268"> </a>
+<a name="ln1269">//---------------------------------------------------------</a>
+<a name="ln1270">//   addShortName</a>
+<a name="ln1271">//---------------------------------------------------------</a>
+<a name="ln1272"> </a>
+<a name="ln1273">void Instrument::addShortName(const StaffName&amp; f)</a>
+<a name="ln1274">      {</a>
+<a name="ln1275">      _shortNames.append(f);</a>
+<a name="ln1276">      }</a>
+<a name="ln1277"> </a>
+<a name="ln1278">//---------------------------------------------------------</a>
+<a name="ln1279">//   clefType</a>
+<a name="ln1280">//---------------------------------------------------------</a>
+<a name="ln1281"> </a>
+<a name="ln1282">ClefTypeList Instrument::clefType(int staffIdx) const</a>
+<a name="ln1283">      {</a>
+<a name="ln1284">      if (staffIdx &gt;= _clefType.size()) {</a>
+<a name="ln1285">            if (_clefType.empty())</a>
+<a name="ln1286">                  return ClefTypeList(staffIdx == 1 ? ClefType::F : ClefType::G);</a>
+<a name="ln1287">            return _clefType[0];</a>
+<a name="ln1288">            }</a>
+<a name="ln1289">      return _clefType[staffIdx];</a>
+<a name="ln1290">      }</a>
+<a name="ln1291"> </a>
+<a name="ln1292">//---------------------------------------------------------</a>
+<a name="ln1293">//   setClefType</a>
+<a name="ln1294">//---------------------------------------------------------</a>
+<a name="ln1295"> </a>
+<a name="ln1296">void Instrument::setClefType(int staffIdx, const ClefTypeList&amp; c)</a>
+<a name="ln1297">      {</a>
+<a name="ln1298">      while (_clefType.size() &lt;= staffIdx)</a>
+<a name="ln1299">            _clefType.append(ClefTypeList());</a>
+<a name="ln1300">      _clefType[staffIdx] = c;</a>
+<a name="ln1301">      }</a>
+<a name="ln1302"> </a>
+<a name="ln1303">//---------------------------------------------------------</a>
+<a name="ln1304">//   minPitchP</a>
+<a name="ln1305">//---------------------------------------------------------</a>
+<a name="ln1306"> </a>
+<a name="ln1307">int Instrument::minPitchP() const</a>
+<a name="ln1308">      {</a>
+<a name="ln1309">      return _minPitchP;</a>
+<a name="ln1310">      }</a>
+<a name="ln1311"> </a>
+<a name="ln1312">//---------------------------------------------------------</a>
+<a name="ln1313">//   maxPitchP</a>
+<a name="ln1314">//---------------------------------------------------------</a>
+<a name="ln1315"> </a>
+<a name="ln1316">int Instrument::maxPitchP() const</a>
+<a name="ln1317">      {</a>
+<a name="ln1318">      return _maxPitchP;</a>
+<a name="ln1319">      }</a>
+<a name="ln1320"> </a>
+<a name="ln1321">//---------------------------------------------------------</a>
+<a name="ln1322">//   minPitchA</a>
+<a name="ln1323">//---------------------------------------------------------</a>
+<a name="ln1324"> </a>
+<a name="ln1325">int Instrument::minPitchA() const</a>
+<a name="ln1326">      {</a>
+<a name="ln1327">      return _minPitchA;</a>
+<a name="ln1328">      }</a>
+<a name="ln1329"> </a>
+<a name="ln1330">//---------------------------------------------------------</a>
+<a name="ln1331">//   maxPitchA</a>
+<a name="ln1332">//---------------------------------------------------------</a>
+<a name="ln1333"> </a>
+<a name="ln1334">int Instrument::maxPitchA() const</a>
+<a name="ln1335">      {</a>
+<a name="ln1336">      return _maxPitchA;</a>
+<a name="ln1337">      }</a>
+<a name="ln1338"> </a>
+<a name="ln1339">//---------------------------------------------------------</a>
+<a name="ln1340">//   instrumentId</a>
+<a name="ln1341">//---------------------------------------------------------</a>
+<a name="ln1342"> </a>
+<a name="ln1343">QString Instrument::instrumentId() const</a>
+<a name="ln1344">      {</a>
+<a name="ln1345">      return _instrumentId;</a>
+<a name="ln1346">      }</a>
+<a name="ln1347"> </a>
+<a name="ln1348">//---------------------------------------------------------</a>
+<a name="ln1349">//   instrument</a>
+<a name="ln1350">//---------------------------------------------------------</a>
+<a name="ln1351"> </a>
+<a name="ln1352">const Instrument* InstrumentList::instrument(int tick) const</a>
+<a name="ln1353">      {</a>
+<a name="ln1354">      if (empty())</a>
+<a name="ln1355">            return &amp;defaultInstrument;</a>
+<a name="ln1356">      auto i = upper_bound(tick);</a>
+<a name="ln1357">      if (i == begin())</a>
+<a name="ln1358">            return &amp;defaultInstrument;</a>
+<a name="ln1359">      --i;</a>
+<a name="ln1360">      return i-&gt;second;</a>
+<a name="ln1361">      }</a>
+<a name="ln1362"> </a>
+<a name="ln1363">//---------------------------------------------------------</a>
+<a name="ln1364">//   instrument</a>
+<a name="ln1365">//---------------------------------------------------------</a>
+<a name="ln1366"> </a>
+<a name="ln1367">Instrument* InstrumentList::instrument(int tick)</a>
+<a name="ln1368">      {</a>
+<a name="ln1369">      if (empty())</a>
+<a name="ln1370">            return &amp;defaultInstrument;</a>
+<a name="ln1371">      auto i = upper_bound(tick);</a>
+<a name="ln1372">      if (i == begin())</a>
+<a name="ln1373">            return &amp;defaultInstrument;</a>
+<a name="ln1374">      --i;</a>
+<a name="ln1375">      return i-&gt;second;</a>
+<a name="ln1376">      }</a>
+<a name="ln1377"> </a>
+<a name="ln1378">//---------------------------------------------------------</a>
+<a name="ln1379">//   setInstrument</a>
+<a name="ln1380">//---------------------------------------------------------</a>
+<a name="ln1381"> </a>
+<a name="ln1382">void InstrumentList::setInstrument(Instrument* instr, int tick)</a>
+<a name="ln1383">      {</a>
+<a name="ln1384">      if (!insert({tick, instr}).second)</a>
+<a name="ln1385">            (*this)[tick] = instr;</a>
+<a name="ln1386">      }</a>
+<a name="ln1387"> </a>
+<a name="ln1388">//---------------------------------------------------------</a>
+<a name="ln1389">//   longName</a>
+<a name="ln1390">//---------------------------------------------------------</a>
+<a name="ln1391"> </a>
+<a name="ln1392">const QList&lt;StaffName&gt;&amp; Instrument::longNames() const</a>
+<a name="ln1393">      {</a>
+<a name="ln1394">      return _longNames;</a>
+<a name="ln1395">      }</a>
+<a name="ln1396"> </a>
+<a name="ln1397">//---------------------------------------------------------</a>
+<a name="ln1398">//   shortName</a>
+<a name="ln1399">//---------------------------------------------------------</a>
+<a name="ln1400"> </a>
+<a name="ln1401">const QList&lt;StaffName&gt;&amp; Instrument::shortNames() const</a>
+<a name="ln1402">      {</a>
+<a name="ln1403">      return _shortNames;</a>
+<a name="ln1404">      }</a>
+<a name="ln1405"> </a>
+<a name="ln1406">//---------------------------------------------------------</a>
+<a name="ln1407">//   longName</a>
+<a name="ln1408">//---------------------------------------------------------</a>
+<a name="ln1409"> </a>
+<a name="ln1410">QList&lt;StaffName&gt;&amp; Instrument::longNames()</a>
+<a name="ln1411">      {</a>
+<a name="ln1412">      return _longNames;</a>
+<a name="ln1413">      }</a>
+<a name="ln1414"> </a>
+<a name="ln1415">//---------------------------------------------------------</a>
+<a name="ln1416">//   shortName</a>
+<a name="ln1417">//---------------------------------------------------------</a>
+<a name="ln1418"> </a>
+<a name="ln1419">QList&lt;StaffName&gt;&amp; Instrument::shortNames()</a>
+<a name="ln1420">      {</a>
+<a name="ln1421">      return _shortNames;</a>
+<a name="ln1422">      }</a>
+<a name="ln1423"> </a>
+<a name="ln1424">//---------------------------------------------------------</a>
+<a name="ln1425">//   trackName</a>
+<a name="ln1426">//---------------------------------------------------------</a>
+<a name="ln1427"> </a>
+<a name="ln1428">QString Instrument::trackName() const</a>
+<a name="ln1429">      {</a>
+<a name="ln1430">      return _trackName;</a>
+<a name="ln1431">      }</a>
+<a name="ln1432"> </a>
+<a name="ln1433">void Instrument::setTrackName(const QString&amp; s)</a>
+<a name="ln1434">      {</a>
+<a name="ln1435">      _trackName = s;</a>
+<a name="ln1436">      }</a>
+<a name="ln1437"> </a>
+<a name="ln1438">//---------------------------------------------------------</a>
+<a name="ln1439">//   fromTemplate</a>
+<a name="ln1440">//---------------------------------------------------------</a>
+<a name="ln1441"> </a>
+<a name="ln1442">Instrument Instrument::fromTemplate(const InstrumentTemplate* t)</a>
+<a name="ln1443">      {</a>
+<a name="ln1444">      Instrument instr;</a>
+<a name="ln1445">      instr.setAmateurPitchRange(t-&gt;minPitchA, t-&gt;maxPitchA);</a>
+<a name="ln1446">      instr.setProfessionalPitchRange(t-&gt;minPitchP, t-&gt;maxPitchP);</a>
+<a name="ln1447">      for (StaffName sn : t-&gt;longNames)</a>
+<a name="ln1448">            instr.addLongName(StaffName(sn.name(), sn.pos()));</a>
+<a name="ln1449">      for (StaffName sn : t-&gt;shortNames)</a>
+<a name="ln1450">            instr.addShortName(StaffName(sn.name(), sn.pos()));</a>
+<a name="ln1451">      instr.setTrackName(t-&gt;trackName);</a>
+<a name="ln1452">      instr.setTranspose(t-&gt;transpose);</a>
+<a name="ln1453">      instr.setInstrumentId(t-&gt;musicXMLid);</a>
+<a name="ln1454">      if (t-&gt;useDrumset)</a>
+<a name="ln1455">            instr.setDrumset(t-&gt;drumset ? t-&gt;drumset : smDrumset);</a>
+<a name="ln1456">      for (int i = 0; i &lt; t-&gt;nstaves(); ++i)</a>
+<a name="ln1457">            instr.setClefType(i, t-&gt;clefTypes[i]);</a>
+<a name="ln1458">      instr.setMidiActions(t-&gt;midiActions);</a>
+<a name="ln1459">      instr.setArticulation(t-&gt;articulation);</a>
+<a name="ln1460">      instr._channel.clear();</a>
+<a name="ln1461">      for (const Channel&amp; c : t-&gt;channel)</a>
+<a name="ln1462">            instr._channel.append(new Channel(c));</a>
+<a name="ln1463">      instr.setStringData(t-&gt;stringData);</a>
+<a name="ln1464">      instr.setSingleNoteDynamics(t-&gt;singleNoteDynamics);</a>
+<a name="ln1465">      return instr;</a>
+<a name="ln1466">      }</a>
+<a name="ln1467"> </a>
+<a name="ln1468">//---------------------------------------------------------</a>
+<a name="ln1469">//   Instrument::playbackChannel</a>
+<a name="ln1470">//---------------------------------------------------------</a>
+<a name="ln1471"> </a>
+<a name="ln1472">const Channel* Instrument::playbackChannel(int idx, const MasterScore* score) const</a>
+<a name="ln1473">      {</a>
+<a name="ln1474">      return score-&gt;playbackChannel(channel(idx));</a>
+<a name="ln1475">      }</a>
+<a name="ln1476"> </a>
+<a name="ln1477"> </a>
+<a name="ln1478">//---------------------------------------------------------</a>
+<a name="ln1479">//   Instrument::playbackChannel</a>
+<a name="ln1480">//---------------------------------------------------------</a>
+<a name="ln1481"> </a>
+<a name="ln1482">Channel* Instrument::playbackChannel(int idx, MasterScore* score)</a>
+<a name="ln1483">      {</a>
+<a name="ln1484">      return score-&gt;playbackChannel(channel(idx));</a>
+<a name="ln1485">      }</a>
+<a name="ln1486"> </a>
+<a name="ln1487">//---------------------------------------------------------</a>
+<a name="ln1488">//   getSingleNoteDynamicsFromTemplate</a>
+<a name="ln1489">//---------------------------------------------------------</a>
+<a name="ln1490"> </a>
+<a name="ln1491">bool Instrument::getSingleNoteDynamicsFromTemplate() const</a>
+<a name="ln1492">      {</a>
+<a name="ln1493">      QString templateName = trackName().toLower().replace(&quot; &quot;, &quot;-&quot;).replace(&quot;♭&quot;, &quot;b&quot;);</a>
+<a name="ln1494">      InstrumentTemplate* tp = searchTemplate(templateName);</a>
+<a name="ln1495">      if (tp)</a>
+<a name="ln1496">            return tp-&gt;singleNoteDynamics;</a>
+<a name="ln1497">      return true;</a>
+<a name="ln1498">      }</a>
+<a name="ln1499"> </a>
+<a name="ln1500">//---------------------------------------------------------</a>
+<a name="ln1501">//   setSingleNoteDynamicsFromTemplate</a>
+<a name="ln1502">//---------------------------------------------------------</a>
+<a name="ln1503"> </a>
+<a name="ln1504">void Instrument::setSingleNoteDynamicsFromTemplate()</a>
+<a name="ln1505">      {</a>
+<a name="ln1506">      setSingleNoteDynamics(getSingleNoteDynamicsFromTemplate());</a>
+<a name="ln1507">      }</a>
+<a name="ln1508"> </a>
+<a name="ln1509">//---------------------------------------------------------</a>
+<a name="ln1510">//   StaffNameList::write</a>
+<a name="ln1511">//---------------------------------------------------------</a>
+<a name="ln1512"> </a>
+<a name="ln1513">void StaffNameList::write(XmlWriter&amp; xml, const char* name) const</a>
+<a name="ln1514">      {</a>
+<a name="ln1515">      for (const StaffName&amp; sn : *this)</a>
+<a name="ln1516">            sn.write(xml, name);</a>
+<a name="ln1517">      }</a>
+<a name="ln1518">}</a>
+<a name="ln1519"> </a>
+
+</code></pre>
+<div class="balloon" rel="131"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v794/" target="_blank">V794</a> The assignment operator should be protected from the case of 'this == &i'.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,330 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pmutil.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/* pmutil.c -- some helpful utilities for building midi</a>
+<a name="ln2">               applications that use PortMidi</a>
+<a name="ln3"> */</a>
+<a name="ln4">#include &lt;stdlib.h&gt;</a>
+<a name="ln5">#include &lt;assert.h&gt;</a>
+<a name="ln6">#include &lt;string.h&gt;</a>
+<a name="ln7">#include &quot;portmidi.h&quot;</a>
+<a name="ln8">#include &quot;pmutil.h&quot;</a>
+<a name="ln9">#include &quot;pminternal.h&quot;</a>
+<a name="ln10"></a>
+<a name="ln11">#ifdef WIN32</a>
+<a name="ln12">#define bzero(addr, siz) memset(addr, 0, siz)</a>
+<a name="ln13">#endif</a>
+<a name="ln14"></a>
+<a name="ln15">// #define QUEUE_DEBUG 1</a>
+<a name="ln16">#ifdef QUEUE_DEBUG</a>
+<a name="ln17">#include &quot;stdio.h&quot;</a>
+<a name="ln18">#endif</a>
+<a name="ln19"></a>
+<a name="ln20">typedef struct {</a>
+<a name="ln21">    long head;</a>
+<a name="ln22">    long tail;</a>
+<a name="ln23">    long len;</a>
+<a name="ln24">    long overflow;</a>
+<a name="ln25">    int32_t msg_size; /* number of int32_t in a message including extra word */</a>
+<a name="ln26">    int32_t peek_overflow;</a>
+<a name="ln27">    int32_t *buffer;</a>
+<a name="ln28">    int32_t *peek;</a>
+<a name="ln29">    int32_t peek_flag;</a>
+<a name="ln30">} PmQueueRep;</a>
+<a name="ln31"></a>
+<a name="ln32"></a>
+<a name="ln33">PMEXPORT PmQueue *Pm_QueueCreate(long num_msgs, int32_t bytes_per_msg)</a>
+<a name="ln34">{</a>
+<a name="ln35">    int32_t int32s_per_msg = </a>
+<a name="ln36">            (int32_t) (((bytes_per_msg + sizeof(int32_t) - 1) &amp;</a>
+<a name="ln37">                       ~(sizeof(int32_t) - 1)) / sizeof(int32_t));</a>
+<a name="ln38">    PmQueueRep *queue = (PmQueueRep *) pm_alloc(sizeof(PmQueueRep));</a>
+<a name="ln39">    if (!queue) /* memory allocation failed */</a>
+<a name="ln40">        return NULL;</a>
+<a name="ln41"></a>
+<a name="ln42">    /* need extra word per message for non-zero encoding */</a>
+<a name="ln43">    queue-&gt;len = num_msgs * (int32s_per_msg + 1);</a>
+<a name="ln44">    queue-&gt;buffer = (int32_t *) pm_alloc(queue-&gt;len * sizeof(int32_t));</a>
+<a name="ln45">    bzero(queue-&gt;buffer, queue-&gt;len * sizeof(int32_t));</a>
+<a name="ln46">    if (!queue-&gt;buffer) {</a>
+<a name="ln47">        pm_free(queue);</a>
+<a name="ln48">        return NULL;</a>
+<a name="ln49">    } else { /* allocate the &quot;peek&quot; buffer */</a>
+<a name="ln50">        queue-&gt;peek = (int32_t *) pm_alloc(int32s_per_msg * sizeof(int32_t));</a>
+<a name="ln51">        if (!queue-&gt;peek) {</a>
+<a name="ln52">            /* free everything allocated so far and return */</a>
+<a name="ln53">            pm_free(queue-&gt;buffer);</a>
+<a name="ln54">            pm_free(queue);</a>
+<a name="ln55">            return NULL;</a>
+<a name="ln56">        }</a>
+<a name="ln57">    }</a>
+<a name="ln58">    bzero(queue-&gt;buffer, queue-&gt;len * sizeof(int32_t));</a>
+<a name="ln59">    queue-&gt;head = 0;</a>
+<a name="ln60">    queue-&gt;tail = 0;</a>
+<a name="ln61">    /* msg_size is in words */</a>
+<a name="ln62">    queue-&gt;msg_size = int32s_per_msg + 1; /* note extra word is counted */</a>
+<a name="ln63">    queue-&gt;overflow = FALSE;</a>
+<a name="ln64">    queue-&gt;peek_overflow = FALSE;</a>
+<a name="ln65">    queue-&gt;peek_flag = FALSE;</a>
+<a name="ln66">    return queue;</a>
+<a name="ln67">}</a>
+<a name="ln68"></a>
+<a name="ln69"></a>
+<a name="ln70">PMEXPORT PmError Pm_QueueDestroy(PmQueue *q)</a>
+<a name="ln71">{</a>
+<a name="ln72">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln73">        </a>
+<a name="ln74">    /* arg checking */</a>
+<a name="ln75">    if (!queue || !queue-&gt;buffer || !queue-&gt;peek) </a>
+<a name="ln76">                return pmBadPtr;</a>
+<a name="ln77">    </a>
+<a name="ln78">    pm_free(queue-&gt;peek);</a>
+<a name="ln79">    pm_free(queue-&gt;buffer);</a>
+<a name="ln80">    pm_free(queue);</a>
+<a name="ln81">    return pmNoError;</a>
+<a name="ln82">}</a>
+<a name="ln83"></a>
+<a name="ln84"></a>
+<a name="ln85">PMEXPORT PmError Pm_Dequeue(PmQueue *q, void *msg)</a>
+<a name="ln86">{</a>
+<a name="ln87">    long head;</a>
+<a name="ln88">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln89">    int i;</a>
+<a name="ln90">    int32_t *msg_as_int32 = (int32_t *) msg;</a>
+<a name="ln91"></a>
+<a name="ln92">    /* arg checking */</a>
+<a name="ln93">    if (!queue)</a>
+<a name="ln94">        return pmBadPtr;</a>
+<a name="ln95">    /* a previous peek operation encountered an overflow, but the overflow</a>
+<a name="ln96">     * has not yet been reported to client, so do it now. No message is</a>
+<a name="ln97">     * returned, but on the next call, we will return the peek buffer.</a>
+<a name="ln98">     */</a>
+<a name="ln99">    if (queue-&gt;peek_overflow) {</a>
+<a name="ln100">        queue-&gt;peek_overflow = FALSE;</a>
+<a name="ln101">        return pmBufferOverflow;</a>
+<a name="ln102">    }</a>
+<a name="ln103">    if (queue-&gt;peek_flag) {</a>
+<a name="ln104">        memcpy(msg, queue-&gt;peek, (queue-&gt;msg_size - 1) * sizeof(int32_t));</a>
+<a name="ln105">        queue-&gt;peek_flag = FALSE;</a>
+<a name="ln106">        return pmGotData;</a>
+<a name="ln107">    }</a>
+<a name="ln108"></a>
+<a name="ln109">    head = queue-&gt;head;</a>
+<a name="ln110">    /* if writer overflows, it writes queue-&gt;overflow = tail+1 so that</a>
+<a name="ln111">     * when the reader gets to that position in the buffer, it can </a>
+<a name="ln112">     * return the overflow condition to the reader. The problem is that</a>
+<a name="ln113">     * at overflow, things have wrapped around, so tail == head, and the</a>
+<a name="ln114">     * reader will detect overflow immediately instead of waiting until</a>
+<a name="ln115">     * it reads everything in the buffer, wrapping around again to the</a>
+<a name="ln116">     * point where tail == head. So the condition also checks that</a>
+<a name="ln117">     * queue-&gt;buffer[head] is zero -- if so, then the buffer is now</a>
+<a name="ln118">     * empty, and we're at the point in the msg stream where overflow</a>
+<a name="ln119">     * occurred. It's time to signal overflow to the reader. If </a>
+<a name="ln120">     * queue-&gt;buffer[head] is non-zero, there's a message there and we</a>
+<a name="ln121">     * should read all the way around the buffer before signalling overflow.</a>
+<a name="ln122">     * There is a write-order dependency here, but to fail, the overflow</a>
+<a name="ln123">     * field would have to be written while an entire buffer full of </a>
+<a name="ln124">     * writes are still pending. I'm assuming out-of-order writes are</a>
+<a name="ln125">     * possible, but not that many.</a>
+<a name="ln126">     */</a>
+<a name="ln127">    if (queue-&gt;overflow == head + 1 &amp;&amp; !queue-&gt;buffer[head]) {</a>
+<a name="ln128">        queue-&gt;overflow = 0; /* non-overflow condition */</a>
+<a name="ln129">        return pmBufferOverflow;</a>
+<a name="ln130">    }</a>
+<a name="ln131"></a>
+<a name="ln132">    /* test to see if there is data in the queue -- test from back</a>
+<a name="ln133">     * to front so if writer is simultaneously writing, we don't</a>
+<a name="ln134">     * waste time discovering the write is not finished </a>
+<a name="ln135">     */</a>
+<a name="ln136">    for (i = queue-&gt;msg_size - 1; i &gt;= 0; i--) {</a>
+<a name="ln137">        if (!queue-&gt;buffer[head + i]) {</a>
+<a name="ln138">            return pmNoData;</a>
+<a name="ln139">        }</a>
+<a name="ln140">    }</a>
+<a name="ln141">    memcpy(msg, (char *) &amp;queue-&gt;buffer[head + 1], </a>
+<a name="ln142">           sizeof(int32_t) * (queue-&gt;msg_size - 1));</a>
+<a name="ln143">    /* fix up zeros */</a>
+<a name="ln144">    i = queue-&gt;buffer[head];</a>
+<a name="ln145">    while (i &lt; queue-&gt;msg_size) {</a>
+<a name="ln146">        int32_t j;</a>
+<a name="ln147">        i--; /* msg does not have extra word so shift down */</a>
+<a name="ln148">        j = msg_as_int32[i];</a>
+<a name="ln149">        msg_as_int32[i] = 0;</a>
+<a name="ln150">        i = j;</a>
+<a name="ln151">    }</a>
+<a name="ln152">    /* signal that data has been removed by zeroing: */</a>
+<a name="ln153">    bzero((char *) &amp;queue-&gt;buffer[head], sizeof(int32_t) * queue-&gt;msg_size);</a>
+<a name="ln154"></a>
+<a name="ln155">    /* update head */</a>
+<a name="ln156">    head += queue-&gt;msg_size;</a>
+<a name="ln157">    if (head == queue-&gt;len) head = 0;</a>
+<a name="ln158">    queue-&gt;head = head;</a>
+<a name="ln159">    return pmGotData; /* success */</a>
+<a name="ln160">}</a>
+<a name="ln161"></a>
+<a name="ln162"></a>
+<a name="ln163"></a>
+<a name="ln164">PMEXPORT PmError Pm_SetOverflow(PmQueue *q)</a>
+<a name="ln165">{</a>
+<a name="ln166">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln167">    long tail;</a>
+<a name="ln168">    /* arg checking */</a>
+<a name="ln169">    if (!queue)</a>
+<a name="ln170">        return pmBadPtr;</a>
+<a name="ln171">    /* no more enqueue until receiver acknowledges overflow */</a>
+<a name="ln172">    if (queue-&gt;overflow) return pmBufferOverflow;</a>
+<a name="ln173">    tail = queue-&gt;tail;</a>
+<a name="ln174">    queue-&gt;overflow = tail + 1;</a>
+<a name="ln175">    return pmBufferOverflow;</a>
+<a name="ln176">}</a>
+<a name="ln177"></a>
+<a name="ln178"></a>
+<a name="ln179">PMEXPORT PmError Pm_Enqueue(PmQueue *q, void *msg)</a>
+<a name="ln180">{</a>
+<a name="ln181">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln182">    long tail;</a>
+<a name="ln183">    int i;</a>
+<a name="ln184">    int32_t *src = (int32_t *) msg;</a>
+<a name="ln185">    int32_t *ptr;</a>
+<a name="ln186">    int32_t *dest;</a>
+<a name="ln187">    int rslt;</a>
+<a name="ln188">    if (!queue) </a>
+<a name="ln189">        return pmBadPtr;</a>
+<a name="ln190">    /* no more enqueue until receiver acknowledges overflow */</a>
+<a name="ln191">    if (queue-&gt;overflow) return pmBufferOverflow;</a>
+<a name="ln192">    rslt = Pm_QueueFull(q);</a>
+<a name="ln193">    /* already checked above: if (rslt == pmBadPtr) return rslt; */</a>
+<a name="ln194">    tail = queue-&gt;tail;</a>
+<a name="ln195">    if (rslt) {</a>
+<a name="ln196">        queue-&gt;overflow = tail + 1;</a>
+<a name="ln197">        return pmBufferOverflow;</a>
+<a name="ln198">    }</a>
+<a name="ln199"></a>
+<a name="ln200">    /* queue is has room for message, and overflow flag is cleared */</a>
+<a name="ln201">    ptr = &amp;queue-&gt;buffer[tail];</a>
+<a name="ln202">    dest = ptr + 1;</a>
+<a name="ln203">    for (i = 1; i &lt; queue-&gt;msg_size; i++) {</a>
+<a name="ln204">        int32_t j = src[i - 1];</a>
+<a name="ln205">        if (!j) {</a>
+<a name="ln206">            *ptr = i;</a>
+<a name="ln207">            ptr = dest;</a>
+<a name="ln208">        } else {</a>
+<a name="ln209">            *dest = j;</a>
+<a name="ln210">        }</a>
+<a name="ln211">        dest++;</a>
+<a name="ln212">    }</a>
+<a name="ln213">    *ptr = i;</a>
+<a name="ln214">    tail += queue-&gt;msg_size;</a>
+<a name="ln215">    if (tail == queue-&gt;len) tail = 0;</a>
+<a name="ln216">    queue-&gt;tail = tail;</a>
+<a name="ln217">    return pmNoError;</a>
+<a name="ln218">}</a>
+<a name="ln219"></a>
+<a name="ln220"></a>
+<a name="ln221">PMEXPORT int Pm_QueueEmpty(PmQueue *q)</a>
+<a name="ln222">{</a>
+<a name="ln223">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln224">    return (!queue) ||  /* null pointer -&gt; return &quot;empty&quot; */</a>
+<a name="ln225">           (queue-&gt;buffer[queue-&gt;head] == 0 &amp;&amp; !queue-&gt;peek_flag);</a>
+<a name="ln226">}</a>
+<a name="ln227"></a>
+<a name="ln228"></a>
+<a name="ln229">PMEXPORT int Pm_QueueFull(PmQueue *q)</a>
+<a name="ln230">{</a>
+<a name="ln231">    long tail;</a>
+<a name="ln232">    int i; </a>
+<a name="ln233">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln234">    /* arg checking */</a>
+<a name="ln235">    if (!queue)</a>
+<a name="ln236">        return pmBadPtr;</a>
+<a name="ln237">    tail = queue-&gt;tail;</a>
+<a name="ln238">    /* test to see if there is space in the queue */</a>
+<a name="ln239">    for (i = 0; i &lt; queue-&gt;msg_size; i++) {</a>
+<a name="ln240">        if (queue-&gt;buffer[tail + i]) {</a>
+<a name="ln241">            return TRUE;</a>
+<a name="ln242">        }</a>
+<a name="ln243">    }</a>
+<a name="ln244">    return FALSE;</a>
+<a name="ln245">}</a>
+<a name="ln246"></a>
+<a name="ln247"></a>
+<a name="ln248">PMEXPORT void *Pm_QueuePeek(PmQueue *q)</a>
+<a name="ln249">{</a>
+<a name="ln250">    PmError rslt;</a>
+<a name="ln251">    int32_t temp;</a>
+<a name="ln252">    PmQueueRep *queue = (PmQueueRep *) q;</a>
+<a name="ln253">    /* arg checking */</a>
+<a name="ln254">    if (!queue)</a>
+<a name="ln255">        return NULL;</a>
+<a name="ln256"></a>
+<a name="ln257">    if (queue-&gt;peek_flag) {</a>
+<a name="ln258">        return queue-&gt;peek;</a>
+<a name="ln259">    }</a>
+<a name="ln260">    /* this is ugly: if peek_overflow is set, then Pm_Dequeue() </a>
+<a name="ln261">     * returns immediately with pmBufferOverflow, but here, we</a>
+<a name="ln262">     * want Pm_Dequeue() to really check for data. If data is</a>
+<a name="ln263">     * there, we can return it</a>
+<a name="ln264">     */</a>
+<a name="ln265">    temp = queue-&gt;peek_overflow;</a>
+<a name="ln266">    queue-&gt;peek_overflow = FALSE;</a>
+<a name="ln267">    rslt = Pm_Dequeue(q, queue-&gt;peek);</a>
+<a name="ln268">    queue-&gt;peek_overflow = temp;</a>
+<a name="ln269"></a>
+<a name="ln270">    if (rslt == 1) {</a>
+<a name="ln271">        queue-&gt;peek_flag = TRUE;</a>
+<a name="ln272">        return queue-&gt;peek;</a>
+<a name="ln273">    } else if (rslt == pmBufferOverflow) {</a>
+<a name="ln274">        /* when overflow is indicated, the queue is empty and the </a>
+<a name="ln275">         * first message that was dropped by Enqueue (signalling</a>
+<a name="ln276">         * pmBufferOverflow to its caller) would have been the next</a>
+<a name="ln277">         * message in the queue. Pm_QueuePeek will return NULL, but</a>
+<a name="ln278">         * remember that an overflow occurred. (see Pm_Dequeue)</a>
+<a name="ln279">         */</a>
+<a name="ln280">        queue-&gt;peek_overflow = TRUE;</a>
+<a name="ln281">    }</a>
+<a name="ln282">    return NULL;</a>
+<a name="ln283">}</a>
+<a name="ln284"></a>
+
+</code></pre>
+<div class="balloon" rel="45"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'queue->buffer' pointer was utilized before it was verified against nullptr. Check lines: 45, 46.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

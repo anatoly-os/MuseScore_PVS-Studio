@@ -1,0 +1,867 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pianoroll.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2009-2013 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;pianoroll.h&quot;</a>
+<a name="ln14">#include &quot;config.h&quot;</a>
+<a name="ln15">#include &quot;pianokeyboard.h&quot;</a>
+<a name="ln16">#include &quot;pianoruler.h&quot;</a>
+<a name="ln17">#include &quot;pianolevels.h&quot;</a>
+<a name="ln18">#include &quot;pianolevelschooser.h&quot;</a>
+<a name="ln19">#include &quot;pianoview.h&quot;</a>
+<a name="ln20">#include &quot;musescore.h&quot;</a>
+<a name="ln21">#include &quot;seq.h&quot;</a>
+<a name="ln22">#include &quot;preferences.h&quot;</a>
+<a name="ln23">#include &quot;waveview.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/repeatlist.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/instrument.h&quot;</a>
+<a name="ln31">#include &quot;awl/pitchlabel.h&quot;</a>
+<a name="ln32">#include &quot;awl/pitchedit.h&quot;</a>
+<a name="ln33">#include &quot;awl/poslabel.h&quot;</a>
+<a name="ln34"> </a>
+<a name="ln35"> </a>
+<a name="ln36">namespace Ms {</a>
+<a name="ln37"> </a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39">//   PianorollEditor</a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41"> </a>
+<a name="ln42">PianorollEditor::PianorollEditor(QWidget* parent)</a>
+<a name="ln43">   : QMainWindow(parent)</a>
+<a name="ln44">      {</a>
+<a name="ln45">      setObjectName(&quot;Pianoroll&quot;);</a>
+<a name="ln46">      setWindowTitle(QString(&quot;MuseScore&quot;));</a>
+<a name="ln47"> </a>
+<a name="ln48">      waveView = 0;</a>
+<a name="ln49">      _score   = 0;</a>
+<a name="ln50">      staff    = 0;</a>
+<a name="ln51"> </a>
+<a name="ln52">      QWidget* mainWidget = new QWidget;</a>
+<a name="ln53">      QToolBar* tb = addToolBar(&quot;Toolbar 1&quot;);</a>
+<a name="ln54">      if (qApp-&gt;layoutDirection() == Qt::LayoutDirection::LeftToRight) {</a>
+<a name="ln55">            tb-&gt;addAction(getAction(&quot;undo&quot;));</a>
+<a name="ln56">            tb-&gt;addAction(getAction(&quot;redo&quot;));</a>
+<a name="ln57">            }</a>
+<a name="ln58">      else {</a>
+<a name="ln59">            tb-&gt;addAction(getAction(&quot;redo&quot;));</a>
+<a name="ln60">            tb-&gt;addAction(getAction(&quot;undo&quot;));</a>
+<a name="ln61">            }</a>
+<a name="ln62">      tb-&gt;addSeparator();</a>
+<a name="ln63">#ifdef HAS_MIDI</a>
+<a name="ln64">      tb-&gt;addAction(getAction(&quot;midi-on&quot;));</a>
+<a name="ln65">#endif</a>
+<a name="ln66">      tb-&gt;addSeparator();</a>
+<a name="ln67"> </a>
+<a name="ln68">      tb-&gt;addAction(getAction(&quot;rewind&quot;));</a>
+<a name="ln69">      tb-&gt;addAction(getAction(&quot;play&quot;));</a>
+<a name="ln70">      tb-&gt;addSeparator();</a>
+<a name="ln71"> </a>
+<a name="ln72">      tb-&gt;addAction(getAction(&quot;loop&quot;));</a>
+<a name="ln73">      tb-&gt;addSeparator();</a>
+<a name="ln74">      tb-&gt;addAction(getAction(&quot;repeat&quot;));</a>
+<a name="ln75">      QAction* followAction = getAction(&quot;follow&quot;);</a>
+<a name="ln76">      followAction-&gt;setChecked(preferences.getBool(PREF_APP_PLAYBACK_FOLLOWSONG));</a>
+<a name="ln77">      tb-&gt;addAction(followAction);</a>
+<a name="ln78">      tb-&gt;addSeparator();</a>
+<a name="ln79">      tb-&gt;addAction(getAction(&quot;metronome&quot;));</a>
+<a name="ln80"> </a>
+<a name="ln81">      showWave = new QAction(tr(&quot;Wave&quot;), tb);</a>
+<a name="ln82">      showWave-&gt;setToolTip(tr(&quot;Show wave display&quot;));</a>
+<a name="ln83">      showWave-&gt;setCheckable(true);</a>
+<a name="ln84">      showWave-&gt;setChecked(false);</a>
+<a name="ln85">      connect(showWave, SIGNAL(toggled(bool)), SLOT(showWaveView(bool)));</a>
+<a name="ln86">      tb-&gt;addAction(showWave);</a>
+<a name="ln87"> </a>
+<a name="ln88">      tb-&gt;addSeparator();</a>
+<a name="ln89">      for (int i = 0; i &lt; VOICES; ++i) {</a>
+<a name="ln90">            QToolButton* b = new QToolButton(this);</a>
+<a name="ln91">            b-&gt;setToolButtonStyle(Qt::ToolButtonTextOnly);</a>
+<a name="ln92">            QPalette p(b-&gt;palette());</a>
+<a name="ln93">            p.setColor(QPalette::Base, MScore::selectColor[i]);</a>
+<a name="ln94">            b-&gt;setPalette(p);</a>
+<a name="ln95">            QAction* a = getAction(voiceActions[i]);</a>
+<a name="ln96">            b-&gt;setDefaultAction(a);</a>
+<a name="ln97">            tb-&gt;addWidget(b);</a>
+<a name="ln98">            }</a>
+<a name="ln99"> </a>
+<a name="ln100">      tb-&gt;addSeparator();</a>
+<a name="ln101"> </a>
+<a name="ln102">      partLabel = new QLabel(&quot;Part:&quot;);</a>
+<a name="ln103">      tb-&gt;addWidget(partLabel);</a>
+<a name="ln104"> </a>
+<a name="ln105"> </a>
+<a name="ln106">      //-------------</a>
+<a name="ln107">      tb = addToolBar(&quot;Toolbar 2&quot;);</a>
+<a name="ln108"> </a>
+<a name="ln109">      tb-&gt;addWidget(new QLabel(tr(&quot;Cursor:&quot;)));</a>
+<a name="ln110">      pos = new Awl::PosLabel;</a>
+<a name="ln111">      pos-&gt;setFrameStyle(QFrame::NoFrame | QFrame::Plain);</a>
+<a name="ln112"> </a>
+<a name="ln113">      tb-&gt;addWidget(pos);</a>
+<a name="ln114">      Awl::PitchLabel* pl = new Awl::PitchLabel();</a>
+<a name="ln115">      pl-&gt;setFrameStyle(QFrame::NoFrame | QFrame::Plain);</a>
+<a name="ln116">      tb-&gt;addWidget(pl);</a>
+<a name="ln117"> </a>
+<a name="ln118">      tb-&gt;addSeparator();</a>
+<a name="ln119"> </a>
+<a name="ln120">      tb-&gt;addWidget(new QLabel(tr(&quot;Subdiv.:&quot;)));</a>
+<a name="ln121">      subdiv = new QSpinBox;</a>
+<a name="ln122">      subdiv-&gt;setToolTip(tr(&quot;Subdivide the beat this many times&quot;));</a>
+<a name="ln123">      subdiv-&gt;setMinimum(0);</a>
+<a name="ln124">      subdiv-&gt;setValue(0);</a>
+<a name="ln125">      tb-&gt;addWidget(subdiv);</a>
+<a name="ln126"> </a>
+<a name="ln127">      tb-&gt;addWidget(new QLabel(tr(&quot;Tuplet:&quot;)));</a>
+<a name="ln128">      tuplet = new QSpinBox;</a>
+<a name="ln129">      tuplet-&gt;setToolTip(tr(&quot;Edit notes aligned to tuplets of this many beats&quot;));</a>
+<a name="ln130">      tuplet-&gt;setMinimum(1);</a>
+<a name="ln131">      tuplet-&gt;setValue(1);</a>
+<a name="ln132">      tb-&gt;addWidget(tuplet);</a>
+<a name="ln133"> </a>
+<a name="ln134">      tb-&gt;addWidget(new QLabel(tr(&quot;Stripe Pattern:&quot;)));</a>
+<a name="ln135">      barPattern = new QComboBox;</a>
+<a name="ln136">      barPattern-&gt;setToolTip(tr(&quot;White stripes show the tones of this chord.&quot;));</a>
+<a name="ln137">      for (int i = 0; !PianoView::barPatterns[i].name.isEmpty(); ++i) {</a>
+<a name="ln138">            barPattern-&gt;addItem(PianoView::barPatterns[i].name, i);</a>
+<a name="ln139">            }</a>
+<a name="ln140">      tb-&gt;addWidget(barPattern);</a>
+<a name="ln141"> </a>
+<a name="ln142">      tb-&gt;addSeparator();</a>
+<a name="ln143">      tb-&gt;addWidget(new QLabel(tr(&quot;Velocity:&quot;)));</a>
+<a name="ln144">      veloType = new QComboBox;</a>
+<a name="ln145">      veloType-&gt;addItem(tr(&quot;Offset&quot;), int(Note::ValueType::OFFSET_VAL));</a>
+<a name="ln146">      veloType-&gt;addItem(tr(&quot;User&quot;),   int (Note::ValueType::USER_VAL));</a>
+<a name="ln147">      tb-&gt;addWidget(veloType);</a>
+<a name="ln148"> </a>
+<a name="ln149">      velocity = new QSpinBox;</a>
+<a name="ln150">      velocity-&gt;setRange(-1000, 1000);</a>
+<a name="ln151">      velocity-&gt;setReadOnly(true);</a>
+<a name="ln152">      tb-&gt;addWidget(velocity);</a>
+<a name="ln153"> </a>
+<a name="ln154">      tb-&gt;addWidget(new QLabel(tr(&quot;Pitch:&quot;)));</a>
+<a name="ln155">      pitch = new Awl::PitchEdit;</a>
+<a name="ln156">      pitch-&gt;setReadOnly(true);</a>
+<a name="ln157">      tb-&gt;addWidget(pitch);</a>
+<a name="ln158"> </a>
+<a name="ln159">      tb-&gt;addWidget(new QLabel(tr(&quot;OnTime:&quot;)));</a>
+<a name="ln160">      tb-&gt;addWidget((onTime = new QSpinBox));</a>
+<a name="ln161">      onTime-&gt;setRange(-2000, 2000);</a>
+<a name="ln162"> </a>
+<a name="ln163">      tb-&gt;addWidget(new QLabel(tr(&quot;Len:&quot;)));</a>
+<a name="ln164">      tb-&gt;addWidget((tickLen = new QSpinBox));</a>
+<a name="ln165">      tickLen-&gt;setRange(-2000, 2000);</a>
+<a name="ln166"> </a>
+<a name="ln167">      //-------------</a>
+<a name="ln168">      //Empty area for spacing</a>
+<a name="ln169">      QWidget* topLeftSpacer = new QWidget;</a>
+<a name="ln170">      topLeftSpacer-&gt;setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);</a>
+<a name="ln171">      topLeftSpacer-&gt;setFixedWidth(PIANO_KEYBOARD_WIDTH);</a>
+<a name="ln172">      topLeftSpacer-&gt;setFixedHeight(pianoRulerHeight);</a>
+<a name="ln173"> </a>
+<a name="ln174">      ruler = new PianoRuler;</a>
+<a name="ln175">      ruler-&gt;setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);</a>
+<a name="ln176">      ruler-&gt;setFixedHeight(pianoRulerHeight);</a>
+<a name="ln177"> </a>
+<a name="ln178">      pianoKbd = new PianoKeyboard;</a>
+<a name="ln179">      pianoKbd-&gt;setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);</a>
+<a name="ln180">      pianoKbd-&gt;setFixedWidth(PIANO_KEYBOARD_WIDTH);</a>
+<a name="ln181"> </a>
+<a name="ln182">      pianoView = new PianoView;</a>
+<a name="ln183">      pianoView-&gt;setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);</a>
+<a name="ln184">      pianoView-&gt;setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);</a>
+<a name="ln185"> </a>
+<a name="ln186">      hsb = new QScrollBar(Qt::Horizontal);</a>
+<a name="ln187">      connect(pianoView-&gt;horizontalScrollBar(), SIGNAL(rangeChanged(int,int)),</a>
+<a name="ln188">         SLOT(rangeChanged(int,int)));</a>
+<a name="ln189"> </a>
+<a name="ln190">      QWidget* noteAreaWidget = new QWidget;</a>
+<a name="ln191"> </a>
+<a name="ln192">      QGridLayout* noteAreaLayout = new QGridLayout;</a>
+<a name="ln193">      noteAreaLayout-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln194">      noteAreaLayout-&gt;setSpacing(0);</a>
+<a name="ln195">      noteAreaLayout-&gt;addWidget(topLeftSpacer, 0, 0, 1, 1);</a>
+<a name="ln196">      noteAreaLayout-&gt;addWidget(ruler, 0, 1, 1, 1);</a>
+<a name="ln197">      noteAreaLayout-&gt;addWidget(pianoKbd, 1, 0, 1, 1);</a>
+<a name="ln198">      noteAreaLayout-&gt;addWidget(pianoView, 1, 1, 1, 1);</a>
+<a name="ln199">      noteAreaLayout-&gt;addWidget(hsb, 2, 1, 1, 1);</a>
+<a name="ln200">      noteAreaWidget-&gt;setLayout(noteAreaLayout);</a>
+<a name="ln201"> </a>
+<a name="ln202">      //Levels area</a>
+<a name="ln203">      pianoLevelsChooser = new PianoLevelsChooser;</a>
+<a name="ln204">      pianoLevelsChooser-&gt;setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);</a>
+<a name="ln205">      pianoLevelsChooser-&gt;setFixedWidth(PIANO_KEYBOARD_WIDTH);</a>
+<a name="ln206"> </a>
+<a name="ln207">      pianoLevels = new PianoLevels;</a>
+<a name="ln208">      pianoLevels-&gt;setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);</a>
+<a name="ln209"> </a>
+<a name="ln210">      QWidget* levelsAreaWidget = new QWidget;</a>
+<a name="ln211">      QHBoxLayout* levelsAreaLayout = new QHBoxLayout;</a>
+<a name="ln212">      levelsAreaLayout-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln213">      levelsAreaLayout-&gt;setSpacing(0);</a>
+<a name="ln214">      levelsAreaLayout-&gt;addWidget(pianoLevelsChooser);</a>
+<a name="ln215">      levelsAreaLayout-&gt;addWidget(pianoLevels);</a>
+<a name="ln216">      levelsAreaWidget-&gt;setLayout(levelsAreaLayout);</a>
+<a name="ln217"> </a>
+<a name="ln218">      // layout</a>
+<a name="ln219">      QSplitter* editAreaSplitter = new QSplitter(Qt::Vertical);</a>
+<a name="ln220">      editAreaSplitter-&gt;addWidget(noteAreaWidget);</a>
+<a name="ln221">      editAreaSplitter-&gt;addWidget(levelsAreaWidget);</a>
+<a name="ln222">      editAreaSplitter-&gt;setFrameShape(QFrame::NoFrame);</a>
+<a name="ln223"> </a>
+<a name="ln224">      editAreaSplitter-&gt;setSizes(QList&lt;int&gt;() &lt;&lt; (height() * 3 / 4) &lt;&lt; (height() * 1 / 4));</a>
+<a name="ln225"> </a>
+<a name="ln226"> </a>
+<a name="ln227"> </a>
+<a name="ln228">      split = new QSplitter(Qt::Vertical);</a>
+<a name="ln229">      split-&gt;setFrameShape(QFrame::NoFrame);</a>
+<a name="ln230"> </a>
+<a name="ln231">      QGridLayout* layout = new QGridLayout;</a>
+<a name="ln232">      layout-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln233">      layout-&gt;setSpacing(0);</a>
+<a name="ln234">      layout-&gt;setColumnMinimumWidth(0, PIANO_KEYBOARD_WIDTH);</a>
+<a name="ln235">      layout-&gt;addWidget(tb,    0, 0, 1, 1);</a>
+<a name="ln236">      layout-&gt;addWidget(editAreaSplitter, 1, 0, 1, 1);</a>
+<a name="ln237"> </a>
+<a name="ln238">      mainWidget-&gt;setLayout(layout);</a>
+<a name="ln239">      setCentralWidget(mainWidget);</a>
+<a name="ln240"> </a>
+<a name="ln241">      connect(pianoView-&gt;verticalScrollBar(),   SIGNAL(valueChanged(int)), pianoKbd, SLOT(setYpos(int)));</a>
+<a name="ln242">      connect(pianoView-&gt;horizontalScrollBar(), SIGNAL(valueChanged(int)), hsb,      SLOT(setValue(int)));</a>
+<a name="ln243"> </a>
+<a name="ln244">      connect(pianoView,          SIGNAL(xZoomChanged(qreal)),            ruler,       SLOT(setXZoom(qreal)));</a>
+<a name="ln245">      connect(pianoView,          SIGNAL(xZoomChanged(qreal)),            pianoLevels, SLOT(setXZoom(qreal)));</a>
+<a name="ln246">      connect(pianoView,          SIGNAL(noteHeightChanged(int)),         pianoKbd,    SLOT(setNoteHeight(int)));</a>
+<a name="ln247">      connect(pianoView,          SIGNAL(pitchChanged(int)),              pl,          SLOT(setPitch(int)));</a>
+<a name="ln248">      connect(pianoView,          SIGNAL(pitchChanged(int)),              pianoKbd,    SLOT(setPitch(int)));</a>
+<a name="ln249">      connect(pianoKbd,           SIGNAL(pitchChanged(int)),              pl,          SLOT(setPitch(int)));</a>
+<a name="ln250">      connect(pianoView,          SIGNAL(trackingPosChanged(const Pos&amp;)), pos,         SLOT(setValue(const Pos&amp;)));</a>
+<a name="ln251">      connect(pianoView,          SIGNAL(trackingPosChanged(const Pos&amp;)), ruler,       SLOT(setPos(const Pos&amp;)));</a>
+<a name="ln252">      connect(pianoView,          SIGNAL(trackingPosChanged(const Pos&amp;)), pianoLevels, SLOT(setPos(const Pos&amp;)));</a>
+<a name="ln253">      connect(ruler,              SIGNAL(posChanged(const Pos&amp;)),         pos,         SLOT(setValue(const Pos&amp;)));</a>
+<a name="ln254">      connect(pianoLevels,        SIGNAL(posChanged(const Pos&amp;)),         pos,         SLOT(setValue(const Pos&amp;)));</a>
+<a name="ln255">      connect(tuplet,             SIGNAL(valueChanged(int)),              pianoView,   SLOT(setTuplet(int)));</a>
+<a name="ln256">      connect(tuplet,             SIGNAL(valueChanged(int)),              pianoLevels, SLOT(setTuplet(int)));</a>
+<a name="ln257">      connect(barPattern,         SIGNAL(activated(int)),                 pianoView,   SLOT(setBarPattern(int)));</a>
+<a name="ln258">      connect(subdiv,             SIGNAL(valueChanged(int)),              pianoView,   SLOT(setSubdiv(int)));</a>
+<a name="ln259">      connect(subdiv,             SIGNAL(valueChanged(int)),              pianoLevels, SLOT(setSubdiv(int)));</a>
+<a name="ln260">      connect(pianoLevelsChooser, SIGNAL(levelsIndexChanged(int)),        pianoLevels, SLOT(setLevelsIndex(int)));</a>
+<a name="ln261"> </a>
+<a name="ln262">      connect(hsb,         SIGNAL(valueChanged(int)),                 SLOT(setXpos(int)));</a>
+<a name="ln263">      connect(pianoView-&gt;horizontalScrollBar(), SIGNAL(valueChanged(int)),   SLOT(setXpos(int)));</a>
+<a name="ln264"> </a>
+<a name="ln265">      connect(ruler,       SIGNAL(locatorMoved(int, const Pos&amp;)), SLOT(moveLocator(int, const Pos&amp;)));</a>
+<a name="ln266">      connect(pianoLevels, SIGNAL(locatorMoved(int, const Pos&amp;)), SLOT(moveLocator(int, const Pos&amp;)));</a>
+<a name="ln267">      connect(veloType,    SIGNAL(activated(int)),                SLOT(veloTypeChanged(int)));</a>
+<a name="ln268">      connect(velocity,    SIGNAL(valueChanged(int)),             SLOT(velocityChanged(int)));</a>
+<a name="ln269">      connect(onTime,      SIGNAL(valueChanged(int)),             SLOT(onTimeChanged(int)));</a>
+<a name="ln270">      connect(tickLen,     SIGNAL(valueChanged(int)),             SLOT(tickLenChanged(int)));</a>
+<a name="ln271">      connect(pianoView,   SIGNAL(selectionChanged()),            SLOT(selectionChanged()));</a>
+<a name="ln272">      connect(pianoKbd,    SIGNAL(keyPressed(int)),               SLOT(keyPressed(int)));</a>
+<a name="ln273">      connect(pianoKbd,    SIGNAL(keyReleased(int)),              SLOT(keyReleased(int)));</a>
+<a name="ln274">      connect(pianoLevels, SIGNAL(noteLevelsChanged()),           SLOT(selectionChanged()));</a>
+<a name="ln275"> </a>
+<a name="ln276">      readSettings();</a>
+<a name="ln277"> </a>
+<a name="ln278">      actions.append(getAction(&quot;tie&quot;));</a>
+<a name="ln279">      actions.append(getAction(&quot;play&quot;));</a>
+<a name="ln280">      actions.append(getAction(&quot;delete&quot;));</a>
+<a name="ln281">      actions.append(getAction(&quot;pitch-up&quot;));</a>
+<a name="ln282">      actions.append(getAction(&quot;pitch-down&quot;));</a>
+<a name="ln283">      actions.append(getAction(&quot;pitch-up-octave&quot;));</a>
+<a name="ln284">      actions.append(getAction(&quot;pitch-down-octave&quot;));</a>
+<a name="ln285"> </a>
+<a name="ln286">//      QMenu* popup = new QMenu(this);</a>
+<a name="ln287">//      popup-&gt;setSeparatorsCollapsible(false);</a>
+<a name="ln288">//      QAction* a = popup-&gt;addSeparator();</a>
+<a name="ln289">//      popup-&gt;addAction(getAction(&quot;cut&quot;));</a>
+<a name="ln290">//      popup-&gt;addAction(getAction(&quot;copy&quot;));</a>
+<a name="ln291">//      popup-&gt;addAction(getAction(&quot;paste&quot;));</a>
+<a name="ln292">//      popup-&gt;addAction(getAction(&quot;swap&quot;));</a>
+<a name="ln293">//      popup-&gt;addAction(getAction(&quot;delete&quot;));</a>
+<a name="ln294"> </a>
+<a name="ln295">      addActions(actions);</a>
+<a name="ln296">      for (auto* action : actions)</a>
+<a name="ln297">            connect(action, &amp;QAction::triggered, this, [this, action](bool){ cmd(action); });</a>
+<a name="ln298"> </a>
+<a name="ln299">      setXpos(0);</a>
+<a name="ln300">      }</a>
+<a name="ln301"> </a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303">//   ~PianorollEditor</a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305"> </a>
+<a name="ln306">PianorollEditor::~PianorollEditor()</a>
+<a name="ln307">      {</a>
+<a name="ln308">      if (_score)</a>
+<a name="ln309">            _score-&gt;removeViewer(this);</a>
+<a name="ln310">      for (auto* action : actions)</a>
+<a name="ln311">            action-&gt;disconnect(this);</a>
+<a name="ln312">      }</a>
+<a name="ln313"> </a>
+<a name="ln314">//---------------------------------------------------------</a>
+<a name="ln315">//   focucOnElement</a>
+<a name="ln316">//---------------------------------------------------------</a>
+<a name="ln317"> </a>
+<a name="ln318">void PianorollEditor::focusOnPosition(Position* p)</a>
+<a name="ln319">      {</a>
+<a name="ln320">      if (!p || !p-&gt;segment)</a>
+<a name="ln321">            return;</a>
+<a name="ln322"> </a>
+<a name="ln323">      //Move view so that view is centered on this element</a>
+<a name="ln324">      pianoView-&gt;ensureVisible(p-&gt;segment-&gt;tick().ticks());</a>
+<a name="ln325">      }</a>
+<a name="ln326"> </a>
+<a name="ln327">//---------------------------------------------------------</a>
+<a name="ln328">//   setStaff</a>
+<a name="ln329">//---------------------------------------------------------</a>
+<a name="ln330"> </a>
+<a name="ln331">void PianorollEditor::setStaff(Staff* st)</a>
+<a name="ln332">      {</a>
+<a name="ln333">      if (staff == st)</a>
+<a name="ln334">            return;</a>
+<a name="ln335"> </a>
+<a name="ln336">      if (st)</a>
+<a name="ln337">            partLabel-&gt;setText(&quot;Part: &quot; + st-&gt;partName());</a>
+<a name="ln338"> </a>
+<a name="ln339">      if ((st &amp;&amp; st-&gt;score() != _score) || (!st &amp;&amp; _score)) {</a>
+<a name="ln340">            if (_score) {</a>
+<a name="ln341">                  _score-&gt;removeViewer(this);</a>
+<a name="ln342">                  disconnect(_score, SIGNAL(posChanged(POS,unsigned)), this, SLOT(posChanged(POS,unsigned)));</a>
+<a name="ln343">                  disconnect(_score, SIGNAL(playlistChanged()), this, SLOT(playlistChanged()));</a>
+<a name="ln344">                  }</a>
+<a name="ln345">            _score = st ? st-&gt;score() : nullptr;</a>
+<a name="ln346">            if (_score) {</a>
+<a name="ln347">                  _score-&gt;addViewer(this);</a>
+<a name="ln348">                  setLocator(POS::CURRENT, _score-&gt;pos(POS::CURRENT).ticks());</a>
+<a name="ln349">                  setLocator(POS::LEFT,    _score-&gt;pos(POS::LEFT).ticks());</a>
+<a name="ln350">                  setLocator(POS::RIGHT,   _score-&gt;pos(POS::RIGHT).ticks());</a>
+<a name="ln351">                  connect(_score, SIGNAL(posChanged(POS,unsigned)), SLOT(posChanged(POS,unsigned)));</a>
+<a name="ln352">                  connect(_score, SIGNAL(playlistChanged()), SLOT(playlistChanged()));</a>
+<a name="ln353">                  }</a>
+<a name="ln354">            }</a>
+<a name="ln355">      staff = st;</a>
+<a name="ln356">      if (staff) {</a>
+<a name="ln357">            setWindowTitle(tr(&quot;&lt;%1&gt; Staff: %2&quot;).arg(_score-&gt;masterScore()-&gt;fileInfo()-&gt;completeBaseName()).arg(st-&gt;idx()));</a>
+<a name="ln358">            TempoMap* tl = _score-&gt;tempomap();</a>
+<a name="ln359">            TimeSigMap*  sl = _score-&gt;sigmap();</a>
+<a name="ln360">            for (int i = 0; i &lt; 3; ++i)</a>
+<a name="ln361">                  locator[i].setContext(tl, sl);</a>
+<a name="ln362">            pos-&gt;setContext(tl, sl);</a>
+<a name="ln363">            showWave-&gt;setEnabled(_score-&gt;audio() != 0);</a>
+<a name="ln364">            }</a>
+<a name="ln365">      else</a>
+<a name="ln366">            setWindowTitle(tr(&quot;Piano roll editor&quot;));</a>
+<a name="ln367">      ruler-&gt;setScore(_score, locator);</a>
+<a name="ln368">      pianoView-&gt;setStaff(staff, locator);</a>
+<a name="ln369">      pianoLevels-&gt;setScore(_score, locator);</a>
+<a name="ln370">      pianoLevels-&gt;setStaff(staff, locator);</a>
+<a name="ln371">      pianoKbd-&gt;setStaff(staff);</a>
+<a name="ln372"> </a>
+<a name="ln373">      updateSelection();</a>
+<a name="ln374">      setEnabled(st != nullptr);</a>
+<a name="ln375">      }</a>
+<a name="ln376"> </a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378">//   writeSettings</a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380"> </a>
+<a name="ln381">void PianorollEditor::writeSettings()</a>
+<a name="ln382">      {</a>
+<a name="ln383">      MuseScore::saveGeometry(this);</a>
+<a name="ln384">      }</a>
+<a name="ln385"> </a>
+<a name="ln386">//---------------------------------------------------------</a>
+<a name="ln387">//   readSettings</a>
+<a name="ln388">//---------------------------------------------------------</a>
+<a name="ln389"> </a>
+<a name="ln390">void PianorollEditor::readSettings()</a>
+<a name="ln391">      {</a>
+<a name="ln392">      resize(QSize(800, 600)); //ensure default size if no geometry in settings</a>
+<a name="ln393">      MuseScore::restoreGeometry(this);</a>
+<a name="ln394">      }</a>
+<a name="ln395"> </a>
+<a name="ln396">//---------------------------------------------------------</a>
+<a name="ln397">//   setXpos</a>
+<a name="ln398">//---------------------------------------------------------</a>
+<a name="ln399"> </a>
+<a name="ln400">void PianorollEditor::setXpos(int x)</a>
+<a name="ln401">      {</a>
+<a name="ln402">      pianoView-&gt;horizontalScrollBar()-&gt;setValue(x);</a>
+<a name="ln403">      ruler-&gt;setXpos(x);</a>
+<a name="ln404">      pianoLevels-&gt;setXpos(x);</a>
+<a name="ln405">      if (waveView &amp;&amp; showWave-&gt;isChecked())</a>
+<a name="ln406">            waveView-&gt;setXpos(x);</a>
+<a name="ln407">      }</a>
+<a name="ln408"> </a>
+<a name="ln409">//---------------------------------------------------------</a>
+<a name="ln410">//   rangeChanged</a>
+<a name="ln411">//---------------------------------------------------------</a>
+<a name="ln412"> </a>
+<a name="ln413">void PianorollEditor::rangeChanged(int min, int max)</a>
+<a name="ln414">      {</a>
+<a name="ln415">      hsb-&gt;setRange(min, max);</a>
+<a name="ln416">      }</a>
+<a name="ln417"> </a>
+<a name="ln418">//---------------------------------------------------------</a>
+<a name="ln419">//   updateSelection</a>
+<a name="ln420">//---------------------------------------------------------</a>
+<a name="ln421"> </a>
+<a name="ln422">void PianorollEditor::updateSelection()</a>
+<a name="ln423">      {</a>
+<a name="ln424">      QList&lt;PianoItem*&gt; items = pianoView-&gt;getSelectedItems();</a>
+<a name="ln425">      bool enabled = false;</a>
+<a name="ln426"> </a>
+<a name="ln427">      if (items.size() == 1) {</a>
+<a name="ln428">            PianoItem* item = items[0];</a>
+<a name="ln429">            Note* note = item-&gt;note();</a>
+<a name="ln430"> </a>
+<a name="ln431">            pitch-&gt;setValue(note-&gt;pitch());</a>
+<a name="ln432"> </a>
+<a name="ln433">            NoteEvent* event = item-&gt;getTweakNoteEvent();</a>
+<a name="ln434">            if (event) {</a>
+<a name="ln435">                  onTime-&gt;setValue(event-&gt;ontime());</a>
+<a name="ln436">                  tickLen-&gt;setValue(event-&gt;len());</a>
+<a name="ln437">                  }</a>
+<a name="ln438"> </a>
+<a name="ln439">            updateVelocity(note);</a>
+<a name="ln440">            enabled = true;</a>
+<a name="ln441">            }</a>
+<a name="ln442"> </a>
+<a name="ln443">      velocity-&gt;setEnabled(enabled);</a>
+<a name="ln444">      pitch-&gt;setEnabled(enabled);</a>
+<a name="ln445">      veloType-&gt;setEnabled(enabled);</a>
+<a name="ln446">      onTime-&gt;setEnabled(enabled);</a>
+<a name="ln447">      tickLen-&gt;setEnabled(enabled);</a>
+<a name="ln448">      }</a>
+<a name="ln449"> </a>
+<a name="ln450">//---------------------------------------------------------</a>
+<a name="ln451">//   selectionChanged</a>
+<a name="ln452">//    called if selection in PianoView changed</a>
+<a name="ln453">//---------------------------------------------------------</a>
+<a name="ln454"> </a>
+<a name="ln455">void PianorollEditor::selectionChanged()</a>
+<a name="ln456">      {</a>
+<a name="ln457">      QList&lt;PianoItem*&gt; items = pianoView-&gt;getSelectedItems();</a>
+<a name="ln458">      if (items.size() == 1) {</a>
+<a name="ln459">            Note* note = items[0]-&gt;note();</a>
+<a name="ln460">            _score-&gt;select(note, SelectType::SINGLE, 0);</a>
+<a name="ln461">            }</a>
+<a name="ln462">      else if (items.size() == 0)</a>
+<a name="ln463">            _score-&gt;select(0, SelectType::SINGLE, 0);</a>
+<a name="ln464">      else {</a>
+<a name="ln465">            _score-&gt;deselectAll();</a>
+<a name="ln466">            for (PianoItem* item : items) {</a>
+<a name="ln467">                  Note* note = item-&gt;note();</a>
+<a name="ln468">                  if (!note-&gt;selected())</a>
+<a name="ln469">                        _score-&gt;select(note, SelectType::ADD, 0);</a>
+<a name="ln470">                  }</a>
+<a name="ln471">            }</a>
+<a name="ln472">      for (MuseScoreView* view : score()-&gt;getViewer())</a>
+<a name="ln473">            view-&gt;updateAll();</a>
+<a name="ln474"> </a>
+<a name="ln475">      pianoView-&gt;scene()-&gt;update();</a>
+<a name="ln476">      pianoLevels-&gt;update();</a>
+<a name="ln477">      updateSelection();</a>
+<a name="ln478">      }</a>
+<a name="ln479"> </a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481">//   changeSelection</a>
+<a name="ln482">//---------------------------------------------------------</a>
+<a name="ln483"> </a>
+<a name="ln484">void PianorollEditor::changeSelection(SelState)</a>
+<a name="ln485">      {</a>
+<a name="ln486">      }</a>
+<a name="ln487"> </a>
+<a name="ln488"> </a>
+<a name="ln489">//---------------------------------------------------------</a>
+<a name="ln490">//   veloTypeChanged</a>
+<a name="ln491">//---------------------------------------------------------</a>
+<a name="ln492"> </a>
+<a name="ln493">void PianorollEditor::veloTypeChanged(int val)</a>
+<a name="ln494">      {</a>
+<a name="ln495">      QList&lt;PianoItem*&gt; items = pianoView-&gt;getSelectedItems();</a>
+<a name="ln496">      if (items.size() != 1)</a>
+<a name="ln497">            return;</a>
+<a name="ln498">      PianoItem* item = items[0];</a>
+<a name="ln499">      Note* note = item-&gt;note();</a>
+<a name="ln500">      if (Note::ValueType(val) == note-&gt;veloType())</a>
+<a name="ln501">            return;</a>
+<a name="ln502"> </a>
+<a name="ln503">      int newVelocity = note-&gt;veloOffset();</a>
+<a name="ln504">      int dynamicsVel = staff-&gt;velocities().val(note-&gt;tick());</a>
+<a name="ln505"> </a>
+<a name="ln506">      //Change velocity to equivalent in new metric</a>
+<a name="ln507">      switch (Note::ValueType(val)) {</a>
+<a name="ln508">            case Note::ValueType::USER_VAL:</a>
+<a name="ln509">                  newVelocity = static_cast&lt;int&gt;(dynamicsVel * (1 + newVelocity / 100.0));</a>
+<a name="ln510">                  break;</a>
+<a name="ln511">            case Note::ValueType::OFFSET_VAL:</a>
+<a name="ln512">                  newVelocity = static_cast&lt;int&gt;((newVelocity / (qreal)dynamicsVel - 1) * 100);</a>
+<a name="ln513">                  break;</a>
+<a name="ln514">            }</a>
+<a name="ln515"> </a>
+<a name="ln516">      _score-&gt;startCmd();</a>
+<a name="ln517">      _score-&gt;undo(new ChangeVelocity(note, Note::ValueType(val), newVelocity));</a>
+<a name="ln518">      _score-&gt;endCmd();</a>
+<a name="ln519">      updateVelocity(note);</a>
+<a name="ln520">      }</a>
+<a name="ln521"> </a>
+<a name="ln522">//---------------------------------------------------------</a>
+<a name="ln523">//   updateVelocity</a>
+<a name="ln524">//---------------------------------------------------------</a>
+<a name="ln525"> </a>
+<a name="ln526">void PianorollEditor::updateVelocity(Note* note)</a>
+<a name="ln527">      {</a>
+<a name="ln528">      Note::ValueType vt = note-&gt;veloType();</a>
+<a name="ln529">      veloType-&gt;setCurrentIndex(int(vt));</a>
+<a name="ln530">      switch(vt) {</a>
+<a name="ln531">            case Note::ValueType::USER_VAL:</a>
+<a name="ln532">                  velocity-&gt;setReadOnly(false);</a>
+<a name="ln533">                  velocity-&gt;setSuffix(&quot;&quot;);</a>
+<a name="ln534">                  break;</a>
+<a name="ln535">            case Note::ValueType::OFFSET_VAL:</a>
+<a name="ln536">                  velocity-&gt;setReadOnly(false);</a>
+<a name="ln537">                  velocity-&gt;setSuffix(&quot;%&quot;);</a>
+<a name="ln538">                  break;</a>
+<a name="ln539">            }</a>
+<a name="ln540"> </a>
+<a name="ln541">      switch(vt) {</a>
+<a name="ln542">            case Note::ValueType::USER_VAL:</a>
+<a name="ln543">                  velocity-&gt;setValue(note-&gt;veloOffset());</a>
+<a name="ln544">                  break;</a>
+<a name="ln545">            case Note::ValueType::OFFSET_VAL:</a>
+<a name="ln546">                  velocity-&gt;setValue(note-&gt;veloOffset());</a>
+<a name="ln547">                  break;</a>
+<a name="ln548">            }</a>
+<a name="ln549"> </a>
+<a name="ln550">      pianoLevels-&gt;update();</a>
+<a name="ln551">      }</a>
+<a name="ln552"> </a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554">//   velocityChanged</a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556"> </a>
+<a name="ln557">void PianorollEditor::velocityChanged(int val)</a>
+<a name="ln558">      {</a>
+<a name="ln559">      QList&lt;PianoItem*&gt; items = pianoView-&gt;getSelectedItems();</a>
+<a name="ln560">      if (items.size() != 1)</a>
+<a name="ln561">            return;</a>
+<a name="ln562">      PianoItem* item = items[0];</a>
+<a name="ln563">      Note* note = item-&gt;note();</a>
+<a name="ln564">      Note::ValueType vt = note-&gt;veloType();</a>
+<a name="ln565"> </a>
+<a name="ln566">      if (val == note-&gt;veloOffset())</a>
+<a name="ln567">            return;</a>
+<a name="ln568"> </a>
+<a name="ln569">      _score-&gt;startCmd();</a>
+<a name="ln570">      _score-&gt;undo(new ChangeVelocity(note, vt, val));</a>
+<a name="ln571">      _score-&gt;endCmd();</a>
+<a name="ln572"> </a>
+<a name="ln573">      pianoLevels-&gt;update();</a>
+<a name="ln574">      }</a>
+<a name="ln575"> </a>
+<a name="ln576">//---------------------------------------------------------</a>
+<a name="ln577">//   keyPressed</a>
+<a name="ln578">//---------------------------------------------------------</a>
+<a name="ln579"> </a>
+<a name="ln580">void PianorollEditor::keyPressed(int p)</a>
+<a name="ln581">      {</a>
+<a name="ln582">      seq-&gt;startNote(staff-&gt;part()-&gt;instrument()-&gt;channel(0)-&gt;channel(), p, 80, 0, 0.0);</a>
+<a name="ln583">      }</a>
+<a name="ln584"> </a>
+<a name="ln585">//---------------------------------------------------------</a>
+<a name="ln586">//   keyReleased</a>
+<a name="ln587">//---------------------------------------------------------</a>
+<a name="ln588"> </a>
+<a name="ln589">void PianorollEditor::keyReleased(int /*p*/)</a>
+<a name="ln590">      {</a>
+<a name="ln591">      seq-&gt;stopNotes();</a>
+<a name="ln592">      }</a>
+<a name="ln593"> </a>
+<a name="ln594">//---------------------------------------------------------</a>
+<a name="ln595">//   heartBeat</a>
+<a name="ln596">//---------------------------------------------------------</a>
+<a name="ln597"> </a>
+<a name="ln598">void PianorollEditor::heartBeat(Seq* s)</a>
+<a name="ln599">      {</a>
+<a name="ln600">      unsigned tick = s-&gt;getCurTick();</a>
+<a name="ln601">      if (score()-&gt;masterScore())</a>
+<a name="ln602">            tick = score()-&gt;masterScore()-&gt;repeatList().utick2tick(tick);</a>
+<a name="ln603">      if (locator[0].tick() != tick) {</a>
+<a name="ln604">            posChanged(POS::CURRENT, tick);</a>
+<a name="ln605">            if (preferences.getBool(PREF_APP_PLAYBACK_FOLLOWSONG))</a>
+<a name="ln606">                  pianoView-&gt;ensureVisible(tick);</a>
+<a name="ln607">            }</a>
+<a name="ln608">      }</a>
+<a name="ln609"> </a>
+<a name="ln610">//---------------------------------------------------------</a>
+<a name="ln611">//   moveLocator</a>
+<a name="ln612">//---------------------------------------------------------</a>
+<a name="ln613"> </a>
+<a name="ln614">void PianorollEditor::moveLocator(int i, const Pos&amp; p)</a>
+<a name="ln615">      {</a>
+<a name="ln616">      if (locator[i].valid())</a>
+<a name="ln617">            score()-&gt;setPos(POS(i), Fraction::fromTicks(p.tick()));</a>
+<a name="ln618">      }</a>
+<a name="ln619"> </a>
+<a name="ln620">//---------------------------------------------------------</a>
+<a name="ln621">//   cmd</a>
+<a name="ln622">//---------------------------------------------------------</a>
+<a name="ln623"> </a>
+<a name="ln624">void PianorollEditor::cmd(QAction* /*a*/)</a>
+<a name="ln625">      {</a>
+<a name="ln626">      //score()-&gt;startCmd();</a>
+<a name="ln627">      pianoView-&gt;setStaff(staff, locator);</a>
+<a name="ln628">      pianoLevels-&gt;setStaff(staff, locator);</a>
+<a name="ln629">      pianoKbd-&gt;setStaff(staff);</a>
+<a name="ln630">      //score()-&gt;endCmd();</a>
+<a name="ln631">      }</a>
+<a name="ln632"> </a>
+<a name="ln633">//---------------------------------------------------------</a>
+<a name="ln634">//   dataChanged</a>
+<a name="ln635">//---------------------------------------------------------</a>
+<a name="ln636"> </a>
+<a name="ln637">void PianorollEditor::dataChanged(const QRectF&amp;)</a>
+<a name="ln638">      {</a>
+<a name="ln639">      }</a>
+<a name="ln640"> </a>
+<a name="ln641">//---------------------------------------------------------</a>
+<a name="ln642">//   removeScore</a>
+<a name="ln643">//---------------------------------------------------------</a>
+<a name="ln644"> </a>
+<a name="ln645">void PianorollEditor::removeScore()</a>
+<a name="ln646">      {</a>
+<a name="ln647">      _score = nullptr;</a>
+<a name="ln648">      setStaff(nullptr);</a>
+<a name="ln649">      }</a>
+<a name="ln650"> </a>
+<a name="ln651">//---------------------------------------------------------</a>
+<a name="ln652">//   changeEditElement</a>
+<a name="ln653">//---------------------------------------------------------</a>
+<a name="ln654"> </a>
+<a name="ln655">void PianorollEditor::changeEditElement(Element*)</a>
+<a name="ln656">      {</a>
+<a name="ln657">      }</a>
+<a name="ln658"> </a>
+<a name="ln659">//---------------------------------------------------------</a>
+<a name="ln660">//   cursor</a>
+<a name="ln661">//---------------------------------------------------------</a>
+<a name="ln662"> </a>
+<a name="ln663">QCursor PianorollEditor::cursor() const</a>
+<a name="ln664">      {</a>
+<a name="ln665">      return QCursor();</a>
+<a name="ln666">      }</a>
+<a name="ln667"> </a>
+<a name="ln668">//---------------------------------------------------------</a>
+<a name="ln669">//   setCursor</a>
+<a name="ln670">//---------------------------------------------------------</a>
+<a name="ln671"> </a>
+<a name="ln672">void PianorollEditor::setCursor(const QCursor&amp;)</a>
+<a name="ln673">      {</a>
+<a name="ln674">      }</a>
+<a name="ln675"> </a>
+<a name="ln676">//---------------------------------------------------------</a>
+<a name="ln677">//   matrix</a>
+<a name="ln678">//---------------------------------------------------------</a>
+<a name="ln679"> </a>
+<a name="ln680">const QTransform&amp; PianorollEditor::matrix() const</a>
+<a name="ln681">      {</a>
+<a name="ln682">      static QTransform t;</a>
+<a name="ln683">      return t;</a>
+<a name="ln684">      }</a>
+<a name="ln685"> </a>
+<a name="ln686">//---------------------------------------------------------</a>
+<a name="ln687">//   elementNear</a>
+<a name="ln688">//---------------------------------------------------------</a>
+<a name="ln689"> </a>
+<a name="ln690">Element* PianorollEditor::elementNear(QPointF)</a>
+<a name="ln691">      {</a>
+<a name="ln692">      return 0;</a>
+<a name="ln693">      }</a>
+<a name="ln694"> </a>
+<a name="ln695">//---------------------------------------------------------</a>
+<a name="ln696">//   updateAll</a>
+<a name="ln697">//---------------------------------------------------------</a>
+<a name="ln698"> </a>
+<a name="ln699">void PianorollEditor::updateAll()</a>
+<a name="ln700">      {</a>
+<a name="ln701">      if (updateScheduled)</a>
+<a name="ln702">            return;</a>
+<a name="ln703"> </a>
+<a name="ln704">      QTimer::singleShot(0, this, &amp;PianorollEditor::doUpdate);</a>
+<a name="ln705">      updateScheduled = true;</a>
+<a name="ln706">      }</a>
+<a name="ln707"> </a>
+<a name="ln708">//---------------------------------------------------------</a>
+<a name="ln709">//   doUpdate</a>
+<a name="ln710">//---------------------------------------------------------</a>
+<a name="ln711"> </a>
+<a name="ln712">void PianorollEditor::doUpdate()</a>
+<a name="ln713">      {</a>
+<a name="ln714">      updateScheduled = false;</a>
+<a name="ln715"> </a>
+<a name="ln716">      if (staff &amp;&amp; staff-&gt;idx() == -1) { // staff removed</a>
+<a name="ln717">            removeScore();</a>
+<a name="ln718">            return;</a>
+<a name="ln719">            }</a>
+<a name="ln720">      pianoView-&gt;updateNotes();</a>
+<a name="ln721">      pianoLevels-&gt;updateNotes();</a>
+<a name="ln722">      }</a>
+<a name="ln723"> </a>
+<a name="ln724">void PianorollEditor::playlistChanged()</a>
+<a name="ln725">      {</a>
+<a name="ln726">      }</a>
+<a name="ln727"> </a>
+<a name="ln728">//---------------------------------------------------------</a>
+<a name="ln729">//   showWavView</a>
+<a name="ln730">//---------------------------------------------------------</a>
+<a name="ln731"> </a>
+<a name="ln732">void PianorollEditor::showWaveView(bool val)</a>
+<a name="ln733">      {</a>
+<a name="ln734">      if (val) {</a>
+<a name="ln735">            if (waveView == 0) {</a>
+<a name="ln736">                  waveView = new WaveView;</a>
+<a name="ln737">                  connect(pianoView, SIGNAL(magChanged(double,double)), waveView, SLOT(setMag(double,double)));</a>
+<a name="ln738">                  connect(pianoView, SIGNAL(posChanged(const Pos&amp;)), waveView,   SLOT(setValue(const Pos&amp;)));</a>
+<a name="ln739">                  waveView-&gt;setAudio(_score-&gt;audio());</a>
+<a name="ln740">                  waveView-&gt;setScore(_score, locator);</a>
+<a name="ln741">                  split-&gt;addWidget(waveView);</a>
+<a name="ln742">                  waveView-&gt;setXpos(ruler-&gt;xpos());</a>
+<a name="ln743">                  }</a>
+<a name="ln744">            waveView-&gt;setVisible(true);</a>
+<a name="ln745">            }</a>
+<a name="ln746">      else {</a>
+<a name="ln747">            if (waveView)</a>
+<a name="ln748">                  waveView-&gt;setVisible(false);</a>
+<a name="ln749">            }</a>
+<a name="ln750">      }</a>
+<a name="ln751"> </a>
+<a name="ln752">//---------------------------------------------------------</a>
+<a name="ln753">//   posChanged</a>
+<a name="ln754">//    position in score has changed</a>
+<a name="ln755">//---------------------------------------------------------</a>
+<a name="ln756"> </a>
+<a name="ln757">void PianorollEditor::posChanged(POS p, unsigned tick)</a>
+<a name="ln758">      {</a>
+<a name="ln759">      if (locator[int(p)].tick() == unsigned(tick))</a>
+<a name="ln760">            return;</a>
+<a name="ln761">      setLocator(p, tick);</a>
+<a name="ln762">      pianoView-&gt;moveLocator(int(p));</a>
+<a name="ln763">      if (waveView)</a>
+<a name="ln764">            waveView-&gt;moveLocator(int(p));</a>
+<a name="ln765">      ruler-&gt;update();</a>
+<a name="ln766">      pianoLevels-&gt;update();</a>
+<a name="ln767">      }</a>
+<a name="ln768"> </a>
+<a name="ln769">//---------------------------------------------------------</a>
+<a name="ln770">//   onTimeChanged</a>
+<a name="ln771">//---------------------------------------------------------</a>
+<a name="ln772"> </a>
+<a name="ln773">void PianorollEditor::onTimeChanged(int val)</a>
+<a name="ln774">      {</a>
+<a name="ln775">      QList&lt;PianoItem*&gt; items = pianoView-&gt;getSelectedItems();</a>
+<a name="ln776">      if (items.size() != 1)</a>
+<a name="ln777">            return;</a>
+<a name="ln778">      PianoItem* item = items[0];</a>
+<a name="ln779">      Note* note       = item-&gt;note();</a>
+<a name="ln780">      NoteEvent* event = item-&gt;getTweakNoteEvent();</a>
+<a name="ln781">      if (!event || event-&gt;ontime() == val)</a>
+<a name="ln782">            return;</a>
+<a name="ln783"> </a>
+<a name="ln784">      NoteEvent ne = *event;</a>
+<a name="ln785">      ne.setOntime(val);</a>
+<a name="ln786">      _score-&gt;startCmd();</a>
+<a name="ln787">      _score-&gt;undo(new ChangeNoteEvent(note, event, ne));</a>
+<a name="ln788">      _score-&gt;endCmd();</a>
+<a name="ln789"> </a>
+<a name="ln790">      pianoView-&gt;updateNotes();</a>
+<a name="ln791">      pianoLevels-&gt;updateNotes();</a>
+<a name="ln792">      }</a>
+<a name="ln793"> </a>
+<a name="ln794">//---------------------------------------------------------</a>
+<a name="ln795">//   tickLenChanged</a>
+<a name="ln796">//---------------------------------------------------------</a>
+<a name="ln797"> </a>
+<a name="ln798">void PianorollEditor::tickLenChanged(int val)</a>
+<a name="ln799">      {</a>
+<a name="ln800">      QList&lt;PianoItem*&gt; items = pianoView-&gt;getSelectedItems();</a>
+<a name="ln801">      if (items.size() != 1)</a>
+<a name="ln802">            return;</a>
+<a name="ln803">      PianoItem* item = items[0];</a>
+<a name="ln804">      Note* note       = item-&gt;note();</a>
+<a name="ln805">      NoteEvent* event = item-&gt;getTweakNoteEvent();</a>
+<a name="ln806">      if (!event || event-&gt;len() == val)</a>
+<a name="ln807">            return;</a>
+<a name="ln808"> </a>
+<a name="ln809">      NoteEvent ne = *event;</a>
+<a name="ln810">      ne.setLen(val);</a>
+<a name="ln811">      _score-&gt;startCmd();</a>
+<a name="ln812">      _score-&gt;undo(new ChangeNoteEvent(note, event, ne));</a>
+<a name="ln813">      _score-&gt;endCmd();</a>
+<a name="ln814"> </a>
+<a name="ln815">      pianoView-&gt;updateNotes();</a>
+<a name="ln816">      pianoLevels-&gt;updateNotes();</a>
+<a name="ln817">      }</a>
+<a name="ln818"> </a>
+<a name="ln819">}</a>
+
+</code></pre>
+<div class="balloon" rel="357"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'st' pointer was utilized before it was verified against nullptr. Check lines: 357, 374.</p></div>
+<div class="balloon" rel="543"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 543, 546</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

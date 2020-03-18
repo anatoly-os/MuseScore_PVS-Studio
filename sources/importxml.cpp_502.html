@@ -1,0 +1,424 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>importxml.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MusE Score</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2015 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">/**</a>
+<a name="ln21"> MusicXML import.</a>
+<a name="ln22"> */</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;thirdparty/qzip/qzipreader_p.h&quot;</a>
+<a name="ln25">#include &quot;importmxml.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">namespace Ms {</a>
+<a name="ln28"> </a>
+<a name="ln29">//---------------------------------------------------------</a>
+<a name="ln30">//   tupletAssert -- check assertions for tuplet handling</a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32"> </a>
+<a name="ln33">/**</a>
+<a name="ln34"> Check assertions for tuplet handling. If this fails, MusicXML</a>
+<a name="ln35"> import will almost certainly break in non-obvious ways.</a>
+<a name="ln36"> Should never happen, thus it is OK to quit the application.</a>
+<a name="ln37"> */</a>
+<a name="ln38"> </a>
+<a name="ln39">static void tupletAssert()</a>
+<a name="ln40">      {</a>
+<a name="ln41">      if (!(int(TDuration::DurationType::V_BREVE)      == int(TDuration::DurationType::V_LONG)    + 1</a>
+<a name="ln42">            &amp;&amp; int(TDuration::DurationType::V_WHOLE)   == int(TDuration::DurationType::V_BREVE)   + 1</a>
+<a name="ln43">            &amp;&amp; int(TDuration::DurationType::V_HALF)    == int(TDuration::DurationType::V_WHOLE)   + 1</a>
+<a name="ln44">            &amp;&amp; int(TDuration::DurationType::V_QUARTER) == int(TDuration::DurationType::V_HALF)    + 1</a>
+<a name="ln45">            &amp;&amp; int(TDuration::DurationType::V_EIGHTH)  == int(TDuration::DurationType::V_QUARTER) + 1</a>
+<a name="ln46">            &amp;&amp; int(TDuration::DurationType::V_16TH)    == int(TDuration::DurationType::V_EIGHTH)  + 1</a>
+<a name="ln47">            &amp;&amp; int(TDuration::DurationType::V_32ND)    == int(TDuration::DurationType::V_16TH)    + 1</a>
+<a name="ln48">            &amp;&amp; int(TDuration::DurationType::V_64TH)    == int(TDuration::DurationType::V_32ND)    + 1</a>
+<a name="ln49">            &amp;&amp; int(TDuration::DurationType::V_128TH)   == int(TDuration::DurationType::V_64TH)    + 1</a>
+<a name="ln50">            &amp;&amp; int(TDuration::DurationType::V_256TH)   == int(TDuration::DurationType::V_128TH)   + 1</a>
+<a name="ln51">            )) {</a>
+<a name="ln52">            qFatal(&quot;tupletAssert() failed&quot;);</a>
+<a name="ln53">            }</a>
+<a name="ln54">      }</a>
+<a name="ln55"> </a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57">//   initMusicXmlSchema</a>
+<a name="ln58">//    return false on error</a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60"> </a>
+<a name="ln61">static bool initMusicXmlSchema(QXmlSchema&amp; schema)</a>
+<a name="ln62">      {</a>
+<a name="ln63">      // read the MusicXML schema from the application resources</a>
+<a name="ln64">      QFile schemaFile(&quot;:/schema/musicxml.xsd&quot;);</a>
+<a name="ln65">      if (!schemaFile.open(QIODevice::ReadOnly | QIODevice::Text)) {</a>
+<a name="ln66">            qDebug(&quot;initMusicXmlSchema() could not open resource musicxml.xsd&quot;);</a>
+<a name="ln67">            MScore::lastError = QObject::tr(&quot;Internal error: Could not open resource musicxml.xsd\n&quot;);</a>
+<a name="ln68">            return false;</a>
+<a name="ln69">            }</a>
+<a name="ln70"> </a>
+<a name="ln71">      // copy the schema into a QByteArray and fixup xs:imports,</a>
+<a name="ln72">      // using a path to the application resources instead of to www.musicxml.org</a>
+<a name="ln73">      // to prevent downloading from the net</a>
+<a name="ln74">      QByteArray schemaBa;</a>
+<a name="ln75">      QTextStream schemaStream(&amp;schemaFile);</a>
+<a name="ln76">      while (!schemaStream.atEnd()) {</a>
+<a name="ln77">            QString line = schemaStream.readLine();</a>
+<a name="ln78">            if (line.contains(&quot;xs:import&quot;))</a>
+<a name="ln79">                  line.replace(&quot;http://www.musicxml.org/xsd&quot;, &quot;qrc:///schema&quot;);</a>
+<a name="ln80">            schemaBa += line.toUtf8();</a>
+<a name="ln81">            schemaBa += &quot;\n&quot;;</a>
+<a name="ln82">            }</a>
+<a name="ln83"> </a>
+<a name="ln84">      // load and validate the schema</a>
+<a name="ln85">      schema.load(schemaBa);</a>
+<a name="ln86">      if (!schema.isValid()) {</a>
+<a name="ln87">            qDebug(&quot;initMusicXmlSchema() internal error: MusicXML schema is invalid&quot;);</a>
+<a name="ln88">            MScore::lastError = QObject::tr(&quot;Internal error: MusicXML schema is invalid\n&quot;);</a>
+<a name="ln89">            return false;</a>
+<a name="ln90">            }</a>
+<a name="ln91"> </a>
+<a name="ln92">      return true;</a>
+<a name="ln93">      }</a>
+<a name="ln94"> </a>
+<a name="ln95"> </a>
+<a name="ln96">//---------------------------------------------------------</a>
+<a name="ln97">//   musicXMLValidationErrorDialog</a>
+<a name="ln98">//---------------------------------------------------------</a>
+<a name="ln99"> </a>
+<a name="ln100">/**</a>
+<a name="ln101"> Show a dialog displaying the MusicXML validation error(s)</a>
+<a name="ln102"> and asks the user if he wants to try to load the file anyway.</a>
+<a name="ln103"> Return QMessageBox::Yes (try anyway) or QMessageBox::No (don't)</a>
+<a name="ln104"> */</a>
+<a name="ln105"> </a>
+<a name="ln106">static int musicXMLValidationErrorDialog(QString text, QString detailedText)</a>
+<a name="ln107">      {</a>
+<a name="ln108">      QMessageBox errorDialog;</a>
+<a name="ln109">      errorDialog.setIcon(QMessageBox::Question);</a>
+<a name="ln110">      errorDialog.setText(text);</a>
+<a name="ln111">      errorDialog.setInformativeText(QObject::tr(&quot;Do you want to try to load this file anyway?&quot;));</a>
+<a name="ln112">      errorDialog.setDetailedText(detailedText);</a>
+<a name="ln113">      errorDialog.setStandardButtons(QMessageBox::Yes | QMessageBox::No);</a>
+<a name="ln114">      errorDialog.setDefaultButton(QMessageBox::No);</a>
+<a name="ln115">      return errorDialog.exec();</a>
+<a name="ln116">      }</a>
+<a name="ln117"> </a>
+<a name="ln118"> </a>
+<a name="ln119">//---------------------------------------------------------</a>
+<a name="ln120">//   extractRootfile</a>
+<a name="ln121">//---------------------------------------------------------</a>
+<a name="ln122"> </a>
+<a name="ln123">/**</a>
+<a name="ln124">Extract rootfile from compressed MusicXML file \a qf, return true if OK and false on error.</a>
+<a name="ln125">*/</a>
+<a name="ln126"> </a>
+<a name="ln127">static bool extractRootfile(QFile* qf, QByteArray&amp; data)</a>
+<a name="ln128">      {</a>
+<a name="ln129">      MQZipReader f(qf-&gt;fileName());</a>
+<a name="ln130">      data = f.fileData(&quot;META-INF/container.xml&quot;);</a>
+<a name="ln131"> </a>
+<a name="ln132">      QDomDocument container;</a>
+<a name="ln133">      int line, column;</a>
+<a name="ln134">      QString err;</a>
+<a name="ln135">      if (!container.setContent(data, false, &amp;err, &amp;line, &amp;column)) {</a>
+<a name="ln136">            MScore::lastError = QObject::tr(&quot;Error reading container.xml at line %1 column %2: %3\n&quot;).arg(line).arg(column).arg(err);</a>
+<a name="ln137">            return false;</a>
+<a name="ln138">            }</a>
+<a name="ln139"> </a>
+<a name="ln140">      // extract first rootfile</a>
+<a name="ln141">      QString rootfile = &quot;&quot;;</a>
+<a name="ln142">      for (QDomElement e = container.documentElement(); !e.isNull(); e = e.nextSiblingElement()) {</a>
+<a name="ln143">            if (e.tagName() == &quot;container&quot;) {</a>
+<a name="ln144">                  for (QDomElement ee = e.firstChildElement(); !ee.isNull(); ee = ee.nextSiblingElement()) {</a>
+<a name="ln145">                        if (ee.tagName() == &quot;rootfiles&quot;) {</a>
+<a name="ln146">                              for (QDomElement eee = ee.firstChildElement(); !eee.isNull(); eee = eee.nextSiblingElement()) {</a>
+<a name="ln147">                                    if (eee.tagName() == &quot;rootfile&quot;) {</a>
+<a name="ln148">                                          if (rootfile == &quot;&quot;)</a>
+<a name="ln149">                                                rootfile = eee.attribute(QString(&quot;full-path&quot;));</a>
+<a name="ln150">                                          }</a>
+<a name="ln151">                                    else</a>
+<a name="ln152">                                          domError(eee);</a>
+<a name="ln153">                                    }</a>
+<a name="ln154">                              }</a>
+<a name="ln155">                        else</a>
+<a name="ln156">                              domError(ee);</a>
+<a name="ln157">                        }</a>
+<a name="ln158">                  }</a>
+<a name="ln159">            else</a>
+<a name="ln160">                  domError(e);</a>
+<a name="ln161">            }</a>
+<a name="ln162"> </a>
+<a name="ln163">      if (rootfile == &quot;&quot;) {</a>
+<a name="ln164">            qDebug(&quot;can't find rootfile in: %s&quot;, qPrintable(qf-&gt;fileName()));</a>
+<a name="ln165">            MScore::lastError = QObject::tr(&quot;Can't find rootfile\n%1&quot;).arg(qf-&gt;fileName());</a>
+<a name="ln166">            return false;</a>
+<a name="ln167">            }</a>
+<a name="ln168"> </a>
+<a name="ln169">      // read the rootfile</a>
+<a name="ln170">      data = f.fileData(rootfile);</a>
+<a name="ln171">      return true;</a>
+<a name="ln172">      }</a>
+<a name="ln173"> </a>
+<a name="ln174"> </a>
+<a name="ln175">//---------------------------------------------------------</a>
+<a name="ln176">//   doValidate</a>
+<a name="ln177">//---------------------------------------------------------</a>
+<a name="ln178"> </a>
+<a name="ln179">/**</a>
+<a name="ln180"> Validate MusicXML data from file \a name contained in QIODevice \a dev.</a>
+<a name="ln181"> */</a>
+<a name="ln182"> </a>
+<a name="ln183">static Score::FileError doValidate(const QString&amp; name, QIODevice* dev)</a>
+<a name="ln184">      {</a>
+<a name="ln185">      QTime t;</a>
+<a name="ln186">      t.start();</a>
+<a name="ln187"> </a>
+<a name="ln188">      // initialize the schema</a>
+<a name="ln189">      ValidatorMessageHandler messageHandler;</a>
+<a name="ln190">      QXmlSchema schema;</a>
+<a name="ln191">      schema.setMessageHandler(&amp;messageHandler);</a>
+<a name="ln192">      if (!initMusicXmlSchema(schema))</a>
+<a name="ln193">            return Score::FileError::FILE_BAD_FORMAT;  // appropriate error message has been printed by initMusicXmlSchema</a>
+<a name="ln194"> </a>
+<a name="ln195">      // validate the data</a>
+<a name="ln196">      QXmlSchemaValidator validator(schema);</a>
+<a name="ln197">      bool valid = validator.validate(dev, QUrl::fromLocalFile(name));</a>
+<a name="ln198">      //qDebug(&quot;Validation time elapsed: %d ms&quot;, t.elapsed());</a>
+<a name="ln199"> </a>
+<a name="ln200">      if (!valid) {</a>
+<a name="ln201">            qDebug(&quot;importMusicXml() file '%s' is not a valid MusicXML file&quot;, qPrintable(name));</a>
+<a name="ln202">            MScore::lastError = QObject::tr(&quot;File '%1' is not a valid MusicXML file&quot;).arg(name);</a>
+<a name="ln203">            if (MScore::noGui)</a>
+<a name="ln204">                  return Score::FileError::FILE_NO_ERROR;   // might as well try anyhow in converter mode</a>
+<a name="ln205">            if (musicXMLValidationErrorDialog(MScore::lastError, messageHandler.getErrors()) != QMessageBox::Yes)</a>
+<a name="ln206">                  return Score::FileError::FILE_USER_ABORT;</a>
+<a name="ln207">            }</a>
+<a name="ln208"> </a>
+<a name="ln209">      // return OK</a>
+<a name="ln210">      return Score::FileError::FILE_NO_ERROR;</a>
+<a name="ln211">      }</a>
+<a name="ln212"> </a>
+<a name="ln213">//---------------------------------------------------------</a>
+<a name="ln214">//   doValidateAndImport</a>
+<a name="ln215">//---------------------------------------------------------</a>
+<a name="ln216"> </a>
+<a name="ln217">/**</a>
+<a name="ln218"> Validate and import MusicXML data from file \a name contained in QIODevice \a dev into score \a score.</a>
+<a name="ln219"> */</a>
+<a name="ln220"> </a>
+<a name="ln221">static Score::FileError doValidateAndImport(Score* score, const QString&amp; name, QIODevice* dev)</a>
+<a name="ln222">      {</a>
+<a name="ln223">      // verify tuplet TDuration::DurationType dependencies</a>
+<a name="ln224">      tupletAssert();</a>
+<a name="ln225"> </a>
+<a name="ln226">      // validate the file</a>
+<a name="ln227">      Score::FileError res;</a>
+<a name="ln228">      res = doValidate(name, dev);</a>
+<a name="ln229">      if (res != Score::FileError::FILE_NO_ERROR)</a>
+<a name="ln230">            return res;</a>
+<a name="ln231"> </a>
+<a name="ln232">      // actually do the import</a>
+<a name="ln233">      importMusicXMLfromBuffer(score, name, dev);</a>
+<a name="ln234">      //qDebug(&quot;importMusicXml() return %d&quot;, int(res));</a>
+<a name="ln235">      return res;</a>
+<a name="ln236">      }</a>
+<a name="ln237"> </a>
+<a name="ln238"> </a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240">//   importMusicXml</a>
+<a name="ln241">//    return Score::FileError::FILE_* errors</a>
+<a name="ln242">//---------------------------------------------------------</a>
+<a name="ln243"> </a>
+<a name="ln244">/**</a>
+<a name="ln245"> Import MusicXML file \a name into the Score.</a>
+<a name="ln246"> */</a>
+<a name="ln247"> </a>
+<a name="ln248">Score::FileError importMusicXml(MasterScore* score, const QString&amp; name)</a>
+<a name="ln249">      {</a>
+<a name="ln250">      ScoreLoad sl;     // suppress warnings for undo push/pop</a>
+<a name="ln251"> </a>
+<a name="ln252">      //qDebug(&quot;importMusicXml(%p, %s)&quot;, score, qPrintable(name));</a>
+<a name="ln253"> </a>
+<a name="ln254">      // open the MusicXML file</a>
+<a name="ln255">      QFile xmlFile(name);</a>
+<a name="ln256">      if (!xmlFile.exists())</a>
+<a name="ln257">            return Score::FileError::FILE_NOT_FOUND;</a>
+<a name="ln258">      if (!xmlFile.open(QIODevice::ReadOnly)) {</a>
+<a name="ln259">            qDebug(&quot;importMusicXml() could not open MusicXML file '%s'&quot;, qPrintable(name));</a>
+<a name="ln260">            MScore::lastError = QObject::tr(&quot;Could not open MusicXML file\n%1&quot;).arg(name);</a>
+<a name="ln261">            return Score::FileError::FILE_OPEN_ERROR;</a>
+<a name="ln262">            }</a>
+<a name="ln263"> </a>
+<a name="ln264">      // and import it</a>
+<a name="ln265">      return doValidateAndImport(score, name, &amp;xmlFile);</a>
+<a name="ln266">      }</a>
+<a name="ln267"> </a>
+<a name="ln268"> </a>
+<a name="ln269">//---------------------------------------------------------</a>
+<a name="ln270">//   importCompressedMusicXml</a>
+<a name="ln271">//    return false on error</a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273"> </a>
+<a name="ln274">/**</a>
+<a name="ln275"> Import compressed MusicXML file \a name into the Score.</a>
+<a name="ln276"> */</a>
+<a name="ln277"> </a>
+<a name="ln278">Score::FileError importCompressedMusicXml(MasterScore* score, const QString&amp; name)</a>
+<a name="ln279">      {</a>
+<a name="ln280">      //qDebug(&quot;importCompressedMusicXml(%p, %s)&quot;, score, qPrintable(name));</a>
+<a name="ln281"> </a>
+<a name="ln282">      // open the compressed MusicXML file</a>
+<a name="ln283">      QFile mxlFile(name);</a>
+<a name="ln284">      if (!mxlFile.exists())</a>
+<a name="ln285">            return Score::FileError::FILE_NOT_FOUND;</a>
+<a name="ln286">      if (!mxlFile.open(QIODevice::ReadOnly)) {</a>
+<a name="ln287">            qDebug(&quot;importCompressedMusicXml() could not open compressed MusicXML file '%s'&quot;, qPrintable(name));</a>
+<a name="ln288">            MScore::lastError = QObject::tr(&quot;Could not open compressed MusicXML file\n%1&quot;).arg(name);</a>
+<a name="ln289">            return Score::FileError::FILE_OPEN_ERROR;</a>
+<a name="ln290">            }</a>
+<a name="ln291"> </a>
+<a name="ln292">      // extract the root file</a>
+<a name="ln293">      QByteArray data;</a>
+<a name="ln294">      if (!extractRootfile(&amp;mxlFile, data))</a>
+<a name="ln295">            return Score::FileError::FILE_BAD_FORMAT;  // appropriate error message has been printed by extractRootfile</a>
+<a name="ln296">      QBuffer buffer(&amp;data);</a>
+<a name="ln297">      buffer.open(QIODevice::ReadOnly);</a>
+<a name="ln298"> </a>
+<a name="ln299">      // and import it</a>
+<a name="ln300">      return doValidateAndImport(score, name, &amp;buffer);</a>
+<a name="ln301">      }</a>
+<a name="ln302"> </a>
+<a name="ln303">//---------------------------------------------------------</a>
+<a name="ln304">//   VoiceDesc</a>
+<a name="ln305">//---------------------------------------------------------</a>
+<a name="ln306"> </a>
+<a name="ln307">// TODO: move somewhere else</a>
+<a name="ln308"> </a>
+<a name="ln309">VoiceDesc::VoiceDesc() : _staff(-1), _voice(-1), _overlaps(false)</a>
+<a name="ln310">      {</a>
+<a name="ln311">      for (int i = 0; i &lt; MAX_STAVES; ++i) {</a>
+<a name="ln312">            _chordRests[i] =  0;</a>
+<a name="ln313">            _staffAlloc[i] = -1;</a>
+<a name="ln314">            _voices[i]     = -1;</a>
+<a name="ln315">            }</a>
+<a name="ln316">      }</a>
+<a name="ln317"> </a>
+<a name="ln318">void VoiceDesc::incrChordRests(int s)</a>
+<a name="ln319">      {</a>
+<a name="ln320">      if (0 &lt;= s &amp;&amp; s &lt; MAX_STAVES)</a>
+<a name="ln321">            _chordRests[s]++;</a>
+<a name="ln322">      }</a>
+<a name="ln323"> </a>
+<a name="ln324">int VoiceDesc::numberChordRests() const</a>
+<a name="ln325">      {</a>
+<a name="ln326">      int res = 0;</a>
+<a name="ln327">      for (int i = 0; i &lt; MAX_STAVES; ++i)</a>
+<a name="ln328">            res += _chordRests[i];</a>
+<a name="ln329">      return res;</a>
+<a name="ln330">      }</a>
+<a name="ln331"> </a>
+<a name="ln332">int VoiceDesc::preferredStaff() const</a>
+<a name="ln333">      {</a>
+<a name="ln334">      int max = 0;</a>
+<a name="ln335">      int res = 0;</a>
+<a name="ln336">      for (int i = 0; i &lt; MAX_STAVES; ++i)</a>
+<a name="ln337">            if (_chordRests[i] &gt; max) {</a>
+<a name="ln338">                  max = _chordRests[i];</a>
+<a name="ln339">                  res = i;</a>
+<a name="ln340">                  }</a>
+<a name="ln341">      return res;</a>
+<a name="ln342">      }</a>
+<a name="ln343"> </a>
+<a name="ln344">QString VoiceDesc::toString() const</a>
+<a name="ln345">      {</a>
+<a name="ln346">      QString res = &quot;[&quot;;</a>
+<a name="ln347">      for (int i = 0; i &lt; MAX_STAVES; ++i)</a>
+<a name="ln348">            res += QString(&quot; %1&quot;).arg(_chordRests[i]);</a>
+<a name="ln349">      res += QString(&quot; ] overlaps %1&quot;).arg(_overlaps);</a>
+<a name="ln350">      if (_overlaps) {</a>
+<a name="ln351">            res += &quot; staffAlloc [&quot;;</a>
+<a name="ln352">            for (int i = 0; i &lt; MAX_STAVES; ++i)</a>
+<a name="ln353">                  res += QString(&quot; %1&quot;).arg(_staffAlloc[i]);</a>
+<a name="ln354">            res += &quot; ] voices [&quot;;</a>
+<a name="ln355">            for (int i = 0; i &lt; MAX_STAVES; ++i)</a>
+<a name="ln356">                  res += QString(&quot; %1&quot;).arg(_voices[i]);</a>
+<a name="ln357">            res += &quot; ]&quot;;</a>
+<a name="ln358">            }</a>
+<a name="ln359">      else</a>
+<a name="ln360">            res += QString(&quot; staff %1 voice %2&quot;).arg(_staff + 1).arg(_voice + 1);</a>
+<a name="ln361">      return res;</a>
+<a name="ln362">      }</a>
+<a name="ln363">} // namespace Ms</a>
+<a name="ln364"> </a>
+
+</code></pre>
+<div class="balloon" rel="41"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="42"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="44"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="45"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="46"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="47"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="48"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="49"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="50"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true.</p></div>
+<div class="balloon" rel="164"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="201"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="259"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="287"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

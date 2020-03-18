@@ -1,0 +1,609 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>sig.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2007 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;sig.h&quot;</a>
+<a name="ln14">#include &quot;xml.h&quot;</a>
+<a name="ln15"> </a>
+<a name="ln16">namespace Ms {</a>
+<a name="ln17"> </a>
+<a name="ln18">//---------------------------------------------------------</a>
+<a name="ln19">//   ticks_beat</a>
+<a name="ln20">//---------------------------------------------------------</a>
+<a name="ln21"> </a>
+<a name="ln22">int ticks_beat(int n)</a>
+<a name="ln23">      {</a>
+<a name="ln24">      int m = (MScore::division * 4) / n;</a>
+<a name="ln25">      if ((MScore::division * 4) % n) {</a>
+<a name="ln26">            qFatal(&quot;Mscore: ticks_beat(): bad divisor %d&quot;, n);</a>
+<a name="ln27">            }</a>
+<a name="ln28">      return m;</a>
+<a name="ln29">      }</a>
+<a name="ln30"> </a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32">//   ticks_measure</a>
+<a name="ln33">//---------------------------------------------------------</a>
+<a name="ln34"> </a>
+<a name="ln35">static int ticks_measure(const Fraction&amp; f)</a>
+<a name="ln36">      {</a>
+<a name="ln37">      return (MScore::division * 4 * f.numerator()) / f.denominator();</a>
+<a name="ln38">      }</a>
+<a name="ln39"> </a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41">//   rtick2beatType</a>
+<a name="ln42">//    caller must adjust rtick as appropriate if the measure's</a>
+<a name="ln43">//    actual timeSig is different from the nominal timeSig.</a>
+<a name="ln44">//---------------------------------------------------------</a>
+<a name="ln45"> </a>
+<a name="ln46">BeatType TimeSigFrac::rtick2beatType(int rtick) const</a>
+<a name="ln47">      {</a>
+<a name="ln48">      if (rtick == 0)</a>
+<a name="ln49">            return BeatType::DOWNBEAT; // note: only return DOWNBEAT for rtick = 0, not for rtick = measureTicks,</a>
+<a name="ln50"> </a>
+<a name="ln51">      if (rtick % dUnitTicks() != 0)</a>
+<a name="ln52">            return BeatType::SUBBEAT;</a>
+<a name="ln53"> </a>
+<a name="ln54">      if (isCompound()) {</a>
+<a name="ln55">            if (rtick % beatTicks() != 0)</a>
+<a name="ln56">                  return BeatType::COMPOUND_SUBBEAT;</a>
+<a name="ln57">            }</a>
+<a name="ln58"> </a>
+<a name="ln59">      const int beatNum = rtick / beatTicks();</a>
+<a name="ln60"> </a>
+<a name="ln61">      int stressBeat = 0;</a>
+<a name="ln62"> </a>
+<a name="ln63">      if (isTriple())</a>
+<a name="ln64">            stressBeat = 3;</a>
+<a name="ln65">      else if (isDuple())</a>
+<a name="ln66">            stressBeat = 2;</a>
+<a name="ln67">      else</a>
+<a name="ln68">            stressBeat = (numerator() + 1) / 2; // Assumes 5/4 timeSig = (3+2)/4. (The same assumption is used for beaming)</a>
+<a name="ln69"> </a>
+<a name="ln70">      if (stressBeat &amp;&amp; beatNum % stressBeat == 0)</a>
+<a name="ln71">            return isCompound() ? BeatType::COMPOUND_STRESSED : BeatType::SIMPLE_STRESSED;</a>
+<a name="ln72"> </a>
+<a name="ln73">      return isCompound() ? BeatType::COMPOUND_UNSTRESSED : BeatType::SIMPLE_UNSTRESSED;</a>
+<a name="ln74">      }</a>
+<a name="ln75"> </a>
+<a name="ln76">//---------------------------------------------------------</a>
+<a name="ln77">//   strongestBeatInRange</a>
+<a name="ln78">//    dUnitsCrossed - pointer to store number crossed</a>
+<a name="ln79">//    subbeatTick - pointer to store tick of strongest beat</a>
+<a name="ln80">//    saveLast - which tick to store if strongest type is</a>
+<a name="ln81">//                crossed more than once</a>
+<a name="ln82">//</a>
+<a name="ln83">//    caller must adjust rticks as appropriate if the measure's</a>
+<a name="ln84">//    actual timeSig is different from the nominal timeSig.</a>
+<a name="ln85">//---------------------------------------------------------</a>
+<a name="ln86"> </a>
+<a name="ln87">BeatType TimeSigFrac::strongestBeatInRange(int rtick1, int rtick2, int* dUnitsCrossed, int* subbeatTick, bool saveLast) const</a>
+<a name="ln88">      {</a>
+<a name="ln89">      Q_ASSERT(rtick2 &gt; rtick1);</a>
+<a name="ln90"> </a>
+<a name="ln91">      BeatType strongest = BeatType::SUBBEAT;</a>
+<a name="ln92"> </a>
+<a name="ln93">      for (int rtick = rtick1 + ticksToNextDUnit(rtick1); rtick &lt; rtick2; rtick += dUnitTicks()) {</a>
+<a name="ln94">            if (dUnitsCrossed)</a>
+<a name="ln95">                  (*dUnitsCrossed)++;</a>
+<a name="ln96">            BeatType type = rtick2beatType(rtick);</a>
+<a name="ln97">            if (static_cast&lt;int&gt;(type) &lt; static_cast&lt;int&gt;(strongest) + saveLast) { // &quot;&lt;&quot; behaves like &quot;&lt;=&quot; if saveLast is true</a>
+<a name="ln98">                  strongest = type;</a>
+<a name="ln99">                  if (subbeatTick)</a>
+<a name="ln100">                        (*subbeatTick) = rtick;</a>
+<a name="ln101">                  }</a>
+<a name="ln102">            }</a>
+<a name="ln103"> </a>
+<a name="ln104">      return strongest;</a>
+<a name="ln105">      }</a>
+<a name="ln106"> </a>
+<a name="ln107">//---------------------------------------------------------</a>
+<a name="ln108">//   subbeatTicks</a>
+<a name="ln109">//    divides dUnitTicks() by 2 once for each level.</a>
+<a name="ln110">//---------------------------------------------------------</a>
+<a name="ln111"> </a>
+<a name="ln112">int TimeSigFrac::subbeatTicks(int level) const</a>
+<a name="ln113">      {</a>
+<a name="ln114">      Q_ASSERT(level &lt;= maxSubbeatLevel());</a>
+<a name="ln115">      int subbeatTicks = dUnitTicks();</a>
+<a name="ln116">      while (level &gt; 0) {</a>
+<a name="ln117">            subbeatTicks /= 2;</a>
+<a name="ln118">            level--;</a>
+<a name="ln119">            }</a>
+<a name="ln120">      return subbeatTicks;</a>
+<a name="ln121">      }</a>
+<a name="ln122"> </a>
+<a name="ln123">//---------------------------------------------------------</a>
+<a name="ln124">//   maxSubbeatLevel</a>
+<a name="ln125">//    subdivision beyond this level would result in rounding errors</a>
+<a name="ln126">//---------------------------------------------------------</a>
+<a name="ln127"> </a>
+<a name="ln128">int TimeSigFrac::maxSubbeatLevel() const</a>
+<a name="ln129">      {</a>
+<a name="ln130">      int level = 0;</a>
+<a name="ln131">      int subbeatTicks = dUnitTicks();</a>
+<a name="ln132">      while (subbeatTicks % 2 == 0) {</a>
+<a name="ln133">            subbeatTicks /= 2;</a>
+<a name="ln134">            level++;</a>
+<a name="ln135">            }</a>
+<a name="ln136">      return level;</a>
+<a name="ln137">      }</a>
+<a name="ln138"> </a>
+<a name="ln139">//---------------------------------------------------------</a>
+<a name="ln140">//   rtick2subbeatLevel</a>
+<a name="ln141">//    returns 0 if rtick is on a beat or denominator unit.</a>
+<a name="ln142">//    returns 1 if rtick lies halfway between dUnits</a>
+<a name="ln143">//    returns 2 if rtick lies on a multiple of  1/4  of dUnit</a>
+<a name="ln144">//            3                                 1/8</a>
+<a name="ln145">//            4                                 1/16</a>
+<a name="ln146">//            n                                 1/(2**n)</a>
+<a name="ln147">//    returns -(n+1) if max n is reached and rtick still not found.</a>
+<a name="ln148">//</a>
+<a name="ln149">//    Caller must adjust rtick as appropriate if the measure's</a>
+<a name="ln150">//    actual timeSig is different from the nominal timeSig.</a>
+<a name="ln151">//---------------------------------------------------------</a>
+<a name="ln152"> </a>
+<a name="ln153">int TimeSigFrac::rtick2subbeatLevel(int rtick) const</a>
+<a name="ln154">      {</a>
+<a name="ln155">      int level = 0;</a>
+<a name="ln156">      int subbeatTicks = dUnitTicks();</a>
+<a name="ln157">      int remainder = rtick % subbeatTicks;</a>
+<a name="ln158">      while (remainder != 0) {</a>
+<a name="ln159">            level++;</a>
+<a name="ln160">            if (subbeatTicks % 2 != 0)</a>
+<a name="ln161">                  return -level; // further sub-division would split measure into chunks of unequal length.</a>
+<a name="ln162">            subbeatTicks /= 2;</a>
+<a name="ln163">            remainder %= subbeatTicks;</a>
+<a name="ln164">            }</a>
+<a name="ln165">      return level;</a>
+<a name="ln166">      }</a>
+<a name="ln167"> </a>
+<a name="ln168">//---------------------------------------------------------</a>
+<a name="ln169">//   strongestSubbeatLevelInRange</a>
+<a name="ln170">//    Return value is negative if none are found.</a>
+<a name="ln171">//</a>
+<a name="ln172">//    Caller must adjust rtick as appropriate if the measure's</a>
+<a name="ln173">//    actual timeSig is different from the nominal timeSig.</a>
+<a name="ln174">//---------------------------------------------------------</a>
+<a name="ln175"> </a>
+<a name="ln176">int TimeSigFrac::strongestSubbeatLevelInRange(int rtick1, int rtick2, int* subbeatTick) const</a>
+<a name="ln177">      {</a>
+<a name="ln178">      Q_ASSERT(rtick2 &gt; rtick1);</a>
+<a name="ln179"> </a>
+<a name="ln180">      for (int level = 0, subbeatTicks = dUnitTicks();;) {</a>
+<a name="ln181">            int n = rtick1 / subbeatTicks;</a>
+<a name="ln182">            int m = (rtick2 - 1) / subbeatTicks; // -1 to make the range exclusive</a>
+<a name="ln183">            if (m &gt; n) {</a>
+<a name="ln184">                  if (subbeatTick)</a>
+<a name="ln185">                        (*subbeatTick) = m * subbeatTicks;</a>
+<a name="ln186">                  return level;</a>
+<a name="ln187">                  }</a>
+<a name="ln188">            level++;</a>
+<a name="ln189">            if (subbeatTicks % 2 != 0)</a>
+<a name="ln190">                  return -level; // further sub-division would split measure into chunks of unequal length.</a>
+<a name="ln191">            subbeatTicks /= 2;</a>
+<a name="ln192">            }</a>
+<a name="ln193">      }</a>
+<a name="ln194"> </a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196">//   operator==</a>
+<a name="ln197">//---------------------------------------------------------</a>
+<a name="ln198"> </a>
+<a name="ln199">bool SigEvent::operator==(const SigEvent&amp; e) const</a>
+<a name="ln200">      {</a>
+<a name="ln201">      return (_timesig.identical(e._timesig));</a>
+<a name="ln202">      }</a>
+<a name="ln203"> </a>
+<a name="ln204">//---------------------------------------------------------</a>
+<a name="ln205">//   add</a>
+<a name="ln206">//---------------------------------------------------------</a>
+<a name="ln207"> </a>
+<a name="ln208">void TimeSigMap::add(int tick, const Fraction&amp; f)</a>
+<a name="ln209">      {</a>
+<a name="ln210">      if (!f.isValid()) {</a>
+<a name="ln211">            qDebug(&quot;illegal signature %d/%d&quot;, f.numerator(), f.denominator());</a>
+<a name="ln212">            }</a>
+<a name="ln213">      (*this)[tick] = SigEvent(f);</a>
+<a name="ln214">      normalize();</a>
+<a name="ln215">      }</a>
+<a name="ln216"> </a>
+<a name="ln217">void TimeSigMap::add(int tick, const SigEvent&amp; ev)</a>
+<a name="ln218">      {</a>
+<a name="ln219">      (*this)[tick] = ev;</a>
+<a name="ln220">      normalize();</a>
+<a name="ln221">      }</a>
+<a name="ln222"> </a>
+<a name="ln223">//---------------------------------------------------------</a>
+<a name="ln224">//   del</a>
+<a name="ln225">//---------------------------------------------------------</a>
+<a name="ln226"> </a>
+<a name="ln227">void TimeSigMap::del(int tick)</a>
+<a name="ln228">      {</a>
+<a name="ln229">      erase(tick);</a>
+<a name="ln230">      normalize();</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   clearRange</a>
+<a name="ln235">//    Clears the given range, start tick included, end tick</a>
+<a name="ln236">//    excluded.</a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238"> </a>
+<a name="ln239">void TimeSigMap::clearRange(int tick1, int tick2)</a>
+<a name="ln240">      {</a>
+<a name="ln241">      iterator first = lower_bound(tick1);</a>
+<a name="ln242">      iterator last = lower_bound(tick2);</a>
+<a name="ln243">      if (first == last)</a>
+<a name="ln244">            return;</a>
+<a name="ln245">      erase(first, last);</a>
+<a name="ln246">      normalize();</a>
+<a name="ln247">      }</a>
+<a name="ln248"> </a>
+<a name="ln249">//---------------------------------------------------------</a>
+<a name="ln250">//   TimeSigMap::normalize</a>
+<a name="ln251">//---------------------------------------------------------</a>
+<a name="ln252"> </a>
+<a name="ln253">void TimeSigMap::normalize()</a>
+<a name="ln254">      {</a>
+<a name="ln255">      int z    = 4;</a>
+<a name="ln256">      int n    = 4;</a>
+<a name="ln257">      int tick = 0;</a>
+<a name="ln258">      TimeSigFrac bar;</a>
+<a name="ln259">      int tm   = ticks_measure(TimeSigFrac(z, n));</a>
+<a name="ln260"> </a>
+<a name="ln261">      for (auto i = begin(); i != end(); ++i) {</a>
+<a name="ln262">            SigEvent&amp; e  = i-&gt;second;</a>
+<a name="ln263">            bar += TimeSigFrac(i-&gt;first - tick, tm).reduced();</a>
+<a name="ln264">            e.setBar(bar.numerator() / bar.denominator());</a>
+<a name="ln265">            tick = i-&gt;first;</a>
+<a name="ln266">            tm   = ticks_measure(e.timesig());</a>
+<a name="ln267">            }</a>
+<a name="ln268">      }</a>
+<a name="ln269"> </a>
+<a name="ln270">//---------------------------------------------------------</a>
+<a name="ln271">//   timesig</a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273"> </a>
+<a name="ln274">const SigEvent&amp; TimeSigMap::timesig(int tick) const</a>
+<a name="ln275">      {</a>
+<a name="ln276">      static const SigEvent ev(TimeSigFrac(4, 4));</a>
+<a name="ln277">      if (empty())</a>
+<a name="ln278">            return ev;</a>
+<a name="ln279">      auto i = upper_bound(tick);</a>
+<a name="ln280">      if (i != begin())</a>
+<a name="ln281">            --i;</a>
+<a name="ln282">      return i-&gt;second;</a>
+<a name="ln283">      }</a>
+<a name="ln284"> </a>
+<a name="ln285">//---------------------------------------------------------</a>
+<a name="ln286">//   tickValues</a>
+<a name="ln287">//    t - some time moment on timeline (in ticks)</a>
+<a name="ln288">//</a>
+<a name="ln289">//    Result - values computed for this time moment:</a>
+<a name="ln290">//    bar - index of bar containing time moment t</a>
+<a name="ln291">//    beat - index of beat in bar containing t</a>
+<a name="ln292">//    tick - position of t in beat (in ticks)</a>
+<a name="ln293">//---------------------------------------------------------</a>
+<a name="ln294"> </a>
+<a name="ln295">void TimeSigMap::tickValues(int t, int* bar, int* beat, int* tick) const</a>
+<a name="ln296">      {</a>
+<a name="ln297">      if (empty()) {</a>
+<a name="ln298">            *bar  = 0;</a>
+<a name="ln299">            *beat = 0;</a>
+<a name="ln300">            *tick = 0;</a>
+<a name="ln301">            return;</a>
+<a name="ln302">            }</a>
+<a name="ln303">      auto e = upper_bound(t);</a>
+<a name="ln304">      if (empty() || e == begin()) {</a>
+<a name="ln305">            qFatal(&quot;tickValue(0x%x) not found&quot;, t);</a>
+<a name="ln306">            }</a>
+<a name="ln307">      --e;</a>
+<a name="ln308">      int delta  = t - e-&gt;first;</a>
+<a name="ln309">      int ticksB = ticks_beat(e-&gt;second.timesig().denominator()); // ticks in beat</a>
+<a name="ln310">      int ticksM = ticksB * e-&gt;second.timesig().numerator();      // ticks in measure (bar)</a>
+<a name="ln311">      if (ticksM == 0) {</a>
+<a name="ln312">            qDebug(&quot;TimeSigMap::tickValues: at %d %s&quot;, t, qPrintable(e-&gt;second.timesig().print()));</a>
+<a name="ln313">            *bar  = 0;</a>
+<a name="ln314">            *beat = 0;</a>
+<a name="ln315">            *tick = 0;</a>
+<a name="ln316">            return;</a>
+<a name="ln317">            }</a>
+<a name="ln318">      *bar       = e-&gt;second.bar() + delta / ticksM;</a>
+<a name="ln319">      int rest   = delta % ticksM;</a>
+<a name="ln320">      *beat      = rest / ticksB;</a>
+<a name="ln321">      *tick      = rest % ticksB;</a>
+<a name="ln322">      }</a>
+<a name="ln323"> </a>
+<a name="ln324">//---------------------------------------------------------</a>
+<a name="ln325">//   pos</a>
+<a name="ln326">//    Return string representation of tick position.</a>
+<a name="ln327">//    This is not reentrant and only for debugging!</a>
+<a name="ln328">//---------------------------------------------------------</a>
+<a name="ln329"> </a>
+<a name="ln330">QString TimeSigMap::pos(int t) const</a>
+<a name="ln331">      {</a>
+<a name="ln332">      int bar, beat, tick;</a>
+<a name="ln333">      tickValues(t, &amp;bar, &amp;beat, &amp;tick);</a>
+<a name="ln334">      return QString(&quot;%1:%2:%3&quot;).arg(bar+1).arg(beat).arg(tick);</a>
+<a name="ln335">      }</a>
+<a name="ln336"> </a>
+<a name="ln337">//---------------------------------------------------------</a>
+<a name="ln338">//   bar2tick</a>
+<a name="ln339">//    Returns the absolute start time (in ticks)</a>
+<a name="ln340">//    of beat in bar</a>
+<a name="ln341">//---------------------------------------------------------</a>
+<a name="ln342"> </a>
+<a name="ln343">int TimeSigMap::bar2tick(int bar, int beat) const</a>
+<a name="ln344">      {</a>
+<a name="ln345">      // bar - index of current bar (terminology: bar == measure)</a>
+<a name="ln346">      // beat - index of beat in current bar</a>
+<a name="ln347">      auto e = begin();</a>
+<a name="ln348"> </a>
+<a name="ln349">      for (; e != end(); ++e) {</a>
+<a name="ln350">            if (bar &lt; e-&gt;second.bar())</a>
+<a name="ln351">                  break;</a>
+<a name="ln352">            }</a>
+<a name="ln353">      if (empty() || e == begin()) {</a>
+<a name="ln354">            qDebug(&quot;TimeSigMap::bar2tick(): not found(%d,%d) not found&quot;, bar, beat);</a>
+<a name="ln355">            if (empty())</a>
+<a name="ln356">                  qDebug(&quot;   list is empty&quot;);</a>
+<a name="ln357">            return 0;</a>
+<a name="ln358">            }</a>
+<a name="ln359">      --e; // current TimeSigMap value</a>
+<a name="ln360">      int ticksB = ticks_beat(e-&gt;second.timesig().denominator()); // ticks per beat</a>
+<a name="ln361">      int ticksM = ticksB * e-&gt;second.timesig().numerator();      // bar length in ticks</a>
+<a name="ln362">      return e-&gt;first + (bar - e-&gt;second.bar()) * ticksM + ticksB * beat;</a>
+<a name="ln363">      }</a>
+<a name="ln364"> </a>
+<a name="ln365">//---------------------------------------------------------</a>
+<a name="ln366">//   TimeSigMap::write</a>
+<a name="ln367">//---------------------------------------------------------</a>
+<a name="ln368"> </a>
+<a name="ln369">void TimeSigMap::write(XmlWriter&amp; xml) const</a>
+<a name="ln370">      {</a>
+<a name="ln371">      xml.stag(&quot;siglist&quot;);</a>
+<a name="ln372">      for (auto i = begin(); i != end(); ++i)</a>
+<a name="ln373">            i-&gt;second.write(xml, i-&gt;first);</a>
+<a name="ln374">      xml.etag();</a>
+<a name="ln375">      }</a>
+<a name="ln376"> </a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378">//   TimeSigMap::read</a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380"> </a>
+<a name="ln381">void TimeSigMap::read(XmlReader&amp; e, int fileDivision)</a>
+<a name="ln382">      {</a>
+<a name="ln383">      while (e.readNextStartElement()) {</a>
+<a name="ln384">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln385">            if (tag == &quot;sig&quot;) {</a>
+<a name="ln386">                  SigEvent t;</a>
+<a name="ln387">                  int tick = t.read(e, fileDivision);</a>
+<a name="ln388">                  (*this)[tick] = t;</a>
+<a name="ln389">                  }</a>
+<a name="ln390">            else</a>
+<a name="ln391">                  e.unknown();</a>
+<a name="ln392">            }</a>
+<a name="ln393">      normalize();</a>
+<a name="ln394">      }</a>
+<a name="ln395"> </a>
+<a name="ln396">//---------------------------------------------------------</a>
+<a name="ln397">//   SigEvent</a>
+<a name="ln398">//---------------------------------------------------------</a>
+<a name="ln399"> </a>
+<a name="ln400">SigEvent::SigEvent(const SigEvent&amp; e)</a>
+<a name="ln401">      {</a>
+<a name="ln402">      _timesig = e._timesig;</a>
+<a name="ln403">      _nominal = e._nominal;</a>
+<a name="ln404">      _bar     = e._bar;</a>
+<a name="ln405">      }</a>
+<a name="ln406"> </a>
+<a name="ln407">//---------------------------------------------------------</a>
+<a name="ln408">//   SigEvent::write</a>
+<a name="ln409">//---------------------------------------------------------</a>
+<a name="ln410"> </a>
+<a name="ln411">void SigEvent::write(XmlWriter&amp; xml, int tick) const</a>
+<a name="ln412">      {</a>
+<a name="ln413">      xml.stag(QString(&quot;sig tick=\&quot;%1\&quot;&quot;).arg(tick));</a>
+<a name="ln414">      xml.tag(&quot;nom&quot;,   _timesig.numerator());</a>
+<a name="ln415">      xml.tag(&quot;denom&quot;, _timesig.denominator());</a>
+<a name="ln416">      xml.etag();</a>
+<a name="ln417">      }</a>
+<a name="ln418"> </a>
+<a name="ln419">//---------------------------------------------------------</a>
+<a name="ln420">//   SigEvent::read</a>
+<a name="ln421">//---------------------------------------------------------</a>
+<a name="ln422"> </a>
+<a name="ln423">int SigEvent::read(XmlReader&amp; e, int fileDivision)</a>
+<a name="ln424">      {</a>
+<a name="ln425">      int tick  = e.intAttribute(&quot;tick&quot;, 0);</a>
+<a name="ln426">      tick      = tick * MScore::division / fileDivision;</a>
+<a name="ln427"> </a>
+<a name="ln428">      int numerator = 1;</a>
+<a name="ln429">      int denominator = 1;</a>
+<a name="ln430">      int denominator2 = -1;</a>
+<a name="ln431">      int numerator2   = -1;</a>
+<a name="ln432"> </a>
+<a name="ln433">      while (e.readNextStartElement()) {</a>
+<a name="ln434">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln435">            if (tag == &quot;nom&quot;)</a>
+<a name="ln436">                  numerator = e.readInt();</a>
+<a name="ln437">            else if (tag == &quot;denom&quot;)</a>
+<a name="ln438">                  denominator = e.readInt();</a>
+<a name="ln439">            else if (tag == &quot;nom2&quot;)</a>
+<a name="ln440">                  numerator2 = e.readInt();</a>
+<a name="ln441">            else if (tag == &quot;denom2&quot;)</a>
+<a name="ln442">                  denominator2 = e.readInt();</a>
+<a name="ln443">            else</a>
+<a name="ln444">                  e.unknown();</a>
+<a name="ln445">            }</a>
+<a name="ln446">      if ((numerator2 == -1) || (denominator2 == -1)) {</a>
+<a name="ln447">            numerator2   = numerator;</a>
+<a name="ln448">            denominator2 = denominator;</a>
+<a name="ln449">            }</a>
+<a name="ln450">      _timesig = TimeSigFrac(numerator, denominator);</a>
+<a name="ln451">      _nominal = TimeSigFrac(numerator2, denominator2);</a>
+<a name="ln452">      return tick;</a>
+<a name="ln453">      }</a>
+<a name="ln454"> </a>
+<a name="ln455">//---------------------------------------------------------</a>
+<a name="ln456">//   ticksPerMeasure</a>
+<a name="ln457">//---------------------------------------------------------</a>
+<a name="ln458"> </a>
+<a name="ln459">int ticksPerMeasure(int numerator, int denominator)</a>
+<a name="ln460">      {</a>
+<a name="ln461">      return ticks_beat(denominator) * numerator;</a>
+<a name="ln462">      }</a>
+<a name="ln463"> </a>
+<a name="ln464">//---------------------------------------------------------</a>
+<a name="ln465">//   rasterEval</a>
+<a name="ln466">//---------------------------------------------------------</a>
+<a name="ln467"> </a>
+<a name="ln468">unsigned rasterEval(unsigned t, int raster, int startTick,</a>
+<a name="ln469">         int numerator, int denominator, int addition)</a>
+<a name="ln470">      {</a>
+<a name="ln471">      int delta  = t - startTick;</a>
+<a name="ln472">      int ticksM = ticksPerMeasure(numerator, denominator);</a>
+<a name="ln473">      if (raster == 0)</a>
+<a name="ln474">            raster = ticksM;</a>
+<a name="ln475">      int rest   = delta % ticksM;</a>
+<a name="ln476">      int bb     = (delta / ticksM) * ticksM;</a>
+<a name="ln477">      return startTick + bb + ((rest + addition) / raster) * raster;</a>
+<a name="ln478">      }</a>
+<a name="ln479"> </a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481">//   raster</a>
+<a name="ln482">//---------------------------------------------------------</a>
+<a name="ln483"> </a>
+<a name="ln484">unsigned TimeSigMap::raster(unsigned t, int raster) const</a>
+<a name="ln485">      {</a>
+<a name="ln486">      if (raster == 1)</a>
+<a name="ln487">            return t;</a>
+<a name="ln488">      auto e = upper_bound(t);</a>
+<a name="ln489">      if (e == end()) {</a>
+<a name="ln490">            qDebug(&quot;TimeSigMap::raster(%x,)&quot;, t);</a>
+<a name="ln491">            return t;</a>
+<a name="ln492">            }</a>
+<a name="ln493">      auto timesig = e-&gt;second.timesig();</a>
+<a name="ln494">      return rasterEval(t, raster, e-&gt;first, timesig.numerator(),</a>
+<a name="ln495">                        timesig.denominator(), raster / 2);</a>
+<a name="ln496">      }</a>
+<a name="ln497"> </a>
+<a name="ln498">//---------------------------------------------------------</a>
+<a name="ln499">//   raster1</a>
+<a name="ln500">//    round down</a>
+<a name="ln501">//---------------------------------------------------------</a>
+<a name="ln502"> </a>
+<a name="ln503">unsigned TimeSigMap::raster1(unsigned t, int raster) const</a>
+<a name="ln504">      {</a>
+<a name="ln505">      if (raster == 1)</a>
+<a name="ln506">            return t;</a>
+<a name="ln507">      auto e = upper_bound(t);</a>
+<a name="ln508">      auto timesig = e-&gt;second.timesig();</a>
+<a name="ln509">      return rasterEval(t, raster, e-&gt;first, timesig.numerator(),</a>
+<a name="ln510">                        timesig.denominator(), 0);</a>
+<a name="ln511">      }</a>
+<a name="ln512"> </a>
+<a name="ln513">//---------------------------------------------------------</a>
+<a name="ln514">//   raster2</a>
+<a name="ln515">//    round up</a>
+<a name="ln516">//---------------------------------------------------------</a>
+<a name="ln517"> </a>
+<a name="ln518">unsigned TimeSigMap::raster2(unsigned t, int raster) const</a>
+<a name="ln519">      {</a>
+<a name="ln520">      if (raster == 1)</a>
+<a name="ln521">            return t;</a>
+<a name="ln522">      auto e = upper_bound(t);</a>
+<a name="ln523">      auto timesig = e-&gt;second.timesig();</a>
+<a name="ln524">      return rasterEval(t, raster, e-&gt;first, timesig.numerator(),</a>
+<a name="ln525">                        timesig.denominator(), raster - 1);</a>
+<a name="ln526">      }</a>
+<a name="ln527"> </a>
+<a name="ln528">//---------------------------------------------------------</a>
+<a name="ln529">//   rasterStep</a>
+<a name="ln530">//---------------------------------------------------------</a>
+<a name="ln531"> </a>
+<a name="ln532">int TimeSigMap::rasterStep(unsigned t, int raster) const</a>
+<a name="ln533">      {</a>
+<a name="ln534">      if (raster == 0) {</a>
+<a name="ln535">            auto timesig = upper_bound(t)-&gt;second.timesig();</a>
+<a name="ln536">            return ticksPerMeasure(timesig.denominator(), timesig.numerator());</a>
+<a name="ln537">            }</a>
+<a name="ln538">      return raster;</a>
+<a name="ln539">      }</a>
+<a name="ln540"> </a>
+<a name="ln541">//---------------------------------------------------------</a>
+<a name="ln542">//   TimeSigMap::dump</a>
+<a name="ln543">//---------------------------------------------------------</a>
+<a name="ln544"> </a>
+<a name="ln545">void TimeSigMap::dump() const</a>
+<a name="ln546">      {</a>
+<a name="ln547">      qDebug(&quot;TimeSigMap:&quot;);</a>
+<a name="ln548">      for (auto i = begin(); i != end(); ++i)</a>
+<a name="ln549">            qDebug(&quot;%6d timesig: %s measure: %d&quot;,</a>
+<a name="ln550">               i-&gt;first, qPrintable(i-&gt;second.timesig().print()), i-&gt;second.bar());</a>
+<a name="ln551">      }</a>
+<a name="ln552"> </a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554">//   dUnitTicks</a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556"> </a>
+<a name="ln557">int TimeSigFrac::dUnitTicks() const</a>
+<a name="ln558">      {</a>
+<a name="ln559">      return (4 * MScore::division) / denominator();</a>
+<a name="ln560">      }</a>
+<a name="ln561"> </a>
+<a name="ln562">}</a>
+<a name="ln563"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

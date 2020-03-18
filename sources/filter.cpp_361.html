@@ -1,0 +1,335 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>filter.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  Zerberus</a>
+<a name="ln3">//  Filters implementation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2018 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;filter.h&quot;</a>
+<a name="ln14">#include &quot;zerberus.h&quot;</a>
+<a name="ln15">#include &quot;zone.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &lt;math.h&gt;</a>
+<a name="ln18">#include &lt;functional&gt;</a>
+<a name="ln19"> </a>
+<a name="ln20">static constexpr int INTERP_MAX = 256;</a>
+<a name="ln21">static float interpCoeff[INTERP_MAX][4];</a>
+<a name="ln22"> </a>
+<a name="ln23">//---------------------------------------------------------</a>
+<a name="ln24">//   FilterBQ</a>
+<a name="ln25">//---------------------------------------------------------</a>
+<a name="ln26"> </a>
+<a name="ln27">ZFilter::ZFilter()</a>
+<a name="ln28">      {</a>
+<a name="ln29">      constexpr double ff = 1.0 / 32768.0;</a>
+<a name="ln30">      for (int i = 0; i &lt; INTERP_MAX; i++) {</a>
+<a name="ln31">            double x = (double) i / (double) INTERP_MAX;</a>
+<a name="ln32">            interpCoeff[i][0] = (x * (-0.5 + x * (1 - 0.5 * x)))  * ff;</a>
+<a name="ln33">            interpCoeff[i][1] = (1.0 + x * x * (1.5 * x - 2.5))   * ff;</a>
+<a name="ln34">            interpCoeff[i][2] = (x * (0.5 + x * (2.0 - 1.5 * x))) * ff;</a>
+<a name="ln35">            interpCoeff[i][3] = (0.5 * x * x * (x - 1.0))         * ff;</a>
+<a name="ln36">            }</a>
+<a name="ln37">      }</a>
+<a name="ln38"> </a>
+<a name="ln39">//---------------------------------------------------------</a>
+<a name="ln40">//   initialize</a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42"> </a>
+<a name="ln43">void ZFilter::initialize(const Zerberus* _zerberus, const Zone* z, int velocity)</a>
+<a name="ln44">      {</a>
+<a name="ln45">      this-&gt;zerberus = _zerberus;</a>
+<a name="ln46">      this-&gt;sampleZone = z;</a>
+<a name="ln47"> </a>
+<a name="ln48">      resonanceF = _zerberus-&gt;ct2hz(13500.0);</a>
+<a name="ln49">      if (z-&gt;isCutoffDefined) {</a>
+<a name="ln50">            //calculate current cutoff value</a>
+<a name="ln51">            float cutoffHz = z-&gt;cutoff;</a>
+<a name="ln52">            //Formula for converting the interval frequency ratio f2 / f1 to cents (c or ¢).</a>
+<a name="ln53">            //¢ or c = 1200 × log2 (f2 / f1)</a>
+<a name="ln54">            cutoffHz *= pow(2.0, velocity / 127.0f * z-&gt;fil_veltrack / 1200.0);</a>
+<a name="ln55">            resonanceF = cutoffHz;</a>
+<a name="ln56">            }</a>
+<a name="ln57"> </a>
+<a name="ln58">      last_resonanceF   = -1.0;</a>
+<a name="ln59">      float q_db  = 0; //no resonance by default</a>
+<a name="ln60">      q_lin       = pow(10.0f, q_db / 20.0f);</a>
+<a name="ln61">      gain = 1.0 / sqrt(q_lin);</a>
+<a name="ln62"> </a>
+<a name="ln63">      firstRun = true;</a>
+<a name="ln64">      }</a>
+<a name="ln65"> </a>
+<a name="ln66">//---------------------------------------------------------</a>
+<a name="ln67">//   update</a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69"> </a>
+<a name="ln70">void ZFilter::update()</a>
+<a name="ln71">      {</a>
+<a name="ln72">      float adaptedFrequency = resonanceF;</a>
+<a name="ln73">      const float sr = zerberus-&gt;sampleRate();</a>
+<a name="ln74">      if (adaptedFrequency &gt; 0.45f * sr)</a>
+<a name="ln75">            adaptedFrequency = 0.45f * sr;</a>
+<a name="ln76">      else if (adaptedFrequency &lt; 5.f)</a>
+<a name="ln77">            adaptedFrequency = 5.f;</a>
+<a name="ln78"> </a>
+<a name="ln79">      const bool freqWasUpdated = fabs(adaptedFrequency - last_resonanceF) &gt; 0.01f;</a>
+<a name="ln80">      if (!freqWasUpdated)</a>
+<a name="ln81">            return;</a>
+<a name="ln82"> </a>
+<a name="ln83">      last_resonanceF = adaptedFrequency;</a>
+<a name="ln84"> </a>
+<a name="ln85">      // The filter coefficients have to be recalculated (filter</a>
+<a name="ln86">      // parameters have changed). Recalculation for various reasons is</a>
+<a name="ln87">      // forced by setting last_fres to -1.  The flag filter_startup</a>
+<a name="ln88">      // indicates, that the DSP loop runs for the first time, in this</a>
+<a name="ln89">      // case, the filter is set directly, instead of smoothly fading</a>
+<a name="ln90">      // between old and new settings.</a>
+<a name="ln91">      //</a>
+<a name="ln92">      // Those equations from Robert Bristow-Johnson's `Cookbook</a>
+<a name="ln93">      // formulae for audio EQ biquad filter coefficients', obtained</a>
+<a name="ln94">      // from Harmony-central.com / Computer / Programming. They are</a>
+<a name="ln95">      // the result of the bilinear transform on an analogue filter</a>
+<a name="ln96">      // prototype. To quote, `BLT frequency warping has been taken</a>
+<a name="ln97">      // into account for both significant frequency relocation and for</a>
+<a name="ln98">      // bandwidth readjustment'.</a>
+<a name="ln99"> </a>
+<a name="ln100">      const float omega       = (float) 2.0f * M_PI * (adaptedFrequency / sr);</a>
+<a name="ln101">      const float sin_coeff   = sin(omega);</a>
+<a name="ln102">      const float cos_coeff   = cos(omega);</a>
+<a name="ln103">      const float alpha_coeff = sin_coeff / (2.0f * q_lin);</a>
+<a name="ln104">      const float a0_inv      = 1.0f / (1.0f + alpha_coeff);</a>
+<a name="ln105">      const float linCosCoeff = 2.f - cos_coeff;</a>
+<a name="ln106"> </a>
+<a name="ln107">      float a1_temp = 0.f;</a>
+<a name="ln108">      float a2_temp = 0.f;</a>
+<a name="ln109">      float b1_temp = 0.f;</a>
+<a name="ln110">      float b0_temp = 0.f;</a>
+<a name="ln111">      float b2_temp = 0.f;</a>
+<a name="ln112">      switch (sampleZone-&gt;fil_type) {</a>
+<a name="ln113">            case FilterType::lpf_2p: {</a>
+<a name="ln114">                  a1_temp = 2.0f * cos_coeff * a0_inv;</a>
+<a name="ln115">                  a2_temp = (alpha_coeff - 1.f) * a0_inv;</a>
+<a name="ln116">                  b1_temp = (1.0f - cos_coeff) * a0_inv;</a>
+<a name="ln117">                  b0_temp = b2_temp = b1_temp * 0.5f;</a>
+<a name="ln118">                  break;</a>
+<a name="ln119">                  }</a>
+<a name="ln120">            case FilterType::hpf_2p: {</a>
+<a name="ln121">                  a1_temp = 2.0f * cos_coeff * a0_inv;</a>
+<a name="ln122">                  a2_temp = (alpha_coeff - 1.f) * a0_inv;</a>
+<a name="ln123">                  b1_temp = -(1.0f + cos_coeff) * a0_inv;</a>
+<a name="ln124">                  b0_temp = b2_temp = -b1_temp * 0.5f;</a>
+<a name="ln125">                  break;</a>
+<a name="ln126">                  }</a>
+<a name="ln127">            case FilterType::bpf_2p: {</a>
+<a name="ln128">                  a1_temp = 2.0f * cos_coeff * a0_inv;</a>
+<a name="ln129">                  a2_temp = (alpha_coeff - 1.f) * a0_inv;</a>
+<a name="ln130">                  b0_temp = alpha_coeff * a0_inv;</a>
+<a name="ln131">                  b1_temp = 0.f;</a>
+<a name="ln132">                  b2_temp = -b0_temp;</a>
+<a name="ln133">                  break;</a>
+<a name="ln134">                  }</a>
+<a name="ln135">            case FilterType::brf_2p: {</a>
+<a name="ln136">                  a1_temp = 2.0f * cos_coeff * a0_inv;</a>
+<a name="ln137">                  a2_temp = (alpha_coeff - 1.f) * a0_inv;</a>
+<a name="ln138">                  b1_temp = a0_inv * (-2.f * cos_coeff);</a>
+<a name="ln139">                  b0_temp = b2_temp = a0_inv;</a>
+<a name="ln140">                  break;</a>
+<a name="ln141">                  }</a>
+<a name="ln142">            case FilterType::lpf_1p: {</a>
+<a name="ln143">                  a1_temp = -(linCosCoeff - sqrt(linCosCoeff * linCosCoeff - 1));</a>
+<a name="ln144">                  b0_temp = 1 + a1_temp;</a>
+<a name="ln145">                  break;</a>
+<a name="ln146">                  }</a>
+<a name="ln147">            case FilterType::hpf_1p: {</a>
+<a name="ln148">                  a1_temp = -(linCosCoeff - sqrt(linCosCoeff * linCosCoeff - 1));</a>
+<a name="ln149">                  b0_temp = -a1_temp;</a>
+<a name="ln150">                  b1_temp = a1_temp;</a>
+<a name="ln151">                  break;</a>
+<a name="ln152">                  }</a>
+<a name="ln153">            default:</a>
+<a name="ln154">                  qWarning() &lt;&lt; &quot;fil_type is not implemented: &quot; &lt;&lt; (int)sampleZone-&gt;fil_type;</a>
+<a name="ln155">            }</a>
+<a name="ln156"> </a>
+<a name="ln157">      if (firstRun) {</a>
+<a name="ln158">            /* The filter is calculated, because the voice was started up.</a>
+<a name="ln159">             * In this case set the filter coefficients without delay.</a>
+<a name="ln160">             */</a>
+<a name="ln161">            a1 = a1_temp;</a>
+<a name="ln162">            a2 = a2_temp;</a>
+<a name="ln163">            b0 = b0_temp;</a>
+<a name="ln164">            b2 = b2_temp;</a>
+<a name="ln165">            b1 = b1_temp;</a>
+<a name="ln166">            filter_coeff_incr_count = 0;</a>
+<a name="ln167">            firstRun = false;</a>
+<a name="ln168">            }</a>
+<a name="ln169">      else {</a>
+<a name="ln170">            /* The filter frequency is changed.  Calculate an increment</a>
+<a name="ln171">            * factor, so that the new setting is reached after some time.</a>
+<a name="ln172">            */</a>
+<a name="ln173"> </a>
+<a name="ln174">            static const int FILTER_TRANSITION_SAMPLES = 64;</a>
+<a name="ln175"> </a>
+<a name="ln176">            a1_incr = (a1_temp - a1) / FILTER_TRANSITION_SAMPLES;</a>
+<a name="ln177">            a2_incr = (a2_temp - a2) / FILTER_TRANSITION_SAMPLES;</a>
+<a name="ln178">            b0_incr = (b0_temp - b0) / FILTER_TRANSITION_SAMPLES;</a>
+<a name="ln179">            b1_incr = (b1_temp - b1) / FILTER_TRANSITION_SAMPLES;</a>
+<a name="ln180">            b2_incr = (b2_temp - b2) / FILTER_TRANSITION_SAMPLES;</a>
+<a name="ln181">            /* Have to add the increments filter_coeff_incr_count times. */</a>
+<a name="ln182">            filter_coeff_incr_count = FILTER_TRANSITION_SAMPLES;</a>
+<a name="ln183">            }</a>
+<a name="ln184">      }</a>
+<a name="ln185"> </a>
+<a name="ln186">//---------------------------------------------------------</a>
+<a name="ln187">//   apply</a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189"> </a>
+<a name="ln190">float ZFilter::apply(float inputValue, bool leftChannel)</a>
+<a name="ln191">      {</a>
+<a name="ln192">      float value = 0.f;</a>
+<a name="ln193">      const auto applyBqEquation = [this, &amp;inputValue](float&amp; histX1, float&amp; histX2, float&amp; histY1, float&amp; histY2) {</a>
+<a name="ln194">            //apply filter</a>
+<a name="ln195">            /*</a>
+<a name="ln196">                  float y = d.b0 * x + d.b1 * d.x1 + d.b2 * d.x2 +</a>
+<a name="ln197">                            d.a1 * d.y1 + d.a2 * d.y2;</a>
+<a name="ln198">                  d.x2 = d.x1;</a>
+<a name="ln199">                  d.x1 = x;</a>
+<a name="ln200">                  d.y2 = d.y1;</a>
+<a name="ln201">                  d.y1 = y;</a>
+<a name="ln202">                  return y;</a>
+<a name="ln203">             */</a>
+<a name="ln204">            float value = b0 * inputValue + b1 * histX1 + b2 * histX2 + a1 * histY1 + a2 * histY2;</a>
+<a name="ln205">            histX2 = histX1;</a>
+<a name="ln206">            histX1 = inputValue;</a>
+<a name="ln207">            histY2 = histY1;</a>
+<a name="ln208">            histY1 = value;</a>
+<a name="ln209">            return value;</a>
+<a name="ln210">            };</a>
+<a name="ln211">      const auto applyHPF1PEquation = [this, &amp;inputValue](float&amp; histX1, float&amp; histY1) {</a>
+<a name="ln212">            float value = b0 * inputValue + b1 * histX1 - a1 * histY1;</a>
+<a name="ln213">            histX1 = inputValue;</a>
+<a name="ln214">            histY1 = value;</a>
+<a name="ln215">            return value;</a>
+<a name="ln216">            };</a>
+<a name="ln217">      const auto applyLPF1PEquation = [this, &amp;inputValue](float&amp; histY1) {</a>
+<a name="ln218">            float value = b0 * inputValue - a1 * histY1;</a>
+<a name="ln219">            histY1 = value;</a>
+<a name="ln220">            return value;</a>
+<a name="ln221">            };</a>
+<a name="ln222">      if (leftChannel) {</a>
+<a name="ln223">            switch (sampleZone-&gt;fil_type) {</a>
+<a name="ln224">                  case FilterType::hpf_2p:</a>
+<a name="ln225">                  case FilterType::lpf_2p:</a>
+<a name="ln226">                  case FilterType::bpf_2p:</a>
+<a name="ln227">                  case FilterType::brf_2p: {</a>
+<a name="ln228">                        value = applyBqEquation(monoL.histX1, monoL.histX2, monoL.histY1, monoL.histY2);</a>
+<a name="ln229">                        break;</a>
+<a name="ln230">                        }</a>
+<a name="ln231">                  case FilterType::hpf_1p: {</a>
+<a name="ln232">                        value = applyHPF1PEquation(monoL.histX1, monoL.histY1);</a>
+<a name="ln233">                        break;</a>
+<a name="ln234">                        }</a>
+<a name="ln235">                  case FilterType::lpf_1p: {</a>
+<a name="ln236">                        value = applyLPF1PEquation(monoL.histY1);</a>
+<a name="ln237">                        break;</a>
+<a name="ln238">                        }</a>
+<a name="ln239">                  default:</a>
+<a name="ln240">                        qWarning() &lt;&lt; &quot;this equation is not implemented&quot; &lt;&lt; (int)sampleZone-&gt;fil_type;</a>
+<a name="ln241">                  }</a>
+<a name="ln242">            }</a>
+<a name="ln243">      else { //right channel in stereo samples</a>
+<a name="ln244">            switch (sampleZone-&gt;fil_type) {</a>
+<a name="ln245">                  case FilterType::hpf_2p:</a>
+<a name="ln246">                  case FilterType::lpf_2p:</a>
+<a name="ln247">                  case FilterType::bpf_2p:</a>
+<a name="ln248">                  case FilterType::brf_2p: {</a>
+<a name="ln249">                        value = applyBqEquation(monoR.histX1, monoR.histX2, monoR.histY1, monoR.histY2);</a>
+<a name="ln250">                        break;</a>
+<a name="ln251">                        }</a>
+<a name="ln252">                  case FilterType::hpf_1p: {</a>
+<a name="ln253">                        value = applyHPF1PEquation(monoR.histX1, monoR.histY1);</a>
+<a name="ln254">                        break;</a>
+<a name="ln255">                        }</a>
+<a name="ln256">                  case FilterType::lpf_1p: {</a>
+<a name="ln257">                        value = applyLPF1PEquation(monoR.histY1);</a>
+<a name="ln258">                        break;</a>
+<a name="ln259">                        }</a>
+<a name="ln260">                  default:</a>
+<a name="ln261">                        qWarning() &lt;&lt; &quot;this equation is not implemented&quot; &lt;&lt; (int)sampleZone-&gt;fil_type;</a>
+<a name="ln262">                  }</a>
+<a name="ln263">            }</a>
+<a name="ln264"> </a>
+<a name="ln265">      if (filter_coeff_incr_count) {</a>
+<a name="ln266">            --filter_coeff_incr_count;</a>
+<a name="ln267">            a1 += a1_incr;</a>
+<a name="ln268">            a2 += a2_incr;</a>
+<a name="ln269">            b0 += b0_incr;</a>
+<a name="ln270">            b1 += b1_incr;</a>
+<a name="ln271">            b2 += b2_incr;</a>
+<a name="ln272">            }</a>
+<a name="ln273"> </a>
+<a name="ln274">      return value;</a>
+<a name="ln275">      }</a>
+<a name="ln276"> </a>
+<a name="ln277">//---------------------------------------------------------</a>
+<a name="ln278">//   interpolate</a>
+<a name="ln279">//---------------------------------------------------------</a>
+<a name="ln280"> </a>
+<a name="ln281">float ZFilter::interpolate(unsigned phase, short prevVal, short currVal, short nextVal, short nextNextVal) const</a>
+<a name="ln282">      {</a>
+<a name="ln283">      const auto&amp; interpValTable = interpCoeff[phase];</a>
+<a name="ln284">      return (interpValTable[0] * prevVal</a>
+<a name="ln285">          + interpValTable[1] * currVal</a>
+<a name="ln286">          + interpValTable[2] * nextVal</a>
+<a name="ln287">          + interpValTable[3] * nextNextVal);</a>
+<a name="ln288">      }</a>
+
+</code></pre>
+<div class="balloon" rel="27"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: zerberus, sampleZone.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

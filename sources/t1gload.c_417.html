@@ -1,0 +1,567 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>t1gload.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  t1gload.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Type 1 Glyph Loader (body).                                          */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include &quot;t1gload.h&quot;</a>
+<a name="ln21">#include FT_INTERNAL_CALC_H</a>
+<a name="ln22">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln23">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln24">#include FT_OUTLINE_H</a>
+<a name="ln25">#include FT_INTERNAL_POSTSCRIPT_AUX_H</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;t1errors.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29"> </a>
+<a name="ln30">  /*************************************************************************/</a>
+<a name="ln31">  /*                                                                       */</a>
+<a name="ln32">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln33">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln34">  /* messages during execution.                                            */</a>
+<a name="ln35">  /*                                                                       */</a>
+<a name="ln36">#undef  FT_COMPONENT</a>
+<a name="ln37">#define FT_COMPONENT  trace_t1gload</a>
+<a name="ln38"> </a>
+<a name="ln39"> </a>
+<a name="ln40">  /*************************************************************************/</a>
+<a name="ln41">  /*************************************************************************/</a>
+<a name="ln42">  /*************************************************************************/</a>
+<a name="ln43">  /**********                                                      *********/</a>
+<a name="ln44">  /**********            COMPUTE THE MAXIMUM ADVANCE WIDTH         *********/</a>
+<a name="ln45">  /**********                                                      *********/</a>
+<a name="ln46">  /**********    The following code is in charge of computing      *********/</a>
+<a name="ln47">  /**********    the maximum advance width of the font.  It        *********/</a>
+<a name="ln48">  /**********    quickly processes each glyph charstring to        *********/</a>
+<a name="ln49">  /**********    extract the value from either a `sbw' or `seac'   *********/</a>
+<a name="ln50">  /**********    operator.                                         *********/</a>
+<a name="ln51">  /**********                                                      *********/</a>
+<a name="ln52">  /*************************************************************************/</a>
+<a name="ln53">  /*************************************************************************/</a>
+<a name="ln54">  /*************************************************************************/</a>
+<a name="ln55"> </a>
+<a name="ln56"> </a>
+<a name="ln57">  static FT_Error</a>
+<a name="ln58">  T1_Parse_Glyph_And_Get_Char_String( T1_Decoder  decoder,</a>
+<a name="ln59">                                      FT_UInt     glyph_index,</a>
+<a name="ln60">                                      FT_Data*    char_string )</a>
+<a name="ln61">  {</a>
+<a name="ln62">    T1_Face   face  = (T1_Face)decoder-&gt;builder.face;</a>
+<a name="ln63">    T1_Font   type1 = &amp;face-&gt;type1;</a>
+<a name="ln64">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln65"> </a>
+<a name="ln66">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln67">    FT_Incremental_InterfaceRec *inc =</a>
+<a name="ln68">                      face-&gt;root.internal-&gt;incremental_interface;</a>
+<a name="ln69">#endif</a>
+<a name="ln70"> </a>
+<a name="ln71"> </a>
+<a name="ln72">    decoder-&gt;font_matrix = type1-&gt;font_matrix;</a>
+<a name="ln73">    decoder-&gt;font_offset = type1-&gt;font_offset;</a>
+<a name="ln74"> </a>
+<a name="ln75">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln76"> </a>
+<a name="ln77">    /* For incremental fonts get the character data using the */</a>
+<a name="ln78">    /* callback function.                                     */</a>
+<a name="ln79">    if ( inc )</a>
+<a name="ln80">      error = inc-&gt;funcs-&gt;get_glyph_data( inc-&gt;object,</a>
+<a name="ln81">                                          glyph_index, char_string );</a>
+<a name="ln82">    else</a>
+<a name="ln83"> </a>
+<a name="ln84">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln85"> </a>
+<a name="ln86">    /* For ordinary fonts get the character data stored in the face record. */</a>
+<a name="ln87">    {</a>
+<a name="ln88">      char_string-&gt;pointer = type1-&gt;charstrings[glyph_index];</a>
+<a name="ln89">      char_string-&gt;length  = (FT_Int)type1-&gt;charstrings_len[glyph_index];</a>
+<a name="ln90">    }</a>
+<a name="ln91"> </a>
+<a name="ln92">    if ( !error )</a>
+<a name="ln93">      error = decoder-&gt;funcs.parse_charstrings(</a>
+<a name="ln94">                decoder, (FT_Byte*)char_string-&gt;pointer,</a>
+<a name="ln95">                (FT_UInt)char_string-&gt;length );</a>
+<a name="ln96"> </a>
+<a name="ln97">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln98"> </a>
+<a name="ln99">    /* Incremental fonts can optionally override the metrics. */</a>
+<a name="ln100">    if ( !error &amp;&amp; inc &amp;&amp; inc-&gt;funcs-&gt;get_glyph_metrics )</a>
+<a name="ln101">    {</a>
+<a name="ln102">      FT_Incremental_MetricsRec  metrics;</a>
+<a name="ln103"> </a>
+<a name="ln104"> </a>
+<a name="ln105">      metrics.bearing_x = FIXED_TO_INT( decoder-&gt;builder.left_bearing.x );</a>
+<a name="ln106">      metrics.bearing_y = 0;</a>
+<a name="ln107">      metrics.advance   = FIXED_TO_INT( decoder-&gt;builder.advance.x );</a>
+<a name="ln108">      metrics.advance_v = FIXED_TO_INT( decoder-&gt;builder.advance.y );</a>
+<a name="ln109"> </a>
+<a name="ln110">      error = inc-&gt;funcs-&gt;get_glyph_metrics( inc-&gt;object,</a>
+<a name="ln111">                                             glyph_index, FALSE, &amp;metrics );</a>
+<a name="ln112"> </a>
+<a name="ln113">      decoder-&gt;builder.left_bearing.x = INT_TO_FIXED( metrics.bearing_x );</a>
+<a name="ln114">      decoder-&gt;builder.advance.x      = INT_TO_FIXED( metrics.advance );</a>
+<a name="ln115">      decoder-&gt;builder.advance.y      = INT_TO_FIXED( metrics.advance_v );</a>
+<a name="ln116">    }</a>
+<a name="ln117"> </a>
+<a name="ln118">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln119"> </a>
+<a name="ln120">    return error;</a>
+<a name="ln121">  }</a>
+<a name="ln122"> </a>
+<a name="ln123"> </a>
+<a name="ln124">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln125">  T1_Parse_Glyph( T1_Decoder  decoder,</a>
+<a name="ln126">                  FT_UInt     glyph_index )</a>
+<a name="ln127">  {</a>
+<a name="ln128">    FT_Data   glyph_data;</a>
+<a name="ln129">    FT_Error  error = T1_Parse_Glyph_And_Get_Char_String(</a>
+<a name="ln130">                        decoder, glyph_index, &amp;glyph_data );</a>
+<a name="ln131"> </a>
+<a name="ln132"> </a>
+<a name="ln133">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln134"> </a>
+<a name="ln135">    if ( !error )</a>
+<a name="ln136">    {</a>
+<a name="ln137">      T1_Face  face = (T1_Face)decoder-&gt;builder.face;</a>
+<a name="ln138"> </a>
+<a name="ln139"> </a>
+<a name="ln140">      if ( face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln141">        face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;free_glyph_data(</a>
+<a name="ln142">          face-&gt;root.internal-&gt;incremental_interface-&gt;object,</a>
+<a name="ln143">          &amp;glyph_data );</a>
+<a name="ln144">    }</a>
+<a name="ln145"> </a>
+<a name="ln146">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln147"> </a>
+<a name="ln148">    return error;</a>
+<a name="ln149">  }</a>
+<a name="ln150"> </a>
+<a name="ln151"> </a>
+<a name="ln152">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln153">  T1_Compute_Max_Advance( T1_Face  face,</a>
+<a name="ln154">                          FT_Pos*  max_advance )</a>
+<a name="ln155">  {</a>
+<a name="ln156">    FT_Error       error;</a>
+<a name="ln157">    T1_DecoderRec  decoder;</a>
+<a name="ln158">    FT_Int         glyph_index;</a>
+<a name="ln159">    T1_Font        type1 = &amp;face-&gt;type1;</a>
+<a name="ln160">    PSAux_Service  psaux = (PSAux_Service)face-&gt;psaux;</a>
+<a name="ln161"> </a>
+<a name="ln162"> </a>
+<a name="ln163">    FT_ASSERT( ( face-&gt;len_buildchar == 0 ) == ( face-&gt;buildchar == NULL ) );</a>
+<a name="ln164"> </a>
+<a name="ln165">    *max_advance = 0;</a>
+<a name="ln166"> </a>
+<a name="ln167">    /* initialize load decoder */</a>
+<a name="ln168">    error = psaux-&gt;t1_decoder_funcs-&gt;init( &amp;decoder,</a>
+<a name="ln169">                                           (FT_Face)face,</a>
+<a name="ln170">                                           0, /* size       */</a>
+<a name="ln171">                                           0, /* glyph slot */</a>
+<a name="ln172">                                           (FT_Byte**)type1-&gt;glyph_names,</a>
+<a name="ln173">                                           face-&gt;blend,</a>
+<a name="ln174">                                           0,</a>
+<a name="ln175">                                           FT_RENDER_MODE_NORMAL,</a>
+<a name="ln176">                                           T1_Parse_Glyph );</a>
+<a name="ln177">    if ( error )</a>
+<a name="ln178">      return error;</a>
+<a name="ln179"> </a>
+<a name="ln180">    decoder.builder.metrics_only = 1;</a>
+<a name="ln181">    decoder.builder.load_points  = 0;</a>
+<a name="ln182"> </a>
+<a name="ln183">    decoder.num_subrs     = type1-&gt;num_subrs;</a>
+<a name="ln184">    decoder.subrs         = type1-&gt;subrs;</a>
+<a name="ln185">    decoder.subrs_len     = type1-&gt;subrs_len;</a>
+<a name="ln186"> </a>
+<a name="ln187">    decoder.buildchar     = face-&gt;buildchar;</a>
+<a name="ln188">    decoder.len_buildchar = face-&gt;len_buildchar;</a>
+<a name="ln189"> </a>
+<a name="ln190">    *max_advance = 0;</a>
+<a name="ln191"> </a>
+<a name="ln192">    /* for each glyph, parse the glyph charstring and extract */</a>
+<a name="ln193">    /* the advance width                                      */</a>
+<a name="ln194">    for ( glyph_index = 0; glyph_index &lt; type1-&gt;num_glyphs; glyph_index++ )</a>
+<a name="ln195">    {</a>
+<a name="ln196">      /* now get load the unscaled outline */</a>
+<a name="ln197">      (void)T1_Parse_Glyph( &amp;decoder, (FT_UInt)glyph_index );</a>
+<a name="ln198">      if ( glyph_index == 0 || decoder.builder.advance.x &gt; *max_advance )</a>
+<a name="ln199">        *max_advance = decoder.builder.advance.x;</a>
+<a name="ln200"> </a>
+<a name="ln201">      /* ignore the error if one occurred - skip to next glyph */</a>
+<a name="ln202">    }</a>
+<a name="ln203"> </a>
+<a name="ln204">    psaux-&gt;t1_decoder_funcs-&gt;done( &amp;decoder );</a>
+<a name="ln205"> </a>
+<a name="ln206">    return FT_Err_Ok;</a>
+<a name="ln207">  }</a>
+<a name="ln208"> </a>
+<a name="ln209"> </a>
+<a name="ln210">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln211">  T1_Get_Advances( FT_Face    t1face,        /* T1_Face */</a>
+<a name="ln212">                   FT_UInt    first,</a>
+<a name="ln213">                   FT_UInt    count,</a>
+<a name="ln214">                   FT_Int32   load_flags,</a>
+<a name="ln215">                   FT_Fixed*  advances )</a>
+<a name="ln216">  {</a>
+<a name="ln217">    T1_Face        face  = (T1_Face)t1face;</a>
+<a name="ln218">    T1_DecoderRec  decoder;</a>
+<a name="ln219">    T1_Font        type1 = &amp;face-&gt;type1;</a>
+<a name="ln220">    PSAux_Service  psaux = (PSAux_Service)face-&gt;psaux;</a>
+<a name="ln221">    FT_UInt        nn;</a>
+<a name="ln222">    FT_Error       error;</a>
+<a name="ln223"> </a>
+<a name="ln224"> </a>
+<a name="ln225">    if ( load_flags &amp; FT_LOAD_VERTICAL_LAYOUT )</a>
+<a name="ln226">    {</a>
+<a name="ln227">      for ( nn = 0; nn &lt; count; nn++ )</a>
+<a name="ln228">        advances[nn] = 0;</a>
+<a name="ln229"> </a>
+<a name="ln230">      return FT_Err_Ok;</a>
+<a name="ln231">    }</a>
+<a name="ln232"> </a>
+<a name="ln233">    error = psaux-&gt;t1_decoder_funcs-&gt;init( &amp;decoder,</a>
+<a name="ln234">                                           (FT_Face)face,</a>
+<a name="ln235">                                           0, /* size       */</a>
+<a name="ln236">                                           0, /* glyph slot */</a>
+<a name="ln237">                                           (FT_Byte**)type1-&gt;glyph_names,</a>
+<a name="ln238">                                           face-&gt;blend,</a>
+<a name="ln239">                                           0,</a>
+<a name="ln240">                                           FT_RENDER_MODE_NORMAL,</a>
+<a name="ln241">                                           T1_Parse_Glyph );</a>
+<a name="ln242">    if ( error )</a>
+<a name="ln243">      return error;</a>
+<a name="ln244"> </a>
+<a name="ln245">    decoder.builder.metrics_only = 1;</a>
+<a name="ln246">    decoder.builder.load_points  = 0;</a>
+<a name="ln247"> </a>
+<a name="ln248">    decoder.num_subrs = type1-&gt;num_subrs;</a>
+<a name="ln249">    decoder.subrs     = type1-&gt;subrs;</a>
+<a name="ln250">    decoder.subrs_len = type1-&gt;subrs_len;</a>
+<a name="ln251"> </a>
+<a name="ln252">    decoder.buildchar     = face-&gt;buildchar;</a>
+<a name="ln253">    decoder.len_buildchar = face-&gt;len_buildchar;</a>
+<a name="ln254"> </a>
+<a name="ln255">    for ( nn = 0; nn &lt; count; nn++ )</a>
+<a name="ln256">    {</a>
+<a name="ln257">      error = T1_Parse_Glyph( &amp;decoder, first + nn );</a>
+<a name="ln258">      if ( !error )</a>
+<a name="ln259">        advances[nn] = FIXED_TO_INT( decoder.builder.advance.x );</a>
+<a name="ln260">      else</a>
+<a name="ln261">        advances[nn] = 0;</a>
+<a name="ln262">    }</a>
+<a name="ln263"> </a>
+<a name="ln264">    return FT_Err_Ok;</a>
+<a name="ln265">  }</a>
+<a name="ln266"> </a>
+<a name="ln267"> </a>
+<a name="ln268">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln269">  T1_Load_Glyph( FT_GlyphSlot  t1glyph,          /* T1_GlyphSlot */</a>
+<a name="ln270">                 FT_Size       t1size,           /* T1_Size      */</a>
+<a name="ln271">                 FT_UInt       glyph_index,</a>
+<a name="ln272">                 FT_Int32      load_flags )</a>
+<a name="ln273">  {</a>
+<a name="ln274">    T1_GlyphSlot            glyph = (T1_GlyphSlot)t1glyph;</a>
+<a name="ln275">    FT_Error                error;</a>
+<a name="ln276">    T1_DecoderRec           decoder;</a>
+<a name="ln277">    T1_Face                 face = (T1_Face)t1glyph-&gt;face;</a>
+<a name="ln278">    FT_Bool                 hinting;</a>
+<a name="ln279">    T1_Font                 type1         = &amp;face-&gt;type1;</a>
+<a name="ln280">    PSAux_Service           psaux         = (PSAux_Service)face-&gt;psaux;</a>
+<a name="ln281">    const T1_Decoder_Funcs  decoder_funcs = psaux-&gt;t1_decoder_funcs;</a>
+<a name="ln282"> </a>
+<a name="ln283">    FT_Matrix               font_matrix;</a>
+<a name="ln284">    FT_Vector               font_offset;</a>
+<a name="ln285">    FT_Data                 glyph_data;</a>
+<a name="ln286">    FT_Bool                 must_finish_decoder = FALSE;</a>
+<a name="ln287">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln288">    FT_Bool                 glyph_data_loaded = 0;</a>
+<a name="ln289">#endif</a>
+<a name="ln290"> </a>
+<a name="ln291"> </a>
+<a name="ln292">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln293">    if ( glyph_index &gt;= (FT_UInt)face-&gt;root.num_glyphs &amp;&amp;</a>
+<a name="ln294">         !face-&gt;root.internal-&gt;incremental_interface   )</a>
+<a name="ln295">#else</a>
+<a name="ln296">    if ( glyph_index &gt;= (FT_UInt)face-&gt;root.num_glyphs )</a>
+<a name="ln297">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln298">    {</a>
+<a name="ln299">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln300">      goto Exit;</a>
+<a name="ln301">    }</a>
+<a name="ln302"> </a>
+<a name="ln303">    FT_TRACE1(( &quot;T1_Load_Glyph: glyph index %d\n&quot;, glyph_index ));</a>
+<a name="ln304"> </a>
+<a name="ln305">    FT_ASSERT( ( face-&gt;len_buildchar == 0 ) == ( face-&gt;buildchar == NULL ) );</a>
+<a name="ln306"> </a>
+<a name="ln307">    if ( load_flags &amp; FT_LOAD_NO_RECURSE )</a>
+<a name="ln308">      load_flags |= FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING;</a>
+<a name="ln309"> </a>
+<a name="ln310">    if ( t1size )</a>
+<a name="ln311">    {</a>
+<a name="ln312">      glyph-&gt;x_scale = t1size-&gt;metrics.x_scale;</a>
+<a name="ln313">      glyph-&gt;y_scale = t1size-&gt;metrics.y_scale;</a>
+<a name="ln314">    }</a>
+<a name="ln315">    else</a>
+<a name="ln316">    {</a>
+<a name="ln317">      glyph-&gt;x_scale = 0x10000L;</a>
+<a name="ln318">      glyph-&gt;y_scale = 0x10000L;</a>
+<a name="ln319">    }</a>
+<a name="ln320"> </a>
+<a name="ln321">    t1glyph-&gt;outline.n_points   = 0;</a>
+<a name="ln322">    t1glyph-&gt;outline.n_contours = 0;</a>
+<a name="ln323"> </a>
+<a name="ln324">    hinting = FT_BOOL( ( load_flags &amp; FT_LOAD_NO_SCALE   ) == 0 &amp;&amp;</a>
+<a name="ln325">                       ( load_flags &amp; FT_LOAD_NO_HINTING ) == 0 );</a>
+<a name="ln326"> </a>
+<a name="ln327">    t1glyph-&gt;format = FT_GLYPH_FORMAT_OUTLINE;</a>
+<a name="ln328"> </a>
+<a name="ln329">    error = decoder_funcs-&gt;init( &amp;decoder,</a>
+<a name="ln330">                                 t1glyph-&gt;face,</a>
+<a name="ln331">                                 t1size,</a>
+<a name="ln332">                                 t1glyph,</a>
+<a name="ln333">                                 (FT_Byte**)type1-&gt;glyph_names,</a>
+<a name="ln334">                                 face-&gt;blend,</a>
+<a name="ln335">                                 FT_BOOL( hinting ),</a>
+<a name="ln336">                                 FT_LOAD_TARGET_MODE( load_flags ),</a>
+<a name="ln337">                                 T1_Parse_Glyph );</a>
+<a name="ln338">    if ( error )</a>
+<a name="ln339">      goto Exit;</a>
+<a name="ln340"> </a>
+<a name="ln341">    must_finish_decoder = TRUE;</a>
+<a name="ln342"> </a>
+<a name="ln343">    decoder.builder.no_recurse = FT_BOOL(</a>
+<a name="ln344">                                   ( load_flags &amp; FT_LOAD_NO_RECURSE ) != 0 );</a>
+<a name="ln345"> </a>
+<a name="ln346">    decoder.num_subrs     = type1-&gt;num_subrs;</a>
+<a name="ln347">    decoder.subrs         = type1-&gt;subrs;</a>
+<a name="ln348">    decoder.subrs_len     = type1-&gt;subrs_len;</a>
+<a name="ln349"> </a>
+<a name="ln350">    decoder.buildchar     = face-&gt;buildchar;</a>
+<a name="ln351">    decoder.len_buildchar = face-&gt;len_buildchar;</a>
+<a name="ln352"> </a>
+<a name="ln353">    /* now load the unscaled outline */</a>
+<a name="ln354">    error = T1_Parse_Glyph_And_Get_Char_String( &amp;decoder, glyph_index,</a>
+<a name="ln355">                                                &amp;glyph_data );</a>
+<a name="ln356">    if ( error )</a>
+<a name="ln357">      goto Exit;</a>
+<a name="ln358">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln359">    glyph_data_loaded = 1;</a>
+<a name="ln360">#endif</a>
+<a name="ln361"> </a>
+<a name="ln362">    font_matrix = decoder.font_matrix;</a>
+<a name="ln363">    font_offset = decoder.font_offset;</a>
+<a name="ln364"> </a>
+<a name="ln365">    /* save new glyph tables */</a>
+<a name="ln366">    decoder_funcs-&gt;done( &amp;decoder );</a>
+<a name="ln367"> </a>
+<a name="ln368">    must_finish_decoder = FALSE;</a>
+<a name="ln369"> </a>
+<a name="ln370">    /* now, set the metrics -- this is rather simple, as   */</a>
+<a name="ln371">    /* the left side bearing is the xMin, and the top side */</a>
+<a name="ln372">    /* bearing the yMax                                    */</a>
+<a name="ln373">    if ( !error )</a>
+<a name="ln374">    {</a>
+<a name="ln375">      t1glyph-&gt;outline.flags &amp;= FT_OUTLINE_OWNER;</a>
+<a name="ln376">      t1glyph-&gt;outline.flags |= FT_OUTLINE_REVERSE_FILL;</a>
+<a name="ln377"> </a>
+<a name="ln378">      /* for composite glyphs, return only left side bearing and */</a>
+<a name="ln379">      /* advance width                                           */</a>
+<a name="ln380">      if ( load_flags &amp; FT_LOAD_NO_RECURSE )</a>
+<a name="ln381">      {</a>
+<a name="ln382">        FT_Slot_Internal  internal = t1glyph-&gt;internal;</a>
+<a name="ln383"> </a>
+<a name="ln384"> </a>
+<a name="ln385">        t1glyph-&gt;metrics.horiBearingX =</a>
+<a name="ln386">          FIXED_TO_INT( decoder.builder.left_bearing.x );</a>
+<a name="ln387">        t1glyph-&gt;metrics.horiAdvance  =</a>
+<a name="ln388">          FIXED_TO_INT( decoder.builder.advance.x );</a>
+<a name="ln389"> </a>
+<a name="ln390">        internal-&gt;glyph_matrix      = font_matrix;</a>
+<a name="ln391">        internal-&gt;glyph_delta       = font_offset;</a>
+<a name="ln392">        internal-&gt;glyph_transformed = 1;</a>
+<a name="ln393">      }</a>
+<a name="ln394">      else</a>
+<a name="ln395">      {</a>
+<a name="ln396">        FT_BBox            cbox;</a>
+<a name="ln397">        FT_Glyph_Metrics*  metrics = &amp;t1glyph-&gt;metrics;</a>
+<a name="ln398"> </a>
+<a name="ln399"> </a>
+<a name="ln400">        /* copy the _unscaled_ advance width */</a>
+<a name="ln401">        metrics-&gt;horiAdvance =</a>
+<a name="ln402">          FIXED_TO_INT( decoder.builder.advance.x );</a>
+<a name="ln403">        t1glyph-&gt;linearHoriAdvance =</a>
+<a name="ln404">          FIXED_TO_INT( decoder.builder.advance.x );</a>
+<a name="ln405">        t1glyph-&gt;internal-&gt;glyph_transformed = 0;</a>
+<a name="ln406"> </a>
+<a name="ln407">        if ( load_flags &amp; FT_LOAD_VERTICAL_LAYOUT )</a>
+<a name="ln408">        {</a>
+<a name="ln409">          /* make up vertical ones */</a>
+<a name="ln410">          metrics-&gt;vertAdvance = ( face-&gt;type1.font_bbox.yMax -</a>
+<a name="ln411">                                   face-&gt;type1.font_bbox.yMin ) &gt;&gt; 16;</a>
+<a name="ln412">          t1glyph-&gt;linearVertAdvance = metrics-&gt;vertAdvance;</a>
+<a name="ln413">        }</a>
+<a name="ln414">        else</a>
+<a name="ln415">        {</a>
+<a name="ln416">          metrics-&gt;vertAdvance =</a>
+<a name="ln417">            FIXED_TO_INT( decoder.builder.advance.y );</a>
+<a name="ln418">          t1glyph-&gt;linearVertAdvance =</a>
+<a name="ln419">            FIXED_TO_INT( decoder.builder.advance.y );</a>
+<a name="ln420">        }</a>
+<a name="ln421"> </a>
+<a name="ln422">        t1glyph-&gt;format = FT_GLYPH_FORMAT_OUTLINE;</a>
+<a name="ln423"> </a>
+<a name="ln424">        if ( t1size &amp;&amp; t1size-&gt;metrics.y_ppem &lt; 24 )</a>
+<a name="ln425">          t1glyph-&gt;outline.flags |= FT_OUTLINE_HIGH_PRECISION;</a>
+<a name="ln426"> </a>
+<a name="ln427">#if 1</a>
+<a name="ln428">        /* apply the font matrix, if any */</a>
+<a name="ln429">        if ( font_matrix.xx != 0x10000L || font_matrix.yy != 0x10000L ||</a>
+<a name="ln430">             font_matrix.xy != 0        || font_matrix.yx != 0        )</a>
+<a name="ln431">        {</a>
+<a name="ln432">          FT_Outline_Transform( &amp;t1glyph-&gt;outline, &amp;font_matrix );</a>
+<a name="ln433"> </a>
+<a name="ln434">          metrics-&gt;horiAdvance = FT_MulFix( metrics-&gt;horiAdvance,</a>
+<a name="ln435">                                            font_matrix.xx );</a>
+<a name="ln436">          metrics-&gt;vertAdvance = FT_MulFix( metrics-&gt;vertAdvance,</a>
+<a name="ln437">                                            font_matrix.yy );</a>
+<a name="ln438">        }</a>
+<a name="ln439"> </a>
+<a name="ln440">        if ( font_offset.x || font_offset.y )</a>
+<a name="ln441">        {</a>
+<a name="ln442">          FT_Outline_Translate( &amp;t1glyph-&gt;outline,</a>
+<a name="ln443">                                font_offset.x,</a>
+<a name="ln444">                                font_offset.y );</a>
+<a name="ln445"> </a>
+<a name="ln446">          metrics-&gt;horiAdvance += font_offset.x;</a>
+<a name="ln447">          metrics-&gt;vertAdvance += font_offset.y;</a>
+<a name="ln448">        }</a>
+<a name="ln449">#endif</a>
+<a name="ln450"> </a>
+<a name="ln451">        if ( ( load_flags &amp; FT_LOAD_NO_SCALE ) == 0 )</a>
+<a name="ln452">        {</a>
+<a name="ln453">          /* scale the outline and the metrics */</a>
+<a name="ln454">          FT_Int       n;</a>
+<a name="ln455">          FT_Outline*  cur = decoder.builder.base;</a>
+<a name="ln456">          FT_Vector*   vec = cur-&gt;points;</a>
+<a name="ln457">          FT_Fixed     x_scale = glyph-&gt;x_scale;</a>
+<a name="ln458">          FT_Fixed     y_scale = glyph-&gt;y_scale;</a>
+<a name="ln459"> </a>
+<a name="ln460"> </a>
+<a name="ln461">          /* First of all, scale the points, if we are not hinting */</a>
+<a name="ln462">          if ( !hinting || ! decoder.builder.hints_funcs )</a>
+<a name="ln463">            for ( n = cur-&gt;n_points; n &gt; 0; n--, vec++ )</a>
+<a name="ln464">            {</a>
+<a name="ln465">              vec-&gt;x = FT_MulFix( vec-&gt;x, x_scale );</a>
+<a name="ln466">              vec-&gt;y = FT_MulFix( vec-&gt;y, y_scale );</a>
+<a name="ln467">            }</a>
+<a name="ln468"> </a>
+<a name="ln469">          /* Then scale the metrics */</a>
+<a name="ln470">          metrics-&gt;horiAdvance = FT_MulFix( metrics-&gt;horiAdvance, x_scale );</a>
+<a name="ln471">          metrics-&gt;vertAdvance = FT_MulFix( metrics-&gt;vertAdvance, y_scale );</a>
+<a name="ln472">        }</a>
+<a name="ln473"> </a>
+<a name="ln474">        /* compute the other metrics */</a>
+<a name="ln475">        FT_Outline_Get_CBox( &amp;t1glyph-&gt;outline, &amp;cbox );</a>
+<a name="ln476"> </a>
+<a name="ln477">        metrics-&gt;width  = cbox.xMax - cbox.xMin;</a>
+<a name="ln478">        metrics-&gt;height = cbox.yMax - cbox.yMin;</a>
+<a name="ln479"> </a>
+<a name="ln480">        metrics-&gt;horiBearingX = cbox.xMin;</a>
+<a name="ln481">        metrics-&gt;horiBearingY = cbox.yMax;</a>
+<a name="ln482"> </a>
+<a name="ln483">        if ( load_flags &amp; FT_LOAD_VERTICAL_LAYOUT )</a>
+<a name="ln484">        {</a>
+<a name="ln485">          /* make up vertical ones */</a>
+<a name="ln486">          ft_synthesize_vertical_metrics( metrics,</a>
+<a name="ln487">                                          metrics-&gt;vertAdvance );</a>
+<a name="ln488">        }</a>
+<a name="ln489">      }</a>
+<a name="ln490"> </a>
+<a name="ln491">      /* Set control data to the glyph charstrings.  Note that this is */</a>
+<a name="ln492">      /* _not_ zero-terminated.                                        */</a>
+<a name="ln493">      t1glyph-&gt;control_data = (FT_Byte*)glyph_data.pointer;</a>
+<a name="ln494">      t1glyph-&gt;control_len  = glyph_data.length;</a>
+<a name="ln495">    }</a>
+<a name="ln496"> </a>
+<a name="ln497"> </a>
+<a name="ln498">  Exit:</a>
+<a name="ln499"> </a>
+<a name="ln500">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln501">    if ( glyph_data_loaded &amp;&amp; face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln502">    {</a>
+<a name="ln503">      face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;free_glyph_data(</a>
+<a name="ln504">        face-&gt;root.internal-&gt;incremental_interface-&gt;object,</a>
+<a name="ln505">        &amp;glyph_data );</a>
+<a name="ln506"> </a>
+<a name="ln507">      /* Set the control data to null - it is no longer available if   */</a>
+<a name="ln508">      /* loaded incrementally.                                         */</a>
+<a name="ln509">      t1glyph-&gt;control_data = NULL;</a>
+<a name="ln510">      t1glyph-&gt;control_len  = 0;</a>
+<a name="ln511">    }</a>
+<a name="ln512">#endif</a>
+<a name="ln513"> </a>
+<a name="ln514">    if ( must_finish_decoder )</a>
+<a name="ln515">      decoder_funcs-&gt;done( &amp;decoder );</a>
+<a name="ln516"> </a>
+<a name="ln517">    return error;</a>
+<a name="ln518">  }</a>
+<a name="ln519"> </a>
+<a name="ln520"> </a>
+<a name="ln521">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="373"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!error' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

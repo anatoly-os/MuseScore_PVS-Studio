@@ -1,0 +1,1849 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>seq.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;config.h&quot;</a>
+<a name="ln21">#include &quot;seq.h&quot;</a>
+<a name="ln22">#include &quot;musescore.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;synthesizer/msynthesizer.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/rendermidi.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/slur.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/tie.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln31">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln32">#include &quot;libmscore/tempo.h&quot;</a>
+<a name="ln33">#include &quot;scoreview.h&quot;</a>
+<a name="ln34">#include &quot;playpanel.h&quot;</a>
+<a name="ln35">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln36">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln37">#include &quot;preferences.h&quot;</a>
+<a name="ln38">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln39">#include &quot;libmscore/ottava.h&quot;</a>
+<a name="ln40">#include &quot;libmscore/utils.h&quot;</a>
+<a name="ln41">#include &quot;libmscore/repeatlist.h&quot;</a>
+<a name="ln42">#include &quot;libmscore/audio.h&quot;</a>
+<a name="ln43">#include &quot;synthcontrol.h&quot;</a>
+<a name="ln44">#include &quot;pianoroll.h&quot;</a>
+<a name="ln45">#include &quot;pianotools.h&quot;</a>
+<a name="ln46"> </a>
+<a name="ln47">#include &quot;click.h&quot;</a>
+<a name="ln48"> </a>
+<a name="ln49">#define OV_EXCLUDE_STATIC_CALLBACKS</a>
+<a name="ln50">#include &lt;vorbis/vorbisfile.h&gt;</a>
+<a name="ln51"> </a>
+<a name="ln52">#ifdef USE_PORTMIDI</a>
+<a name="ln53">#if defined(Q_OS_MAC) || defined(Q_OS_WIN)</a>
+<a name="ln54">  #include &quot;portmidi/porttime/porttime.h&quot;</a>
+<a name="ln55">#else</a>
+<a name="ln56">  #include &lt;porttime.h&gt;</a>
+<a name="ln57">#endif</a>
+<a name="ln58">#endif</a>
+<a name="ln59"> </a>
+<a name="ln60">namespace Ms {</a>
+<a name="ln61"> </a>
+<a name="ln62">Seq* seq;</a>
+<a name="ln63"> </a>
+<a name="ln64">static const int guiRefresh   = 10;       // Hz</a>
+<a name="ln65">static const int peakHoldTime = 1400;     // msec</a>
+<a name="ln66">static const int peakHold     = (peakHoldTime * guiRefresh) / 1000;</a>
+<a name="ln67">static OggVorbis_File vf;</a>
+<a name="ln68"> </a>
+<a name="ln69">static constexpr int minUtickBufferSize = 480 * 4 * 10; // about 10 measures of 4/4 time signature</a>
+<a name="ln70"> </a>
+<a name="ln71">#if 0 // yet(?) unused</a>
+<a name="ln72">static const int AUDIO_BUFFER_SIZE = 1024 * 512;  // 2 MB</a>
+<a name="ln73">#endif</a>
+<a name="ln74"> </a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76">//   VorbisData</a>
+<a name="ln77">//---------------------------------------------------------</a>
+<a name="ln78"> </a>
+<a name="ln79">struct VorbisData {</a>
+<a name="ln80">      int pos;          // current position in audio-&gt;data()</a>
+<a name="ln81">      QByteArray data;</a>
+<a name="ln82">      };</a>
+<a name="ln83"> </a>
+<a name="ln84">static VorbisData vorbisData;</a>
+<a name="ln85"> </a>
+<a name="ln86">static size_t ovRead(void* ptr, size_t size, size_t nmemb, void* datasource);</a>
+<a name="ln87">static int ovSeek(void* datasource, ogg_int64_t offset, int whence);</a>
+<a name="ln88">static long ovTell(void* datasource);</a>
+<a name="ln89"> </a>
+<a name="ln90">static ov_callbacks ovCallbacks = {</a>
+<a name="ln91">      ovRead, ovSeek, 0, ovTell</a>
+<a name="ln92">      };</a>
+<a name="ln93"> </a>
+<a name="ln94">//---------------------------------------------------------</a>
+<a name="ln95">//   ovRead</a>
+<a name="ln96">//---------------------------------------------------------</a>
+<a name="ln97"> </a>
+<a name="ln98">static size_t ovRead(void* ptr, size_t size, size_t nmemb, void* datasource)</a>
+<a name="ln99">      {</a>
+<a name="ln100">      VorbisData* vd = (VorbisData*)datasource;</a>
+<a name="ln101">      size_t n = size * nmemb;</a>
+<a name="ln102">      if (vd-&gt;data.size() &lt; int(vd-&gt;pos + n))</a>
+<a name="ln103">            n = vd-&gt;data.size() - vd-&gt;pos;</a>
+<a name="ln104">      if (n) {</a>
+<a name="ln105">            const char* src = vd-&gt;data.data() + vd-&gt;pos;</a>
+<a name="ln106">            memcpy(ptr, src, n);</a>
+<a name="ln107">            vd-&gt;pos += int(n);</a>
+<a name="ln108">            }</a>
+<a name="ln109">      return n;</a>
+<a name="ln110">      }</a>
+<a name="ln111"> </a>
+<a name="ln112">//---------------------------------------------------------</a>
+<a name="ln113">//   ovSeek</a>
+<a name="ln114">//---------------------------------------------------------</a>
+<a name="ln115"> </a>
+<a name="ln116">static int ovSeek(void* datasource, ogg_int64_t offset, int whence)</a>
+<a name="ln117">      {</a>
+<a name="ln118">      VorbisData* vd = (VorbisData*)datasource;</a>
+<a name="ln119">      switch(whence) {</a>
+<a name="ln120">            case SEEK_SET:</a>
+<a name="ln121">                  vd-&gt;pos = offset;</a>
+<a name="ln122">                  break;</a>
+<a name="ln123">            case SEEK_CUR:</a>
+<a name="ln124">                  vd-&gt;pos += offset;</a>
+<a name="ln125">                  break;</a>
+<a name="ln126">            case SEEK_END:</a>
+<a name="ln127">                  vd-&gt;pos = vd-&gt;data.size() - offset;</a>
+<a name="ln128">                  break;</a>
+<a name="ln129">            }</a>
+<a name="ln130">      return 0;</a>
+<a name="ln131">      }</a>
+<a name="ln132"> </a>
+<a name="ln133">//---------------------------------------------------------</a>
+<a name="ln134">//   ovTell</a>
+<a name="ln135">//---------------------------------------------------------</a>
+<a name="ln136"> </a>
+<a name="ln137">static long ovTell(void* datasource)</a>
+<a name="ln138">      {</a>
+<a name="ln139">      VorbisData* vd = (VorbisData*)datasource;</a>
+<a name="ln140">      return vd-&gt;pos;</a>
+<a name="ln141">      }</a>
+<a name="ln142"> </a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144">//   Seq</a>
+<a name="ln145">//---------------------------------------------------------</a>
+<a name="ln146"> </a>
+<a name="ln147">Seq::Seq()</a>
+<a name="ln148">   : midi(nullptr)</a>
+<a name="ln149">      {</a>
+<a name="ln150">      running         = false;</a>
+<a name="ln151">      playlistChanged = false;</a>
+<a name="ln152">      cs              = 0;</a>
+<a name="ln153">      cv              = 0;</a>
+<a name="ln154">      tackRemain        = 0;</a>
+<a name="ln155">      tickRemain        = 0;</a>
+<a name="ln156">      maxMidiOutPort  = 0;</a>
+<a name="ln157"> </a>
+<a name="ln158">      endUTick  = 0;</a>
+<a name="ln159">      state    = Transport::STOP;</a>
+<a name="ln160">      oggInit  = false;</a>
+<a name="ln161">      _driver  = 0;</a>
+<a name="ln162">      playPos  = events.cbegin();</a>
+<a name="ln163">      playFrame  = 0;</a>
+<a name="ln164">      metronomeVolume = 0.3;</a>
+<a name="ln165">      useJackTransportSavedFlag = false;</a>
+<a name="ln166"> </a>
+<a name="ln167">      inCountIn         = false;</a>
+<a name="ln168">      countInPlayPos    = countInEvents.cbegin();</a>
+<a name="ln169">      countInPlayFrame  = 0;</a>
+<a name="ln170"> </a>
+<a name="ln171">      meterValue[0]     = 0.0;</a>
+<a name="ln172">      meterValue[1]     = 0.0;</a>
+<a name="ln173">      meterPeakValue[0] = 0.0;</a>
+<a name="ln174">      meterPeakValue[1] = 0.0;</a>
+<a name="ln175">      peakTimer[0]       = 0;</a>
+<a name="ln176">      peakTimer[1]       = 0;</a>
+<a name="ln177"> </a>
+<a name="ln178">      heartBeatTimer = new QTimer(this);</a>
+<a name="ln179">      connect(heartBeatTimer, SIGNAL(timeout()), this, SLOT(heartBeatTimeout()));</a>
+<a name="ln180"> </a>
+<a name="ln181">      noteTimer = new QTimer(this);</a>
+<a name="ln182">      noteTimer-&gt;setSingleShot(true);</a>
+<a name="ln183">      connect(noteTimer, SIGNAL(timeout()), this, SLOT(stopNotes()));</a>
+<a name="ln184">      noteTimer-&gt;stop();</a>
+<a name="ln185"> </a>
+<a name="ln186">      connect(this, SIGNAL(toGui(int, int)), this, SLOT(seqMessage(int, int)), Qt::QueuedConnection);</a>
+<a name="ln187"> </a>
+<a name="ln188">      prevTimeSig.setNumerator(0);</a>
+<a name="ln189">      prevTempo = 0;</a>
+<a name="ln190">      connect(this, SIGNAL(timeSigChanged()),this,SLOT(handleTimeSigTempoChanged()));</a>
+<a name="ln191">      connect(this, SIGNAL(tempoChanged()),this,SLOT(handleTimeSigTempoChanged()));</a>
+<a name="ln192"> </a>
+<a name="ln193">      initialMillisecondTimestampWithLatency = 0;</a>
+<a name="ln194">      }</a>
+<a name="ln195"> </a>
+<a name="ln196">//---------------------------------------------------------</a>
+<a name="ln197">//   Seq</a>
+<a name="ln198">//---------------------------------------------------------</a>
+<a name="ln199"> </a>
+<a name="ln200">Seq::~Seq()</a>
+<a name="ln201">      {</a>
+<a name="ln202">      delete _driver;</a>
+<a name="ln203">      }</a>
+<a name="ln204"> </a>
+<a name="ln205">//---------------------------------------------------------</a>
+<a name="ln206">//   setScoreView</a>
+<a name="ln207">//---------------------------------------------------------</a>
+<a name="ln208"> </a>
+<a name="ln209">void Seq::setScoreView(ScoreView* v)</a>
+<a name="ln210">      {</a>
+<a name="ln211">      if (oggInit) {</a>
+<a name="ln212">            ov_clear(&amp;vf);</a>
+<a name="ln213">            oggInit = false;</a>
+<a name="ln214">            }</a>
+<a name="ln215">      if (cv !=v &amp;&amp; cs) {</a>
+<a name="ln216">            unmarkNotes();</a>
+<a name="ln217">            stopWait();</a>
+<a name="ln218">            }</a>
+<a name="ln219">      cv = v;</a>
+<a name="ln220">      if (cs)</a>
+<a name="ln221">            disconnect(cs, SIGNAL(playlistChanged()), this, SLOT(setPlaylistChanged()));</a>
+<a name="ln222">      cs = cv ? cv-&gt;score()-&gt;masterScore() : 0;</a>
+<a name="ln223">      midi = MidiRenderer(cs);</a>
+<a name="ln224">      midi.setMinChunkSize(10);</a>
+<a name="ln225"> </a>
+<a name="ln226">      if (!heartBeatTimer-&gt;isActive())</a>
+<a name="ln227">            heartBeatTimer-&gt;start(20);    // msec</a>
+<a name="ln228"> </a>
+<a name="ln229">      playlistChanged = true;</a>
+<a name="ln230">      _synti-&gt;reset();</a>
+<a name="ln231">      if (cs) {</a>
+<a name="ln232">            initInstruments();</a>
+<a name="ln233">            connect(cs, SIGNAL(playlistChanged()), this, SLOT(setPlaylistChanged()));</a>
+<a name="ln234">            }</a>
+<a name="ln235">      }</a>
+<a name="ln236"> </a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238">//   Seq::CachedPreferences::update</a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240"> </a>
+<a name="ln241">void Seq::CachedPreferences::update()</a>
+<a name="ln242">      {</a>
+<a name="ln243">      portMidiOutputLatencyMilliseconds = preferences.getInt(PREF_IO_PORTMIDI_OUTPUTLATENCYMILLISECONDS);</a>
+<a name="ln244">      jackTimeBaseMaster = preferences.getBool(PREF_IO_JACK_TIMEBASEMASTER);</a>
+<a name="ln245">      useJackTransport = preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT);</a>
+<a name="ln246">      useJackMidi = preferences.getBool(PREF_IO_JACK_USEJACKMIDI);</a>
+<a name="ln247">      useJackAudio = preferences.getBool(PREF_IO_JACK_USEJACKAUDIO);</a>
+<a name="ln248">      useAlsaAudio = preferences.getBool(PREF_IO_ALSA_USEALSAAUDIO);</a>
+<a name="ln249">      usePortAudio = preferences.getBool(PREF_IO_PORTAUDIO_USEPORTAUDIO);</a>
+<a name="ln250">      usePulseAudio = preferences.getBool(PREF_IO_PULSEAUDIO_USEPULSEAUDIO);</a>
+<a name="ln251">      }</a>
+<a name="ln252"> </a>
+<a name="ln253">//---------------------------------------------------------</a>
+<a name="ln254">//   startTransport</a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256"> </a>
+<a name="ln257">void Seq::startTransport()</a>
+<a name="ln258">      {</a>
+<a name="ln259">      cachedPrefs.update();</a>
+<a name="ln260">      _driver-&gt;startTransport();</a>
+<a name="ln261">      }</a>
+<a name="ln262"> </a>
+<a name="ln263">//---------------------------------------------------------</a>
+<a name="ln264">//   stopTransport</a>
+<a name="ln265">//---------------------------------------------------------</a>
+<a name="ln266"> </a>
+<a name="ln267">void Seq::stopTransport()</a>
+<a name="ln268">      {</a>
+<a name="ln269">      _driver-&gt;stopTransport();</a>
+<a name="ln270">      }</a>
+<a name="ln271"> </a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273">//   init</a>
+<a name="ln274">//    return false on error</a>
+<a name="ln275">//---------------------------------------------------------</a>
+<a name="ln276"> </a>
+<a name="ln277">bool Seq::init(bool hotPlug)</a>
+<a name="ln278">      {</a>
+<a name="ln279">      if (!_driver || !_driver-&gt;start(hotPlug)) {</a>
+<a name="ln280">            qDebug(&quot;Cannot start I/O&quot;);</a>
+<a name="ln281">            running = false;</a>
+<a name="ln282">            return false;</a>
+<a name="ln283">            }</a>
+<a name="ln284">      cachedPrefs.update();</a>
+<a name="ln285">      running = true;</a>
+<a name="ln286">      return true;</a>
+<a name="ln287">      }</a>
+<a name="ln288"> </a>
+<a name="ln289">//---------------------------------------------------------</a>
+<a name="ln290">//   exit</a>
+<a name="ln291">//---------------------------------------------------------</a>
+<a name="ln292"> </a>
+<a name="ln293">void Seq::exit()</a>
+<a name="ln294">      {</a>
+<a name="ln295">      if (_driver) {</a>
+<a name="ln296">            if (MScore::debugMode)</a>
+<a name="ln297">                  qDebug(&quot;Stop I/O&quot;);</a>
+<a name="ln298">            stopWait();</a>
+<a name="ln299">            delete _driver;</a>
+<a name="ln300">            _driver = 0;</a>
+<a name="ln301">            }</a>
+<a name="ln302">      }</a>
+<a name="ln303"> </a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305">//   rewindStart</a>
+<a name="ln306">//---------------------------------------------------------</a>
+<a name="ln307"> </a>
+<a name="ln308">void Seq::rewindStart()</a>
+<a name="ln309">      {</a>
+<a name="ln310">      seek(0);</a>
+<a name="ln311">      }</a>
+<a name="ln312"> </a>
+<a name="ln313">//---------------------------------------------------------</a>
+<a name="ln314">//   loopStart</a>
+<a name="ln315">//---------------------------------------------------------</a>
+<a name="ln316"> </a>
+<a name="ln317">void Seq::loopStart()</a>
+<a name="ln318">      {</a>
+<a name="ln319">      start();</a>
+<a name="ln320">//      qDebug(&quot;LoopStart. playPos = %d&quot;, playPos);</a>
+<a name="ln321">      }</a>
+<a name="ln322"> </a>
+<a name="ln323">//---------------------------------------------------------</a>
+<a name="ln324">//   canStart</a>
+<a name="ln325">//    return true if sequencer can be started</a>
+<a name="ln326">//---------------------------------------------------------</a>
+<a name="ln327"> </a>
+<a name="ln328">bool Seq::canStart()</a>
+<a name="ln329">      {</a>
+<a name="ln330">      if (!_driver)</a>
+<a name="ln331">            return false;</a>
+<a name="ln332">      collectEvents(getPlayStartUtick());</a>
+<a name="ln333">      return (!events.empty() &amp;&amp; endUTick != 0);</a>
+<a name="ln334">      }</a>
+<a name="ln335"> </a>
+<a name="ln336">//---------------------------------------------------------</a>
+<a name="ln337">//   start</a>
+<a name="ln338">//    called from gui thread</a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340"> </a>
+<a name="ln341">void Seq::start()</a>
+<a name="ln342">      {</a>
+<a name="ln343">      if (!_driver) {</a>
+<a name="ln344">            qDebug(&quot;No driver!&quot;);</a>
+<a name="ln345">            return;</a>
+<a name="ln346">            }</a>
+<a name="ln347"> </a>
+<a name="ln348">      allowBackgroundRendering = true;</a>
+<a name="ln349">      collectEvents(getPlayStartUtick());</a>
+<a name="ln350">      if (cs-&gt;playMode() == PlayMode::AUDIO) {</a>
+<a name="ln351">            if (!oggInit) {</a>
+<a name="ln352">                  vorbisData.pos  = 0;</a>
+<a name="ln353">                  vorbisData.data = cs-&gt;audio()-&gt;data();</a>
+<a name="ln354">                  int n = ov_open_callbacks(&amp;vorbisData, &amp;vf, 0, 0, ovCallbacks);</a>
+<a name="ln355">                  if (n &lt; 0) {</a>
+<a name="ln356">                        qDebug(&quot;ogg open failed: %d&quot;, n);</a>
+<a name="ln357">                        }</a>
+<a name="ln358">                  oggInit = true;</a>
+<a name="ln359">                  }</a>
+<a name="ln360">            }</a>
+<a name="ln361"> </a>
+<a name="ln362">      if (!preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) || (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) &amp;&amp; state == Transport::STOP))</a>
+<a name="ln363">            seek(getPlayStartUtick());</a>
+<a name="ln364"> </a>
+<a name="ln365">      if (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) &amp;&amp; mscore-&gt;countIn() &amp;&amp; state == Transport::STOP) {</a>
+<a name="ln366">            // Ready to start playing count in, switching to fake transport</a>
+<a name="ln367">            // to prevent playing in other applications with our ticks simultaneously</a>
+<a name="ln368">            useJackTransportSavedFlag    = true;</a>
+<a name="ln369">            preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, false);</a>
+<a name="ln370">            }</a>
+<a name="ln371">      startTransport();</a>
+<a name="ln372">      }</a>
+<a name="ln373"> </a>
+<a name="ln374">//---------------------------------------------------------</a>
+<a name="ln375">//   stop</a>
+<a name="ln376">//    called from gui thread</a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378"> </a>
+<a name="ln379">void Seq::stop()</a>
+<a name="ln380">      {</a>
+<a name="ln381">      const bool seqStopped = (state == Transport::STOP);</a>
+<a name="ln382">      const bool driverStopped = !_driver || _driver-&gt;getState() == Transport::STOP;</a>
+<a name="ln383">      if (seqStopped &amp;&amp; driverStopped)</a>
+<a name="ln384">            return;</a>
+<a name="ln385"> </a>
+<a name="ln386">      allowBackgroundRendering = false;</a>
+<a name="ln387">      if (oggInit) {</a>
+<a name="ln388">            ov_clear(&amp;vf);</a>
+<a name="ln389">            oggInit = false;</a>
+<a name="ln390">            }</a>
+<a name="ln391">      if (!_driver)</a>
+<a name="ln392">            return;</a>
+<a name="ln393">      if (!preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) || (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT) &amp;&amp; _driver-&gt;getState() == Transport::PLAY))</a>
+<a name="ln394">            stopTransport();</a>
+<a name="ln395">      if (cv)</a>
+<a name="ln396">            cv-&gt;setCursorOn(false);</a>
+<a name="ln397">      if (midiRenderFuture.isRunning())</a>
+<a name="ln398">            midiRenderFuture.waitForFinished();</a>
+<a name="ln399">      if (cs) {</a>
+<a name="ln400">            cs-&gt;setUpdateAll();</a>
+<a name="ln401">            cs-&gt;update();</a>
+<a name="ln402">            }</a>
+<a name="ln403">      }</a>
+<a name="ln404"> </a>
+<a name="ln405">//---------------------------------------------------------</a>
+<a name="ln406">//   stopWait</a>
+<a name="ln407">//---------------------------------------------------------</a>
+<a name="ln408"> </a>
+<a name="ln409">void Seq::stopWait()</a>
+<a name="ln410">      {</a>
+<a name="ln411">      stop();</a>
+<a name="ln412">      QWaitCondition sleep;</a>
+<a name="ln413">      int idx = 0;</a>
+<a name="ln414">      while (state != Transport::STOP) {</a>
+<a name="ln415">            qDebug(&quot;State %d&quot;, (int)state);</a>
+<a name="ln416">            mutex.lock();</a>
+<a name="ln417">            sleep.wait(&amp;mutex, 100);</a>
+<a name="ln418">            mutex.unlock();</a>
+<a name="ln419">            ++idx;</a>
+<a name="ln420">            Q_ASSERT(idx &lt;= 10);</a>
+<a name="ln421">            }</a>
+<a name="ln422">      }</a>
+<a name="ln423"> </a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425">//   seqStarted</a>
+<a name="ln426">//---------------------------------------------------------</a>
+<a name="ln427"> </a>
+<a name="ln428">void MuseScore::seqStarted()</a>
+<a name="ln429">      {</a>
+<a name="ln430">      if (cv)</a>
+<a name="ln431">            cv-&gt;setCursorOn(true);</a>
+<a name="ln432">      if (cs)</a>
+<a name="ln433">            cs-&gt;update();</a>
+<a name="ln434">      }</a>
+<a name="ln435"> </a>
+<a name="ln436">//---------------------------------------------------------</a>
+<a name="ln437">//   seqStopped</a>
+<a name="ln438">//    JACK has stopped</a>
+<a name="ln439">//    executed in gui environment</a>
+<a name="ln440">//---------------------------------------------------------</a>
+<a name="ln441"> </a>
+<a name="ln442">void MuseScore::seqStopped()</a>
+<a name="ln443">      {</a>
+<a name="ln444">      cv-&gt;setCursorOn(false);</a>
+<a name="ln445">      }</a>
+<a name="ln446"> </a>
+<a name="ln447">//---------------------------------------------------------</a>
+<a name="ln448">//   unmarkNotes</a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450"> </a>
+<a name="ln451">void Seq::unmarkNotes()</a>
+<a name="ln452">      {</a>
+<a name="ln453">      foreach(const Note* n, markedNotes) {</a>
+<a name="ln454">            n-&gt;setMark(false);</a>
+<a name="ln455">            cs-&gt;addRefresh(n-&gt;canvasBoundingRect());</a>
+<a name="ln456">            }</a>
+<a name="ln457">      markedNotes.clear();</a>
+<a name="ln458">      PianoTools* piano = mscore-&gt;pianoTools();</a>
+<a name="ln459">      if (piano &amp;&amp; piano-&gt;isVisible())</a>
+<a name="ln460">            piano-&gt;setPlaybackNotes(markedNotes);</a>
+<a name="ln461">      }</a>
+<a name="ln462"> </a>
+<a name="ln463">//---------------------------------------------------------</a>
+<a name="ln464">//   guiStop</a>
+<a name="ln465">//---------------------------------------------------------</a>
+<a name="ln466"> </a>
+<a name="ln467">void Seq::guiStop()</a>
+<a name="ln468">      {</a>
+<a name="ln469">      QAction* a = getAction(&quot;play&quot;);</a>
+<a name="ln470">      a-&gt;setChecked(false);</a>
+<a name="ln471"> </a>
+<a name="ln472">      unmarkNotes();</a>
+<a name="ln473">      if (!cs)</a>
+<a name="ln474">            return;</a>
+<a name="ln475"> </a>
+<a name="ln476">      int tck = cs-&gt;repeatList().utick2tick(cs-&gt;utime2utick(qreal(playFrame) / qreal(MScore::sampleRate)));</a>
+<a name="ln477">      cs-&gt;setPlayPos(Fraction::fromTicks(tck));</a>
+<a name="ln478">      cs-&gt;update();</a>
+<a name="ln479">      emit stopped();</a>
+<a name="ln480">      }</a>
+<a name="ln481"> </a>
+<a name="ln482">//---------------------------------------------------------</a>
+<a name="ln483">//   seqSignal</a>
+<a name="ln484">//    sequencer message to GUI</a>
+<a name="ln485">//    execution environment: gui thread</a>
+<a name="ln486">//---------------------------------------------------------</a>
+<a name="ln487"> </a>
+<a name="ln488">void Seq::seqMessage(int msg, int arg)</a>
+<a name="ln489">      {</a>
+<a name="ln490">      switch(msg) {</a>
+<a name="ln491">            case '5': {</a>
+<a name="ln492">                  // Update the screen after seeking from the realtime thread</a>
+<a name="ln493">                  Segment* seg = cs-&gt;tick2segment(Fraction::fromTicks(arg));</a>
+<a name="ln494">                  if (seg)</a>
+<a name="ln495">                        mscore-&gt;currentScoreView()-&gt;moveCursor(seg-&gt;tick());</a>
+<a name="ln496">                  cs-&gt;setPlayPos(Fraction::fromTicks(arg));</a>
+<a name="ln497">                  cs-&gt;update();</a>
+<a name="ln498">                  break;</a>
+<a name="ln499">                  }</a>
+<a name="ln500">            case '4':   // Restart the playback at the end of the score</a>
+<a name="ln501">                  loopStart();</a>
+<a name="ln502">                  break;</a>
+<a name="ln503">            case '3':   // Loop restart while playing</a>
+<a name="ln504">                  seek(cs-&gt;repeatList().tick2utick(cs-&gt;loopInTick().ticks()));</a>
+<a name="ln505">                  break;</a>
+<a name="ln506">            case '2':</a>
+<a name="ln507">                  guiStop();</a>
+<a name="ln508">//                  heartBeatTimer-&gt;stop();</a>
+<a name="ln509">                  if (_driver &amp;&amp; mscore-&gt;getSynthControl()) {</a>
+<a name="ln510">                        meterValue[0]     = .0f;</a>
+<a name="ln511">                        meterValue[1]     = .0f;</a>
+<a name="ln512">                        meterPeakValue[0] = .0f;</a>
+<a name="ln513">                        meterPeakValue[1] = .0f;</a>
+<a name="ln514">                        peakTimer[0]       = 0;</a>
+<a name="ln515">                        peakTimer[1]       = 0;</a>
+<a name="ln516">                        mscore-&gt;getSynthControl()-&gt;setMeter(0.0, 0.0, 0.0, 0.0);</a>
+<a name="ln517">                        }</a>
+<a name="ln518">                  seek(0);</a>
+<a name="ln519">                  break;</a>
+<a name="ln520">            case '0':         // STOP</a>
+<a name="ln521">                  guiStop();</a>
+<a name="ln522">//                  heartBeatTimer-&gt;stop();</a>
+<a name="ln523">                  if (_driver &amp;&amp; mscore-&gt;getSynthControl()) {</a>
+<a name="ln524">                        meterValue[0]     = .0f;</a>
+<a name="ln525">                        meterValue[1]     = .0f;</a>
+<a name="ln526">                        meterPeakValue[0] = .0f;</a>
+<a name="ln527">                        meterPeakValue[1] = .0f;</a>
+<a name="ln528">                        peakTimer[0]       = 0;</a>
+<a name="ln529">                        peakTimer[1]       = 0;</a>
+<a name="ln530">                        mscore-&gt;getSynthControl()-&gt;setMeter(0.0, 0.0, 0.0, 0.0);</a>
+<a name="ln531">                        }</a>
+<a name="ln532">                  break;</a>
+<a name="ln533"> </a>
+<a name="ln534">            case '1':         // PLAY</a>
+<a name="ln535">                  emit started();</a>
+<a name="ln536">//                  heartBeatTimer-&gt;start(1000/guiRefresh);</a>
+<a name="ln537">                  break;</a>
+<a name="ln538"> </a>
+<a name="ln539">            default:</a>
+<a name="ln540">                  qDebug(&quot;MScore::Seq:: unknown seq msg %d&quot;, msg);</a>
+<a name="ln541">                  break;</a>
+<a name="ln542">            }</a>
+<a name="ln543">      }</a>
+<a name="ln544"> </a>
+<a name="ln545">//---------------------------------------------------------</a>
+<a name="ln546">//   playEvent</a>
+<a name="ln547">//    send one event to the synthesizer</a>
+<a name="ln548">//---------------------------------------------------------</a>
+<a name="ln549"> </a>
+<a name="ln550">void Seq::playEvent(const NPlayEvent&amp; event, unsigned framePos)</a>
+<a name="ln551">      {</a>
+<a name="ln552">      int type = event.type();</a>
+<a name="ln553">      if (type == ME_NOTEON) {</a>
+<a name="ln554">            if (!event.isMuted()) {</a>
+<a name="ln555">                  if (event.discard()) { // ignore noteoff but restrike noteon</a>
+<a name="ln556">                        if (event.velo() &gt; 0)</a>
+<a name="ln557">                              putEvent(NPlayEvent(ME_NOTEON, event.channel(), event.pitch(), 0) ,framePos);</a>
+<a name="ln558">                        else</a>
+<a name="ln559">                              return;</a>
+<a name="ln560">                        }</a>
+<a name="ln561">                  putEvent(event, framePos);</a>
+<a name="ln562">                  }</a>
+<a name="ln563">            }</a>
+<a name="ln564">      else if (type == ME_CONTROLLER || type == ME_PITCHBEND || type == ME_AFTERTOUCH || type == ME_POLYAFTER)</a>
+<a name="ln565">            putEvent(event, framePos);</a>
+<a name="ln566">      }</a>
+<a name="ln567"> </a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569">//   recomputeMaxMidiOutPort</a>
+<a name="ln570">//   Computes the maximum number of midi out ports</a>
+<a name="ln571">//   in all opened scores</a>
+<a name="ln572">//---------------------------------------------------------</a>
+<a name="ln573"> </a>
+<a name="ln574">void Seq::recomputeMaxMidiOutPort()</a>
+<a name="ln575">      {</a>
+<a name="ln576">      if (!(preferences.getBool(PREF_IO_JACK_USEJACKMIDI) || preferences.getBool(PREF_IO_ALSA_USEALSAAUDIO)))</a>
+<a name="ln577">            return;</a>
+<a name="ln578">      int max = 0;</a>
+<a name="ln579">      for (Score * s : MuseScoreCore::mscoreCore-&gt;scores()) {</a>
+<a name="ln580">            if (s-&gt;masterScore()-&gt;midiPortCount() &gt; max)</a>
+<a name="ln581">                  max = s-&gt;masterScore()-&gt;midiPortCount();</a>
+<a name="ln582">            }</a>
+<a name="ln583">      maxMidiOutPort = max;</a>
+<a name="ln584">      }</a>
+<a name="ln585"> </a>
+<a name="ln586">//---------------------------------------------------------</a>
+<a name="ln587">//   processMessages</a>
+<a name="ln588">//   from gui to process thread</a>
+<a name="ln589">//---------------------------------------------------------</a>
+<a name="ln590"> </a>
+<a name="ln591">void Seq::processMessages()</a>
+<a name="ln592">      {</a>
+<a name="ln593">      for (;;) {</a>
+<a name="ln594">            if (toSeq.empty())</a>
+<a name="ln595">                  break;</a>
+<a name="ln596">            SeqMsg msg = toSeq.dequeue();</a>
+<a name="ln597">            switch(msg.id) {</a>
+<a name="ln598">                  case SeqMsgId::TEMPO_CHANGE:</a>
+<a name="ln599">                        {</a>
+<a name="ln600">                        if (!cs)</a>
+<a name="ln601">                              continue;</a>
+<a name="ln602">                        if (playFrame != 0) {</a>
+<a name="ln603">                              int utick = cs-&gt;utime2utick(qreal(playFrame) / qreal(MScore::sampleRate));</a>
+<a name="ln604">                              cs-&gt;tempomap()-&gt;setRelTempo(msg.realVal);</a>
+<a name="ln605">                              playFrame = cs-&gt;utick2utime(utick) * MScore::sampleRate;</a>
+<a name="ln606">                              if (cachedPrefs.jackTimeBaseMaster &amp;&amp; cachedPrefs.useJackTransport)</a>
+<a name="ln607">                                    _driver-&gt;seekTransport(utick + 2 * cs-&gt;utime2utick(qreal((_driver-&gt;bufferSize()) + 1) / qreal(MScore::sampleRate)));</a>
+<a name="ln608">                              }</a>
+<a name="ln609">                        else</a>
+<a name="ln610">                              cs-&gt;tempomap()-&gt;setRelTempo(msg.realVal);</a>
+<a name="ln611">                        cs-&gt;masterScore()-&gt;updateRepeatListTempo();</a>
+<a name="ln612">                        prevTempo = curTempo();</a>
+<a name="ln613">                        emit tempoChanged();</a>
+<a name="ln614">                        }</a>
+<a name="ln615">                        break;</a>
+<a name="ln616">                  case SeqMsgId::PLAY:</a>
+<a name="ln617">                        putEvent(msg.event);</a>
+<a name="ln618">                        break;</a>
+<a name="ln619">                  case SeqMsgId::SEEK:</a>
+<a name="ln620">                        setPos(msg.intVal);</a>
+<a name="ln621">                        break;</a>
+<a name="ln622">                  default:</a>
+<a name="ln623">                        break;</a>
+<a name="ln624">                  }</a>
+<a name="ln625">            }</a>
+<a name="ln626">      }</a>
+<a name="ln627"> </a>
+<a name="ln628">//---------------------------------------------------------</a>
+<a name="ln629">//   metronome</a>
+<a name="ln630">//---------------------------------------------------------</a>
+<a name="ln631"> </a>
+<a name="ln632">void Seq::metronome(unsigned n, float* p, bool force)</a>
+<a name="ln633">      {</a>
+<a name="ln634">      if (!mscore-&gt;metronome() &amp;&amp; !force) {</a>
+<a name="ln635">            tickRemain = 0;</a>
+<a name="ln636">            tackRemain = 0;</a>
+<a name="ln637">            return;</a>
+<a name="ln638">            }</a>
+<a name="ln639">      if (tickRemain) {</a>
+<a name="ln640">            tackRemain = 0;</a>
+<a name="ln641">            int idx = tickLength - tickRemain;</a>
+<a name="ln642">            int nn = n &lt; tickRemain ? n : tickRemain;</a>
+<a name="ln643">            for (int i = 0; i &lt; nn; ++i) {</a>
+<a name="ln644">                  qreal v = tick[idx] * tickVolume * metronomeVolume;</a>
+<a name="ln645">                  *p++ += v;</a>
+<a name="ln646">                  *p++ += v;</a>
+<a name="ln647">                  ++idx;</a>
+<a name="ln648">                  }</a>
+<a name="ln649">            tickRemain -= nn;</a>
+<a name="ln650">            }</a>
+<a name="ln651">      if (tackRemain) {</a>
+<a name="ln652">            int idx = tackLength - tackRemain;</a>
+<a name="ln653">            int nn = n &lt; tackRemain ? n : tackRemain;</a>
+<a name="ln654">            for (int i = 0; i &lt; nn; ++i) {</a>
+<a name="ln655">                  qreal v = tack[idx] * tackVolume * metronomeVolume;</a>
+<a name="ln656">                  *p++ += v;</a>
+<a name="ln657">                  *p++ += v;</a>
+<a name="ln658">                  ++idx;</a>
+<a name="ln659">                  }</a>
+<a name="ln660">            tackRemain -= nn;</a>
+<a name="ln661">            }</a>
+<a name="ln662">      }</a>
+<a name="ln663"> </a>
+<a name="ln664">//---------------------------------------------------------</a>
+<a name="ln665">//   addCountInClicks</a>
+<a name="ln666">//---------------------------------------------------------</a>
+<a name="ln667"> </a>
+<a name="ln668">void Seq::addCountInClicks()</a>
+<a name="ln669">      {</a>
+<a name="ln670">      const Fraction plPos = cs-&gt;playPos();</a>
+<a name="ln671">      Measure*    m        = cs-&gt;tick2measure(plPos);</a>
+<a name="ln672">      Fraction   msrTick   = m-&gt;tick();</a>
+<a name="ln673">      qreal tempo          = cs-&gt;tempomap()-&gt;tempo(msrTick.ticks());</a>
+<a name="ln674">      TimeSigFrac timeSig  = cs-&gt;sigmap()-&gt;timesig(m-&gt;tick()).nominal();</a>
+<a name="ln675"> </a>
+<a name="ln676">      const int clickTicks = timeSig.isBeatedCompound(tempo) ? timeSig.beatTicks() : timeSig.dUnitTicks();</a>
+<a name="ln677"> </a>
+<a name="ln678">      // add at least one full measure of just clicks.</a>
+<a name="ln679">      Fraction endTick = Fraction::fromTicks(timeSig.ticksPerMeasure());</a>
+<a name="ln680"> </a>
+<a name="ln681">      // add extra clicks if...</a>
+<a name="ln682">      endTick += plPos - msrTick;   // ...not starting playback at beginning of measure</a>
+<a name="ln683"> </a>
+<a name="ln684">      if (m-&gt;isAnacrusis())         // ...measure is incomplete (anacrusis)</a>
+<a name="ln685">            endTick += Fraction::fromTicks(timeSig.ticksPerMeasure()) - m-&gt;ticks();</a>
+<a name="ln686"> </a>
+<a name="ln687">      for (int t = 0; t &lt; endTick.ticks(); t += clickTicks) {</a>
+<a name="ln688">            const int rtick = t % timeSig.ticksPerMeasure();</a>
+<a name="ln689">            countInEvents.insert(std::pair&lt;int,NPlayEvent&gt;(t, NPlayEvent(timeSig.rtick2beatType(rtick))));</a>
+<a name="ln690">            }</a>
+<a name="ln691"> </a>
+<a name="ln692">      NPlayEvent event;</a>
+<a name="ln693">      event.setType(ME_INVALID);</a>
+<a name="ln694">      event.setPitch(0);</a>
+<a name="ln695">      countInEvents.insert( std::pair&lt;int,NPlayEvent&gt;(endTick.ticks(), event));</a>
+<a name="ln696">      // initialize play parameters to count-in events</a>
+<a name="ln697">      countInPlayPos  = countInEvents.cbegin();</a>
+<a name="ln698">      countInPlayFrame = 0;</a>
+<a name="ln699">      }</a>
+<a name="ln700"> </a>
+<a name="ln701">//-------------------------------------------------------------------</a>
+<a name="ln702">//   process</a>
+<a name="ln703">//    This function is called in a realtime context. This</a>
+<a name="ln704">//    means that no blocking operations are allowed which</a>
+<a name="ln705">//    includes memory allocation. The usual thread synchronisation</a>
+<a name="ln706">//    methods like semaphores can also not be used.</a>
+<a name="ln707">//-------------------------------------------------------------------</a>
+<a name="ln708"> </a>
+<a name="ln709">void Seq::process(unsigned framesPerPeriod, float* buffer)</a>
+<a name="ln710">      {</a>
+<a name="ln711">      unsigned framesRemain = framesPerPeriod; // the number of frames remaining to be processed by this call to Seq::process</a>
+<a name="ln712">      Transport driverState = _driver-&gt;getState();</a>
+<a name="ln713">      // Checking for the reposition from JACK Transport</a>
+<a name="ln714">      _driver-&gt;checkTransportSeek(playFrame, framesRemain, inCountIn);</a>
+<a name="ln715"> </a>
+<a name="ln716">      if (driverState != state) {</a>
+<a name="ln717">            // Got a message from JACK Transport panel: Play</a>
+<a name="ln718">            if (state == Transport::STOP &amp;&amp; driverState == Transport::PLAY) {</a>
+<a name="ln719">                  if ((cachedPrefs.useJackMidi || cachedPrefs.useJackAudio) &amp;&amp; !getAction(&quot;play&quot;)-&gt;isChecked()) {</a>
+<a name="ln720">                        // Do not play while editing elements</a>
+<a name="ln721">                        if (mscore-&gt;state() != STATE_NORMAL || !isRunning() || !canStart())</a>
+<a name="ln722">                              return;</a>
+<a name="ln723">                        getAction(&quot;play&quot;)-&gt;setChecked(true);</a>
+<a name="ln724">                        getAction(&quot;play&quot;)-&gt;triggered(true);</a>
+<a name="ln725"> </a>
+<a name="ln726">                        // If we just launch MuseScore and press &quot;Play&quot; on JACK Transport with time 0:00</a>
+<a name="ln727">                        // MuseScore doesn't seek to 0 and guiPos is uninitialized, so let's make it manually</a>
+<a name="ln728">                        if (cachedPrefs.useJackTransport &amp;&amp; getCurTick() == 0)</a>
+<a name="ln729">                              seekRT(0);</a>
+<a name="ln730"> </a>
+<a name="ln731">                        // Switching to fake transport while playing count in</a>
+<a name="ln732">                        // to prevent playing in other applications with our ticks simultaneously</a>
+<a name="ln733">                        if (cachedPrefs.useJackTransport &amp;&amp; mscore-&gt;countIn()) {</a>
+<a name="ln734">                              // Stopping real JACK Transport</a>
+<a name="ln735">                              stopTransport();</a>
+<a name="ln736">                              // Starting fake transport</a>
+<a name="ln737">                              useJackTransportSavedFlag = preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT);</a>
+<a name="ln738">                              preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, false);</a>
+<a name="ln739">                              startTransport();</a>
+<a name="ln740">                              }</a>
+<a name="ln741">                        }</a>
+<a name="ln742">                  // Initializing instruments every time we start playback.</a>
+<a name="ln743">                  // External synth can have wrong values, for example</a>
+<a name="ln744">                  // if we switch between scores</a>
+<a name="ln745">                  initInstruments(true);</a>
+<a name="ln746">                  // Need to change state after calling collectEvents()</a>
+<a name="ln747">                  state = Transport::PLAY;</a>
+<a name="ln748">                  if (mscore-&gt;countIn() &amp;&amp; cs-&gt;playMode() == PlayMode::SYNTHESIZER) {</a>
+<a name="ln749">                        countInEvents.clear();</a>
+<a name="ln750">                        inCountIn = true;</a>
+<a name="ln751">                        }</a>
+<a name="ln752">                  emit toGui('1');</a>
+<a name="ln753">                  }</a>
+<a name="ln754">            // Got a message from JACK Transport panel: Stop</a>
+<a name="ln755">            else if (state == Transport::PLAY &amp;&amp; driverState == Transport::STOP) {</a>
+<a name="ln756">                  state = Transport::STOP;</a>
+<a name="ln757">                  // Muting all notes</a>
+<a name="ln758">                  stopNotes(-1, true);</a>
+<a name="ln759">                  initInstruments(true);</a>
+<a name="ln760">                  if (playPos == eventsEnd) {</a>
+<a name="ln761">                        if (mscore-&gt;loop()) {</a>
+<a name="ln762">                              qDebug(&quot;Seq.cpp - Process - Loop whole score. playPos = %d, cs-&gt;pos() = %d&quot;, playPos-&gt;first, cs-&gt;pos().ticks());</a>
+<a name="ln763">                              emit toGui('4');</a>
+<a name="ln764">                              return;</a>
+<a name="ln765">                              }</a>
+<a name="ln766">                        else {</a>
+<a name="ln767">                              emit toGui('2');</a>
+<a name="ln768">                              }</a>
+<a name="ln769">                        }</a>
+<a name="ln770">                  else {</a>
+<a name="ln771">                     emit toGui('0');</a>
+<a name="ln772">                     }</a>
+<a name="ln773">                  }</a>
+<a name="ln774">            else if (state != driverState)</a>
+<a name="ln775">                  qDebug(&quot;Seq: state transition %d -&gt; %d ?&quot;,</a>
+<a name="ln776">                     (int)state, (int)driverState);</a>
+<a name="ln777">            }</a>
+<a name="ln778"> </a>
+<a name="ln779">      memset(buffer, 0, sizeof(float) * framesPerPeriod * 2); // assume two channels</a>
+<a name="ln780">      float* p = buffer;</a>
+<a name="ln781"> </a>
+<a name="ln782">      processMessages();</a>
+<a name="ln783"> </a>
+<a name="ln784">      if (state == Transport::PLAY) {</a>
+<a name="ln785">            if (!cs)</a>
+<a name="ln786">                  return;</a>
+<a name="ln787"> </a>
+<a name="ln788">            // if currently in count-in, these pointers will reference data in the count-in</a>
+<a name="ln789">            EventMap::const_iterator* pPlayPos   = &amp;playPos;</a>
+<a name="ln790">            EventMap::const_iterator  pEventsEnd = eventsEnd;</a>
+<a name="ln791">            int*                      pPlayFrame = &amp;playFrame;</a>
+<a name="ln792">            if (inCountIn) {</a>
+<a name="ln793">                  if (countInEvents.size() == 0)</a>
+<a name="ln794">                        addCountInClicks();</a>
+<a name="ln795">                  pEventsEnd = countInEvents.cend();</a>
+<a name="ln796">                  pPlayPos   = &amp;countInPlayPos;</a>
+<a name="ln797">                  pPlayFrame = &amp;countInPlayFrame;</a>
+<a name="ln798">                  }</a>
+<a name="ln799"> </a>
+<a name="ln800">            //</a>
+<a name="ln801">            // play events for one segment</a>
+<a name="ln802">            //</a>
+<a name="ln803">            unsigned framePos = 0; // frame currently being processed relative to the first frame of this call to Seq::process</a>
+<a name="ln804">            int periodEndFrame = *pPlayFrame + framesPerPeriod; // the ending frame (relative to start of playback) of the period being processed by this call to Seq::process</a>
+<a name="ln805">            int scoreEndUTick = cs-&gt;repeatList().tick2utick(cs-&gt;lastMeasure()-&gt;endTick().ticks());</a>
+<a name="ln806">            while (*pPlayPos != pEventsEnd) {</a>
+<a name="ln807">                  int playPosUTick = (*pPlayPos)-&gt;first;</a>
+<a name="ln808">                  int n; // current frame (relative to start of playback) that is being synthesized</a>
+<a name="ln809"> </a>
+<a name="ln810">                  if (inCountIn) {</a>
+<a name="ln811">                        qreal beatsPerSecond = curTempo() * cs-&gt;tempomap()-&gt;relTempo(); // relTempo needed here to ensure that bps changes as we slide the tempo bar</a>
+<a name="ln812">                        qreal ticksPerSecond = beatsPerSecond * MScore::division;</a>
+<a name="ln813">                        qreal playPosSeconds = playPosUTick / ticksPerSecond;</a>
+<a name="ln814">                        int playPosFrame = playPosSeconds * MScore::sampleRate;</a>
+<a name="ln815">                        if (playPosFrame &gt;= periodEndFrame)</a>
+<a name="ln816">                              break;</a>
+<a name="ln817">                        n = playPosFrame - *pPlayFrame;</a>
+<a name="ln818">                        if (n &lt; 0) {</a>
+<a name="ln819">                              qDebug(&quot;Count-in: playPosUTick %d: n = %d - %d&quot;, playPosUTick, playPosFrame, *pPlayFrame);</a>
+<a name="ln820">                              n = 0;</a>
+<a name="ln821">                              }</a>
+<a name="ln822">                        }</a>
+<a name="ln823">                  else {</a>
+<a name="ln824">                        qreal playPosSeconds = cs-&gt;utick2utime(playPosUTick);</a>
+<a name="ln825">                        int playPosFrame = playPosSeconds * MScore::sampleRate;</a>
+<a name="ln826">                        if (playPosFrame &gt;= periodEndFrame)</a>
+<a name="ln827">                              break;</a>
+<a name="ln828">                        n = playPosFrame - *pPlayFrame;</a>
+<a name="ln829">                        if (n &lt; 0) {</a>
+<a name="ln830">                              qDebug(&quot;%d:  %d - %d&quot;, playPosUTick, playPosFrame, *pPlayFrame);</a>
+<a name="ln831">                              n = 0;</a>
+<a name="ln832">                              }</a>
+<a name="ln833">                        if (mscore-&gt;loop()) {</a>
+<a name="ln834">                              int loopOutUTick = cs-&gt;repeatList().tick2utick(cs-&gt;loopOutTick().ticks());</a>
+<a name="ln835">                              if (loopOutUTick &lt; scoreEndUTick) {</a>
+<a name="ln836">                                    // Also make sure we are not &quot;before&quot; the loop</a>
+<a name="ln837">                                    if (playPosUTick &gt;= loopOutUTick || cs-&gt;repeatList().utick2tick(playPosUTick) &lt; cs-&gt;loopInTick().ticks()) {</a>
+<a name="ln838">                                          qDebug (&quot;Process: playPosUTick = %d, cs-&gt;loopInTick().ticks() = %d, cs-&gt;loopOutTick().ticks() = %d, getCurTick() = %d, loopOutUTick = %d, playFrame = %d&quot;,</a>
+<a name="ln839">                                                            playPosUTick,      cs-&gt;loopInTick().ticks(),      cs-&gt;loopOutTick().ticks(),      getCurTick(),      loopOutUTick,    *pPlayFrame);</a>
+<a name="ln840">                                          if (cachedPrefs.useJackTransport) {</a>
+<a name="ln841">                                                int loopInUTick = cs-&gt;repeatList().tick2utick(cs-&gt;loopInTick().ticks());</a>
+<a name="ln842">                                                _driver-&gt;seekTransport(loopInUTick);</a>
+<a name="ln843">                                                if (loopInUTick != 0) {</a>
+<a name="ln844">                                                      int seekto = loopInUTick - 2 * cs-&gt;utime2utick((qreal)_driver-&gt;bufferSize() / MScore::sampleRate);</a>
+<a name="ln845">                                                      seekRT((seekto &gt; 0) ? seekto : 0 );</a>
+<a name="ln846">                                                      }</a>
+<a name="ln847">                                                }</a>
+<a name="ln848">                                          else {</a>
+<a name="ln849">                                                emit toGui('3');</a>
+<a name="ln850">                                                }</a>
+<a name="ln851">                                          // Exit this function to avoid segmentation fault in Scoreview</a>
+<a name="ln852">                                          return;</a>
+<a name="ln853">                                          }</a>
+<a name="ln854">                                    }</a>
+<a name="ln855">                              }</a>
+<a name="ln856">                        }</a>
+<a name="ln857">                  if (n) {</a>
+<a name="ln858">                        if (cs-&gt;playMode() == PlayMode::SYNTHESIZER) {</a>
+<a name="ln859">                              metronome(n, p, inCountIn);</a>
+<a name="ln860">                              _synti-&gt;process(n, p);</a>
+<a name="ln861">                              p += n * 2;</a>
+<a name="ln862">                              *pPlayFrame  += n;</a>
+<a name="ln863">                              framesRemain -= n;</a>
+<a name="ln864">                              framePos     += n;</a>
+<a name="ln865">                              }</a>
+<a name="ln866">                        else {</a>
+<a name="ln867">                              while (n &gt; 0) {</a>
+<a name="ln868">                                    int section;</a>
+<a name="ln869">                                    float** pcm;</a>
+<a name="ln870">                                    long rn = ov_read_float(&amp;vf, &amp;pcm, n, &amp;section);</a>
+<a name="ln871">                                    if (rn == 0)</a>
+<a name="ln872">                                          break;</a>
+<a name="ln873">                                    for (int i = 0; i &lt; rn; ++i) {</a>
+<a name="ln874">                                          *p++ = pcm[0][i];</a>
+<a name="ln875">                                          *p++ = pcm[1][i];</a>
+<a name="ln876">                                          }</a>
+<a name="ln877">                                    *pPlayFrame  += rn;</a>
+<a name="ln878">                                    framesRemain -= rn;</a>
+<a name="ln879">                                    framePos     += rn;</a>
+<a name="ln880">                                    n            -= rn;</a>
+<a name="ln881">                                    }</a>
+<a name="ln882">                              }</a>
+<a name="ln883">                        }</a>
+<a name="ln884">                  const NPlayEvent&amp; event = (*pPlayPos)-&gt;second;</a>
+<a name="ln885">                  playEvent(event, framePos);</a>
+<a name="ln886">                  if (event.type() == ME_TICK1) {</a>
+<a name="ln887">                        tickRemain = tickLength;</a>
+<a name="ln888">                        tickVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;</a>
+<a name="ln889">                        }</a>
+<a name="ln890">                  else if (event.type() == ME_TICK2) {</a>
+<a name="ln891">                        tackRemain = tackLength;</a>
+<a name="ln892">                        tackVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;</a>
+<a name="ln893">                        }</a>
+<a name="ln894">                  mutex.lock();</a>
+<a name="ln895">                  ++(*pPlayPos);</a>
+<a name="ln896">                  mutex.unlock();</a>
+<a name="ln897">                  }</a>
+<a name="ln898">            if (framesRemain) {</a>
+<a name="ln899">                  if (cs-&gt;playMode() == PlayMode::SYNTHESIZER) {</a>
+<a name="ln900">                        metronome(framesRemain, p, inCountIn);</a>
+<a name="ln901">                        _synti-&gt;process(framesRemain, p);</a>
+<a name="ln902">                        *pPlayFrame += framesRemain;</a>
+<a name="ln903">                        }</a>
+<a name="ln904">                  else {</a>
+<a name="ln905">                        int n = framesRemain;</a>
+<a name="ln906">                        while (n &gt; 0) {</a>
+<a name="ln907">                              int section;</a>
+<a name="ln908">                              float** pcm;</a>
+<a name="ln909">                              long rn = ov_read_float(&amp;vf, &amp;pcm, n, &amp;section);</a>
+<a name="ln910">                              if (rn == 0)</a>
+<a name="ln911">                                    break;</a>
+<a name="ln912">                              for (int i = 0; i &lt; rn; ++i) {</a>
+<a name="ln913">                                    *p++ = pcm[0][i];</a>
+<a name="ln914">                                    *p++ = pcm[1][i];</a>
+<a name="ln915">                                    }</a>
+<a name="ln916">                              *pPlayFrame  += rn;</a>
+<a name="ln917">                              framesRemain -= rn;</a>
+<a name="ln918">                              framePos     += rn;</a>
+<a name="ln919">                              n            -= rn;</a>
+<a name="ln920">                              }</a>
+<a name="ln921">                        }</a>
+<a name="ln922">                  }</a>
+<a name="ln923">            if (*pPlayPos == pEventsEnd) {</a>
+<a name="ln924">                  if (inCountIn) {</a>
+<a name="ln925">                        inCountIn = false;</a>
+<a name="ln926">                        // Connecting to JACK Transport if MuseScore was temporarily disconnected from it</a>
+<a name="ln927">                        if (useJackTransportSavedFlag) {</a>
+<a name="ln928">                              // Stopping fake driver</a>
+<a name="ln929">                              stopTransport();</a>
+<a name="ln930">                              preferences.setPreference(PREF_IO_JACK_USEJACKTRANSPORT, true);</a>
+<a name="ln931">                              // Starting the real JACK Transport. All applications play in sync now</a>
+<a name="ln932">                              startTransport();</a>
+<a name="ln933">                              }</a>
+<a name="ln934">                        }</a>
+<a name="ln935">                  else</a>
+<a name="ln936">                        stopTransport();</a>
+<a name="ln937">                  }</a>
+<a name="ln938">            }</a>
+<a name="ln939">      else {</a>
+<a name="ln940">            // Outside of playback mode</a>
+<a name="ln941">            while (!liveEventQueue()-&gt;empty()) {</a>
+<a name="ln942">                  const NPlayEvent&amp; event = liveEventQueue()-&gt;dequeue();</a>
+<a name="ln943">                  if (event.type() == ME_TICK1) {</a>
+<a name="ln944">                        tickRemain = tickLength;</a>
+<a name="ln945">                        tickVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;</a>
+<a name="ln946">                        }</a>
+<a name="ln947">                  else if (event.type() == ME_TICK2) {</a>
+<a name="ln948">                        tackRemain = tackLength;</a>
+<a name="ln949">                        tackVolume = event.velo() ? qreal(event.value()) / 127.0 : 1.0;</a>
+<a name="ln950">                        }</a>
+<a name="ln951">                  }</a>
+<a name="ln952">            if (framesRemain) {</a>
+<a name="ln953">                  metronome(framesRemain, p, true);</a>
+<a name="ln954">                  _synti-&gt;process(framesRemain, p);</a>
+<a name="ln955">                  }</a>
+<a name="ln956">            }</a>
+<a name="ln957">      //</a>
+<a name="ln958">      // metering / master gain</a>
+<a name="ln959">      //</a>
+<a name="ln960">      qreal lv = 0.0f;</a>
+<a name="ln961">      qreal rv = 0.0f;</a>
+<a name="ln962">      p = buffer;</a>
+<a name="ln963">      for (unsigned i = 0; i &lt; framesRemain; ++i) {</a>
+<a name="ln964">            qreal val = *p;</a>
+<a name="ln965">            lv = qMax(lv, qAbs(val));</a>
+<a name="ln966">            p++;</a>
+<a name="ln967"> </a>
+<a name="ln968">            val = *p;</a>
+<a name="ln969">            rv = qMax(rv, qAbs(val));</a>
+<a name="ln970">            p++;</a>
+<a name="ln971">            }</a>
+<a name="ln972">      meterValue[0] = lv;</a>
+<a name="ln973">      meterValue[1] = rv;</a>
+<a name="ln974">      if (meterPeakValue[0] &lt; lv) {</a>
+<a name="ln975">            meterPeakValue[0] = lv;</a>
+<a name="ln976">            peakTimer[0] = 0;</a>
+<a name="ln977">            }</a>
+<a name="ln978">      if (meterPeakValue[1] &lt; rv) {</a>
+<a name="ln979">            meterPeakValue[1] = rv;</a>
+<a name="ln980">            peakTimer[1] = 0;</a>
+<a name="ln981">            }</a>
+<a name="ln982">      }</a>
+<a name="ln983"> </a>
+<a name="ln984">//---------------------------------------------------------</a>
+<a name="ln985">//   initInstruments</a>
+<a name="ln986">//---------------------------------------------------------</a>
+<a name="ln987"> </a>
+<a name="ln988">void Seq::initInstruments(bool realTime)</a>
+<a name="ln989">      {</a>
+<a name="ln990">      // Add midi out ports if necessary</a>
+<a name="ln991">      if (cs &amp;&amp; (cachedPrefs.useJackMidi || cachedPrefs.useAlsaAudio)) {</a>
+<a name="ln992">            // Increase the maximum number of midi ports if user adds staves/instruments</a>
+<a name="ln993">            int scoreMaxMidiPort = cs-&gt;masterScore()-&gt;midiPortCount();</a>
+<a name="ln994">            if (maxMidiOutPort &lt; scoreMaxMidiPort)</a>
+<a name="ln995">                  maxMidiOutPort = scoreMaxMidiPort;</a>
+<a name="ln996">            // if maxMidiOutPort is equal to existing ports number, it will do nothing</a>
+<a name="ln997">            if (_driver)</a>
+<a name="ln998">                  _driver-&gt;updateOutPortCount(maxMidiOutPort + 1);</a>
+<a name="ln999">            }</a>
+<a name="ln1000"> </a>
+<a name="ln1001">      for (const MidiMapping&amp; mm : cs-&gt;midiMapping()) {</a>
+<a name="ln1002">            const Channel* channel = mm.articulation();</a>
+<a name="ln1003">            for (const MidiCoreEvent&amp; e : channel-&gt;initList()) {</a>
+<a name="ln1004">                  if (e.type() == ME_INVALID)</a>
+<a name="ln1005">                        continue;</a>
+<a name="ln1006">                  NPlayEvent event(e.type(), channel-&gt;channel(), e.dataA(), e.dataB());</a>
+<a name="ln1007">                  if (realTime)</a>
+<a name="ln1008">                        putEvent(event);</a>
+<a name="ln1009">                  else</a>
+<a name="ln1010">                        sendEvent(event);</a>
+<a name="ln1011">                  }</a>
+<a name="ln1012">            // Setting pitch bend sensitivity to 12 semitones for external synthesizers</a>
+<a name="ln1013">            if ((cachedPrefs.useJackMidi || cachedPrefs.useAlsaAudio) &amp;&amp; mm.channel() != 9) {</a>
+<a name="ln1014">                  if (realTime) {</a>
+<a name="ln1015">                        putEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_LRPN, 0));</a>
+<a name="ln1016">                        putEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_HRPN, 0));</a>
+<a name="ln1017">                        putEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_HDATA,12));</a>
+<a name="ln1018">                        putEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_LRPN, 127));</a>
+<a name="ln1019">                        putEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_HRPN, 127));</a>
+<a name="ln1020">                        }</a>
+<a name="ln1021">                  else {</a>
+<a name="ln1022">                        sendEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_LRPN, 0));</a>
+<a name="ln1023">                        sendEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_HRPN, 0));</a>
+<a name="ln1024">                        sendEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_HDATA,12));</a>
+<a name="ln1025">                        sendEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_LRPN, 127));</a>
+<a name="ln1026">                        sendEvent(NPlayEvent(ME_CONTROLLER, channel-&gt;channel(), CTRL_HRPN, 127));</a>
+<a name="ln1027">                        }</a>
+<a name="ln1028">                  }</a>
+<a name="ln1029">            }</a>
+<a name="ln1030">      }</a>
+<a name="ln1031"> </a>
+<a name="ln1032">//---------------------------------------------------------</a>
+<a name="ln1033">//   renderChunk</a>
+<a name="ln1034">//---------------------------------------------------------</a>
+<a name="ln1035"> </a>
+<a name="ln1036">void Seq::renderChunk(const MidiRenderer::Chunk&amp; ch, EventMap* eventMap)</a>
+<a name="ln1037">      {</a>
+<a name="ln1038">      midi.renderChunk(ch, eventMap, mscore-&gt;synthesizerState(), /* metronome */ true);</a>
+<a name="ln1039">      renderEventsStatus.setOccupied(ch.utick1(), ch.utick2());</a>
+<a name="ln1040">      }</a>
+<a name="ln1041"> </a>
+<a name="ln1042">//---------------------------------------------------------</a>
+<a name="ln1043">//   updateEventsEnd</a>
+<a name="ln1044">//---------------------------------------------------------</a>
+<a name="ln1045"> </a>
+<a name="ln1046">void Seq::updateEventsEnd()</a>
+<a name="ln1047">      {</a>
+<a name="ln1048">      auto end = events.cend();</a>
+<a name="ln1049">      eventsEnd = end;</a>
+<a name="ln1050">      endUTick = events.empty() ? 0 : (--end)-&gt;first;</a>
+<a name="ln1051">      }</a>
+<a name="ln1052"> </a>
+<a name="ln1053">//---------------------------------------------------------</a>
+<a name="ln1054">//   collectEvents</a>
+<a name="ln1055">//---------------------------------------------------------</a>
+<a name="ln1056"> </a>
+<a name="ln1057">void Seq::collectEvents(int utick)</a>
+<a name="ln1058">      {</a>
+<a name="ln1059">      //do not collect even while playing</a>
+<a name="ln1060">      if (state == Transport::PLAY &amp;&amp; playlistChanged)</a>
+<a name="ln1061">            return;</a>
+<a name="ln1062"> </a>
+<a name="ln1063">      mutex.lock();</a>
+<a name="ln1064"> </a>
+<a name="ln1065">      if (midiRenderFuture.isRunning())</a>
+<a name="ln1066">            midiRenderFuture.waitForFinished();</a>
+<a name="ln1067"> </a>
+<a name="ln1068">      if (playlistChanged) {</a>
+<a name="ln1069">            midi.setScoreChanged();</a>
+<a name="ln1070">            events.clear();</a>
+<a name="ln1071">            renderEvents.clear();</a>
+<a name="ln1072">            renderEventsStatus.clear();</a>
+<a name="ln1073">            }</a>
+<a name="ln1074">      else if (!renderEvents.empty()) {</a>
+<a name="ln1075">            events.insert(renderEvents.begin(), renderEvents.end());</a>
+<a name="ln1076">            renderEvents.clear();</a>
+<a name="ln1077">            }</a>
+<a name="ln1078"> </a>
+<a name="ln1079">      int unrenderedUtick = renderEventsStatus.occupiedRangeEnd(utick);</a>
+<a name="ln1080">      while (unrenderedUtick - utick &lt; minUtickBufferSize) {</a>
+<a name="ln1081">            const MidiRenderer::Chunk chunk = midi.getChunkAt(unrenderedUtick);</a>
+<a name="ln1082">            if (!chunk)</a>
+<a name="ln1083">                  break;</a>
+<a name="ln1084">            renderChunk(chunk, &amp;events);</a>
+<a name="ln1085">            unrenderedUtick = renderEventsStatus.occupiedRangeEnd(utick);</a>
+<a name="ln1086">            }</a>
+<a name="ln1087"> </a>
+<a name="ln1088">      updateEventsEnd();</a>
+<a name="ln1089">      playPos = events.cbegin();</a>
+<a name="ln1090">      playlistChanged = false;</a>
+<a name="ln1091">      mutex.unlock();</a>
+<a name="ln1092">      }</a>
+<a name="ln1093"> </a>
+<a name="ln1094">//---------------------------------------------------------</a>
+<a name="ln1095">//   ensureBufferAsync</a>
+<a name="ln1096">//---------------------------------------------------------</a>
+<a name="ln1097"> </a>
+<a name="ln1098">void Seq::ensureBufferAsync(int utick)</a>
+<a name="ln1099">      {</a>
+<a name="ln1100">      if (mutex.tryLock()) { // sync with possible collectEvents calls</a>
+<a name="ln1101"> </a>
+<a name="ln1102">            if (midiRenderFuture.isRunning() || !allowBackgroundRendering) {</a>
+<a name="ln1103">                  mutex.unlock();</a>
+<a name="ln1104">                  return;</a>
+<a name="ln1105">                  }</a>
+<a name="ln1106"> </a>
+<a name="ln1107">            if (!renderEvents.empty()) {</a>
+<a name="ln1108">                  // TODO: use C++17 map::merge()?</a>
+<a name="ln1109">                  events.insert(renderEvents.begin(), renderEvents.end());</a>
+<a name="ln1110">                  updateEventsEnd();</a>
+<a name="ln1111">                  renderEvents.clear();</a>
+<a name="ln1112">                  }</a>
+<a name="ln1113"> </a>
+<a name="ln1114">            const int unrenderedUtick = renderEventsStatus.occupiedRangeEnd(utick);</a>
+<a name="ln1115">            if (unrenderedUtick - utick &lt; minUtickBufferSize) {</a>
+<a name="ln1116">                  const MidiRenderer::Chunk chunk = midi.getChunkAt(unrenderedUtick);</a>
+<a name="ln1117">                  if (chunk) {</a>
+<a name="ln1118">                        midiRenderFuture = QtConcurrent::run([this, chunk]() {</a>
+<a name="ln1119">                              renderChunk(chunk, &amp;renderEvents);</a>
+<a name="ln1120">                              });</a>
+<a name="ln1121">                        }</a>
+<a name="ln1122">                  }</a>
+<a name="ln1123">            mutex.unlock();</a>
+<a name="ln1124">            }</a>
+<a name="ln1125">      }</a>
+<a name="ln1126"> </a>
+<a name="ln1127">//---------------------------------------------------------</a>
+<a name="ln1128">//   getCurTick</a>
+<a name="ln1129">//---------------------------------------------------------</a>
+<a name="ln1130"> </a>
+<a name="ln1131">int Seq::getCurTick()</a>
+<a name="ln1132">      {</a>
+<a name="ln1133">      return cs-&gt;utime2utick(qreal(playFrame) / qreal(MScore::sampleRate));</a>
+<a name="ln1134">      }</a>
+<a name="ln1135"> </a>
+<a name="ln1136">//---------------------------------------------------------</a>
+<a name="ln1137">//   setRelTempo</a>
+<a name="ln1138">//    relTempo = 1.0 = normal tempo</a>
+<a name="ln1139">//---------------------------------------------------------</a>
+<a name="ln1140"> </a>
+<a name="ln1141">void Seq::setRelTempo(double relTempo)</a>
+<a name="ln1142">      {</a>
+<a name="ln1143">      guiToSeq(SeqMsg(SeqMsgId::TEMPO_CHANGE, relTempo));</a>
+<a name="ln1144">      }</a>
+<a name="ln1145"> </a>
+<a name="ln1146">//---------------------------------------------------------</a>
+<a name="ln1147">//   setPos</a>
+<a name="ln1148">//    seek</a>
+<a name="ln1149">//    realtime environment</a>
+<a name="ln1150">//---------------------------------------------------------</a>
+<a name="ln1151"> </a>
+<a name="ln1152">void Seq::setPos(int utick)</a>
+<a name="ln1153">      {</a>
+<a name="ln1154">      if (cs == 0)</a>
+<a name="ln1155">            return;</a>
+<a name="ln1156">      stopNotes(-1, true);</a>
+<a name="ln1157"> </a>
+<a name="ln1158">      int ucur;</a>
+<a name="ln1159">      mutex.lock();</a>
+<a name="ln1160">      if (playPos != events.end())</a>
+<a name="ln1161">            ucur = cs-&gt;repeatList().utick2tick(playPos-&gt;first);</a>
+<a name="ln1162">      else</a>
+<a name="ln1163">            ucur = utick - 1;</a>
+<a name="ln1164">      if (utick != ucur)</a>
+<a name="ln1165">            updateSynthesizerState(ucur, utick);</a>
+<a name="ln1166"> </a>
+<a name="ln1167">      playFrame = cs-&gt;utick2utime(utick) * MScore::sampleRate;</a>
+<a name="ln1168">      playPos   = events.lower_bound(utick);</a>
+<a name="ln1169">      mutex.unlock();</a>
+<a name="ln1170">      }</a>
+<a name="ln1171"> </a>
+<a name="ln1172">//---------------------------------------------------------</a>
+<a name="ln1173">//   getPlayStartUtick</a>
+<a name="ln1174">//---------------------------------------------------------</a>
+<a name="ln1175"> </a>
+<a name="ln1176">int Seq::getPlayStartUtick()</a>
+<a name="ln1177">      {</a>
+<a name="ln1178">      if ((mscore-&gt;loop())) {</a>
+<a name="ln1179">            if (preferences.getBool(PREF_APP_PLAYBACK_LOOPTOSELECTIONONPLAY)) {</a>
+<a name="ln1180">                  setLoopSelection();</a>
+<a name="ln1181">                  }</a>
+<a name="ln1182">            return cs-&gt;repeatList().tick2utick(cs-&gt;loopInTick().ticks());</a>
+<a name="ln1183">            }</a>
+<a name="ln1184">      return cs-&gt;repeatList().tick2utick(cs-&gt;playPos().ticks());</a>
+<a name="ln1185">      }</a>
+<a name="ln1186"> </a>
+<a name="ln1187">//---------------------------------------------------------</a>
+<a name="ln1188">//   seekCommon</a>
+<a name="ln1189">//   a common part of seek() and seekRT(), contains code</a>
+<a name="ln1190">//   that could be safely called from any thread.</a>
+<a name="ln1191">//   Do not use explicitly, use seek() or seekRT()</a>
+<a name="ln1192">//---------------------------------------------------------</a>
+<a name="ln1193"> </a>
+<a name="ln1194">void Seq::seekCommon(int utick)</a>
+<a name="ln1195">      {</a>
+<a name="ln1196">      if (cs == 0)</a>
+<a name="ln1197">            return;</a>
+<a name="ln1198"> </a>
+<a name="ln1199">      collectEvents(utick);</a>
+<a name="ln1200"> </a>
+<a name="ln1201">      if (cs-&gt;playMode() == PlayMode::AUDIO) {</a>
+<a name="ln1202">            ogg_int64_t sp = cs-&gt;utick2utime(utick) * MScore::sampleRate;</a>
+<a name="ln1203">            ov_pcm_seek(&amp;vf, sp);</a>
+<a name="ln1204">            }</a>
+<a name="ln1205"> </a>
+<a name="ln1206">      guiPos = events.lower_bound(utick);</a>
+<a name="ln1207">      mscore-&gt;setPos(Fraction::fromTicks(cs-&gt;repeatList().utick2tick(utick)));</a>
+<a name="ln1208">      unmarkNotes();</a>
+<a name="ln1209">      }</a>
+<a name="ln1210"> </a>
+<a name="ln1211">//---------------------------------------------------------</a>
+<a name="ln1212">//   seek</a>
+<a name="ln1213">//   send seek message to sequencer</a>
+<a name="ln1214">//   gui thread</a>
+<a name="ln1215">//---------------------------------------------------------</a>
+<a name="ln1216"> </a>
+<a name="ln1217">void Seq::seek(int utick)</a>
+<a name="ln1218">      {</a>
+<a name="ln1219">      if (preferences.getBool(PREF_IO_JACK_USEJACKTRANSPORT)) {</a>
+<a name="ln1220">            if (utick &gt; endUTick)</a>
+<a name="ln1221">                  utick = 0;</a>
+<a name="ln1222">            _driver-&gt;seekTransport(utick);</a>
+<a name="ln1223">            if (utick != 0)</a>
+<a name="ln1224">                  return;</a>
+<a name="ln1225">            }</a>
+<a name="ln1226">      seekCommon(utick);</a>
+<a name="ln1227"> </a>
+<a name="ln1228">      int t = cs-&gt;repeatList().utick2tick(utick);</a>
+<a name="ln1229">      Segment* seg = cs-&gt;tick2segment(Fraction::fromTicks(t));</a>
+<a name="ln1230">      if (seg)</a>
+<a name="ln1231">            mscore-&gt;currentScoreView()-&gt;moveCursor(seg-&gt;tick());</a>
+<a name="ln1232">      cs-&gt;setPlayPos(Fraction::fromTicks(t));</a>
+<a name="ln1233">      cs-&gt;update();</a>
+<a name="ln1234">      guiToSeq(SeqMsg(SeqMsgId::SEEK, utick));</a>
+<a name="ln1235">      }</a>
+<a name="ln1236"> </a>
+<a name="ln1237">//---------------------------------------------------------</a>
+<a name="ln1238">//   seekRT</a>
+<a name="ln1239">//   realtime thread</a>
+<a name="ln1240">//---------------------------------------------------------</a>
+<a name="ln1241"> </a>
+<a name="ln1242">void Seq::seekRT(int utick)</a>
+<a name="ln1243">      {</a>
+<a name="ln1244">      if (cachedPrefs.useJackTransport &amp;&amp; utick &gt; endUTick)</a>
+<a name="ln1245">                  utick = 0;</a>
+<a name="ln1246">      seekCommon(utick);</a>
+<a name="ln1247">      setPos(utick);</a>
+<a name="ln1248">      // Update the screen in GUI thread</a>
+<a name="ln1249">      emit toGui('5', cs-&gt;repeatList().utick2tick(utick));</a>
+<a name="ln1250">      }</a>
+<a name="ln1251"> </a>
+<a name="ln1252">//---------------------------------------------------------</a>
+<a name="ln1253">//   startNote</a>
+<a name="ln1254">//---------------------------------------------------------</a>
+<a name="ln1255"> </a>
+<a name="ln1256">void Seq::startNote(int channel, int pitch, int velo, double nt)</a>
+<a name="ln1257">      {</a>
+<a name="ln1258">      if (state != Transport::STOP &amp;&amp; state != Transport::PLAY)</a>
+<a name="ln1259">            return;</a>
+<a name="ln1260">      NPlayEvent ev(ME_NOTEON, channel, pitch, velo);</a>
+<a name="ln1261">      ev.setTuning(nt);</a>
+<a name="ln1262">      sendEvent(ev);</a>
+<a name="ln1263">      }</a>
+<a name="ln1264"> </a>
+<a name="ln1265">void Seq::startNote(int channel, int pitch, int velo, int duration, double nt)</a>
+<a name="ln1266">      {</a>
+<a name="ln1267">      stopNotes();</a>
+<a name="ln1268">      startNote(channel, pitch, velo, nt);</a>
+<a name="ln1269">      startNoteTimer(duration);</a>
+<a name="ln1270">      }</a>
+<a name="ln1271"> </a>
+<a name="ln1272">//---------------------------------------------------------</a>
+<a name="ln1273">//   playMetronomeBeat</a>
+<a name="ln1274">//---------------------------------------------------------</a>
+<a name="ln1275"> </a>
+<a name="ln1276">void Seq::playMetronomeBeat(BeatType type)</a>
+<a name="ln1277">      {</a>
+<a name="ln1278">      if (state != Transport::STOP)</a>
+<a name="ln1279">            return;</a>
+<a name="ln1280">      liveEventQueue()-&gt;enqueue(NPlayEvent(type));</a>
+<a name="ln1281">      }</a>
+<a name="ln1282"> </a>
+<a name="ln1283">//---------------------------------------------------------</a>
+<a name="ln1284">//   startNoteTimer</a>
+<a name="ln1285">//---------------------------------------------------------</a>
+<a name="ln1286"> </a>
+<a name="ln1287">void Seq::startNoteTimer(int duration)</a>
+<a name="ln1288">      {</a>
+<a name="ln1289">      if (duration) {</a>
+<a name="ln1290">            noteTimer-&gt;setInterval(duration);</a>
+<a name="ln1291">            noteTimer-&gt;start();</a>
+<a name="ln1292">            }</a>
+<a name="ln1293">      }</a>
+<a name="ln1294">//---------------------------------------------------------</a>
+<a name="ln1295">//   stopNoteTimer</a>
+<a name="ln1296">//---------------------------------------------------------</a>
+<a name="ln1297"> </a>
+<a name="ln1298">void Seq::stopNoteTimer()</a>
+<a name="ln1299">      {</a>
+<a name="ln1300">      if (noteTimer-&gt;isActive()) {</a>
+<a name="ln1301">            noteTimer-&gt;stop();</a>
+<a name="ln1302">            stopNotes();</a>
+<a name="ln1303">            }</a>
+<a name="ln1304">      }</a>
+<a name="ln1305"> </a>
+<a name="ln1306">//---------------------------------------------------------</a>
+<a name="ln1307">//   stopNotes</a>
+<a name="ln1308">//---------------------------------------------------------</a>
+<a name="ln1309"> </a>
+<a name="ln1310">void Seq::stopNotes(int channel, bool realTime)</a>
+<a name="ln1311">      {</a>
+<a name="ln1312">      auto send = [this, realTime](const NPlayEvent&amp; event) {</a>
+<a name="ln1313">            if (realTime)</a>
+<a name="ln1314">                  putEvent(event);</a>
+<a name="ln1315">            else</a>
+<a name="ln1316">                  sendEvent(event);</a>
+<a name="ln1317">      };</a>
+<a name="ln1318">      // Stop notes in all channels</a>
+<a name="ln1319">      if (channel == -1) {</a>
+<a name="ln1320">            for(unsigned ch = 0; ch &lt; cs-&gt;midiMapping().size(); ch++) {</a>
+<a name="ln1321">                  send(NPlayEvent(ME_CONTROLLER, ch, CTRL_SUSTAIN, 0));</a>
+<a name="ln1322">                  send(NPlayEvent(ME_CONTROLLER, ch, CTRL_ALL_NOTES_OFF, 0));</a>
+<a name="ln1323">                  if (cs-&gt;midiChannel(ch) != 9)</a>
+<a name="ln1324">                        send(NPlayEvent(ME_PITCHBEND,  ch, 0, 64));</a>
+<a name="ln1325">                  }</a>
+<a name="ln1326">            }</a>
+<a name="ln1327">      else {</a>
+<a name="ln1328">            send(NPlayEvent(ME_CONTROLLER, channel, CTRL_SUSTAIN, 0));</a>
+<a name="ln1329">            send(NPlayEvent(ME_CONTROLLER, channel, CTRL_ALL_NOTES_OFF, 0));</a>
+<a name="ln1330">            if (cs-&gt;midiChannel(channel) != 9)</a>
+<a name="ln1331">                  send(NPlayEvent(ME_PITCHBEND,  channel, 0, 64));</a>
+<a name="ln1332">            }</a>
+<a name="ln1333">      if (cachedPrefs.useAlsaAudio || cachedPrefs.useJackAudio || cachedPrefs.usePulseAudio || cachedPrefs.usePortAudio)</a>
+<a name="ln1334">            _synti-&gt;allNotesOff(channel);</a>
+<a name="ln1335">      }</a>
+<a name="ln1336"> </a>
+<a name="ln1337">//---------------------------------------------------------</a>
+<a name="ln1338">//   setController</a>
+<a name="ln1339">//---------------------------------------------------------</a>
+<a name="ln1340"> </a>
+<a name="ln1341">void Seq::setController(int channel, int ctrl, int data)</a>
+<a name="ln1342">      {</a>
+<a name="ln1343">      NPlayEvent event(ME_CONTROLLER, channel, ctrl, data);</a>
+<a name="ln1344">      sendEvent(event);</a>
+<a name="ln1345">      }</a>
+<a name="ln1346"> </a>
+<a name="ln1347">//---------------------------------------------------------</a>
+<a name="ln1348">//   sendEvent</a>
+<a name="ln1349">//    called from GUI context to send a midi event to</a>
+<a name="ln1350">//    midi out or synthesizer</a>
+<a name="ln1351">//---------------------------------------------------------</a>
+<a name="ln1352"> </a>
+<a name="ln1353">void Seq::sendEvent(const NPlayEvent&amp; ev)</a>
+<a name="ln1354">      {</a>
+<a name="ln1355">      guiToSeq(SeqMsg(SeqMsgId::PLAY, ev));</a>
+<a name="ln1356">      }</a>
+<a name="ln1357"> </a>
+<a name="ln1358">//---------------------------------------------------------</a>
+<a name="ln1359">//   nextMeasure</a>
+<a name="ln1360">//---------------------------------------------------------</a>
+<a name="ln1361"> </a>
+<a name="ln1362">void Seq::nextMeasure()</a>
+<a name="ln1363">      {</a>
+<a name="ln1364">      Measure* m = cs-&gt;tick2measure(Fraction::fromTicks(guiPos-&gt;first));</a>
+<a name="ln1365">      if (m) {</a>
+<a name="ln1366">            if (m-&gt;nextMeasure())</a>
+<a name="ln1367">                  m = m-&gt;nextMeasure();</a>
+<a name="ln1368">            seek(m-&gt;tick().ticks());</a>
+<a name="ln1369">            }</a>
+<a name="ln1370">      }</a>
+<a name="ln1371"> </a>
+<a name="ln1372">//---------------------------------------------------------</a>
+<a name="ln1373">//   nextChord</a>
+<a name="ln1374">//---------------------------------------------------------</a>
+<a name="ln1375"> </a>
+<a name="ln1376">void Seq::nextChord()</a>
+<a name="ln1377">      {</a>
+<a name="ln1378">      int t = guiPos-&gt;first;</a>
+<a name="ln1379">      for (auto i = guiPos; i != eventsEnd; ++i) {</a>
+<a name="ln1380">            if (i-&gt;second.type() == ME_NOTEON &amp;&amp; i-&gt;first &gt; t &amp;&amp; i-&gt;second.velo()) {</a>
+<a name="ln1381">                  seek(i-&gt;first);</a>
+<a name="ln1382">                  break;</a>
+<a name="ln1383">                  }</a>
+<a name="ln1384">            }</a>
+<a name="ln1385">      }</a>
+<a name="ln1386"> </a>
+<a name="ln1387">//---------------------------------------------------------</a>
+<a name="ln1388">//   prevMeasure</a>
+<a name="ln1389">//---------------------------------------------------------</a>
+<a name="ln1390"> </a>
+<a name="ln1391">void Seq::prevMeasure()</a>
+<a name="ln1392">      {</a>
+<a name="ln1393">      auto i = guiPos;</a>
+<a name="ln1394">      if (i == events.begin())</a>
+<a name="ln1395">            return;</a>
+<a name="ln1396">      --i;</a>
+<a name="ln1397">      Measure* m = cs-&gt;tick2measure(Fraction::fromTicks(i-&gt;first));</a>
+<a name="ln1398">      if (m) {</a>
+<a name="ln1399">            if ((i-&gt;first == m-&gt;tick().ticks()) &amp;&amp; m-&gt;prevMeasure())</a>
+<a name="ln1400">                  m = m-&gt;prevMeasure();</a>
+<a name="ln1401">            seek(m-&gt;tick().ticks());</a>
+<a name="ln1402">            }</a>
+<a name="ln1403">      }</a>
+<a name="ln1404"> </a>
+<a name="ln1405">//---------------------------------------------------------</a>
+<a name="ln1406">//   prevChord</a>
+<a name="ln1407">//---------------------------------------------------------</a>
+<a name="ln1408"> </a>
+<a name="ln1409">void Seq::prevChord()</a>
+<a name="ln1410">      {</a>
+<a name="ln1411">      int t  = playPos-&gt;first;</a>
+<a name="ln1412">      //find the chord just before playpos</a>
+<a name="ln1413">      EventMap::const_iterator i = events.upper_bound(cs-&gt;repeatList().tick2utick(t));</a>
+<a name="ln1414">      for (;;) {</a>
+<a name="ln1415">            if (i-&gt;second.type() == ME_NOTEON) {</a>
+<a name="ln1416">                  const NPlayEvent&amp; n = i-&gt;second;</a>
+<a name="ln1417">                  if (i-&gt;first &lt; t &amp;&amp; n.velo()) {</a>
+<a name="ln1418">                        t = i-&gt;first;</a>
+<a name="ln1419">                        break;</a>
+<a name="ln1420">                        }</a>
+<a name="ln1421">                  }</a>
+<a name="ln1422">            if (i == events.cbegin())</a>
+<a name="ln1423">                  break;</a>
+<a name="ln1424">            --i;</a>
+<a name="ln1425">            }</a>
+<a name="ln1426">      //go the previous chord</a>
+<a name="ln1427">      if (i != events.cbegin()) {</a>
+<a name="ln1428">            i = playPos;</a>
+<a name="ln1429">            for (;;) {</a>
+<a name="ln1430">                  if (i-&gt;second.type() == ME_NOTEON) {</a>
+<a name="ln1431">                        const NPlayEvent&amp; n = i-&gt;second;</a>
+<a name="ln1432">                        if (i-&gt;first &lt; t &amp;&amp; n.velo()) {</a>
+<a name="ln1433">                              seek(i-&gt;first);</a>
+<a name="ln1434">                              break;</a>
+<a name="ln1435">                              }</a>
+<a name="ln1436">                        }</a>
+<a name="ln1437">                  if (i == events.cbegin())</a>
+<a name="ln1438">                        break;</a>
+<a name="ln1439">                  --i;</a>
+<a name="ln1440">                  }</a>
+<a name="ln1441">            }</a>
+<a name="ln1442">      }</a>
+<a name="ln1443"> </a>
+<a name="ln1444">//---------------------------------------------------------</a>
+<a name="ln1445">//   seekEnd</a>
+<a name="ln1446">//---------------------------------------------------------</a>
+<a name="ln1447"> </a>
+<a name="ln1448">void Seq::seekEnd()</a>
+<a name="ln1449">      {</a>
+<a name="ln1450">      qDebug(&quot;seek to end&quot;);</a>
+<a name="ln1451">      }</a>
+<a name="ln1452"> </a>
+<a name="ln1453">//---------------------------------------------------------</a>
+<a name="ln1454">//   guiToSeq</a>
+<a name="ln1455">//---------------------------------------------------------</a>
+<a name="ln1456"> </a>
+<a name="ln1457">void Seq::guiToSeq(const SeqMsg&amp; msg)</a>
+<a name="ln1458">      {</a>
+<a name="ln1459">      if (!_driver || !running)</a>
+<a name="ln1460">            return;</a>
+<a name="ln1461">      toSeq.enqueue(msg);</a>
+<a name="ln1462">      }</a>
+<a name="ln1463"> </a>
+<a name="ln1464">//---------------------------------------------------------</a>
+<a name="ln1465">//   eventToGui</a>
+<a name="ln1466">//---------------------------------------------------------</a>
+<a name="ln1467"> </a>
+<a name="ln1468">void Seq::eventToGui(NPlayEvent e)</a>
+<a name="ln1469">      {</a>
+<a name="ln1470">      fromSeq.enqueue(SeqMsg(SeqMsgId::MIDI_INPUT_EVENT, e));</a>
+<a name="ln1471">      }</a>
+<a name="ln1472"> </a>
+<a name="ln1473">//---------------------------------------------------------</a>
+<a name="ln1474">//   midiInputReady</a>
+<a name="ln1475">//---------------------------------------------------------</a>
+<a name="ln1476"> </a>
+<a name="ln1477">void Seq::midiInputReady()</a>
+<a name="ln1478">      {</a>
+<a name="ln1479">      if (_driver)</a>
+<a name="ln1480">            _driver-&gt;midiRead();</a>
+<a name="ln1481">      }</a>
+<a name="ln1482"> </a>
+<a name="ln1483">//---------------------------------------------------------</a>
+<a name="ln1484">//   SeqMsgFifo</a>
+<a name="ln1485">//---------------------------------------------------------</a>
+<a name="ln1486"> </a>
+<a name="ln1487">SeqMsgFifo::SeqMsgFifo()</a>
+<a name="ln1488">      {</a>
+<a name="ln1489">      maxCount = SEQ_MSG_FIFO_SIZE;</a>
+<a name="ln1490">      clear();</a>
+<a name="ln1491">      }</a>
+<a name="ln1492"> </a>
+<a name="ln1493">//---------------------------------------------------------</a>
+<a name="ln1494">//   enqueue</a>
+<a name="ln1495">//---------------------------------------------------------</a>
+<a name="ln1496"> </a>
+<a name="ln1497">void SeqMsgFifo::enqueue(const SeqMsg&amp; msg)</a>
+<a name="ln1498">      {</a>
+<a name="ln1499">      int i = 0;</a>
+<a name="ln1500">      int n = 50;</a>
+<a name="ln1501"> </a>
+<a name="ln1502">      QMutex mutex;</a>
+<a name="ln1503">      QWaitCondition qwc;</a>
+<a name="ln1504">      mutex.lock();</a>
+<a name="ln1505">      for (; i &lt; n; ++i) {</a>
+<a name="ln1506">            if (!isFull())</a>
+<a name="ln1507">                  break;</a>
+<a name="ln1508">            qwc.wait(&amp;mutex,100);</a>
+<a name="ln1509">            }</a>
+<a name="ln1510">      mutex.unlock();</a>
+<a name="ln1511">      if (i == n) {</a>
+<a name="ln1512">            qDebug(&quot;===SeqMsgFifo: overflow&quot;);</a>
+<a name="ln1513">            return;</a>
+<a name="ln1514">            }</a>
+<a name="ln1515">      messages[widx] = msg;</a>
+<a name="ln1516">      push();</a>
+<a name="ln1517">      }</a>
+<a name="ln1518"> </a>
+<a name="ln1519">//---------------------------------------------------------</a>
+<a name="ln1520">//   dequeue</a>
+<a name="ln1521">//---------------------------------------------------------</a>
+<a name="ln1522"> </a>
+<a name="ln1523">SeqMsg SeqMsgFifo::dequeue()</a>
+<a name="ln1524">      {</a>
+<a name="ln1525">      SeqMsg msg = messages[ridx];</a>
+<a name="ln1526">      pop();</a>
+<a name="ln1527">      return msg;</a>
+<a name="ln1528">      }</a>
+<a name="ln1529"> </a>
+<a name="ln1530">//---------------------------------------------------------</a>
+<a name="ln1531">//   putEvent</a>
+<a name="ln1532">//---------------------------------------------------------</a>
+<a name="ln1533"> </a>
+<a name="ln1534">void Seq::putEvent(const NPlayEvent&amp; event, unsigned framePos)</a>
+<a name="ln1535">      {</a>
+<a name="ln1536">      if (!cs)</a>
+<a name="ln1537">            return;</a>
+<a name="ln1538">      int channel = event.channel();</a>
+<a name="ln1539">      if (channel &gt;= int(cs-&gt;midiMapping().size())) {</a>
+<a name="ln1540">            qDebug(&quot;bad channel value %d &gt;= %d&quot;, channel, int(cs-&gt;midiMapping().size()));</a>
+<a name="ln1541">            return;</a>
+<a name="ln1542">            }</a>
+<a name="ln1543"> </a>
+<a name="ln1544">      // audio</a>
+<a name="ln1545">      int syntiIdx= _synti-&gt;index(cs-&gt;midiMapping(channel)-&gt;articulation()-&gt;synti());</a>
+<a name="ln1546">      _synti-&gt;play(event, syntiIdx);</a>
+<a name="ln1547"> </a>
+<a name="ln1548">      // midi</a>
+<a name="ln1549">      if (_driver != 0 &amp;&amp; (cachedPrefs.useJackMidi || cachedPrefs.useAlsaAudio || cachedPrefs.usePortAudio))</a>
+<a name="ln1550">            _driver-&gt;putEvent(event, framePos);</a>
+<a name="ln1551">      }</a>
+<a name="ln1552"> </a>
+<a name="ln1553">//---------------------------------------------------------</a>
+<a name="ln1554">//   heartBeat</a>
+<a name="ln1555">//    update GUI</a>
+<a name="ln1556">//---------------------------------------------------------</a>
+<a name="ln1557"> </a>
+<a name="ln1558">void Seq::heartBeatTimeout()</a>
+<a name="ln1559">      {</a>
+<a name="ln1560">      SynthControl* sc = mscore-&gt;getSynthControl();</a>
+<a name="ln1561">      if (sc &amp;&amp; _driver) {</a>
+<a name="ln1562">            if (++peakTimer[0] &gt;= peakHold)</a>
+<a name="ln1563">                  meterPeakValue[0] *= .7f;</a>
+<a name="ln1564">            if (++peakTimer[1] &gt;= peakHold)</a>
+<a name="ln1565">                  meterPeakValue[1] *= .7f;</a>
+<a name="ln1566">            sc-&gt;setMeter(meterValue[0], meterValue[1], meterPeakValue[0], meterPeakValue[1]);</a>
+<a name="ln1567">            }</a>
+<a name="ln1568"> </a>
+<a name="ln1569">      while (!fromSeq.empty()) {</a>
+<a name="ln1570">            SeqMsg msg = fromSeq.dequeue();</a>
+<a name="ln1571">            if (msg.id == SeqMsgId::MIDI_INPUT_EVENT) {</a>
+<a name="ln1572">                  int type = msg.event.type();</a>
+<a name="ln1573">                  if (type == ME_NOTEON)</a>
+<a name="ln1574">                        mscore-&gt;midiNoteReceived(msg.event.channel(), msg.event.pitch(), msg.event.velo());</a>
+<a name="ln1575">                  else if (type == ME_NOTEOFF)</a>
+<a name="ln1576">                        mscore-&gt;midiNoteReceived(msg.event.channel(), msg.event.pitch(), 0);</a>
+<a name="ln1577">                  else if (type == ME_CONTROLLER)</a>
+<a name="ln1578">                        mscore-&gt;midiCtrlReceived(msg.event.controller(), msg.event.value());</a>
+<a name="ln1579">                  }</a>
+<a name="ln1580">            }</a>
+<a name="ln1581"> </a>
+<a name="ln1582">      if (state != Transport::PLAY || inCountIn)</a>
+<a name="ln1583">            return;</a>
+<a name="ln1584"> </a>
+<a name="ln1585">      int endFrame = playFrame;</a>
+<a name="ln1586"> </a>
+<a name="ln1587">      mutex.lock();</a>
+<a name="ln1588">      auto ppos = playPos;</a>
+<a name="ln1589">      if (ppos != events.cbegin())</a>
+<a name="ln1590">            --ppos;</a>
+<a name="ln1591">      mutex.unlock();</a>
+<a name="ln1592"> </a>
+<a name="ln1593">      ensureBufferAsync(ppos-&gt;first);</a>
+<a name="ln1594"> </a>
+<a name="ln1595">      if (cs &amp;&amp; cs-&gt;sigmap()-&gt;timesig(getCurTick()).nominal()!=prevTimeSig) {</a>
+<a name="ln1596">            prevTimeSig = cs-&gt;sigmap()-&gt;timesig(getCurTick()).nominal();</a>
+<a name="ln1597">            emit timeSigChanged();</a>
+<a name="ln1598">            }</a>
+<a name="ln1599">      if (cs &amp;&amp; curTempo()!=prevTempo) {</a>
+<a name="ln1600">            prevTempo = curTempo();</a>
+<a name="ln1601">            emit tempoChanged();</a>
+<a name="ln1602">            }</a>
+<a name="ln1603"> </a>
+<a name="ln1604">      QRectF r;</a>
+<a name="ln1605">      for (;guiPos != eventsEnd; ++guiPos) {</a>
+<a name="ln1606">            if (guiPos-&gt;first &gt; ppos-&gt;first)</a>
+<a name="ln1607">                  break;</a>
+<a name="ln1608">            if (mscore-&gt;loop())</a>
+<a name="ln1609">                  if (guiPos-&gt;first &gt;= cs-&gt;repeatList().tick2utick(cs-&gt;loopOutTick().ticks()))</a>
+<a name="ln1610">                        break;</a>
+<a name="ln1611">            const NPlayEvent&amp; n = guiPos-&gt;second;</a>
+<a name="ln1612">            if (n.type() == ME_NOTEON) {</a>
+<a name="ln1613">                  const Note* note1 = n.note();</a>
+<a name="ln1614">                  if (n.velo()) {</a>
+<a name="ln1615">                        while (note1) {</a>
+<a name="ln1616">                              for (ScoreElement* se : note1-&gt;linkList()) {</a>
+<a name="ln1617">                                    if (!se-&gt;isNote())</a>
+<a name="ln1618">                                          continue;</a>
+<a name="ln1619">                                    Note* currentNote = toNote(se);</a>
+<a name="ln1620">                                    currentNote-&gt;setMark(true);</a>
+<a name="ln1621">                                    markedNotes.append(currentNote);</a>
+<a name="ln1622">                                    r |= currentNote-&gt;canvasBoundingRect();</a>
+<a name="ln1623">                                    }</a>
+<a name="ln1624">                              note1 = note1-&gt;tieFor() ? note1-&gt;tieFor()-&gt;endNote() : 0;</a>
+<a name="ln1625">                              }</a>
+<a name="ln1626">                        }</a>
+<a name="ln1627">                  else {</a>
+<a name="ln1628">                        while (note1) {</a>
+<a name="ln1629">                              for (ScoreElement* se : note1-&gt;linkList()) {</a>
+<a name="ln1630">                                    if (!se-&gt;isNote())</a>
+<a name="ln1631">                                          continue;</a>
+<a name="ln1632">                                    Note* currentNote = toNote(se);</a>
+<a name="ln1633">                                    currentNote-&gt;setMark(false);</a>
+<a name="ln1634">                                    r |= currentNote-&gt;canvasBoundingRect();</a>
+<a name="ln1635">                                    markedNotes.removeOne(currentNote);</a>
+<a name="ln1636">                                    }</a>
+<a name="ln1637">                              note1 = note1-&gt;tieFor() ? note1-&gt;tieFor()-&gt;endNote() : 0;</a>
+<a name="ln1638">                              }</a>
+<a name="ln1639">                        }</a>
+<a name="ln1640">                  }</a>
+<a name="ln1641">            }</a>
+<a name="ln1642">      int utick = ppos-&gt;first;</a>
+<a name="ln1643">      int t = cs-&gt;repeatList().utick2tick(utick);</a>
+<a name="ln1644">      mscore-&gt;currentScoreView()-&gt;moveCursor(Fraction::fromTicks(t));</a>
+<a name="ln1645">      mscore-&gt;setPos(Fraction::fromTicks(t));</a>
+<a name="ln1646"> </a>
+<a name="ln1647">      emit(heartBeat(t, utick, endFrame));</a>
+<a name="ln1648"> </a>
+<a name="ln1649">      PianorollEditor* pre = mscore-&gt;getPianorollEditor();</a>
+<a name="ln1650">      if (pre &amp;&amp; pre-&gt;isVisible())</a>
+<a name="ln1651">            pre-&gt;heartBeat(this);</a>
+<a name="ln1652"> </a>
+<a name="ln1653">      PianoTools* piano = mscore-&gt;pianoTools();</a>
+<a name="ln1654">      if (piano &amp;&amp; piano-&gt;isVisible())</a>
+<a name="ln1655">            piano-&gt;setPlaybackNotes(markedNotes);</a>
+<a name="ln1656"> </a>
+<a name="ln1657">      cv-&gt;update(cv-&gt;toPhysical(r));</a>
+<a name="ln1658">      }</a>
+<a name="ln1659"> </a>
+<a name="ln1660">//---------------------------------------------------------</a>
+<a name="ln1661">//   updateSynthesizerState</a>
+<a name="ln1662">//    collect all controller events between tick1 and tick2</a>
+<a name="ln1663">//    and send them to the synthesizer</a>
+<a name="ln1664">//    Called from RT thread</a>
+<a name="ln1665">//---------------------------------------------------------</a>
+<a name="ln1666"> </a>
+<a name="ln1667">void Seq::updateSynthesizerState(int tick1, int tick2)</a>
+<a name="ln1668">      {</a>
+<a name="ln1669">      if (tick1 &gt; tick2)</a>
+<a name="ln1670">            tick1 = 0;</a>
+<a name="ln1671">      // Making a local copy of events to avoid touching it</a>
+<a name="ln1672">      // from different threads at the same time</a>
+<a name="ln1673">      EventMap ev = events;</a>
+<a name="ln1674">      EventMap::const_iterator i1 = ev.lower_bound(tick1);</a>
+<a name="ln1675">      EventMap::const_iterator i2 = ev.upper_bound(tick2);</a>
+<a name="ln1676"> </a>
+<a name="ln1677">      for (; i1 != i2; ++i1) {</a>
+<a name="ln1678">            if (i1-&gt;second.type() == ME_CONTROLLER)</a>
+<a name="ln1679">                  playEvent(i1-&gt;second, 0);</a>
+<a name="ln1680">            }</a>
+<a name="ln1681">      }</a>
+<a name="ln1682"> </a>
+<a name="ln1683">//---------------------------------------------------------</a>
+<a name="ln1684">//   curTempo</a>
+<a name="ln1685">//---------------------------------------------------------</a>
+<a name="ln1686"> </a>
+<a name="ln1687">double Seq::curTempo() const</a>
+<a name="ln1688">      {</a>
+<a name="ln1689">      if (playPos != events.end())</a>
+<a name="ln1690">            return cs ? cs-&gt;tempomap()-&gt;tempo(playPos-&gt;first) : 0.0;</a>
+<a name="ln1691"> </a>
+<a name="ln1692">      return 0.0;</a>
+<a name="ln1693">      }</a>
+<a name="ln1694"> </a>
+<a name="ln1695">//---------------------------------------------------------</a>
+<a name="ln1696">//   set Loop in position</a>
+<a name="ln1697">//---------------------------------------------------------</a>
+<a name="ln1698"> </a>
+<a name="ln1699">void Seq::setLoopIn()</a>
+<a name="ln1700">      {</a>
+<a name="ln1701">      Fraction t;</a>
+<a name="ln1702">      if (state == Transport::PLAY) {     // If in playback mode, set the In position where note is being played</a>
+<a name="ln1703">            auto ppos = playPos;</a>
+<a name="ln1704">            if (ppos != events.cbegin())</a>
+<a name="ln1705">                  --ppos;                 // We have to go back one pos to get the correct note that has just been played</a>
+<a name="ln1706">            t = Fraction::fromTicks(cs-&gt;repeatList().utick2tick(ppos-&gt;first));</a>
+<a name="ln1707">            }</a>
+<a name="ln1708">      else</a>
+<a name="ln1709">            t = cs-&gt;pos();        // Otherwise, use the selected note.</a>
+<a name="ln1710">      if (t &gt;= cs-&gt;loopOutTick())         // If In pos &gt;= Out pos, reset Out pos to end of score</a>
+<a name="ln1711">            cs-&gt;setPos(POS::RIGHT, cs-&gt;lastMeasure()-&gt;endTick());</a>
+<a name="ln1712">      cs-&gt;setPos(POS::LEFT, t);</a>
+<a name="ln1713">      }</a>
+<a name="ln1714"> </a>
+<a name="ln1715">//---------------------------------------------------------</a>
+<a name="ln1716">//   set Loop Out position</a>
+<a name="ln1717">//---------------------------------------------------------</a>
+<a name="ln1718"> </a>
+<a name="ln1719">void Seq::setLoopOut()</a>
+<a name="ln1720">      {</a>
+<a name="ln1721">      Fraction t;</a>
+<a name="ln1722">      if (state == Transport::PLAY) {    // If in playback mode, set the Out position where note is being played</a>
+<a name="ln1723">            t = Fraction::fromTicks(cs-&gt;repeatList().utick2tick(playPos-&gt;first));</a>
+<a name="ln1724">            }</a>
+<a name="ln1725">      else</a>
+<a name="ln1726">            t = cs-&gt;pos() + cs-&gt;inputState().ticks();   // Otherwise, use the selected note.</a>
+<a name="ln1727">      if (t &lt;= cs-&gt;loopInTick())                        // If Out pos &lt;= In pos, reset In pos to beginning of score</a>
+<a name="ln1728">            cs-&gt;setPos(POS::LEFT, Fraction(0,1));</a>
+<a name="ln1729">      else</a>
+<a name="ln1730">          if (t &gt; cs-&gt;lastMeasure()-&gt;endTick())</a>
+<a name="ln1731">              t = cs-&gt;lastMeasure()-&gt;endTick();</a>
+<a name="ln1732">      cs-&gt;setPos(POS::RIGHT, t);</a>
+<a name="ln1733">      if (state == Transport::PLAY)</a>
+<a name="ln1734">            guiToSeq(SeqMsg(SeqMsgId::SEEK, t.ticks()));</a>
+<a name="ln1735">      }</a>
+<a name="ln1736"> </a>
+<a name="ln1737">void Seq::setPos(POS, unsigned t)</a>
+<a name="ln1738">      {</a>
+<a name="ln1739">      qDebug(&quot;seq: setPos %d&quot;, t);</a>
+<a name="ln1740">      }</a>
+<a name="ln1741"> </a>
+<a name="ln1742">//---------------------------------------------------------</a>
+<a name="ln1743">//   set Loop In/Out position based on the selection</a>
+<a name="ln1744">//---------------------------------------------------------</a>
+<a name="ln1745"> </a>
+<a name="ln1746">void Seq::setLoopSelection()</a>
+<a name="ln1747">      {</a>
+<a name="ln1748">      const Score* score = mscore-&gt;currentScore();</a>
+<a name="ln1749">      Q_ASSERT(!score || score-&gt;masterScore() == cs);</a>
+<a name="ln1750"> </a>
+<a name="ln1751">      if (score &amp;&amp; score-&gt;selection().isRange()) {</a>
+<a name="ln1752">            cs-&gt;setLoopInTick(score-&gt;selection().tickStart());</a>
+<a name="ln1753">            cs-&gt;setLoopOutTick(score-&gt;selection().tickEnd());</a>
+<a name="ln1754">            }</a>
+<a name="ln1755">      }</a>
+<a name="ln1756"> </a>
+<a name="ln1757">//---------------------------------------------------------</a>
+<a name="ln1758">//   Called after tempo or time signature</a>
+<a name="ln1759">//   changed while playback</a>
+<a name="ln1760">//---------------------------------------------------------</a>
+<a name="ln1761"> </a>
+<a name="ln1762">void Seq::handleTimeSigTempoChanged()</a>
+<a name="ln1763">      {</a>
+<a name="ln1764">      _driver-&gt;handleTimeSigTempoChanged();</a>
+<a name="ln1765">      }</a>
+<a name="ln1766"> </a>
+<a name="ln1767">//---------------------------------------------------------</a>
+<a name="ln1768">//  setInitialMillisecondTimestampWithLatency</a>
+<a name="ln1769">//   Called whenever seq-&gt;process() starts.</a>
+<a name="ln1770">//   Sets a starting reference time for which subsequent PortMidi events will be offset from.</a>
+<a name="ln1771">//   Time is relative to the start of PortMidi's initialization.</a>
+<a name="ln1772">//---------------------------------------------------------</a>
+<a name="ln1773"> </a>
+<a name="ln1774">void Seq::setInitialMillisecondTimestampWithLatency()</a>
+<a name="ln1775">      {</a>
+<a name="ln1776">     #ifdef USE_PORTMIDI</a>
+<a name="ln1777">           initialMillisecondTimestampWithLatency = Pt_Time() + cachedPrefs.portMidiOutputLatencyMilliseconds;</a>
+<a name="ln1778">           //qDebug(&quot;PortMidi initialMillisecondTimestampWithLatency: %d = %d + %d&quot;, initialMillisecondTimestampWithLatency, unsigned(Pt_Time()), preferences.getInt(PREF_IO_PORTMIDI_OUTPUTLATENCYMILLISECONDS));</a>
+<a name="ln1779">     #endif</a>
+<a name="ln1780">     }</a>
+<a name="ln1781"> </a>
+<a name="ln1782">//---------------------------------------------------------</a>
+<a name="ln1783">//  getCurrentMillisecondTimestampWithLatency</a>
+<a name="ln1784">//   Called when midi messages are sent to PortMidi device.</a>
+<a name="ln1785">//   Returns the time in milliseconds of the current play cursor.</a>
+<a name="ln1786">//   Time is relative to the start of PortMidi's initialization.</a>
+<a name="ln1787">//---------------------------------------------------------</a>
+<a name="ln1788"> </a>
+<a name="ln1789">unsigned Seq::getCurrentMillisecondTimestampWithLatency(unsigned framePos) const</a>
+<a name="ln1790">      {</a>
+<a name="ln1791">#ifdef USE_PORTMIDI</a>
+<a name="ln1792">      unsigned playTimeMilliseconds = unsigned(framePos * 1000) / unsigned(MScore::sampleRate);</a>
+<a name="ln1793">      //qDebug(&quot;PortMidi timestamp = %d + %d&quot;, initialMillisecondTimestampWithLatency, playTimeMilliseconds);</a>
+<a name="ln1794">      return initialMillisecondTimestampWithLatency + playTimeMilliseconds;</a>
+<a name="ln1795">#else</a>
+<a name="ln1796">      qDebug(&quot;Shouldn't be using this function if not using PortMidi&quot;);</a>
+<a name="ln1797">      return 0;</a>
+<a name="ln1798">#endif</a>
+<a name="ln1799">      }</a>
+<a name="ln1800">}</a>
+
+</code></pre>
+<div class="balloon" rel="362"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v728/" target="_blank">V728</a> An excessive check can be simplified. The '||' operator is surrounded by opposite expressions.</p></div>
+<div class="balloon" rel="393"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v728/" target="_blank">V728</a> An excessive check can be simplified. The '||' operator is surrounded by opposite expressions.</p></div>
+<div class="balloon" rel="762"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'cs' pointer was utilized before it was verified against nullptr. Check lines: 762, 785.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

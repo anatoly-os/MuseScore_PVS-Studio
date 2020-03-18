@@ -1,0 +1,1408 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>qzip.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/****************************************************************************</a>
+<a name="ln2">**</a>
+<a name="ln3">** Copyright (C) 2016 The Qt Company Ltd.</a>
+<a name="ln4">** Contact: https://www.qt.io/licensing/</a>
+<a name="ln5">**</a>
+<a name="ln6">** This file is part of the QtGui module of the Qt Toolkit.</a>
+<a name="ln7">**</a>
+<a name="ln8">** $QT_BEGIN_LICENSE:LGPL$</a>
+<a name="ln9">** Commercial License Usage</a>
+<a name="ln10">** Licensees holding valid commercial Qt licenses may use this file in</a>
+<a name="ln11">** accordance with the commercial license agreement provided with the</a>
+<a name="ln12">** Software or, alternatively, in accordance with the terms contained in</a>
+<a name="ln13">** a written agreement between you and The Qt Company. For licensing terms</a>
+<a name="ln14">** and conditions see https://www.qt.io/terms-conditions. For further</a>
+<a name="ln15">** information use the contact form at https://www.qt.io/contact-us.</a>
+<a name="ln16">**</a>
+<a name="ln17">** GNU Lesser General Public License Usage</a>
+<a name="ln18">** Alternatively, this file may be used under the terms of the GNU Lesser</a>
+<a name="ln19">** General Public License version 3 as published by the Free Software</a>
+<a name="ln20">** Foundation and appearing in the file LICENSE.LGPL3 included in the</a>
+<a name="ln21">** packaging of this file. Please review the following information to</a>
+<a name="ln22">** ensure the GNU Lesser General Public License version 3 requirements</a>
+<a name="ln23">** will be met: https://www.gnu.org/licenses/lgpl-3.0.html.</a>
+<a name="ln24">**</a>
+<a name="ln25">** GNU General Public License Usage</a>
+<a name="ln26">** Alternatively, this file may be used under the terms of the GNU</a>
+<a name="ln27">** General Public License version 2.0 or (at your option) the GNU General</a>
+<a name="ln28">** Public license version 3 or any later version approved by the KDE Free</a>
+<a name="ln29">** Qt Foundation. The licenses are as published by the Free Software</a>
+<a name="ln30">** Foundation and appearing in the file LICENSE.GPL2 and LICENSE.GPL3</a>
+<a name="ln31">** included in the packaging of this file. Please review the following</a>
+<a name="ln32">** information to ensure the GNU General Public License requirements will</a>
+<a name="ln33">** be met: https://www.gnu.org/licenses/gpl-2.0.html and</a>
+<a name="ln34">** https://www.gnu.org/licenses/gpl-3.0.html.</a>
+<a name="ln35">**</a>
+<a name="ln36">** $QT_END_LICENSE$</a>
+<a name="ln37">**</a>
+<a name="ln38">****************************************************************************/</a>
+<a name="ln39"> </a>
+<a name="ln40"> </a>
+<a name="ln41">#ifndef QT_NO_TEXTODFWRITER</a>
+<a name="ln42"> </a>
+<a name="ln43">#include &quot;qzipreader_p.h&quot;</a>
+<a name="ln44">#include &quot;qzipwriter_p.h&quot;</a>
+<a name="ln45"> </a>
+<a name="ln46">#include &lt;zlib.h&gt;</a>
+<a name="ln47"> </a>
+<a name="ln48">// Zip standard version for archives handled by this API</a>
+<a name="ln49">// (actually, the only basic support of this version is implemented but it is enough for now)</a>
+<a name="ln50">#define ZIP_VERSION 20</a>
+<a name="ln51"> </a>
+<a name="ln52">#if 0</a>
+<a name="ln53">#define ZDEBUG qDebug</a>
+<a name="ln54">#else</a>
+<a name="ln55">#define ZDEBUG if (0) qDebug</a>
+<a name="ln56">#endif</a>
+<a name="ln57"> </a>
+<a name="ln58">QT_BEGIN_NAMESPACE</a>
+<a name="ln59"> </a>
+<a name="ln60">static inline uint readUInt(const uchar *data)</a>
+<a name="ln61">{</a>
+<a name="ln62">    return (data[0]) + (data[1]&lt;&lt;8) + (data[2]&lt;&lt;16) + (data[3]&lt;&lt;24);</a>
+<a name="ln63">}</a>
+<a name="ln64"> </a>
+<a name="ln65">static inline ushort readUShort(const uchar *data)</a>
+<a name="ln66">{</a>
+<a name="ln67">    return (data[0]) + (data[1]&lt;&lt;8);</a>
+<a name="ln68">}</a>
+<a name="ln69"> </a>
+<a name="ln70">static inline void writeUInt(uchar *data, uint i)</a>
+<a name="ln71">{</a>
+<a name="ln72">    data[0] = i &amp; 0xff;</a>
+<a name="ln73">    data[1] = (i&gt;&gt;8) &amp; 0xff;</a>
+<a name="ln74">    data[2] = (i&gt;&gt;16) &amp; 0xff;</a>
+<a name="ln75">    data[3] = (i&gt;&gt;24) &amp; 0xff;</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">static inline void writeUShort(uchar *data, ushort i)</a>
+<a name="ln79">{</a>
+<a name="ln80">    data[0] = i &amp; 0xff;</a>
+<a name="ln81">    data[1] = (i&gt;&gt;8) &amp; 0xff;</a>
+<a name="ln82">}</a>
+<a name="ln83"> </a>
+<a name="ln84">static inline void copyUInt(uchar *dest, const uchar *src)</a>
+<a name="ln85">{</a>
+<a name="ln86">    dest[0] = src[0];</a>
+<a name="ln87">    dest[1] = src[1];</a>
+<a name="ln88">    dest[2] = src[2];</a>
+<a name="ln89">    dest[3] = src[3];</a>
+<a name="ln90">}</a>
+<a name="ln91"> </a>
+<a name="ln92">static inline void copyUShort(uchar *dest, const uchar *src)</a>
+<a name="ln93">{</a>
+<a name="ln94">    dest[0] = src[0];</a>
+<a name="ln95">    dest[1] = src[1];</a>
+<a name="ln96">}</a>
+<a name="ln97"> </a>
+<a name="ln98">static void writeMSDosDate(uchar *dest, const QDateTime&amp; dt)</a>
+<a name="ln99">{</a>
+<a name="ln100">    if (dt.isValid()) {</a>
+<a name="ln101">        quint16 time =</a>
+<a name="ln102">            (dt.time().hour() &lt;&lt; 11)    // 5 bit hour</a>
+<a name="ln103">            | (dt.time().minute() &lt;&lt; 5)   // 6 bit minute</a>
+<a name="ln104">            | (dt.time().second() &gt;&gt; 1);  // 5 bit double seconds</a>
+<a name="ln105"> </a>
+<a name="ln106">        dest[0] = time &amp; 0xff;</a>
+<a name="ln107">        dest[1] = time &gt;&gt; 8;</a>
+<a name="ln108"> </a>
+<a name="ln109">        quint16 date =</a>
+<a name="ln110">            ((dt.date().year() - 1980) &lt;&lt; 9) // 7 bit year 1980-based</a>
+<a name="ln111">            | (dt.date().month() &lt;&lt; 5)           // 4 bit month</a>
+<a name="ln112">            | (dt.date().day());                 // 5 bit day</a>
+<a name="ln113"> </a>
+<a name="ln114">        dest[2] = char(date);</a>
+<a name="ln115">        dest[3] = char(date &gt;&gt; 8);</a>
+<a name="ln116">    } else {</a>
+<a name="ln117">        dest[0] = 0;</a>
+<a name="ln118">        dest[1] = 0;</a>
+<a name="ln119">        dest[2] = 0;</a>
+<a name="ln120">        dest[3] = 0;</a>
+<a name="ln121">    }</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">static int inflate(Bytef *dest, ulong *destLen, const Bytef *source, ulong sourceLen)</a>
+<a name="ln125">{</a>
+<a name="ln126">    z_stream stream;</a>
+<a name="ln127">    int err;</a>
+<a name="ln128"> </a>
+<a name="ln129">    stream.next_in = const_cast&lt;Bytef*&gt;(source);</a>
+<a name="ln130">    stream.avail_in = (uInt)sourceLen;</a>
+<a name="ln131">    if ((uLong)stream.avail_in != sourceLen)</a>
+<a name="ln132">        return Z_BUF_ERROR;</a>
+<a name="ln133"> </a>
+<a name="ln134">    stream.next_out = dest;</a>
+<a name="ln135">    stream.avail_out = (uInt)*destLen;</a>
+<a name="ln136">    if ((uLong)stream.avail_out != *destLen)</a>
+<a name="ln137">        return Z_BUF_ERROR;</a>
+<a name="ln138"> </a>
+<a name="ln139">    stream.zalloc = (alloc_func)0;</a>
+<a name="ln140">    stream.zfree = (free_func)0;</a>
+<a name="ln141"> </a>
+<a name="ln142">    err = inflateInit2(&amp;stream, -MAX_WBITS);</a>
+<a name="ln143">    if (err != Z_OK)</a>
+<a name="ln144">        return err;</a>
+<a name="ln145"> </a>
+<a name="ln146">    err = inflate(&amp;stream, Z_FINISH);</a>
+<a name="ln147">    if (err != Z_STREAM_END) {</a>
+<a name="ln148">        inflateEnd(&amp;stream);</a>
+<a name="ln149">        if (err == Z_NEED_DICT || (err == Z_BUF_ERROR &amp;&amp; stream.avail_in == 0))</a>
+<a name="ln150">            return Z_DATA_ERROR;</a>
+<a name="ln151">        return err;</a>
+<a name="ln152">    }</a>
+<a name="ln153">    *destLen = stream.total_out;</a>
+<a name="ln154"> </a>
+<a name="ln155">    err = inflateEnd(&amp;stream);</a>
+<a name="ln156">    return err;</a>
+<a name="ln157">}</a>
+<a name="ln158"> </a>
+<a name="ln159">static int deflate (Bytef *dest, ulong *destLen, const Bytef *source, ulong sourceLen)</a>
+<a name="ln160">{</a>
+<a name="ln161">    z_stream stream;</a>
+<a name="ln162">    int err;</a>
+<a name="ln163"> </a>
+<a name="ln164">    stream.next_in = const_cast&lt;Bytef*&gt;(source);</a>
+<a name="ln165">    stream.avail_in = (uInt)sourceLen;</a>
+<a name="ln166">    stream.next_out = dest;</a>
+<a name="ln167">    stream.avail_out = (uInt)*destLen;</a>
+<a name="ln168">    if ((uLong)stream.avail_out != *destLen) return Z_BUF_ERROR;</a>
+<a name="ln169"> </a>
+<a name="ln170">    stream.zalloc = (alloc_func)0;</a>
+<a name="ln171">    stream.zfree = (free_func)0;</a>
+<a name="ln172">    stream.opaque = (voidpf)0;</a>
+<a name="ln173"> </a>
+<a name="ln174">    err = deflateInit2(&amp;stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY);</a>
+<a name="ln175">    if (err != Z_OK) return err;</a>
+<a name="ln176"> </a>
+<a name="ln177">    err = deflate(&amp;stream, Z_FINISH);</a>
+<a name="ln178">    if (err != Z_STREAM_END) {</a>
+<a name="ln179">        deflateEnd(&amp;stream);</a>
+<a name="ln180">        return err == Z_OK ? Z_BUF_ERROR : err;</a>
+<a name="ln181">    }</a>
+<a name="ln182">    *destLen = stream.total_out;</a>
+<a name="ln183"> </a>
+<a name="ln184">    err = deflateEnd(&amp;stream);</a>
+<a name="ln185">    return err;</a>
+<a name="ln186">}</a>
+<a name="ln187"> </a>
+<a name="ln188"> </a>
+<a name="ln189">namespace WindowsFileAttributes {</a>
+<a name="ln190">enum {</a>
+<a name="ln191">    Dir        = 0x10, // FILE_ATTRIBUTE_DIRECTORY</a>
+<a name="ln192">    File       = 0x80, // FILE_ATTRIBUTE_NORMAL</a>
+<a name="ln193">    TypeMask   = 0x90,</a>
+<a name="ln194"> </a>
+<a name="ln195">    ReadOnly   = 0x01, // FILE_ATTRIBUTE_READONLY</a>
+<a name="ln196">    PermMask   = 0x01</a>
+<a name="ln197">};</a>
+<a name="ln198">}</a>
+<a name="ln199"> </a>
+<a name="ln200">namespace UnixFileAttributes {</a>
+<a name="ln201">enum {</a>
+<a name="ln202">    Dir        = 0040000, // __S_IFDIR</a>
+<a name="ln203">    File       = 0100000, // __S_IFREG</a>
+<a name="ln204">    SymLink    = 0120000, // __S_IFLNK</a>
+<a name="ln205">    TypeMask   = 0170000, // __S_IFMT</a>
+<a name="ln206"> </a>
+<a name="ln207">    ReadUser   = 0400, // __S_IRUSR</a>
+<a name="ln208">    WriteUser  = 0200, // __S_IWUSR</a>
+<a name="ln209">    ExeUser    = 0100, // __S_IXUSR</a>
+<a name="ln210">    ReadGroup  = 0040, // __S_IRGRP</a>
+<a name="ln211">    WriteGroup = 0020, // __S_IWGRP</a>
+<a name="ln212">    ExeGroup   = 0010, // __S_IXGRP</a>
+<a name="ln213">    ReadOther  = 0004, // __S_IROTH</a>
+<a name="ln214">    WriteOther = 0002, // __S_IWOTH</a>
+<a name="ln215">    ExeOther   = 0001, // __S_IXOTH</a>
+<a name="ln216">    PermMask   = 0777</a>
+<a name="ln217">};</a>
+<a name="ln218">}</a>
+<a name="ln219"> </a>
+<a name="ln220">static QFile::Permissions modeToPermissions(quint32 mode)</a>
+<a name="ln221">{</a>
+<a name="ln222">    QFile::Permissions ret;</a>
+<a name="ln223">    if (mode &amp; UnixFileAttributes::ReadUser)</a>
+<a name="ln224">        ret |= QFile::ReadOwner | QFile::ReadUser;</a>
+<a name="ln225">    if (mode &amp; UnixFileAttributes::WriteUser)</a>
+<a name="ln226">        ret |= QFile::WriteOwner | QFile::WriteUser;</a>
+<a name="ln227">    if (mode &amp; UnixFileAttributes::ExeUser)</a>
+<a name="ln228">        ret |= QFile::ExeOwner | QFile::ExeUser;</a>
+<a name="ln229">    if (mode &amp; UnixFileAttributes::ReadGroup)</a>
+<a name="ln230">        ret |= QFile::ReadGroup;</a>
+<a name="ln231">    if (mode &amp; UnixFileAttributes::WriteGroup)</a>
+<a name="ln232">        ret |= QFile::WriteGroup;</a>
+<a name="ln233">    if (mode &amp; UnixFileAttributes::ExeGroup)</a>
+<a name="ln234">        ret |= QFile::ExeGroup;</a>
+<a name="ln235">    if (mode &amp; UnixFileAttributes::ReadOther)</a>
+<a name="ln236">        ret |= QFile::ReadOther;</a>
+<a name="ln237">    if (mode &amp; UnixFileAttributes::WriteOther)</a>
+<a name="ln238">        ret |= QFile::WriteOther;</a>
+<a name="ln239">    if (mode &amp; UnixFileAttributes::ExeOther)</a>
+<a name="ln240">        ret |= QFile::ExeOther;</a>
+<a name="ln241">    return ret;</a>
+<a name="ln242">}</a>
+<a name="ln243"> </a>
+<a name="ln244">static quint32 permissionsToMode(QFile::Permissions perms)</a>
+<a name="ln245">{</a>
+<a name="ln246">    quint32 mode = 0;</a>
+<a name="ln247">    if (perms &amp; (QFile::ReadOwner | QFile::ReadUser))</a>
+<a name="ln248">        mode |= UnixFileAttributes::ReadUser;</a>
+<a name="ln249">    if (perms &amp; (QFile::WriteOwner | QFile::WriteUser))</a>
+<a name="ln250">        mode |= UnixFileAttributes::WriteUser;</a>
+<a name="ln251">    if (perms &amp; (QFile::ExeOwner | QFile::ExeUser))</a>
+<a name="ln252">        mode |= UnixFileAttributes::WriteUser;</a>
+<a name="ln253">    if (perms &amp; QFile::ReadGroup)</a>
+<a name="ln254">        mode |= UnixFileAttributes::ReadGroup;</a>
+<a name="ln255">    if (perms &amp; QFile::WriteGroup)</a>
+<a name="ln256">        mode |= UnixFileAttributes::WriteGroup;</a>
+<a name="ln257">    if (perms &amp; QFile::ExeGroup)</a>
+<a name="ln258">        mode |= UnixFileAttributes::ExeGroup;</a>
+<a name="ln259">    if (perms &amp; QFile::ReadOther)</a>
+<a name="ln260">        mode |= UnixFileAttributes::ReadOther;</a>
+<a name="ln261">    if (perms &amp; QFile::WriteOther)</a>
+<a name="ln262">        mode |= UnixFileAttributes::WriteOther;</a>
+<a name="ln263">    if (perms &amp; QFile::ExeOther)</a>
+<a name="ln264">        mode |= UnixFileAttributes::ExeOther;</a>
+<a name="ln265">    return mode;</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">static QDateTime readMSDosDate(const uchar *src)</a>
+<a name="ln269">{</a>
+<a name="ln270">    uint dosDate = readUInt(src);</a>
+<a name="ln271">    quint64 uDate;</a>
+<a name="ln272">    uDate = (quint64)(dosDate &gt;&gt; 16);</a>
+<a name="ln273">    uint tm_mday = (uDate &amp; 0x1f);</a>
+<a name="ln274">    uint tm_mon =  ((uDate &amp; 0x1E0) &gt;&gt; 5);</a>
+<a name="ln275">    uint tm_year = (((uDate &amp; 0x0FE00) &gt;&gt; 9) + 1980);</a>
+<a name="ln276">    uint tm_hour = ((dosDate &amp; 0xF800) &gt;&gt; 11);</a>
+<a name="ln277">    uint tm_min =  ((dosDate &amp; 0x7E0) &gt;&gt; 5);</a>
+<a name="ln278">    uint tm_sec =  ((dosDate &amp; 0x1f) &lt;&lt; 1);</a>
+<a name="ln279"> </a>
+<a name="ln280">    return QDateTime(QDate(tm_year, tm_mon, tm_mday), QTime(tm_hour, tm_min, tm_sec));</a>
+<a name="ln281">}</a>
+<a name="ln282"> </a>
+<a name="ln283">// for details, see http://www.pkware.com/documents/casestudies/APPNOTE.TXT</a>
+<a name="ln284"> </a>
+<a name="ln285">enum HostOS {</a>
+<a name="ln286">    HostFAT      = 0,</a>
+<a name="ln287">    HostAMIGA    = 1,</a>
+<a name="ln288">    HostVMS      = 2,  // VAX/VMS</a>
+<a name="ln289">    HostUnix     = 3,</a>
+<a name="ln290">    HostVM_CMS   = 4,</a>
+<a name="ln291">    HostAtari    = 5,  // what if it's a minix filesystem? [cjh]</a>
+<a name="ln292">    HostHPFS     = 6,  // filesystem used by OS/2 (and NT 3.x)</a>
+<a name="ln293">    HostMac      = 7,</a>
+<a name="ln294">    HostZ_System = 8,</a>
+<a name="ln295">    HostCPM      = 9,</a>
+<a name="ln296">    HostTOPS20   = 10, // pkzip 2.50 NTFS</a>
+<a name="ln297">    HostNTFS     = 11, // filesystem used by Windows NT</a>
+<a name="ln298">    HostQDOS     = 12, // SMS/QDOS</a>
+<a name="ln299">    HostAcorn    = 13, // Archimedes Acorn RISC OS</a>
+<a name="ln300">    HostVFAT     = 14, // filesystem used by Windows 95, NT</a>
+<a name="ln301">    HostMVS      = 15,</a>
+<a name="ln302">    HostBeOS     = 16, // hybrid POSIX/database filesystem</a>
+<a name="ln303">    HostTandem   = 17,</a>
+<a name="ln304">    HostOS400    = 18,</a>
+<a name="ln305">    HostOSX      = 19</a>
+<a name="ln306">};</a>
+<a name="ln307">Q_DECLARE_TYPEINFO(HostOS, Q_PRIMITIVE_TYPE);</a>
+<a name="ln308"> </a>
+<a name="ln309">enum GeneralPurposeFlag {</a>
+<a name="ln310">    Encrypted = 0x01,</a>
+<a name="ln311">    AlgTune1 = 0x02,</a>
+<a name="ln312">    AlgTune2 = 0x04,</a>
+<a name="ln313">    HasDataDescriptor = 0x08,</a>
+<a name="ln314">    PatchedData = 0x20,</a>
+<a name="ln315">    StrongEncrypted = 0x40,</a>
+<a name="ln316">    Utf8Names = 0x0800,</a>
+<a name="ln317">    CentralDirectoryEncrypted = 0x2000</a>
+<a name="ln318">};</a>
+<a name="ln319">Q_DECLARE_TYPEINFO(GeneralPurposeFlag, Q_PRIMITIVE_TYPE);</a>
+<a name="ln320"> </a>
+<a name="ln321">enum CompressionMethod {</a>
+<a name="ln322">    CompressionMethodStored = 0,</a>
+<a name="ln323">    CompressionMethodShrunk = 1,</a>
+<a name="ln324">    CompressionMethodReduced1 = 2,</a>
+<a name="ln325">    CompressionMethodReduced2 = 3,</a>
+<a name="ln326">    CompressionMethodReduced3 = 4,</a>
+<a name="ln327">    CompressionMethodReduced4 = 5,</a>
+<a name="ln328">    CompressionMethodImploded = 6,</a>
+<a name="ln329">    CompressionMethodReservedTokenizing = 7, // reserved for tokenizing</a>
+<a name="ln330">    CompressionMethodDeflated = 8,</a>
+<a name="ln331">    CompressionMethodDeflated64 = 9,</a>
+<a name="ln332">    CompressionMethodPKImploding = 10,</a>
+<a name="ln333"> </a>
+<a name="ln334">    CompressionMethodBZip2 = 12,</a>
+<a name="ln335"> </a>
+<a name="ln336">    CompressionMethodLZMA = 14,</a>
+<a name="ln337"> </a>
+<a name="ln338">    CompressionMethodTerse = 18,</a>
+<a name="ln339">    CompressionMethodLz77 = 19,</a>
+<a name="ln340"> </a>
+<a name="ln341">    CompressionMethodJpeg = 96,</a>
+<a name="ln342">    CompressionMethodWavPack = 97,</a>
+<a name="ln343">    CompressionMethodPPMd = 98,</a>
+<a name="ln344">    CompressionMethodWzAES = 99</a>
+<a name="ln345">};</a>
+<a name="ln346">Q_DECLARE_TYPEINFO(CompressionMethod, Q_PRIMITIVE_TYPE);</a>
+<a name="ln347"> </a>
+<a name="ln348">struct LocalFileHeader</a>
+<a name="ln349">{</a>
+<a name="ln350">    uchar signature[4]; //  0x04034b50</a>
+<a name="ln351">    uchar version_needed[2];</a>
+<a name="ln352">    uchar general_purpose_bits[2];</a>
+<a name="ln353">    uchar compression_method[2];</a>
+<a name="ln354">    uchar last_mod_file[4];</a>
+<a name="ln355">    uchar crc_32[4];</a>
+<a name="ln356">    uchar compressed_size[4];</a>
+<a name="ln357">    uchar uncompressed_size[4];</a>
+<a name="ln358">    uchar file_name_length[2];</a>
+<a name="ln359">    uchar extra_field_length[2];</a>
+<a name="ln360">};</a>
+<a name="ln361">Q_DECLARE_TYPEINFO(LocalFileHeader, Q_PRIMITIVE_TYPE);</a>
+<a name="ln362"> </a>
+<a name="ln363">struct DataDescriptor</a>
+<a name="ln364">{</a>
+<a name="ln365">    uchar crc_32[4];</a>
+<a name="ln366">    uchar compressed_size[4];</a>
+<a name="ln367">    uchar uncompressed_size[4];</a>
+<a name="ln368">};</a>
+<a name="ln369">Q_DECLARE_TYPEINFO(DataDescriptor, Q_PRIMITIVE_TYPE);</a>
+<a name="ln370"> </a>
+<a name="ln371">struct CentralFileHeader</a>
+<a name="ln372">{</a>
+<a name="ln373">    uchar signature[4]; // 0x02014b50</a>
+<a name="ln374">    uchar version_made[2];</a>
+<a name="ln375">    uchar version_needed[2];</a>
+<a name="ln376">    uchar general_purpose_bits[2];</a>
+<a name="ln377">    uchar compression_method[2];</a>
+<a name="ln378">    uchar last_mod_file[4];</a>
+<a name="ln379">    uchar crc_32[4];</a>
+<a name="ln380">    uchar compressed_size[4];</a>
+<a name="ln381">    uchar uncompressed_size[4];</a>
+<a name="ln382">    uchar file_name_length[2];</a>
+<a name="ln383">    uchar extra_field_length[2];</a>
+<a name="ln384">    uchar file_comment_length[2];</a>
+<a name="ln385">    uchar disk_start[2];</a>
+<a name="ln386">    uchar internal_file_attributes[2];</a>
+<a name="ln387">    uchar external_file_attributes[4];</a>
+<a name="ln388">    uchar offset_local_header[4];</a>
+<a name="ln389">    LocalFileHeader toLocalHeader() const;</a>
+<a name="ln390">};</a>
+<a name="ln391">Q_DECLARE_TYPEINFO(CentralFileHeader, Q_PRIMITIVE_TYPE);</a>
+<a name="ln392"> </a>
+<a name="ln393">struct EndOfDirectory</a>
+<a name="ln394">{</a>
+<a name="ln395">    uchar signature[4]; // 0x06054b50</a>
+<a name="ln396">    uchar this_disk[2];</a>
+<a name="ln397">    uchar start_of_directory_disk[2];</a>
+<a name="ln398">    uchar num_dir_entries_this_disk[2];</a>
+<a name="ln399">    uchar num_dir_entries[2];</a>
+<a name="ln400">    uchar directory_size[4];</a>
+<a name="ln401">    uchar dir_start_offset[4];</a>
+<a name="ln402">    uchar comment_length[2];</a>
+<a name="ln403">};</a>
+<a name="ln404">Q_DECLARE_TYPEINFO(EndOfDirectory, Q_PRIMITIVE_TYPE);</a>
+<a name="ln405"> </a>
+<a name="ln406">struct FileHeader</a>
+<a name="ln407">{</a>
+<a name="ln408">    CentralFileHeader h;</a>
+<a name="ln409">    QByteArray file_name;</a>
+<a name="ln410">    QByteArray extra_field;</a>
+<a name="ln411">    QByteArray file_comment;</a>
+<a name="ln412">};</a>
+<a name="ln413">Q_DECLARE_TYPEINFO(FileHeader, Q_MOVABLE_TYPE);</a>
+<a name="ln414"> </a>
+<a name="ln415">class MQZipPrivate</a>
+<a name="ln416">{</a>
+<a name="ln417">public:</a>
+<a name="ln418">    MQZipPrivate(QIODevice *device, bool ownDev)</a>
+<a name="ln419">        : device(device), ownDevice(ownDev), dirtyFileTree(true), start_of_directory(0)</a>
+<a name="ln420">    {</a>
+<a name="ln421">    }</a>
+<a name="ln422"> </a>
+<a name="ln423">    ~MQZipPrivate()</a>
+<a name="ln424">    {</a>
+<a name="ln425">        if (ownDevice)</a>
+<a name="ln426">            delete device;</a>
+<a name="ln427">    }</a>
+<a name="ln428"> </a>
+<a name="ln429">    MQZipReader::FileInfo fillFileInfo(int index) const;</a>
+<a name="ln430"> </a>
+<a name="ln431">    QIODevice *device;</a>
+<a name="ln432">    bool ownDevice;</a>
+<a name="ln433">    bool dirtyFileTree;</a>
+<a name="ln434">    QVector&lt;FileHeader&gt; fileHeaders;</a>
+<a name="ln435">    QByteArray comment;</a>
+<a name="ln436">    uint start_of_directory;</a>
+<a name="ln437">};</a>
+<a name="ln438"> </a>
+<a name="ln439">MQZipReader::FileInfo MQZipPrivate::fillFileInfo(int index) const</a>
+<a name="ln440">{</a>
+<a name="ln441">    MQZipReader::FileInfo fileInfo;</a>
+<a name="ln442">    FileHeader header = fileHeaders.at(index);</a>
+<a name="ln443">    quint32 mode = readUInt(header.h.external_file_attributes);</a>
+<a name="ln444">    const HostOS hostOS = HostOS(readUShort(header.h.version_made) &gt;&gt; 8);</a>
+<a name="ln445">    switch (hostOS) {</a>
+<a name="ln446">    case HostUnix:</a>
+<a name="ln447">        mode = (mode &gt;&gt; 16) &amp; 0xffff;</a>
+<a name="ln448">        switch (mode &amp; UnixFileAttributes::TypeMask) {</a>
+<a name="ln449">        case UnixFileAttributes::SymLink:</a>
+<a name="ln450">            fileInfo.isSymLink = true;</a>
+<a name="ln451">            break;</a>
+<a name="ln452">        case UnixFileAttributes::Dir:</a>
+<a name="ln453">            fileInfo.isDir = true;</a>
+<a name="ln454">            break;</a>
+<a name="ln455">        case UnixFileAttributes::File:</a>
+<a name="ln456">        default: // ### just for the case; should we warn?</a>
+<a name="ln457">            fileInfo.isFile = true;</a>
+<a name="ln458">            break;</a>
+<a name="ln459">        }</a>
+<a name="ln460">        fileInfo.permissions = modeToPermissions(mode);</a>
+<a name="ln461">        break;</a>
+<a name="ln462">    case HostFAT:</a>
+<a name="ln463">    case HostNTFS:</a>
+<a name="ln464">    case HostHPFS:</a>
+<a name="ln465">    case HostVFAT:</a>
+<a name="ln466">        switch (mode &amp; WindowsFileAttributes::TypeMask) {</a>
+<a name="ln467">        case WindowsFileAttributes::Dir:</a>
+<a name="ln468">            fileInfo.isDir = true;</a>
+<a name="ln469">            break;</a>
+<a name="ln470">        case WindowsFileAttributes::File:</a>
+<a name="ln471">        default:</a>
+<a name="ln472">            fileInfo.isFile = true;</a>
+<a name="ln473">            break;</a>
+<a name="ln474">        }</a>
+<a name="ln475">        fileInfo.permissions |= QFile::ReadOwner | QFile::ReadUser | QFile::ReadGroup | QFile::ReadOther;</a>
+<a name="ln476">        if ((mode &amp; WindowsFileAttributes::ReadOnly) == 0)</a>
+<a name="ln477">            fileInfo.permissions |= QFile::WriteOwner | QFile::WriteUser | QFile::WriteGroup | QFile::WriteOther;</a>
+<a name="ln478">        if (fileInfo.isDir)</a>
+<a name="ln479">            fileInfo.permissions |= QFile::ExeOwner | QFile::ExeUser | QFile::ExeGroup | QFile::ExeOther;</a>
+<a name="ln480">        break;</a>
+<a name="ln481">    default:</a>
+<a name="ln482">        qWarning(&quot;QZip: Zip entry format at %d is not supported.&quot;, index);</a>
+<a name="ln483">        return fileInfo; // we don't support anything else</a>
+<a name="ln484">    }</a>
+<a name="ln485"> </a>
+<a name="ln486">    ushort general_purpose_bits = readUShort(header.h.general_purpose_bits);</a>
+<a name="ln487">    // if bit 11 is set, the filename and comment fields must be encoded using UTF-8</a>
+<a name="ln488">    const bool inUtf8 = (general_purpose_bits &amp; Utf8Names) != 0;</a>
+<a name="ln489">    fileInfo.filePath = inUtf8 ? QString::fromUtf8(header.file_name) : QString::fromLocal8Bit(header.file_name);</a>
+<a name="ln490">    fileInfo.crc = readUInt(header.h.crc_32);</a>
+<a name="ln491">    fileInfo.size = readUInt(header.h.uncompressed_size);</a>
+<a name="ln492">    fileInfo.lastModified = readMSDosDate(header.h.last_mod_file);</a>
+<a name="ln493"> </a>
+<a name="ln494">    // fix the file path, if broken (convert separators, eat leading and trailing ones)</a>
+<a name="ln495">    fileInfo.filePath = QDir::fromNativeSeparators(fileInfo.filePath);</a>
+<a name="ln496">    while (!fileInfo.filePath.isEmpty() &amp;&amp; (fileInfo.filePath.at(0) == QLatin1Char('.') || fileInfo.filePath.at(0) == QLatin1Char('/')))</a>
+<a name="ln497">        fileInfo.filePath = fileInfo.filePath.mid(1);</a>
+<a name="ln498">    while (!fileInfo.filePath.isEmpty() &amp;&amp; fileInfo.filePath.at(fileInfo.filePath.size() - 1) == QLatin1Char('/'))</a>
+<a name="ln499">        fileInfo.filePath.chop(1);</a>
+<a name="ln500">    return fileInfo;</a>
+<a name="ln501">}</a>
+<a name="ln502"> </a>
+<a name="ln503">class MQZipReaderPrivate : public MQZipPrivate</a>
+<a name="ln504">{</a>
+<a name="ln505">public:</a>
+<a name="ln506">    MQZipReaderPrivate(QIODevice *device, bool ownDev)</a>
+<a name="ln507">        : MQZipPrivate(device, ownDev), status(MQZipReader::NoError)</a>
+<a name="ln508">    {</a>
+<a name="ln509">    }</a>
+<a name="ln510"> </a>
+<a name="ln511">    void scanFiles();</a>
+<a name="ln512"> </a>
+<a name="ln513">    MQZipReader::Status status;</a>
+<a name="ln514">};</a>
+<a name="ln515"> </a>
+<a name="ln516">class MQZipWriterPrivate : public MQZipPrivate</a>
+<a name="ln517">{</a>
+<a name="ln518">public:</a>
+<a name="ln519">    MQZipWriterPrivate(QIODevice *device, bool ownDev)</a>
+<a name="ln520">        : MQZipPrivate(device, ownDev),</a>
+<a name="ln521">        status(MQZipWriter::NoError),</a>
+<a name="ln522">        permissions(QFile::ReadOwner | QFile::WriteOwner),</a>
+<a name="ln523">        compressionPolicy(MQZipWriter::AlwaysCompress)</a>
+<a name="ln524">    {</a>
+<a name="ln525">    }</a>
+<a name="ln526"> </a>
+<a name="ln527">    MQZipWriter::Status status;</a>
+<a name="ln528">    QFile::Permissions permissions;</a>
+<a name="ln529">    MQZipWriter::CompressionPolicy compressionPolicy;</a>
+<a name="ln530"> </a>
+<a name="ln531">    enum EntryType { Directory, File, Symlink };</a>
+<a name="ln532"> </a>
+<a name="ln533">    void addEntry(EntryType type, const QString &amp;fileName, const QByteArray &amp;contents);</a>
+<a name="ln534">};</a>
+<a name="ln535"> </a>
+<a name="ln536">LocalFileHeader CentralFileHeader::toLocalHeader() const</a>
+<a name="ln537">{</a>
+<a name="ln538">    LocalFileHeader h;</a>
+<a name="ln539">    writeUInt(h.signature, 0x04034b50);</a>
+<a name="ln540">    copyUShort(h.version_needed, version_needed);</a>
+<a name="ln541">    copyUShort(h.general_purpose_bits, general_purpose_bits);</a>
+<a name="ln542">    copyUShort(h.compression_method, compression_method);</a>
+<a name="ln543">    copyUInt(h.last_mod_file, last_mod_file);</a>
+<a name="ln544">    copyUInt(h.crc_32, crc_32);</a>
+<a name="ln545">    copyUInt(h.compressed_size, compressed_size);</a>
+<a name="ln546">    copyUInt(h.uncompressed_size, uncompressed_size);</a>
+<a name="ln547">    copyUShort(h.file_name_length, file_name_length);</a>
+<a name="ln548">    copyUShort(h.extra_field_length, extra_field_length);</a>
+<a name="ln549">    return h;</a>
+<a name="ln550">}</a>
+<a name="ln551"> </a>
+<a name="ln552">void MQZipReaderPrivate::scanFiles()</a>
+<a name="ln553">{</a>
+<a name="ln554">    if (!dirtyFileTree)</a>
+<a name="ln555">        return;</a>
+<a name="ln556"> </a>
+<a name="ln557">    if (! (device-&gt;isOpen() || device-&gt;open(QIODevice::ReadOnly))) {</a>
+<a name="ln558">        status = MQZipReader::FileOpenError;</a>
+<a name="ln559">        return;</a>
+<a name="ln560">    }</a>
+<a name="ln561"> </a>
+<a name="ln562">    if ((device-&gt;openMode() &amp; QIODevice::ReadOnly) == 0) { // only read the index from readable files.</a>
+<a name="ln563">        status = MQZipReader::FileReadError;</a>
+<a name="ln564">        return;</a>
+<a name="ln565">    }</a>
+<a name="ln566"> </a>
+<a name="ln567">    dirtyFileTree = false;</a>
+<a name="ln568">    uchar tmp[4];</a>
+<a name="ln569">    device-&gt;read((char *)tmp, 4);</a>
+<a name="ln570">    if (readUInt(tmp) != 0x04034b50) {</a>
+<a name="ln571">        qWarning(&quot;QZip: not a zip file!&quot;);</a>
+<a name="ln572">        return;</a>
+<a name="ln573">    }</a>
+<a name="ln574"> </a>
+<a name="ln575">    // find EndOfDirectory header</a>
+<a name="ln576">    int i = 0;</a>
+<a name="ln577">    int start_of_directory_local = -1;</a>
+<a name="ln578">    int num_dir_entries = 0;</a>
+<a name="ln579">    EndOfDirectory eod;</a>
+<a name="ln580">    while (start_of_directory_local == -1) {</a>
+<a name="ln581">        const int pos = device-&gt;size() - int(sizeof(EndOfDirectory)) - i;</a>
+<a name="ln582">        if (pos &lt; 0 || i &gt; 65535) {</a>
+<a name="ln583">            qWarning(&quot;QZip: EndOfDirectory not found&quot;);</a>
+<a name="ln584">            return;</a>
+<a name="ln585">        }</a>
+<a name="ln586"> </a>
+<a name="ln587">        device-&gt;seek(pos);</a>
+<a name="ln588">        device-&gt;read((char *)&amp;eod, sizeof(EndOfDirectory));</a>
+<a name="ln589">        if (readUInt(eod.signature) == 0x06054b50)</a>
+<a name="ln590">            break;</a>
+<a name="ln591">        ++i;</a>
+<a name="ln592">    }</a>
+<a name="ln593"> </a>
+<a name="ln594">    // have the eod</a>
+<a name="ln595">    start_of_directory_local = readUInt(eod.dir_start_offset);</a>
+<a name="ln596">    num_dir_entries = readUShort(eod.num_dir_entries);</a>
+<a name="ln597">    ZDEBUG(&quot;start_of_directory at %d, num_dir_entries=%d&quot;, start_of_directory_local, num_dir_entries);</a>
+<a name="ln598">    int comment_length = readUShort(eod.comment_length);</a>
+<a name="ln599">    if (comment_length != i)</a>
+<a name="ln600">        qWarning(&quot;QZip: failed to parse zip file.&quot;);</a>
+<a name="ln601">    comment = device-&gt;read(qMin(comment_length, i));</a>
+<a name="ln602"> </a>
+<a name="ln603"> </a>
+<a name="ln604">    device-&gt;seek(start_of_directory_local);</a>
+<a name="ln605">    for (i = 0; i &lt; num_dir_entries; ++i) {</a>
+<a name="ln606">        FileHeader header;</a>
+<a name="ln607">        int read = device-&gt;read((char *) &amp;header.h, sizeof(CentralFileHeader));</a>
+<a name="ln608">        if (read &lt; (int)sizeof(CentralFileHeader)) {</a>
+<a name="ln609">            qWarning(&quot;QZip: Failed to read complete header, index may be incomplete&quot;);</a>
+<a name="ln610">            break;</a>
+<a name="ln611">        }</a>
+<a name="ln612">        if (readUInt(header.h.signature) != 0x02014b50) {</a>
+<a name="ln613">            qWarning(&quot;QZip: invalid header signature, index may be incomplete&quot;);</a>
+<a name="ln614">            break;</a>
+<a name="ln615">        }</a>
+<a name="ln616"> </a>
+<a name="ln617">        int l = readUShort(header.h.file_name_length);</a>
+<a name="ln618">        header.file_name = device-&gt;read(l);</a>
+<a name="ln619">        if (header.file_name.length() != l) {</a>
+<a name="ln620">            qWarning(&quot;QZip: Failed to read filename from zip index, index may be incomplete&quot;);</a>
+<a name="ln621">            break;</a>
+<a name="ln622">        }</a>
+<a name="ln623">        l = readUShort(header.h.extra_field_length);</a>
+<a name="ln624">        header.extra_field = device-&gt;read(l);</a>
+<a name="ln625">        if (header.extra_field.length() != l) {</a>
+<a name="ln626">            qWarning(&quot;QZip: Failed to read extra field in zip file, skipping file, index may be incomplete&quot;);</a>
+<a name="ln627">            break;</a>
+<a name="ln628">        }</a>
+<a name="ln629">        l = readUShort(header.h.file_comment_length);</a>
+<a name="ln630">        header.file_comment = device-&gt;read(l);</a>
+<a name="ln631">        if (header.file_comment.length() != l) {</a>
+<a name="ln632">            qWarning(&quot;QZip: Failed to read read file comment, index may be incomplete&quot;);</a>
+<a name="ln633">            break;</a>
+<a name="ln634">        }</a>
+<a name="ln635"> </a>
+<a name="ln636">        ZDEBUG(&quot;found file '%s'&quot;, header.file_name.data());</a>
+<a name="ln637">        fileHeaders.append(header);</a>
+<a name="ln638">    }</a>
+<a name="ln639">}</a>
+<a name="ln640"> </a>
+<a name="ln641">void MQZipWriterPrivate::addEntry(EntryType type, const QString &amp;fileName, const QByteArray &amp;contents/*, QFile::Permissions permissions, QZip::Method m*/)</a>
+<a name="ln642">{</a>
+<a name="ln643">#ifndef NDEBUG</a>
+<a name="ln644">    static const char *const entryTypes[] = {</a>
+<a name="ln645">        &quot;directory&quot;,</a>
+<a name="ln646">        &quot;file     &quot;,</a>
+<a name="ln647">        &quot;symlink  &quot; };</a>
+<a name="ln648">    ZDEBUG() &lt;&lt; &quot;adding&quot; &lt;&lt; entryTypes[type] &lt;&lt;&quot;:&quot; &lt;&lt; fileName.toUtf8().data() &lt;&lt; (type == 2 ? QByteArray(&quot; -&gt; &quot; + contents).constData() : &quot;&quot;);</a>
+<a name="ln649">#endif</a>
+<a name="ln650"> </a>
+<a name="ln651">    if (! (device-&gt;isOpen() || device-&gt;open(QIODevice::WriteOnly))) {</a>
+<a name="ln652">        status = MQZipWriter::FileOpenError;</a>
+<a name="ln653">        return;</a>
+<a name="ln654">    }</a>
+<a name="ln655">    device-&gt;seek(start_of_directory);</a>
+<a name="ln656"> </a>
+<a name="ln657">    // don't compress small files</a>
+<a name="ln658">    MQZipWriter::CompressionPolicy compression = compressionPolicy;</a>
+<a name="ln659">    if (compressionPolicy == MQZipWriter::AutoCompress) {</a>
+<a name="ln660">        if (contents.length() &lt; 64)</a>
+<a name="ln661">            compression = MQZipWriter::NeverCompress;</a>
+<a name="ln662">        else</a>
+<a name="ln663">            compression = MQZipWriter::AlwaysCompress;</a>
+<a name="ln664">    }</a>
+<a name="ln665"> </a>
+<a name="ln666">    FileHeader header;</a>
+<a name="ln667">    memset(&amp;header.h, 0, sizeof(CentralFileHeader));</a>
+<a name="ln668">    writeUInt(header.h.signature, 0x02014b50);</a>
+<a name="ln669"> </a>
+<a name="ln670">    writeUShort(header.h.version_needed, ZIP_VERSION);</a>
+<a name="ln671">    writeUInt(header.h.uncompressed_size, contents.length());</a>
+<a name="ln672">    writeMSDosDate(header.h.last_mod_file, QDateTime::currentDateTime());</a>
+<a name="ln673">    QByteArray data = contents;</a>
+<a name="ln674">    if (compression == MQZipWriter::AlwaysCompress) {</a>
+<a name="ln675">        writeUShort(header.h.compression_method, CompressionMethodDeflated);</a>
+<a name="ln676"> </a>
+<a name="ln677">       ulong len = contents.length();</a>
+<a name="ln678">        // shamelessly copied form zlib</a>
+<a name="ln679">        len += (len &gt;&gt; 12) + (len &gt;&gt; 14) + 11;</a>
+<a name="ln680">        int res;</a>
+<a name="ln681">        do {</a>
+<a name="ln682">            data.resize(len);</a>
+<a name="ln683">            res = deflate((uchar*)data.data(), &amp;len, (const uchar*)contents.constData(), contents.length());</a>
+<a name="ln684"> </a>
+<a name="ln685">            switch (res) {</a>
+<a name="ln686">            case Z_OK:</a>
+<a name="ln687">                data.resize(len);</a>
+<a name="ln688">                break;</a>
+<a name="ln689">            case Z_MEM_ERROR:</a>
+<a name="ln690">                qWarning(&quot;QZip: Z_MEM_ERROR: Not enough memory to compress file, skipping&quot;);</a>
+<a name="ln691">                data.resize(0);</a>
+<a name="ln692">                break;</a>
+<a name="ln693">            case Z_BUF_ERROR:</a>
+<a name="ln694">                len *= 2;</a>
+<a name="ln695">                break;</a>
+<a name="ln696">            }</a>
+<a name="ln697">        } while (res == Z_BUF_ERROR);</a>
+<a name="ln698">    }</a>
+<a name="ln699">// TODO add a check if data.length() &gt; contents.length().  Then try to store the original and revert the compression method to be uncompressed</a>
+<a name="ln700">    writeUInt(header.h.compressed_size, data.length());</a>
+<a name="ln701">    uint crc_32 = ::crc32(0, 0, 0);</a>
+<a name="ln702">    crc_32 = ::crc32(crc_32, (const uchar *)contents.constData(), contents.length());</a>
+<a name="ln703">    writeUInt(header.h.crc_32, crc_32);</a>
+<a name="ln704"> </a>
+<a name="ln705">    // if bit 11 is set, the filename and comment fields must be encoded using UTF-8</a>
+<a name="ln706">    ushort general_purpose_bits = Utf8Names; // always use utf-8</a>
+<a name="ln707">    writeUShort(header.h.general_purpose_bits, general_purpose_bits);</a>
+<a name="ln708"> </a>
+<a name="ln709">    const bool inUtf8 = (general_purpose_bits &amp; Utf8Names) != 0;</a>
+<a name="ln710">    header.file_name = inUtf8 ? fileName.toUtf8() : fileName.toLocal8Bit();</a>
+<a name="ln711">    if (header.file_name.size() &gt; 0xffff) {</a>
+<a name="ln712">        qWarning(&quot;QZip: Filename is too long, chopping it to 65535 bytes&quot;);</a>
+<a name="ln713">        header.file_name = header.file_name.left(0xffff); // ### don't break the utf-8 sequence, if any</a>
+<a name="ln714">    }</a>
+<a name="ln715">    if (header.file_comment.size() + header.file_name.size() &gt; 0xffff) {</a>
+<a name="ln716">        qWarning(&quot;QZip: File comment is too long, chopping it to 65535 bytes&quot;);</a>
+<a name="ln717">        header.file_comment.truncate(0xffff - header.file_name.size()); // ### don't break the utf-8 sequence, if any</a>
+<a name="ln718">    }</a>
+<a name="ln719">    writeUShort(header.h.file_name_length, header.file_name.length());</a>
+<a name="ln720">    //h.extra_field_length[2];</a>
+<a name="ln721"> </a>
+<a name="ln722">    writeUShort(header.h.version_made, HostUnix &lt;&lt; 8);</a>
+<a name="ln723">    //uchar internal_file_attributes[2];</a>
+<a name="ln724">    //uchar external_file_attributes[4];</a>
+<a name="ln725">    quint32 mode = permissionsToMode(permissions);</a>
+<a name="ln726">    switch (type) {</a>
+<a name="ln727">    case Symlink:</a>
+<a name="ln728">        mode |= UnixFileAttributes::SymLink;</a>
+<a name="ln729">        break;</a>
+<a name="ln730">    case Directory:</a>
+<a name="ln731">        mode |= UnixFileAttributes::Dir;</a>
+<a name="ln732">        break;</a>
+<a name="ln733">    case File:</a>
+<a name="ln734">        mode |= UnixFileAttributes::File;</a>
+<a name="ln735">        break;</a>
+<a name="ln736">    default:</a>
+<a name="ln737">        Q_UNREACHABLE();</a>
+<a name="ln738">        break;</a>
+<a name="ln739">    }</a>
+<a name="ln740">    writeUInt(header.h.external_file_attributes, mode &lt;&lt; 16);</a>
+<a name="ln741">    writeUInt(header.h.offset_local_header, start_of_directory);</a>
+<a name="ln742"> </a>
+<a name="ln743"> </a>
+<a name="ln744">    fileHeaders.append(header);</a>
+<a name="ln745"> </a>
+<a name="ln746">    LocalFileHeader h = header.h.toLocalHeader();</a>
+<a name="ln747">    device-&gt;write((const char *)&amp;h, sizeof(LocalFileHeader));</a>
+<a name="ln748">    device-&gt;write(header.file_name);</a>
+<a name="ln749">    device-&gt;write(data);</a>
+<a name="ln750">    start_of_directory = device-&gt;pos();</a>
+<a name="ln751">    dirtyFileTree = true;</a>
+<a name="ln752">}</a>
+<a name="ln753"> </a>
+<a name="ln754">//////////////////////////////  Reader</a>
+<a name="ln755"> </a>
+<a name="ln756">/*!</a>
+<a name="ln757">    \class QZipReader::FileInfo</a>
+<a name="ln758">    \internal</a>
+<a name="ln759">    Represents one entry in the zip table of contents.</a>
+<a name="ln760">*/</a>
+<a name="ln761"> </a>
+<a name="ln762">/*!</a>
+<a name="ln763">    \variable FileInfo::filePath</a>
+<a name="ln764">    The full filepath inside the archive.</a>
+<a name="ln765">*/</a>
+<a name="ln766"> </a>
+<a name="ln767">/*!</a>
+<a name="ln768">    \variable FileInfo::isDir</a>
+<a name="ln769">    A boolean type indicating if the entry is a directory.</a>
+<a name="ln770">*/</a>
+<a name="ln771"> </a>
+<a name="ln772">/*!</a>
+<a name="ln773">    \variable FileInfo::isFile</a>
+<a name="ln774">    A boolean type, if it is one this entry is a file.</a>
+<a name="ln775">*/</a>
+<a name="ln776"> </a>
+<a name="ln777">/*!</a>
+<a name="ln778">    \variable FileInfo::isSymLink</a>
+<a name="ln779">    A boolean type, if it is one this entry is symbolic link.</a>
+<a name="ln780">*/</a>
+<a name="ln781"> </a>
+<a name="ln782">/*!</a>
+<a name="ln783">    \variable FileInfo::permissions</a>
+<a name="ln784">    A list of flags for the permissions of this entry.</a>
+<a name="ln785">*/</a>
+<a name="ln786"> </a>
+<a name="ln787">/*!</a>
+<a name="ln788">    \variable FileInfo::crc</a>
+<a name="ln789">    The calculated checksum as a crc type.</a>
+<a name="ln790">*/</a>
+<a name="ln791"> </a>
+<a name="ln792">/*!</a>
+<a name="ln793">    \variable FileInfo::size</a>
+<a name="ln794">    The total size of the unpacked content.</a>
+<a name="ln795">*/</a>
+<a name="ln796"> </a>
+<a name="ln797">/*!</a>
+<a name="ln798">    \class QZipReader</a>
+<a name="ln799">    \internal</a>
+<a name="ln800">    \since 4.5</a>
+<a name="ln801"> </a>
+<a name="ln802">    \brief the QZipReader class provides a way to inspect the contents of a zip</a>
+<a name="ln803">    archive and extract individual files from it.</a>
+<a name="ln804"> </a>
+<a name="ln805">    QZipReader can be used to read a zip archive either from a file or from any</a>
+<a name="ln806">    device. An in-memory QBuffer for instance.  The reader can be used to read</a>
+<a name="ln807">    which files are in the archive using fileInfoList() and entryInfoAt() but</a>
+<a name="ln808">    also to extract individual files using fileData() or even to extract all</a>
+<a name="ln809">    files in the archive using extractAll()</a>
+<a name="ln810">*/</a>
+<a name="ln811"> </a>
+<a name="ln812">/*!</a>
+<a name="ln813">    Create a new zip archive that operates on the \a fileName.  The file will be</a>
+<a name="ln814">    opened with the \a mode.</a>
+<a name="ln815">*/</a>
+<a name="ln816">MQZipReader::MQZipReader(const QString &amp;archive, QIODevice::OpenMode mode)</a>
+<a name="ln817">{</a>
+<a name="ln818">    QScopedPointer&lt;QFile&gt; f(new QFile(archive));</a>
+<a name="ln819">    const bool result = f-&gt;open(mode);</a>
+<a name="ln820">    MQZipReader::Status status;</a>
+<a name="ln821">    const QFileDevice::FileError error = f-&gt;error();</a>
+<a name="ln822">    if (result &amp;&amp; error == QFile::NoError) {</a>
+<a name="ln823">        status = NoError;</a>
+<a name="ln824">    } else {</a>
+<a name="ln825">        if (error == QFile::ReadError)</a>
+<a name="ln826">            status = FileReadError;</a>
+<a name="ln827">        else if (error == QFile::OpenError)</a>
+<a name="ln828">            status = FileOpenError;</a>
+<a name="ln829">        else if (error == QFile::PermissionsError)</a>
+<a name="ln830">            status = FilePermissionsError;</a>
+<a name="ln831">        else</a>
+<a name="ln832">            status = FileError;</a>
+<a name="ln833">    }</a>
+<a name="ln834"> </a>
+<a name="ln835">    d = new MQZipReaderPrivate(f.data(), /*ownDevice=*/true);</a>
+<a name="ln836">    f.take();</a>
+<a name="ln837">    d-&gt;status = status;</a>
+<a name="ln838">}</a>
+<a name="ln839"> </a>
+<a name="ln840">/*!</a>
+<a name="ln841">    Create a new zip archive that operates on the archive found in \a device.</a>
+<a name="ln842">    You have to open the device previous to calling the constructor and only a</a>
+<a name="ln843">    device that is readable will be scanned for zip filecontent.</a>
+<a name="ln844"> */</a>
+<a name="ln845">MQZipReader::MQZipReader(QIODevice *device)</a>
+<a name="ln846">    : d(new MQZipReaderPrivate(device, /*ownDevice=*/false))</a>
+<a name="ln847">{</a>
+<a name="ln848">    Q_ASSERT(device);</a>
+<a name="ln849">}</a>
+<a name="ln850"> </a>
+<a name="ln851">/*!</a>
+<a name="ln852">    Desctructor</a>
+<a name="ln853">*/</a>
+<a name="ln854">MQZipReader::~MQZipReader()</a>
+<a name="ln855">{</a>
+<a name="ln856">    close();</a>
+<a name="ln857">    delete d;</a>
+<a name="ln858">}</a>
+<a name="ln859"> </a>
+<a name="ln860">/*!</a>
+<a name="ln861">    Returns device used for reading zip archive.</a>
+<a name="ln862">*/</a>
+<a name="ln863">QIODevice* MQZipReader::device() const</a>
+<a name="ln864">{</a>
+<a name="ln865">    return d-&gt;device;</a>
+<a name="ln866">}</a>
+<a name="ln867"> </a>
+<a name="ln868">/*!</a>
+<a name="ln869">    Returns \c true if the user can read the file; otherwise returns \c false.</a>
+<a name="ln870">*/</a>
+<a name="ln871">bool MQZipReader::isReadable() const</a>
+<a name="ln872">{</a>
+<a name="ln873">    return d-&gt;device-&gt;isReadable();</a>
+<a name="ln874">}</a>
+<a name="ln875"> </a>
+<a name="ln876">/*!</a>
+<a name="ln877">    Returns \c true if the file exists; otherwise returns \c false.</a>
+<a name="ln878">*/</a>
+<a name="ln879">bool MQZipReader::exists() const</a>
+<a name="ln880">{</a>
+<a name="ln881">    QFile *f = qobject_cast&lt;QFile*&gt; (d-&gt;device);</a>
+<a name="ln882">    if (f == 0)</a>
+<a name="ln883">        return true;</a>
+<a name="ln884">    return f-&gt;exists();</a>
+<a name="ln885">}</a>
+<a name="ln886"> </a>
+<a name="ln887">/*!</a>
+<a name="ln888">    Returns the list of files the archive contains.</a>
+<a name="ln889">*/</a>
+<a name="ln890">QVector&lt;MQZipReader::FileInfo&gt; MQZipReader::fileInfoList() const</a>
+<a name="ln891">{</a>
+<a name="ln892">    d-&gt;scanFiles();</a>
+<a name="ln893">    QVector&lt;FileInfo&gt; files;</a>
+<a name="ln894">    const int numFileHeaders = d-&gt;fileHeaders.size();</a>
+<a name="ln895">    files.reserve(numFileHeaders);</a>
+<a name="ln896">    for (int i = 0; i &lt; numFileHeaders; ++i)</a>
+<a name="ln897">        files.append(d-&gt;fillFileInfo(i));</a>
+<a name="ln898">    return files;</a>
+<a name="ln899"> </a>
+<a name="ln900">}</a>
+<a name="ln901"> </a>
+<a name="ln902">/*!</a>
+<a name="ln903">    Return the number of items in the zip archive.</a>
+<a name="ln904">*/</a>
+<a name="ln905">int MQZipReader::count() const</a>
+<a name="ln906">{</a>
+<a name="ln907">    d-&gt;scanFiles();</a>
+<a name="ln908">    return d-&gt;fileHeaders.count();</a>
+<a name="ln909">}</a>
+<a name="ln910"> </a>
+<a name="ln911">/*!</a>
+<a name="ln912">    Returns a FileInfo of an entry in the zipfile.</a>
+<a name="ln913">    The \a index is the index into the directory listing of the zipfile.</a>
+<a name="ln914">    Returns an invalid FileInfo if \a index is out of boundaries.</a>
+<a name="ln915"> </a>
+<a name="ln916">    \sa fileInfoList()</a>
+<a name="ln917">*/</a>
+<a name="ln918">MQZipReader::FileInfo MQZipReader::entryInfoAt(int index) const</a>
+<a name="ln919">{</a>
+<a name="ln920">    d-&gt;scanFiles();</a>
+<a name="ln921">    if (index &gt;= 0 &amp;&amp; index &lt; d-&gt;fileHeaders.count())</a>
+<a name="ln922">        return d-&gt;fillFileInfo(index);</a>
+<a name="ln923">    return MQZipReader::FileInfo();</a>
+<a name="ln924">}</a>
+<a name="ln925"> </a>
+<a name="ln926">/*!</a>
+<a name="ln927">    Fetch the file contents from the zip archive and return the uncompressed bytes.</a>
+<a name="ln928">*/</a>
+<a name="ln929">QByteArray MQZipReader::fileData(const QString &amp;fileName) const</a>
+<a name="ln930">{</a>
+<a name="ln931">    d-&gt;scanFiles();</a>
+<a name="ln932">    int i;</a>
+<a name="ln933">    for (i = 0; i &lt; d-&gt;fileHeaders.size(); ++i) {</a>
+<a name="ln934">        if (QString::fromUtf8(d-&gt;fileHeaders.at(i).file_name) == fileName)</a>
+<a name="ln935">            break;</a>
+<a name="ln936">    }</a>
+<a name="ln937">    if (i == d-&gt;fileHeaders.size())</a>
+<a name="ln938">        return QByteArray();</a>
+<a name="ln939"> </a>
+<a name="ln940">    FileHeader header = d-&gt;fileHeaders.at(i);</a>
+<a name="ln941"> </a>
+<a name="ln942">    ushort version_needed = readUShort(header.h.version_needed);</a>
+<a name="ln943">    if (version_needed &gt; ZIP_VERSION) {</a>
+<a name="ln944">        qWarning(&quot;QZip: .ZIP specification version %d implementationis needed to extract the data.&quot;, version_needed);</a>
+<a name="ln945">        return QByteArray();</a>
+<a name="ln946">    }</a>
+<a name="ln947"> </a>
+<a name="ln948">    ushort general_purpose_bits = readUShort(header.h.general_purpose_bits);</a>
+<a name="ln949">    int compressed_size = readUInt(header.h.compressed_size);</a>
+<a name="ln950">    int uncompressed_size = readUInt(header.h.uncompressed_size);</a>
+<a name="ln951">    int start = readUInt(header.h.offset_local_header);</a>
+<a name="ln952">    //qDebug(&quot;uncompressing file %d: local header at %d&quot;, i, start);</a>
+<a name="ln953"> </a>
+<a name="ln954">    d-&gt;device-&gt;seek(start);</a>
+<a name="ln955">    LocalFileHeader lh;</a>
+<a name="ln956">    d-&gt;device-&gt;read((char *)&amp;lh, sizeof(LocalFileHeader));</a>
+<a name="ln957">    uint skip = readUShort(lh.file_name_length) + readUShort(lh.extra_field_length);</a>
+<a name="ln958">    d-&gt;device-&gt;seek(d-&gt;device-&gt;pos() + skip);</a>
+<a name="ln959"> </a>
+<a name="ln960">    int compression_method = readUShort(lh.compression_method);</a>
+<a name="ln961">    //qDebug(&quot;file=%s: compressed_size=%d, uncompressed_size=%d&quot;, fileName.toLocal8Bit().data(), compressed_size, uncompressed_size);</a>
+<a name="ln962"> </a>
+<a name="ln963">    if ((general_purpose_bits &amp; Encrypted) != 0) {</a>
+<a name="ln964">        qWarning(&quot;QZip: Unsupported encryption method is needed to extract the data.&quot;);</a>
+<a name="ln965">        return QByteArray();</a>
+<a name="ln966">    }</a>
+<a name="ln967"> </a>
+<a name="ln968">    //qDebug(&quot;file at %lld&quot;, d-&gt;device-&gt;pos());</a>
+<a name="ln969">    QByteArray compressed = d-&gt;device-&gt;read(compressed_size);</a>
+<a name="ln970">    if (compression_method == CompressionMethodStored) {</a>
+<a name="ln971">        // no compression</a>
+<a name="ln972">        compressed.truncate(uncompressed_size);</a>
+<a name="ln973">        return compressed;</a>
+<a name="ln974">    } else if (compression_method == CompressionMethodDeflated) {</a>
+<a name="ln975">        // Deflate</a>
+<a name="ln976">        //qDebug(&quot;compressed=%d&quot;, compressed.size());</a>
+<a name="ln977">        compressed.truncate(compressed_size);</a>
+<a name="ln978">        QByteArray baunzip;</a>
+<a name="ln979">        ulong len = qMax(uncompressed_size,  1);</a>
+<a name="ln980">        int res;</a>
+<a name="ln981">        do {</a>
+<a name="ln982">            baunzip.resize(len);</a>
+<a name="ln983">            res = inflate((uchar*)baunzip.data(), &amp;len,</a>
+<a name="ln984">                          (const uchar*)compressed.constData(), compressed_size);</a>
+<a name="ln985"> </a>
+<a name="ln986">            switch (res) {</a>
+<a name="ln987">            case Z_OK:</a>
+<a name="ln988">                if ((int)len != baunzip.size())</a>
+<a name="ln989">                    baunzip.resize(len);</a>
+<a name="ln990">                break;</a>
+<a name="ln991">            case Z_MEM_ERROR:</a>
+<a name="ln992">                qWarning(&quot;QZip: Z_MEM_ERROR: Not enough memory&quot;);</a>
+<a name="ln993">                break;</a>
+<a name="ln994">            case Z_BUF_ERROR:</a>
+<a name="ln995">                len *= 2;</a>
+<a name="ln996">                break;</a>
+<a name="ln997">            case Z_DATA_ERROR:</a>
+<a name="ln998">                qWarning(&quot;QZip: Z_DATA_ERROR: Input data is corrupted&quot;);</a>
+<a name="ln999">                break;</a>
+<a name="ln1000">            }</a>
+<a name="ln1001">        } while (res == Z_BUF_ERROR);</a>
+<a name="ln1002">        return baunzip;</a>
+<a name="ln1003">    }</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    qWarning(&quot;QZip: Unsupported compression method %d is needed to extract the data.&quot;, compression_method);</a>
+<a name="ln1006">    return QByteArray();</a>
+<a name="ln1007">}</a>
+<a name="ln1008"> </a>
+<a name="ln1009">/*!</a>
+<a name="ln1010">    Extracts the full contents of the zip file into \a destinationDir on</a>
+<a name="ln1011">    the local filesystem.</a>
+<a name="ln1012">    In case writing or linking a file fails, the extraction will be aborted.</a>
+<a name="ln1013">*/</a>
+<a name="ln1014">bool MQZipReader::extractAll(const QString &amp;destinationDir) const</a>
+<a name="ln1015">{</a>
+<a name="ln1016">    QDir baseDir(destinationDir);</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    // create directories first</a>
+<a name="ln1019">    const QVector&lt;FileInfo&gt; allFiles = fileInfoList();</a>
+<a name="ln1020">    for (const FileInfo &amp;fi : allFiles) {</a>
+<a name="ln1021">        const QString absPath = destinationDir + QDir::separator() + fi.filePath;</a>
+<a name="ln1022">        if (fi.isDir) {</a>
+<a name="ln1023">            if (!baseDir.mkpath(fi.filePath))</a>
+<a name="ln1024">                return false;</a>
+<a name="ln1025">            if (!QFile::setPermissions(absPath, fi.permissions))</a>
+<a name="ln1026">                return false;</a>
+<a name="ln1027">        }</a>
+<a name="ln1028">    }</a>
+<a name="ln1029"> </a>
+<a name="ln1030">    // set up symlinks</a>
+<a name="ln1031">    for (const FileInfo &amp;fi : allFiles) {</a>
+<a name="ln1032">        const QString absPath = destinationDir + QDir::separator() + fi.filePath;</a>
+<a name="ln1033">        if (fi.isSymLink) {</a>
+<a name="ln1034">            QString destination = QFile::decodeName(fileData(fi.filePath));</a>
+<a name="ln1035">            if (destination.isEmpty())</a>
+<a name="ln1036">                return false;</a>
+<a name="ln1037">            QFileInfo linkFi(absPath);</a>
+<a name="ln1038">            if (!QFile::exists(linkFi.absolutePath()))</a>
+<a name="ln1039">                QDir::root().mkpath(linkFi.absolutePath());</a>
+<a name="ln1040">            if (!QFile::link(destination, absPath))</a>
+<a name="ln1041">                return false;</a>
+<a name="ln1042">            /* cannot change permission of links</a>
+<a name="ln1043">            if (!QFile::setPermissions(absPath, fi.permissions))</a>
+<a name="ln1044">                return false;</a>
+<a name="ln1045">            */</a>
+<a name="ln1046">        }</a>
+<a name="ln1047">    }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    for (const FileInfo &amp;fi : allFiles) {</a>
+<a name="ln1050">        const QString absPath = destinationDir + QDir::separator() + fi.filePath;</a>
+<a name="ln1051">        if (fi.isFile) {</a>
+<a name="ln1052">            QFile f(absPath);</a>
+<a name="ln1053">            if (!f.open(QIODevice::WriteOnly))</a>
+<a name="ln1054">                return false;</a>
+<a name="ln1055">            f.write(fileData(fi.filePath));</a>
+<a name="ln1056">            f.setPermissions(fi.permissions);</a>
+<a name="ln1057">            f.close();</a>
+<a name="ln1058">        }</a>
+<a name="ln1059">    }</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    return true;</a>
+<a name="ln1062">}</a>
+<a name="ln1063"> </a>
+<a name="ln1064">/*!</a>
+<a name="ln1065">    \enum QZipReader::Status</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    The following status values are possible:</a>
+<a name="ln1068"> </a>
+<a name="ln1069">    \value NoError  No error occurred.</a>
+<a name="ln1070">    \value FileReadError    An error occurred when reading from the file.</a>
+<a name="ln1071">    \value FileOpenError    The file could not be opened.</a>
+<a name="ln1072">    \value FilePermissionsError The file could not be accessed.</a>
+<a name="ln1073">    \value FileError        Another file error occurred.</a>
+<a name="ln1074">*/</a>
+<a name="ln1075"> </a>
+<a name="ln1076">/*!</a>
+<a name="ln1077">    Returns a status code indicating the first error that was met by QZipReader,</a>
+<a name="ln1078">    or QZipReader::NoError if no error occurred.</a>
+<a name="ln1079">*/</a>
+<a name="ln1080">MQZipReader::Status MQZipReader::status() const</a>
+<a name="ln1081">{</a>
+<a name="ln1082">    return d-&gt;status;</a>
+<a name="ln1083">}</a>
+<a name="ln1084"> </a>
+<a name="ln1085">/*!</a>
+<a name="ln1086">    Close the zip file.</a>
+<a name="ln1087">*/</a>
+<a name="ln1088">void MQZipReader::close()</a>
+<a name="ln1089">{</a>
+<a name="ln1090">    d-&gt;device-&gt;close();</a>
+<a name="ln1091">}</a>
+<a name="ln1092"> </a>
+<a name="ln1093">////////////////////////////// Writer</a>
+<a name="ln1094"> </a>
+<a name="ln1095">/*!</a>
+<a name="ln1096">    \class QZipWriter</a>
+<a name="ln1097">    \internal</a>
+<a name="ln1098">    \since 4.5</a>
+<a name="ln1099"> </a>
+<a name="ln1100">    \brief the QZipWriter class provides a way to create a new zip archive.</a>
+<a name="ln1101"> </a>
+<a name="ln1102">    QZipWriter can be used to create a zip archive containing any number of files</a>
+<a name="ln1103">    and directories. The files in the archive will be compressed in a way that is</a>
+<a name="ln1104">    compatible with common zip reader applications.</a>
+<a name="ln1105">*/</a>
+<a name="ln1106"> </a>
+<a name="ln1107"> </a>
+<a name="ln1108">/*!</a>
+<a name="ln1109">    Create a new zip archive that operates on the \a archive filename.  The file will</a>
+<a name="ln1110">    be opened with the \a mode.</a>
+<a name="ln1111">    \sa isValid()</a>
+<a name="ln1112">*/</a>
+<a name="ln1113">MQZipWriter::MQZipWriter(const QString &amp;fileName, QIODevice::OpenMode mode)</a>
+<a name="ln1114">{</a>
+<a name="ln1115">    QScopedPointer&lt;QFile&gt; f(new QFile(fileName));</a>
+<a name="ln1116">    MQZipWriter::Status status;</a>
+<a name="ln1117">    if (f-&gt;open(mode) &amp;&amp; f-&gt;error() == QFile::NoError)</a>
+<a name="ln1118">        status = MQZipWriter::NoError;</a>
+<a name="ln1119">    else {</a>
+<a name="ln1120">        if (f-&gt;error() == QFile::WriteError)</a>
+<a name="ln1121">            status = MQZipWriter::FileWriteError;</a>
+<a name="ln1122">        else if (f-&gt;error() == QFile::OpenError)</a>
+<a name="ln1123">            status = MQZipWriter::FileOpenError;</a>
+<a name="ln1124">        else if (f-&gt;error() == QFile::PermissionsError)</a>
+<a name="ln1125">            status = MQZipWriter::FilePermissionsError;</a>
+<a name="ln1126">        else</a>
+<a name="ln1127">            status = MQZipWriter::FileError;</a>
+<a name="ln1128">    }</a>
+<a name="ln1129"> </a>
+<a name="ln1130">    d = new MQZipWriterPrivate(f.data(), /*ownDevice=*/true);</a>
+<a name="ln1131">    f.take();</a>
+<a name="ln1132">    d-&gt;status = status;</a>
+<a name="ln1133">}</a>
+<a name="ln1134"> </a>
+<a name="ln1135">/*!</a>
+<a name="ln1136">    Create a new zip archive that operates on the archive found in \a device.</a>
+<a name="ln1137">    You have to open the device previous to calling the constructor and</a>
+<a name="ln1138">    only a device that is readable will be scanned for zip filecontent.</a>
+<a name="ln1139"> */</a>
+<a name="ln1140">MQZipWriter::MQZipWriter(QIODevice *device)</a>
+<a name="ln1141">    : d(new MQZipWriterPrivate(device, /*ownDevice=*/false))</a>
+<a name="ln1142">{</a>
+<a name="ln1143">    Q_ASSERT(device);</a>
+<a name="ln1144">}</a>
+<a name="ln1145"> </a>
+<a name="ln1146">MQZipWriter::~MQZipWriter()</a>
+<a name="ln1147">{</a>
+<a name="ln1148">    close();</a>
+<a name="ln1149">    delete d;</a>
+<a name="ln1150">}</a>
+<a name="ln1151"> </a>
+<a name="ln1152">/*!</a>
+<a name="ln1153">    Returns device used for writing zip archive.</a>
+<a name="ln1154">*/</a>
+<a name="ln1155">QIODevice* MQZipWriter::device() const</a>
+<a name="ln1156">{</a>
+<a name="ln1157">    return d-&gt;device;</a>
+<a name="ln1158">}</a>
+<a name="ln1159"> </a>
+<a name="ln1160">/*!</a>
+<a name="ln1161">    Returns \c true if the user can write to the archive; otherwise returns \c false.</a>
+<a name="ln1162">*/</a>
+<a name="ln1163">bool MQZipWriter::isWritable() const</a>
+<a name="ln1164">{</a>
+<a name="ln1165">    return d-&gt;device-&gt;isWritable();</a>
+<a name="ln1166">}</a>
+<a name="ln1167"> </a>
+<a name="ln1168">/*!</a>
+<a name="ln1169">    Returns \c true if the file exists; otherwise returns \c false.</a>
+<a name="ln1170">*/</a>
+<a name="ln1171">bool MQZipWriter::exists() const</a>
+<a name="ln1172">{</a>
+<a name="ln1173">    QFile *f = qobject_cast&lt;QFile*&gt; (d-&gt;device);</a>
+<a name="ln1174">    if (f == 0)</a>
+<a name="ln1175">        return true;</a>
+<a name="ln1176">    return f-&gt;exists();</a>
+<a name="ln1177">}</a>
+<a name="ln1178"> </a>
+<a name="ln1179">/*!</a>
+<a name="ln1180">    \enum QZipWriter::Status</a>
+<a name="ln1181"> </a>
+<a name="ln1182">    The following status values are possible:</a>
+<a name="ln1183"> </a>
+<a name="ln1184">    \value NoError  No error occurred.</a>
+<a name="ln1185">    \value FileWriteError    An error occurred when writing to the device.</a>
+<a name="ln1186">    \value FileOpenError    The file could not be opened.</a>
+<a name="ln1187">    \value FilePermissionsError The file could not be accessed.</a>
+<a name="ln1188">    \value FileError        Another file error occurred.</a>
+<a name="ln1189">*/</a>
+<a name="ln1190"> </a>
+<a name="ln1191">/*!</a>
+<a name="ln1192">    Returns a status code indicating the first error that was met by QZipWriter,</a>
+<a name="ln1193">    or QZipWriter::NoError if no error occurred.</a>
+<a name="ln1194">*/</a>
+<a name="ln1195">MQZipWriter::Status MQZipWriter::status() const</a>
+<a name="ln1196">{</a>
+<a name="ln1197">    return d-&gt;status;</a>
+<a name="ln1198">}</a>
+<a name="ln1199"> </a>
+<a name="ln1200">/*!</a>
+<a name="ln1201">    \enum QZipWriter::CompressionPolicy</a>
+<a name="ln1202"> </a>
+<a name="ln1203">    \value AlwaysCompress   A file that is added is compressed.</a>
+<a name="ln1204">    \value NeverCompress    A file that is added will be stored without changes.</a>
+<a name="ln1205">    \value AutoCompress     A file that is added will be compressed only if that will give a smaller file.</a>
+<a name="ln1206">*/</a>
+<a name="ln1207"> </a>
+<a name="ln1208">/*!</a>
+<a name="ln1209">     Sets the policy for compressing newly added files to the new \a policy.</a>
+<a name="ln1210"> </a>
+<a name="ln1211">    \note the default policy is AlwaysCompress</a>
+<a name="ln1212"> </a>
+<a name="ln1213">    \sa compressionPolicy()</a>
+<a name="ln1214">    \sa addFile()</a>
+<a name="ln1215">*/</a>
+<a name="ln1216">void MQZipWriter::setCompressionPolicy(CompressionPolicy policy)</a>
+<a name="ln1217">{</a>
+<a name="ln1218">    d-&gt;compressionPolicy = policy;</a>
+<a name="ln1219">}</a>
+<a name="ln1220"> </a>
+<a name="ln1221">/*!</a>
+<a name="ln1222">     Returns the currently set compression policy.</a>
+<a name="ln1223">    \sa setCompressionPolicy()</a>
+<a name="ln1224">    \sa addFile()</a>
+<a name="ln1225">*/</a>
+<a name="ln1226">MQZipWriter::CompressionPolicy MQZipWriter::compressionPolicy() const</a>
+<a name="ln1227">{</a>
+<a name="ln1228">    return d-&gt;compressionPolicy;</a>
+<a name="ln1229">}</a>
+<a name="ln1230"> </a>
+<a name="ln1231">/*!</a>
+<a name="ln1232">    Sets the permissions that will be used for newly added files.</a>
+<a name="ln1233"> </a>
+<a name="ln1234">    \note the default permissions are QFile::ReadOwner | QFile::WriteOwner.</a>
+<a name="ln1235"> </a>
+<a name="ln1236">    \sa creationPermissions()</a>
+<a name="ln1237">    \sa addFile()</a>
+<a name="ln1238">*/</a>
+<a name="ln1239">void MQZipWriter::setCreationPermissions(QFile::Permissions permissions)</a>
+<a name="ln1240">{</a>
+<a name="ln1241">    d-&gt;permissions = permissions;</a>
+<a name="ln1242">}</a>
+<a name="ln1243"> </a>
+<a name="ln1244">/*!</a>
+<a name="ln1245">     Returns the currently set creation permissions.</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    \sa setCreationPermissions()</a>
+<a name="ln1248">    \sa addFile()</a>
+<a name="ln1249">*/</a>
+<a name="ln1250">QFile::Permissions MQZipWriter::creationPermissions() const</a>
+<a name="ln1251">{</a>
+<a name="ln1252">    return d-&gt;permissions;</a>
+<a name="ln1253">}</a>
+<a name="ln1254"> </a>
+<a name="ln1255">/*!</a>
+<a name="ln1256">    Add a file to the archive with \a data as the file contents.</a>
+<a name="ln1257">    The file will be stored in the archive using the \a fileName which</a>
+<a name="ln1258">    includes the full path in the archive.</a>
+<a name="ln1259"> </a>
+<a name="ln1260">    The new file will get the file permissions based on the current</a>
+<a name="ln1261">    creationPermissions and it will be compressed using the zip compression</a>
+<a name="ln1262">    based on the current compression policy.</a>
+<a name="ln1263"> </a>
+<a name="ln1264">    \sa setCreationPermissions()</a>
+<a name="ln1265">    \sa setCompressionPolicy()</a>
+<a name="ln1266">*/</a>
+<a name="ln1267">void MQZipWriter::addFile(const QString &amp;fileName, const QByteArray &amp;data)</a>
+<a name="ln1268">{</a>
+<a name="ln1269">    d-&gt;addEntry(MQZipWriterPrivate::File, QDir::fromNativeSeparators(fileName), data);</a>
+<a name="ln1270">}</a>
+<a name="ln1271"> </a>
+<a name="ln1272">/*!</a>
+<a name="ln1273">    Add a file to the archive with \a device as the source of the contents.</a>
+<a name="ln1274">    The contents returned from QIODevice::readAll() will be used as the</a>
+<a name="ln1275">    filedata.</a>
+<a name="ln1276">    The file will be stored in the archive using the \a fileName which</a>
+<a name="ln1277">    includes the full path in the archive.</a>
+<a name="ln1278">*/</a>
+<a name="ln1279">void MQZipWriter::addFile(const QString &amp;fileName, QIODevice *device)</a>
+<a name="ln1280">{</a>
+<a name="ln1281">    Q_ASSERT(device);</a>
+<a name="ln1282">    QIODevice::OpenMode mode = device-&gt;openMode();</a>
+<a name="ln1283">    bool opened = false;</a>
+<a name="ln1284">    if ((mode &amp; QIODevice::ReadOnly) == 0) {</a>
+<a name="ln1285">        opened = true;</a>
+<a name="ln1286">        if (! device-&gt;open(QIODevice::ReadOnly)) {</a>
+<a name="ln1287">            d-&gt;status = FileOpenError;</a>
+<a name="ln1288">            return;</a>
+<a name="ln1289">        }</a>
+<a name="ln1290">    }</a>
+<a name="ln1291">    d-&gt;addEntry(MQZipWriterPrivate::File, QDir::fromNativeSeparators(fileName), device-&gt;readAll());</a>
+<a name="ln1292">    if (opened)</a>
+<a name="ln1293">        device-&gt;close();</a>
+<a name="ln1294">}</a>
+<a name="ln1295"> </a>
+<a name="ln1296">/*!</a>
+<a name="ln1297">    Create a new directory in the archive with the specified \a dirName and</a>
+<a name="ln1298">    the \a permissions;</a>
+<a name="ln1299">*/</a>
+<a name="ln1300">void MQZipWriter::addDirectory(const QString &amp;dirName)</a>
+<a name="ln1301">{</a>
+<a name="ln1302">    QString name(QDir::fromNativeSeparators(dirName));</a>
+<a name="ln1303">    // separator is mandatory</a>
+<a name="ln1304">    if (!name.endsWith(QLatin1Char('/')))</a>
+<a name="ln1305">        name.append(QLatin1Char('/'));</a>
+<a name="ln1306">    d-&gt;addEntry(MQZipWriterPrivate::Directory, name, QByteArray());</a>
+<a name="ln1307">}</a>
+<a name="ln1308"> </a>
+<a name="ln1309">/*!</a>
+<a name="ln1310">    Create a new symbolic link in the archive with the specified \a dirName</a>
+<a name="ln1311">    and the \a permissions;</a>
+<a name="ln1312">    A symbolic link contains the destination (relative) path and name.</a>
+<a name="ln1313">*/</a>
+<a name="ln1314">void MQZipWriter::addSymLink(const QString &amp;fileName, const QString &amp;destination)</a>
+<a name="ln1315">{</a>
+<a name="ln1316">    d-&gt;addEntry(MQZipWriterPrivate::Symlink, QDir::fromNativeSeparators(fileName), QFile::encodeName(destination));</a>
+<a name="ln1317">}</a>
+<a name="ln1318"> </a>
+<a name="ln1319">/*!</a>
+<a name="ln1320">   Closes the zip file.</a>
+<a name="ln1321">*/</a>
+<a name="ln1322">void MQZipWriter::close()</a>
+<a name="ln1323">{</a>
+<a name="ln1324">    if (!(d-&gt;device-&gt;openMode() &amp; QIODevice::WriteOnly)) {</a>
+<a name="ln1325">        d-&gt;device-&gt;close();</a>
+<a name="ln1326">        return;</a>
+<a name="ln1327">    }</a>
+<a name="ln1328"> </a>
+<a name="ln1329">    //qDebug(&quot;QZip::close writing directory, %d entries&quot;, d-&gt;fileHeaders.size());</a>
+<a name="ln1330">    d-&gt;device-&gt;seek(d-&gt;start_of_directory);</a>
+<a name="ln1331">    // write new directory</a>
+<a name="ln1332">    for (int i = 0; i &lt; d-&gt;fileHeaders.size(); ++i) {</a>
+<a name="ln1333">        const FileHeader &amp;header = d-&gt;fileHeaders.at(i);</a>
+<a name="ln1334">        d-&gt;device-&gt;write((const char *)&amp;header.h, sizeof(CentralFileHeader));</a>
+<a name="ln1335">        d-&gt;device-&gt;write(header.file_name);</a>
+<a name="ln1336">        d-&gt;device-&gt;write(header.extra_field);</a>
+<a name="ln1337">        d-&gt;device-&gt;write(header.file_comment);</a>
+<a name="ln1338">    }</a>
+<a name="ln1339">    int dir_size = d-&gt;device-&gt;pos() - d-&gt;start_of_directory;</a>
+<a name="ln1340">    // write end of directory</a>
+<a name="ln1341">    EndOfDirectory eod;</a>
+<a name="ln1342">    memset(&amp;eod, 0, sizeof(EndOfDirectory));</a>
+<a name="ln1343">    writeUInt(eod.signature, 0x06054b50);</a>
+<a name="ln1344">    //uchar this_disk[2];</a>
+<a name="ln1345">    //uchar start_of_directory_disk[2];</a>
+<a name="ln1346">    writeUShort(eod.num_dir_entries_this_disk, d-&gt;fileHeaders.size());</a>
+<a name="ln1347">    writeUShort(eod.num_dir_entries, d-&gt;fileHeaders.size());</a>
+<a name="ln1348">    writeUInt(eod.directory_size, dir_size);</a>
+<a name="ln1349">    writeUInt(eod.dir_start_offset, d-&gt;start_of_directory);</a>
+<a name="ln1350">    writeUShort(eod.comment_length, d-&gt;comment.length());</a>
+<a name="ln1351"> </a>
+<a name="ln1352">    d-&gt;device-&gt;write((const char *)&amp;eod, sizeof(EndOfDirectory));</a>
+<a name="ln1353">    d-&gt;device-&gt;write(d-&gt;comment);</a>
+<a name="ln1354">    d-&gt;device-&gt;close();</a>
+<a name="ln1355">}</a>
+<a name="ln1356"> </a>
+<a name="ln1357">QT_END_NAMESPACE</a>
+<a name="ln1358"> </a>
+<a name="ln1359">#endif // QT_NO_TEXTODFWRITER</a>
+
+</code></pre>
+<div class="balloon" rel="580"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v654/" target="_blank">V654</a> The condition 'start_of_directory_local == - 1' of loop is always true.</p></div>
+<div class="balloon" rel="636"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="709"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '(general_purpose_bits & Utf8Names) != 0' is always true.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

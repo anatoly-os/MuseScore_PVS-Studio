@@ -1,0 +1,1138 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>instrwidget.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2009 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;config.h&quot;</a>
+<a name="ln21">#include &quot;icons.h&quot;</a>
+<a name="ln22">#include &quot;instrwidget.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;libmscore/clef.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/instrtemplate.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/line.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln31">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln32">#include &quot;libmscore/stafftype.h&quot;</a>
+<a name="ln33">#include &quot;libmscore/style.h&quot;</a>
+<a name="ln34">#include &quot;libmscore/system.h&quot;</a>
+<a name="ln35">#include &quot;libmscore/stringdata.h&quot;</a>
+<a name="ln36">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln37">#include &quot;libmscore/keysig.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">namespace Ms {</a>
+<a name="ln40"> </a>
+<a name="ln41">int StaffListItem::customStandardIdx;</a>
+<a name="ln42">int StaffListItem::customPercussionIdx;</a>
+<a name="ln43">int StaffListItem::customTablatureIdx;</a>
+<a name="ln44"> </a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46">//   StaffListItem</a>
+<a name="ln47">//---------------------------------------------------------</a>
+<a name="ln48"> </a>
+<a name="ln49">StaffListItem::StaffListItem(PartListItem* li)</a>
+<a name="ln50">   : QTreeWidgetItem(li, STAFF_LIST_ITEM)</a>
+<a name="ln51">      {</a>
+<a name="ln52">      setPartIdx(0);</a>
+<a name="ln53">      setLinked(false);</a>
+<a name="ln54">      setClefType(ClefTypeList(ClefType::G));</a>
+<a name="ln55">      initStaffTypeCombo();</a>
+<a name="ln56">      }</a>
+<a name="ln57"> </a>
+<a name="ln58">StaffListItem::StaffListItem()</a>
+<a name="ln59">   : QTreeWidgetItem(STAFF_LIST_ITEM)</a>
+<a name="ln60">      {</a>
+<a name="ln61">      setPartIdx(0);</a>
+<a name="ln62">      setLinked(false);</a>
+<a name="ln63">      setClefType(ClefTypeList(ClefType::G));</a>
+<a name="ln64">      }</a>
+<a name="ln65"> </a>
+<a name="ln66">//---------------------------------------------------------</a>
+<a name="ln67">//   initStaffTypeCombo</a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69"> </a>
+<a name="ln70">void StaffListItem::initStaffTypeCombo(bool forceRecreate)</a>
+<a name="ln71">      {</a>
+<a name="ln72">      if (_staffTypeCombo &amp;&amp; !forceRecreate)    // do not init more than once</a>
+<a name="ln73">            return;</a>
+<a name="ln74"> </a>
+<a name="ln75">      // NOTE: DO NOT DELETE the old _staffTypeCombo if already created:</a>
+<a name="ln76">      // a bug in Qt looses track of (and presumably deletes) the combo set into the item</a>
+<a name="ln77">      // if the item is repositioned in the tree; in this case, the pointer to the combo</a>
+<a name="ln78">      // is no longer valid and cannot be used to delete it</a>
+<a name="ln79">      // Call initStaffTypeCombo(true) ONLY if the item has been repositioned</a>
+<a name="ln80">      // or a memory leak may result</a>
+<a name="ln81"> </a>
+<a name="ln82">      bool canUseTabs = false; // assume only normal staves are applicable</a>
+<a name="ln83">      int numFrettedStrings = 0;</a>
+<a name="ln84">      bool canUsePerc = false;</a>
+<a name="ln85">      PartListItem* part = static_cast&lt;PartListItem*&gt;(QTreeWidgetItem::parent());</a>
+<a name="ln86"> </a>
+<a name="ln87">      // PartListItem has different members filled out if used in New Score Wizard</a>
+<a name="ln88">      // or in Instruments Wizard</a>
+<a name="ln89">      if (part) {</a>
+<a name="ln90">            const StringData* stringData = part-&gt;it ? &amp;(part-&gt;it-&gt;stringData) :</a>
+<a name="ln91">                        ( (part-&gt;part &amp;&amp; part-&gt;part-&gt;instrument()) ? part-&gt;part-&gt;instrument()-&gt;stringData() : 0);</a>
+<a name="ln92">            canUseTabs = stringData &amp;&amp; stringData-&gt;frettedStrings() &gt; 0;</a>
+<a name="ln93">            if (canUseTabs)</a>
+<a name="ln94">                  numFrettedStrings = stringData-&gt;frettedStrings();</a>
+<a name="ln95">            canUsePerc = part-&gt;it ? part-&gt;it-&gt;useDrumset :</a>
+<a name="ln96">                        ( (part-&gt;part &amp;&amp; part-&gt;part-&gt;instrument()) ? part-&gt;part-&gt;instrument()-&gt;useDrumset() : false);</a>
+<a name="ln97">            }</a>
+<a name="ln98">      _staffTypeCombo = new QComboBox();</a>
+<a name="ln99">      _staffTypeCombo-&gt;setAutoFillBackground(true);</a>
+<a name="ln100">      int idx = 0;</a>
+<a name="ln101">      for (const StaffType&amp; st : StaffType::presets()) {</a>
+<a name="ln102">            if ( (st.group() == StaffGroup::STANDARD &amp;&amp; (!canUsePerc))    // percussion excludes standard</a>
+<a name="ln103">                        || (st.group() == StaffGroup::PERCUSSION &amp;&amp; canUsePerc)</a>
+<a name="ln104">                        || (st.group() == StaffGroup::TAB &amp;&amp; canUseTabs &amp;&amp; st.lines() &lt;= numFrettedStrings)) {</a>
+<a name="ln105">                  _staffTypeCombo-&gt;addItem(st.name(), idx);</a>
+<a name="ln106">                  }</a>
+<a name="ln107">            ++idx;</a>
+<a name="ln108">            }</a>
+<a name="ln109">      customStandardIdx = _staffTypeCombo-&gt;count();</a>
+<a name="ln110">      _staffTypeCombo-&gt;addItem(tr(&quot;Custom Standard&quot;), CUSTOM_STAFF_TYPE_IDX);</a>
+<a name="ln111">      customPercussionIdx = _staffTypeCombo-&gt;count();</a>
+<a name="ln112">      _staffTypeCombo-&gt;addItem(tr(&quot;Custom Percussion&quot;), CUSTOM_STAFF_TYPE_IDX);</a>
+<a name="ln113">      customTablatureIdx = _staffTypeCombo-&gt;count();</a>
+<a name="ln114">      _staffTypeCombo-&gt;addItem(tr(&quot;Custom Tablature&quot;), CUSTOM_STAFF_TYPE_IDX);</a>
+<a name="ln115"> </a>
+<a name="ln116">      treeWidget()-&gt;setItemWidget(this, 4, _staffTypeCombo);</a>
+<a name="ln117">      connect(_staffTypeCombo, SIGNAL(currentIndexChanged(int)), SLOT(staffTypeChanged(int)) );</a>
+<a name="ln118">      }</a>
+<a name="ln119"> </a>
+<a name="ln120">//---------------------------------------------------------</a>
+<a name="ln121">//   setPartIdx</a>
+<a name="ln122">//---------------------------------------------------------</a>
+<a name="ln123"> </a>
+<a name="ln124">void StaffListItem::setPartIdx(int val)</a>
+<a name="ln125">      {</a>
+<a name="ln126">      _partIdx = val;</a>
+<a name="ln127">      setText(0, InstrumentsWidget::tr(&quot;Staff %1&quot;).arg(_partIdx + 1));</a>
+<a name="ln128">      }</a>
+<a name="ln129"> </a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131">//   setClefType</a>
+<a name="ln132">//---------------------------------------------------------</a>
+<a name="ln133"> </a>
+<a name="ln134">void StaffListItem::setClefType(const ClefTypeList&amp; val)</a>
+<a name="ln135">      {</a>
+<a name="ln136">      _clefType = val;</a>
+<a name="ln137">      setText(2, qApp-&gt;translate(&quot;clefTable&quot;, ClefInfo::name(_clefType._transposingClef)));</a>
+<a name="ln138">      }</a>
+<a name="ln139"> </a>
+<a name="ln140">//---------------------------------------------------------</a>
+<a name="ln141">//   setLinked</a>
+<a name="ln142">//---------------------------------------------------------</a>
+<a name="ln143"> </a>
+<a name="ln144">void StaffListItem::setLinked(bool val)</a>
+<a name="ln145">      {</a>
+<a name="ln146">      _linked = val;</a>
+<a name="ln147">      setIcon(3, _linked ? *icons[int(Icons::checkmark_ICON)] : QIcon() );</a>
+<a name="ln148">      }</a>
+<a name="ln149"> </a>
+<a name="ln150">//---------------------------------------------------------</a>
+<a name="ln151">//   setStaffType</a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153"> </a>
+<a name="ln154">void StaffListItem::setStaffType(const StaffType* st)</a>
+<a name="ln155">      {</a>
+<a name="ln156">      if (!st)                                        // if no staff type given, dault to stadard</a>
+<a name="ln157">            _staffTypeCombo-&gt;setCurrentIndex(0);      // staff type (at combo box index 0)</a>
+<a name="ln158">      else {</a>
+<a name="ln159">            // if staff type given, look into combo box item data for a preset equal to staff type</a>
+<a name="ln160">            for (int i = 0; i &lt; _staffTypeCombo-&gt;count(); ++i) {</a>
+<a name="ln161">                  const StaffType* _st = StaffType::preset(StaffTypes(_staffTypeCombo-&gt;itemData(i).toInt()));</a>
+<a name="ln162">                  if (*_st == *st) {</a>
+<a name="ln163">                        _staffTypeCombo-&gt;setCurrentIndex(i);</a>
+<a name="ln164">                        return;</a>
+<a name="ln165">                        }</a>
+<a name="ln166">                  }</a>
+<a name="ln167">            // try harder</a>
+<a name="ln168">            for (int i = 0; i &lt; _staffTypeCombo-&gt;count(); ++i) {</a>
+<a name="ln169">                  const StaffType* _st = StaffType::preset(StaffTypes(_staffTypeCombo-&gt;itemData(i).toInt()));</a>
+<a name="ln170">                  if (_st-&gt;isSameStructure(*st)) {</a>
+<a name="ln171">                        _staffTypeCombo-&gt;setCurrentIndex(i);</a>
+<a name="ln172">                        return;</a>
+<a name="ln173">                        }</a>
+<a name="ln174">                  }</a>
+<a name="ln175">            int idx = 0;</a>
+<a name="ln176">            switch (st-&gt;group()) {</a>
+<a name="ln177">                  case StaffGroup::STANDARD:</a>
+<a name="ln178">                        idx = customStandardIdx;</a>
+<a name="ln179">                        break;</a>
+<a name="ln180">                  case StaffGroup::PERCUSSION:</a>
+<a name="ln181">                        idx = customPercussionIdx;</a>
+<a name="ln182">                        break;</a>
+<a name="ln183">                  case StaffGroup::TAB:</a>
+<a name="ln184">                        idx = customTablatureIdx;</a>
+<a name="ln185">                        break;</a>
+<a name="ln186">                  }</a>
+<a name="ln187">            _staffTypeCombo-&gt;setCurrentIndex(idx);</a>
+<a name="ln188">            }</a>
+<a name="ln189">      }</a>
+<a name="ln190"> </a>
+<a name="ln191">//---------------------------------------------------------</a>
+<a name="ln192">//   setStaffType</a>
+<a name="ln193">//---------------------------------------------------------</a>
+<a name="ln194"> </a>
+<a name="ln195">void StaffListItem::setStaffType(int idx)</a>
+<a name="ln196">      {</a>
+<a name="ln197">      int i = _staffTypeCombo-&gt;findData(idx);</a>
+<a name="ln198">      if (i != -1)</a>
+<a name="ln199">            _staffTypeCombo-&gt;setCurrentIndex(i);</a>
+<a name="ln200">      }</a>
+<a name="ln201"> </a>
+<a name="ln202">//---------------------------------------------------------</a>
+<a name="ln203">//   staffType</a>
+<a name="ln204">//---------------------------------------------------------</a>
+<a name="ln205"> </a>
+<a name="ln206">const StaffType* StaffListItem::staffType() const</a>
+<a name="ln207">      {</a>
+<a name="ln208">      int typeIdx = staffTypeIdx();</a>
+<a name="ln209">      Q_ASSERT(typeIdx != CUSTOM_STAFF_TYPE_IDX);</a>
+<a name="ln210">      if (typeIdx == CUSTOM_STAFF_TYPE_IDX)</a>
+<a name="ln211">            typeIdx = 0;</a>
+<a name="ln212">      return StaffType::preset(StaffTypes(typeIdx));</a>
+<a name="ln213">      }</a>
+<a name="ln214"> </a>
+<a name="ln215">//---------------------------------------------------------</a>
+<a name="ln216">//   staffTypeIdx</a>
+<a name="ln217">//---------------------------------------------------------</a>
+<a name="ln218"> </a>
+<a name="ln219">int StaffListItem::staffTypeIdx(int idx) const</a>
+<a name="ln220">      {</a>
+<a name="ln221">      return _staffTypeCombo-&gt;itemData(idx).toInt();</a>
+<a name="ln222">      }</a>
+<a name="ln223"> </a>
+<a name="ln224">//---------------------------------------------------------</a>
+<a name="ln225">//   staffTypeIdx</a>
+<a name="ln226">//---------------------------------------------------------</a>
+<a name="ln227"> </a>
+<a name="ln228">int StaffListItem::staffTypeIdx() const</a>
+<a name="ln229">      {</a>
+<a name="ln230">      return staffTypeIdx(_staffTypeCombo-&gt;currentIndex());</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   staffTypeChanged</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">void StaffListItem::staffTypeChanged(int idx)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      // check current clef matches new staff type</a>
+<a name="ln240">      const int typeIdx = staffTypeIdx(idx);</a>
+<a name="ln241">      if (typeIdx == CUSTOM_STAFF_TYPE_IDX) // consider it not changed</a>
+<a name="ln242">            return;</a>
+<a name="ln243"> </a>
+<a name="ln244">      const StaffType* stfType = StaffType::preset(StaffTypes(typeIdx));</a>
+<a name="ln245"> </a>
+<a name="ln246">      PartListItem* pli = static_cast&lt;PartListItem*&gt;(QTreeWidgetItem::parent());</a>
+<a name="ln247">      pli-&gt;updateClefs();</a>
+<a name="ln248"> </a>
+<a name="ln249">      if (_staff &amp;&amp; _staff-&gt;staffType(Fraction(0,1))-&gt;name() != stfType-&gt;name()) {</a>
+<a name="ln250">            if (_op != ListItemOp::I_DELETE &amp;&amp; _op != ListItemOp::ADD)</a>
+<a name="ln251">                  _op = ListItemOp::UPDATE;</a>
+<a name="ln252">            }</a>
+<a name="ln253">      }</a>
+<a name="ln254"> </a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256">//   setVisible</a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258"> </a>
+<a name="ln259">void PartListItem::setVisible(bool val)</a>
+<a name="ln260">      {</a>
+<a name="ln261">      setCheckState(1, val ? Qt::Checked : Qt::Unchecked);</a>
+<a name="ln262">      }</a>
+<a name="ln263"> </a>
+<a name="ln264">//---------------------------------------------------------</a>
+<a name="ln265">//   visible</a>
+<a name="ln266">//---------------------------------------------------------</a>
+<a name="ln267"> </a>
+<a name="ln268">bool PartListItem::visible() const</a>
+<a name="ln269">      {</a>
+<a name="ln270">      return checkState(1) == Qt::Checked;</a>
+<a name="ln271">      }</a>
+<a name="ln272"> </a>
+<a name="ln273">//---------------------------------------------------------</a>
+<a name="ln274">//   updateClefs</a>
+<a name="ln275">//---------------------------------------------------------</a>
+<a name="ln276"> </a>
+<a name="ln277">void PartListItem::updateClefs()</a>
+<a name="ln278">      {</a>
+<a name="ln279">      for (int i = 0; i &lt; childCount(); ++i) {</a>
+<a name="ln280">            StaffListItem* sli = static_cast&lt;StaffListItem*&gt;(child(i));</a>
+<a name="ln281">            const StaffType* stfType = StaffType::preset(StaffTypes(sli-&gt;staffTypeIdx()));</a>
+<a name="ln282"> </a>
+<a name="ln283">            ClefTypeList clefType;</a>
+<a name="ln284">            switch (stfType-&gt;group()) {</a>
+<a name="ln285">                  case StaffGroup::STANDARD:</a>
+<a name="ln286">                        clefType = sli-&gt;defaultClefType();</a>
+<a name="ln287">                        break;</a>
+<a name="ln288">                  case StaffGroup::TAB:</a>
+<a name="ln289">                        clefType = ClefTypeList(ClefType::TAB);</a>
+<a name="ln290">                        break;</a>
+<a name="ln291">                  case StaffGroup::PERCUSSION:</a>
+<a name="ln292">                        clefType = ClefTypeList(ClefType::PERC);</a>
+<a name="ln293">                        break;</a>
+<a name="ln294">                  }</a>
+<a name="ln295">            sli-&gt;setClefType(clefType);</a>
+<a name="ln296">            }</a>
+<a name="ln297">      }</a>
+<a name="ln298"> </a>
+<a name="ln299">//---------------------------------------------------------</a>
+<a name="ln300">//   PartListItem</a>
+<a name="ln301">//---------------------------------------------------------</a>
+<a name="ln302"> </a>
+<a name="ln303">PartListItem::PartListItem(Part* p, QTreeWidget* lv)</a>
+<a name="ln304">   : QTreeWidgetItem(lv, PART_LIST_ITEM)</a>
+<a name="ln305">      {</a>
+<a name="ln306">      part = p;</a>
+<a name="ln307">      it   = 0;</a>
+<a name="ln308">      op   = ListItemOp::KEEP;</a>
+<a name="ln309">      setText(0, p-&gt;partName());</a>
+<a name="ln310">      setFlags(flags() | Qt::ItemIsUserCheckable);</a>
+<a name="ln311">      }</a>
+<a name="ln312"> </a>
+<a name="ln313">PartListItem::PartListItem(const InstrumentTemplate* i, QTreeWidget* lv)</a>
+<a name="ln314">   : QTreeWidgetItem(lv, PART_LIST_ITEM)</a>
+<a name="ln315">      {</a>
+<a name="ln316">      part = 0;</a>
+<a name="ln317">      it   = i;</a>
+<a name="ln318">      op   = ListItemOp::ADD;</a>
+<a name="ln319">      setText(0, it-&gt;trackName);</a>
+<a name="ln320">      }</a>
+<a name="ln321"> </a>
+<a name="ln322">//---------------------------------------------------------</a>
+<a name="ln323">//   InstrumentTemplateListItem</a>
+<a name="ln324">//---------------------------------------------------------</a>
+<a name="ln325"> </a>
+<a name="ln326">InstrumentTemplateListItem::InstrumentTemplateListItem(QString group, QTreeWidget* parent)</a>
+<a name="ln327">   : QTreeWidgetItem(parent) {</a>
+<a name="ln328">      _instrumentTemplate = 0;</a>
+<a name="ln329">      _group = group;</a>
+<a name="ln330">      setText(0, group);</a>
+<a name="ln331">      }</a>
+<a name="ln332"> </a>
+<a name="ln333">InstrumentTemplateListItem::InstrumentTemplateListItem(InstrumentTemplate* i, InstrumentTemplateListItem* item)</a>
+<a name="ln334">   : QTreeWidgetItem(item) {</a>
+<a name="ln335">      _instrumentTemplate = i;</a>
+<a name="ln336">      setText(0, i-&gt;trackName);</a>
+<a name="ln337">      }</a>
+<a name="ln338"> </a>
+<a name="ln339">InstrumentTemplateListItem::InstrumentTemplateListItem(InstrumentTemplate* i, QTreeWidget* parent)</a>
+<a name="ln340">   : QTreeWidgetItem(parent) {</a>
+<a name="ln341">      _instrumentTemplate = i;</a>
+<a name="ln342">      setText(0, i-&gt;trackName);</a>
+<a name="ln343">      }</a>
+<a name="ln344"> </a>
+<a name="ln345">//---------------------------------------------------------</a>
+<a name="ln346">//   text</a>
+<a name="ln347">//---------------------------------------------------------</a>
+<a name="ln348"> </a>
+<a name="ln349">QString InstrumentTemplateListItem::text(int col) const</a>
+<a name="ln350">      {</a>
+<a name="ln351">      switch (col) {</a>
+<a name="ln352">            case 0:</a>
+<a name="ln353">                  return _instrumentTemplate ?</a>
+<a name="ln354">                     _instrumentTemplate-&gt;trackName : _group;</a>
+<a name="ln355">            default:</a>
+<a name="ln356">                  return QString(&quot;&quot;);</a>
+<a name="ln357">            }</a>
+<a name="ln358">      }</a>
+<a name="ln359"> </a>
+<a name="ln360">//---------------------------------------------------------</a>
+<a name="ln361">//   InstrumentsWidget</a>
+<a name="ln362">//---------------------------------------------------------</a>
+<a name="ln363"> </a>
+<a name="ln364">InstrumentsWidget::InstrumentsWidget(QWidget* parent)</a>
+<a name="ln365">   : QWidget(parent)</a>
+<a name="ln366">      {</a>
+<a name="ln367">      setupUi(this);</a>
+<a name="ln368">      splitter-&gt;setStretchFactor(0, 10);</a>
+<a name="ln369">      splitter-&gt;setStretchFactor(1, 0);</a>
+<a name="ln370">      splitter-&gt;setStretchFactor(2, 15);</a>
+<a name="ln371">      setWindowFlags(this-&gt;windowFlags() &amp; ~Qt::WindowContextHelpButtonHint);</a>
+<a name="ln372"> </a>
+<a name="ln373">      instrumentList-&gt;setSelectionMode(QAbstractItemView::ExtendedSelection);</a>
+<a name="ln374">      partiturList-&gt;setSelectionMode(QAbstractItemView::SingleSelection);</a>
+<a name="ln375">      QStringList header = (QStringList() &lt;&lt; tr(&quot;Staves&quot;) &lt;&lt; tr(&quot;Visible&quot;) &lt;&lt; tr(&quot;Clef&quot;) &lt;&lt; tr(&quot;Linked&quot;) &lt;&lt; tr(&quot;Staff type&quot;));</a>
+<a name="ln376">      partiturList-&gt;setHeaderLabels(header);</a>
+<a name="ln377">      partiturList-&gt;resizeColumnToContents(1);  // shrink &quot;visible &quot;and &quot;linked&quot; columns as much as possible</a>
+<a name="ln378">      partiturList-&gt;resizeColumnToContents(3);</a>
+<a name="ln379"> </a>
+<a name="ln380">      buildTemplateList();</a>
+<a name="ln381"> </a>
+<a name="ln382">      addButton-&gt;setEnabled(false);</a>
+<a name="ln383">      removeButton-&gt;setEnabled(false);</a>
+<a name="ln384">      upButton-&gt;setEnabled(false);</a>
+<a name="ln385">      downButton-&gt;setEnabled(false);</a>
+<a name="ln386">      addStaffButton-&gt;setEnabled(false);</a>
+<a name="ln387">      addLinkedStaffButton-&gt;setEnabled(false);</a>
+<a name="ln388">      </a>
+<a name="ln389">      upButton-&gt;setIcon(*icons[int(Icons::arrowUp_ICON)]);</a>
+<a name="ln390">      downButton-&gt;setIcon(*icons[int(Icons::arrowDown_ICON)]);</a>
+<a name="ln391"> </a>
+<a name="ln392">      instrumentSearch-&gt;setFilterableView(instrumentList);</a>
+<a name="ln393">      }</a>
+<a name="ln394"> </a>
+<a name="ln395">//---------------------------------------------------------</a>
+<a name="ln396">//   populateGenreCombo</a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398"> </a>
+<a name="ln399">void populateGenreCombo(QComboBox* combo)</a>
+<a name="ln400">      {</a>
+<a name="ln401">      combo-&gt;blockSignals(true);</a>
+<a name="ln402">      combo-&gt;clear();</a>
+<a name="ln403">      combo-&gt;addItem(qApp-&gt;translate(&quot;InstrumentsDialog&quot;, &quot;All instruments&quot;), &quot;all&quot;);</a>
+<a name="ln404">      int i = 1;</a>
+<a name="ln405">      int defaultIndex = 0;</a>
+<a name="ln406">      for (InstrumentGenre *ig : instrumentGenres) {</a>
+<a name="ln407">            combo-&gt;addItem(ig-&gt;name, ig-&gt;id);</a>
+<a name="ln408">            if (ig-&gt;id == &quot;common&quot;)</a>
+<a name="ln409">                  defaultIndex = i;</a>
+<a name="ln410">            ++i;</a>
+<a name="ln411">            }</a>
+<a name="ln412">      combo-&gt;blockSignals(false);</a>
+<a name="ln413">      combo-&gt;setCurrentIndex(defaultIndex);</a>
+<a name="ln414">      }</a>
+<a name="ln415"> </a>
+<a name="ln416">//---------------------------------------------------------</a>
+<a name="ln417"> //   populateInstrumentList</a>
+<a name="ln418">//---------------------------------------------------------</a>
+<a name="ln419"> </a>
+<a name="ln420">void populateInstrumentList(QTreeWidget* instrumentList)</a>
+<a name="ln421">      {</a>
+<a name="ln422">      instrumentList-&gt;clear();</a>
+<a name="ln423">      // TODO: memory leak?</a>
+<a name="ln424">      for (InstrumentGroup* g : instrumentGroups) {</a>
+<a name="ln425">            InstrumentTemplateListItem* group = new InstrumentTemplateListItem(g-&gt;name, instrumentList);</a>
+<a name="ln426">            // provide feedback to blind users that they have selected a group rather than an instrument</a>
+<a name="ln427">            group-&gt;setData(0, Qt::AccessibleTextRole, QVariant(QObject::tr(&quot;%1 category&quot;).arg(g-&gt;name))); // spoken by screen readers</a>
+<a name="ln428">            group-&gt;setFlags(Qt::ItemIsEnabled);</a>
+<a name="ln429">            for (InstrumentTemplate* t : g-&gt;instrumentTemplates) {</a>
+<a name="ln430">                  InstrumentTemplateListItem* instrument = new InstrumentTemplateListItem(t, group);</a>
+<a name="ln431">                  instrument-&gt;setFlags(Qt::ItemFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemNeverHasChildren));</a>
+<a name="ln432">                  }</a>
+<a name="ln433">            }</a>
+<a name="ln434">      }</a>
+<a name="ln435"> </a>
+<a name="ln436">//---------------------------------------------------------</a>
+<a name="ln437">//   buildTemplateList</a>
+<a name="ln438">//---------------------------------------------------------</a>
+<a name="ln439"> </a>
+<a name="ln440">void InstrumentsWidget::buildTemplateList()</a>
+<a name="ln441">      {</a>
+<a name="ln442">      // clear search if instrument list is updated</a>
+<a name="ln443">      instrumentSearch-&gt;clear();</a>
+<a name="ln444"> </a>
+<a name="ln445">      populateInstrumentList(instrumentList);</a>
+<a name="ln446">      populateGenreCombo(instrumentGenreFilter);</a>
+<a name="ln447">      }</a>
+<a name="ln448"> </a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450">//   genPartList</a>
+<a name="ln451">//---------------------------------------------------------</a>
+<a name="ln452"> </a>
+<a name="ln453">void InstrumentsWidget::genPartList(Score* cs)</a>
+<a name="ln454">      {</a>
+<a name="ln455">      partiturList-&gt;clear();</a>
+<a name="ln456"> </a>
+<a name="ln457">      for (Part* p : cs-&gt;parts()) {</a>
+<a name="ln458">            PartListItem* pli = new PartListItem(p, partiturList);</a>
+<a name="ln459">            pli-&gt;setVisible(p-&gt;show());</a>
+<a name="ln460">            for (Staff* s : *p-&gt;staves()) {</a>
+<a name="ln461">                  StaffListItem* sli = new StaffListItem(pli);</a>
+<a name="ln462">                  sli-&gt;setStaff(s);</a>
+<a name="ln463">                  sli-&gt;setClefType(s-&gt;clefType(Fraction(0,1)));</a>
+<a name="ln464">                  sli-&gt;setDefaultClefType(s-&gt;defaultClefType());</a>
+<a name="ln465">                  sli-&gt;setPartIdx(s-&gt;rstaff());</a>
+<a name="ln466">                  const LinkedElements* ls = s-&gt;links();</a>
+<a name="ln467">                  bool bLinked = false;</a>
+<a name="ln468">                  if (ls &amp;&amp; !ls-&gt;empty()) {</a>
+<a name="ln469">                        for (auto le : *ls) {</a>
+<a name="ln470">                              Staff* ps = toStaff(le);</a>
+<a name="ln471">                              if (ps != s &amp;&amp; ps-&gt;score() == s-&gt;score()) {</a>
+<a name="ln472">                                    bLinked = true;</a>
+<a name="ln473">                                    break;</a>
+<a name="ln474">                                    }</a>
+<a name="ln475">                              }</a>
+<a name="ln476">                        }</a>
+<a name="ln477">                  sli-&gt;setLinked(bLinked);</a>
+<a name="ln478">                  sli-&gt;setStaffType(s-&gt;staffType(Fraction(0,1)));    // TODO</a>
+<a name="ln479">                  }</a>
+<a name="ln480">            pli-&gt;updateClefs();</a>
+<a name="ln481">            partiturList-&gt;setItemExpanded(pli, true);</a>
+<a name="ln482">            }</a>
+<a name="ln483">      partiturList-&gt;resizeColumnToContents(2);  // adjust width of &quot;Clef &quot; and &quot;Staff type&quot; columns</a>
+<a name="ln484">      partiturList-&gt;resizeColumnToContents(4);</a>
+<a name="ln485">      }</a>
+<a name="ln486"> </a>
+<a name="ln487">//---------------------------------------------------------</a>
+<a name="ln488">//   on_instrumentList_itemSelectionChanged</a>
+<a name="ln489">//---------------------------------------------------------</a>
+<a name="ln490"> </a>
+<a name="ln491">void InstrumentsWidget::on_instrumentList_itemSelectionChanged()</a>
+<a name="ln492">      {</a>
+<a name="ln493">      QList&lt;QTreeWidgetItem*&gt; wi = instrumentList-&gt;selectedItems();</a>
+<a name="ln494">      bool flag = !wi.isEmpty();</a>
+<a name="ln495">      addButton-&gt;setEnabled(flag);</a>
+<a name="ln496">      }</a>
+<a name="ln497"> </a>
+<a name="ln498">//---------------------------------------------------------</a>
+<a name="ln499">//   on_partiturList_itemSelectionChanged</a>
+<a name="ln500">//---------------------------------------------------------</a>
+<a name="ln501"> </a>
+<a name="ln502">void InstrumentsWidget::on_partiturList_itemSelectionChanged()</a>
+<a name="ln503">      {</a>
+<a name="ln504">      QList&lt;QTreeWidgetItem*&gt; wi = partiturList-&gt;selectedItems();</a>
+<a name="ln505">      if (wi.isEmpty()) {</a>
+<a name="ln506">            removeButton-&gt;setEnabled(false);</a>
+<a name="ln507">            upButton-&gt;setEnabled(false);</a>
+<a name="ln508">            downButton-&gt;setEnabled(false);</a>
+<a name="ln509">            addLinkedStaffButton-&gt;setEnabled(false);</a>
+<a name="ln510">            addStaffButton-&gt;setEnabled(false);</a>
+<a name="ln511">            return;</a>
+<a name="ln512">            }</a>
+<a name="ln513">      QTreeWidgetItem* item = wi.front();</a>
+<a name="ln514">      Q_ASSERT(partiturList-&gt;currentItem() == item);</a>
+<a name="ln515">      bool flag = item != nullptr;</a>
+<a name="ln516"> </a>
+<a name="ln517">      int count = 0; // item can be hidden</a>
+<a name="ln518">      QTreeWidgetItem* it = 0;</a>
+<a name="ln519">      QList&lt;QTreeWidgetItem*&gt; witems;</a>
+<a name="ln520">      if(item-&gt;type() == PART_LIST_ITEM) {</a>
+<a name="ln521">            for (int idx = 0; (it = partiturList-&gt;topLevelItem(idx)); ++idx) {</a>
+<a name="ln522">                  if (!it-&gt;isHidden()) {</a>
+<a name="ln523">                        count++;</a>
+<a name="ln524">                        witems.append(it);</a>
+<a name="ln525">                        }</a>
+<a name="ln526">                  }</a>
+<a name="ln527">            }</a>
+<a name="ln528">      else {</a>
+<a name="ln529">            for (int idx = 0; (it = item-&gt;parent()-&gt;child(idx)); ++idx) {</a>
+<a name="ln530">                  if (!it-&gt;isHidden()){</a>
+<a name="ln531">                        count++;</a>
+<a name="ln532">                        witems.append(it);</a>
+<a name="ln533">                        }</a>
+<a name="ln534">                  }</a>
+<a name="ln535">            }</a>
+<a name="ln536"> </a>
+<a name="ln537">      bool onlyOne = (count == 1);</a>
+<a name="ln538">      bool first = (witems.first() == item);</a>
+<a name="ln539">      bool last = (witems.last() == item);</a>
+<a name="ln540"> </a>
+<a name="ln541">      removeButton-&gt;setEnabled(flag &amp;&amp; !onlyOne);</a>
+<a name="ln542">      upButton-&gt;setEnabled(flag &amp;&amp; !onlyOne &amp;&amp; !first);</a>
+<a name="ln543">      downButton-&gt;setEnabled(flag &amp;&amp; !onlyOne &amp;&amp; !last);</a>
+<a name="ln544">      addLinkedStaffButton-&gt;setEnabled(item &amp;&amp; item-&gt;type() == STAFF_LIST_ITEM);</a>
+<a name="ln545">      addStaffButton-&gt;setEnabled(item &amp;&amp; item-&gt;type() == STAFF_LIST_ITEM);</a>
+<a name="ln546">      }</a>
+<a name="ln547"> </a>
+<a name="ln548">//---------------------------------------------------------</a>
+<a name="ln549">//   on_instrumentList</a>
+<a name="ln550">//---------------------------------------------------------</a>
+<a name="ln551"> </a>
+<a name="ln552">void InstrumentsWidget::on_instrumentList_itemActivated(QTreeWidgetItem* item, int)</a>
+<a name="ln553">      {</a>
+<a name="ln554">      if (item-&gt;flags() &amp; Qt::ItemIsSelectable)</a>
+<a name="ln555">            on_addButton_clicked();</a>
+<a name="ln556">      }</a>
+<a name="ln557"> </a>
+<a name="ln558">//---------------------------------------------------------</a>
+<a name="ln559">//   on_addButton_clicked</a>
+<a name="ln560">//    add instrument to partitur</a>
+<a name="ln561">//---------------------------------------------------------</a>
+<a name="ln562"> </a>
+<a name="ln563">void InstrumentsWidget::on_addButton_clicked()</a>
+<a name="ln564">      {</a>
+<a name="ln565">      for (QTreeWidgetItem* i : instrumentList-&gt;selectedItems()) {</a>
+<a name="ln566">            InstrumentTemplateListItem* item = static_cast&lt;InstrumentTemplateListItem*&gt;(i);</a>
+<a name="ln567">            const InstrumentTemplate* it     = item-&gt;instrumentTemplate();</a>
+<a name="ln568">            if (it == 0)</a>
+<a name="ln569">                  continue;</a>
+<a name="ln570">            PartListItem* pli = new PartListItem(it, partiturList);</a>
+<a name="ln571">            pli-&gt;setFirstColumnSpanned(true);</a>
+<a name="ln572">            pli-&gt;op = ListItemOp::ADD;</a>
+<a name="ln573"> </a>
+<a name="ln574">            int n = it-&gt;nstaves();</a>
+<a name="ln575">            for (int i1 = 0; i1 &lt; n; ++i1) {</a>
+<a name="ln576">                  StaffListItem* sli = new StaffListItem(pli);</a>
+<a name="ln577">                  sli-&gt;setOp(ListItemOp::ADD);</a>
+<a name="ln578">                  sli-&gt;setStaff(0);</a>
+<a name="ln579">                  sli-&gt;setPartIdx(i1);</a>
+<a name="ln580">                  sli-&gt;setDefaultClefType(it-&gt;clefType(i1));</a>
+<a name="ln581">                  sli-&gt;setStaffType(it-&gt;staffTypePreset);</a>
+<a name="ln582">                  }</a>
+<a name="ln583">            pli-&gt;updateClefs();</a>
+<a name="ln584">            partiturList-&gt;setItemExpanded(pli, true);</a>
+<a name="ln585">            partiturList-&gt;clearSelection();     // should not be necessary</a>
+<a name="ln586">            partiturList-&gt;setCurrentItem(pli);</a>
+<a name="ln587">            }</a>
+<a name="ln588">      emit completeChanged(true);</a>
+<a name="ln589">      }</a>
+<a name="ln590"> </a>
+<a name="ln591">//---------------------------------------------------------</a>
+<a name="ln592">//   on_removeButton_clicked</a>
+<a name="ln593">//    remove instrument from partitur</a>
+<a name="ln594">//---------------------------------------------------------</a>
+<a name="ln595"> </a>
+<a name="ln596">void InstrumentsWidget::on_removeButton_clicked()</a>
+<a name="ln597">      {</a>
+<a name="ln598">      QList&lt;QTreeWidgetItem*&gt; wi = partiturList-&gt;selectedItems();</a>
+<a name="ln599">      if (wi.isEmpty()) {</a>
+<a name="ln600">            Q_ASSERT(false); // shouldn't get here (remove button disabled when no items selected)</a>
+<a name="ln601">            removeButton-&gt;setEnabled(false); // nevertheless, handle gracefully in release builds</a>
+<a name="ln602">            return;</a>
+<a name="ln603">            }</a>
+<a name="ln604">      QTreeWidgetItem* item   = wi.front();</a>
+<a name="ln605">      QTreeWidgetItem* parent = item-&gt;parent();</a>
+<a name="ln606"> </a>
+<a name="ln607">      if (parent) {</a>
+<a name="ln608">            if (parent-&gt;childCount() == 1) {</a>
+<a name="ln609">                  Q_ASSERT(false); // shouldn't get here (remove button disabled when one item left)</a>
+<a name="ln610">                  removeButton-&gt;setEnabled(false); // nevertheless, handle gracefully in release builds</a>
+<a name="ln611">                  return;</a>
+<a name="ln612">                  }</a>
+<a name="ln613">            if (((StaffListItem*)item)-&gt;op() == ListItemOp::ADD) {</a>
+<a name="ln614">                  if (parent-&gt;childCount() == 1) {</a>
+<a name="ln615">                        partiturList-&gt;takeTopLevelItem(partiturList-&gt;indexOfTopLevelItem(parent));</a>
+<a name="ln616">                        delete parent;</a>
+<a name="ln617">                        }</a>
+<a name="ln618">                  else {</a>
+<a name="ln619">                        parent-&gt;takeChild(parent-&gt;indexOfChild(item));</a>
+<a name="ln620">                        delete item;</a>
+<a name="ln621">                        }</a>
+<a name="ln622">                  }</a>
+<a name="ln623">            else {</a>
+<a name="ln624">                  ((StaffListItem*)item)-&gt;setOp(ListItemOp::I_DELETE);</a>
+<a name="ln625">                  item-&gt;setHidden(true);</a>
+<a name="ln626"> </a>
+<a name="ln627">                  // check if a staff is linked to this staff</a>
+<a name="ln628"> </a>
+<a name="ln629">                  int idx = parent-&gt;indexOfChild(item);</a>
+<a name="ln630">                  StaffListItem* sli = static_cast&lt;StaffListItem*&gt;(parent-&gt;child(idx+1));</a>
+<a name="ln631">                  if (sli) {</a>
+<a name="ln632">                        StaffListItem* sli2 = static_cast&lt;StaffListItem*&gt;(parent-&gt;child(idx+2));</a>
+<a name="ln633">                        if (sli-&gt;linked() &amp;&amp; !(sli2 &amp;&amp; sli2-&gt;linked())) {</a>
+<a name="ln634">                              sli-&gt;setLinked(false);</a>
+<a name="ln635">                              partiturList-&gt;update();</a>
+<a name="ln636">                              }</a>
+<a name="ln637">                        }</a>
+<a name="ln638">                  }</a>
+<a name="ln639">            static_cast&lt;PartListItem*&gt;(parent)-&gt;updateClefs();</a>
+<a name="ln640">            partiturList-&gt;setCurrentItem(parent);</a>
+<a name="ln641">            }</a>
+<a name="ln642">      else {</a>
+<a name="ln643">            if (partiturList-&gt;topLevelItemCount() == 1) {</a>
+<a name="ln644">                  Q_ASSERT(false); // shouldn't get here as (remove button disabled when one item left)</a>
+<a name="ln645">                  removeButton-&gt;setEnabled(false); // nevertheless, handle gracefully in release builds</a>
+<a name="ln646">                  emit completeChanged(false);</a>
+<a name="ln647">                  return;</a>
+<a name="ln648">                  }</a>
+<a name="ln649">            int idx = partiturList-&gt;indexOfTopLevelItem(item);</a>
+<a name="ln650">            if (((PartListItem*)item)-&gt;op == ListItemOp::ADD) {</a>
+<a name="ln651">                  partiturList-&gt;blockSignals(true);</a>
+<a name="ln652">                  delete item; // fires selectionChanged too early (item is still in view)</a>
+<a name="ln653">                  partiturList-&gt;blockSignals(false);</a>
+<a name="ln654">                  emit on_partiturList_itemSelectionChanged(); // fire manually (item gone by now)</a>
+<a name="ln655">                  }</a>
+<a name="ln656">            else {</a>
+<a name="ln657">                  ((PartListItem*)item)-&gt;op = ListItemOp::I_DELETE;</a>
+<a name="ln658">                  item-&gt;setHidden(true);</a>
+<a name="ln659">                  }</a>
+<a name="ln660">            // select an item, do not consider hidden ones</a>
+<a name="ln661">            int plusIdx = 0;</a>
+<a name="ln662">            QTreeWidgetItem* nextParent = partiturList-&gt;topLevelItem(idx + plusIdx);</a>
+<a name="ln663">            while (nextParent &amp;&amp; nextParent-&gt;isHidden()) {</a>
+<a name="ln664">                  plusIdx++;</a>
+<a name="ln665">                  nextParent = partiturList-&gt;topLevelItem(idx + plusIdx);</a>
+<a name="ln666">                  }</a>
+<a name="ln667">            if(!nextParent) { // couldn't find one after, check before</a>
+<a name="ln668">                  plusIdx = 1;</a>
+<a name="ln669">                  nextParent = partiturList-&gt;topLevelItem(idx - plusIdx);</a>
+<a name="ln670">                  while (nextParent &amp;&amp; nextParent-&gt;isHidden()) {</a>
+<a name="ln671">                        plusIdx++;</a>
+<a name="ln672">                        nextParent = partiturList-&gt;topLevelItem(idx - plusIdx);</a>
+<a name="ln673">                        }</a>
+<a name="ln674">                  }</a>
+<a name="ln675">            partiturList-&gt;setCurrentItem(nextParent);</a>
+<a name="ln676">            }</a>
+<a name="ln677">      }</a>
+<a name="ln678"> </a>
+<a name="ln679">//---------------------------------------------------------</a>
+<a name="ln680">//   on_upButton_clicked</a>
+<a name="ln681">//    move instrument up in partitur</a>
+<a name="ln682">//---------------------------------------------------------</a>
+<a name="ln683"> </a>
+<a name="ln684">void InstrumentsWidget::on_upButton_clicked()</a>
+<a name="ln685">      {</a>
+<a name="ln686">      QList&lt;QTreeWidgetItem*&gt; wi = partiturList-&gt;selectedItems();</a>
+<a name="ln687">      if (wi.isEmpty())</a>
+<a name="ln688">            return;</a>
+<a name="ln689">      QTreeWidgetItem* item = wi.front();</a>
+<a name="ln690"> </a>
+<a name="ln691">      if (item-&gt;type() == PART_LIST_ITEM) {</a>
+<a name="ln692">            bool isExpanded = partiturList-&gt;isItemExpanded(item);</a>
+<a name="ln693">            int idx = partiturList-&gt;indexOfTopLevelItem(item);</a>
+<a name="ln694">            // if part item not first, move one slot up</a>
+<a name="ln695">            if (idx) {</a>
+<a name="ln696">                  partiturList-&gt;selectionModel()-&gt;clear();</a>
+<a name="ln697">                  QTreeWidgetItem* item1 = partiturList-&gt;takeTopLevelItem(idx);</a>
+<a name="ln698">                  // Qt looses the QComboBox set into StaffListItem's when they are re-inserted into the tree:</a>
+<a name="ln699">                  // get the currently selected staff type of each combo and re-insert</a>
+<a name="ln700">                  int numOfStaffListItems = item1-&gt;childCount();</a>
+<a name="ln701">#if (!defined (_MSCVER) &amp;&amp; !defined (_MSC_VER))</a>
+<a name="ln702">                  int staffIdx[numOfStaffListItems];</a>
+<a name="ln703">#else</a>
+<a name="ln704">                  // MSVC does not support VLA. Replace with std::vector. If profiling determines that the</a>
+<a name="ln705">                  //    heap allocation is slow, an optimization might be used.</a>
+<a name="ln706">                  std::vector&lt;int&gt; staffIdx(numOfStaffListItems);</a>
+<a name="ln707">#endif</a>
+<a name="ln708">                  for (int itemIdx=0; itemIdx &lt; numOfStaffListItems; ++itemIdx)</a>
+<a name="ln709">                        staffIdx[itemIdx] = (static_cast&lt;StaffListItem*&gt;(item1-&gt;child(itemIdx)))-&gt;staffTypeIdx();</a>
+<a name="ln710">                  // do not consider hidden ones</a>
+<a name="ln711">                  int minusIdx = 1;</a>
+<a name="ln712">                  QTreeWidgetItem* prevParent = partiturList-&gt;topLevelItem(idx - minusIdx);</a>
+<a name="ln713">                  while (prevParent &amp;&amp; prevParent-&gt;isHidden()) {</a>
+<a name="ln714">                       minusIdx++;</a>
+<a name="ln715">                       prevParent = partiturList-&gt;topLevelItem(idx - minusIdx);</a>
+<a name="ln716">                  }</a>
+<a name="ln717">                  partiturList-&gt;insertTopLevelItem(idx - minusIdx, item1);</a>
+<a name="ln718">                  // after-re-insertion, recreate each combo and set its index</a>
+<a name="ln719">                  for (int itemIdx=0; itemIdx &lt; numOfStaffListItems; ++itemIdx) {</a>
+<a name="ln720">                        StaffListItem* staffItem = static_cast&lt;StaffListItem*&gt;(item1-&gt;child(itemIdx));</a>
+<a name="ln721">                        staffItem-&gt;initStaffTypeCombo(true);</a>
+<a name="ln722">                        staffItem-&gt;setStaffType(staffIdx[itemIdx]);</a>
+<a name="ln723">                        }</a>
+<a name="ln724">                  partiturList-&gt;setItemExpanded(item1, isExpanded);</a>
+<a name="ln725">                  partiturList-&gt;setCurrentItem(item1);</a>
+<a name="ln726">                  }</a>
+<a name="ln727">            }</a>
+<a name="ln728">      else {</a>
+<a name="ln729">            QTreeWidgetItem* parent = item-&gt;parent();</a>
+<a name="ln730">            int idx = parent-&gt;indexOfChild(item);</a>
+<a name="ln731">            // if staff item not first of its part, move one slot up</a>
+<a name="ln732">            if (idx) {</a>
+<a name="ln733">                  partiturList-&gt;selectionModel()-&gt;clear();</a>
+<a name="ln734">                  StaffListItem* item1 = static_cast&lt;StaffListItem*&gt;(parent-&gt;takeChild(idx));</a>
+<a name="ln735">                  // Qt looses the QComboBox set into StaffListItem when it is re-inserted into the tree:</a>
+<a name="ln736">                  // get currently selected staff type and re-insert</a>
+<a name="ln737">                  int staffTypeIdx = item1-&gt;staffTypeIdx();</a>
+<a name="ln738">                  parent-&gt;insertChild(idx - 1, item1);</a>
+<a name="ln739">                  // after item has been inserted into the tree, create a new QComboBox and set its index</a>
+<a name="ln740">                  item1-&gt;initStaffTypeCombo(true);</a>
+<a name="ln741">                  item1-&gt;setStaffType(staffTypeIdx);</a>
+<a name="ln742">                  partiturList-&gt;setCurrentItem(item1);</a>
+<a name="ln743">                  }</a>
+<a name="ln744">            else {</a>
+<a name="ln745">                  // if staff item first of its part...</a>
+<a name="ln746">                  int parentIdx = partiturList-&gt;indexOfTopLevelItem(parent);</a>
+<a name="ln747">                  // ...and there is a previous part, move staff item to previous part</a>
+<a name="ln748">                  if (parentIdx) {</a>
+<a name="ln749">                        partiturList-&gt;selectionModel()-&gt;clear();</a>
+<a name="ln750">                        QTreeWidgetItem* prevParent = partiturList-&gt;topLevelItem(parentIdx - 1);</a>
+<a name="ln751">                        StaffListItem* sli = static_cast&lt;StaffListItem*&gt;(parent-&gt;takeChild(idx));</a>
+<a name="ln752">                        int staffTypeIdx = sli-&gt;staffTypeIdx();</a>
+<a name="ln753">                        prevParent-&gt;addChild(sli);</a>
+<a name="ln754">                        sli-&gt;initStaffTypeCombo(true);</a>
+<a name="ln755">                        sli-&gt;setStaffType(staffTypeIdx);</a>
+<a name="ln756">                        partiturList-&gt;setCurrentItem(sli);</a>
+<a name="ln757">//                        PartListItem* pli = static_cast&lt;PartListItem*&gt;(prevParent);</a>
+<a name="ln758">//                        int idx = pli-&gt;part-&gt;nstaves();</a>
+<a name="ln759">//??                        cs-&gt;undo(new MoveStaff(sli-&gt;staff(), pli-&gt;part, idx));</a>
+<a name="ln760">                        //</a>
+<a name="ln761">                        // TODO : if staff was linked to a staff of the old parent part, unlink it!</a>
+<a name="ln762">                        //</a>
+<a name="ln763">                        }</a>
+<a name="ln764">                  }</a>
+<a name="ln765">            }</a>
+<a name="ln766">      }</a>
+<a name="ln767"> </a>
+<a name="ln768">//---------------------------------------------------------</a>
+<a name="ln769">//   on_downButton_clicked</a>
+<a name="ln770">//    move instrument down in partitur</a>
+<a name="ln771">//---------------------------------------------------------</a>
+<a name="ln772"> </a>
+<a name="ln773">void InstrumentsWidget::on_downButton_clicked()</a>
+<a name="ln774">      {</a>
+<a name="ln775">      QList&lt;QTreeWidgetItem*&gt; wi = partiturList-&gt;selectedItems();</a>
+<a name="ln776">      if (wi.isEmpty())</a>
+<a name="ln777">            return;</a>
+<a name="ln778">      QTreeWidgetItem* item = wi.front();</a>
+<a name="ln779">      if (item-&gt;type() == PART_LIST_ITEM) {</a>
+<a name="ln780">            bool isExpanded = partiturList-&gt;isItemExpanded(item);</a>
+<a name="ln781">            int idx = partiturList-&gt;indexOfTopLevelItem(item);</a>
+<a name="ln782">            int n = partiturList-&gt;topLevelItemCount();</a>
+<a name="ln783">            // if part not last, move one slot down</a>
+<a name="ln784">            if (idx &lt; (n-1)) {</a>
+<a name="ln785">                  partiturList-&gt;selectionModel()-&gt;clear();</a>
+<a name="ln786">                  QTreeWidgetItem* item1 = partiturList-&gt;takeTopLevelItem(idx);</a>
+<a name="ln787">                  // Qt looses the QComboBox set into StaffListItem's when they are re-inserted into the tree:</a>
+<a name="ln788">                  // get the currently selected staff type of each combo and re-insert</a>
+<a name="ln789">                  int numOfStaffListItems = item1-&gt;childCount();</a>
+<a name="ln790">#if (!defined (_MSCVER) &amp;&amp; !defined (_MSC_VER))</a>
+<a name="ln791">                  int staffIdx[numOfStaffListItems];</a>
+<a name="ln792">#else</a>
+<a name="ln793">                  // MSVC does not support VLA. Replace with std::vector. If profiling determines that the</a>
+<a name="ln794">                  //    heap allocation is slow, an optimization might be used.</a>
+<a name="ln795">                  std::vector&lt;int&gt; staffIdx(numOfStaffListItems);</a>
+<a name="ln796">#endif</a>
+<a name="ln797">                  int itemIdx;</a>
+<a name="ln798">                  for (itemIdx=0; itemIdx &lt; numOfStaffListItems; ++itemIdx)</a>
+<a name="ln799">                        staffIdx[itemIdx] = (static_cast&lt;StaffListItem*&gt;(item1-&gt;child(itemIdx)))-&gt;staffTypeIdx();</a>
+<a name="ln800">                  // do not consider hidden ones</a>
+<a name="ln801">                  int plusIdx = 1;</a>
+<a name="ln802">                  QTreeWidgetItem* nextParent = partiturList-&gt;topLevelItem(idx + plusIdx);</a>
+<a name="ln803">                  while (nextParent &amp;&amp; nextParent-&gt;isHidden()) {</a>
+<a name="ln804">                       plusIdx++;</a>
+<a name="ln805">                       nextParent = partiturList-&gt;topLevelItem(idx + plusIdx);</a>
+<a name="ln806">                  }</a>
+<a name="ln807">                  partiturList-&gt;insertTopLevelItem(idx + plusIdx, item1);</a>
+<a name="ln808">                  // after-re-insertion, recreate each combo and set its index</a>
+<a name="ln809">                  for (itemIdx=0; itemIdx &lt; numOfStaffListItems; ++itemIdx) {</a>
+<a name="ln810">                        StaffListItem* staffItem = static_cast&lt;StaffListItem*&gt;(item1-&gt;child(itemIdx));</a>
+<a name="ln811">                        staffItem-&gt;initStaffTypeCombo(true);</a>
+<a name="ln812">                        staffItem-&gt;setStaffType(staffIdx[itemIdx]);</a>
+<a name="ln813">                        }</a>
+<a name="ln814">                  partiturList-&gt;setItemExpanded(item1, isExpanded);</a>
+<a name="ln815">                  partiturList-&gt;setCurrentItem(item1);</a>
+<a name="ln816">                  }</a>
+<a name="ln817">            }</a>
+<a name="ln818">      else {</a>
+<a name="ln819">            QTreeWidgetItem* parent = item-&gt;parent();</a>
+<a name="ln820">            int idx = parent-&gt;indexOfChild(item);</a>
+<a name="ln821">            int n = parent-&gt;childCount();</a>
+<a name="ln822">            // if staff item is not last of its part, move one slot down in part</a>
+<a name="ln823">            if (idx &lt; (n-1)) {</a>
+<a name="ln824">                  partiturList-&gt;selectionModel()-&gt;clear();</a>
+<a name="ln825">                  StaffListItem* item1 = static_cast&lt;StaffListItem*&gt;(parent-&gt;takeChild(idx));</a>
+<a name="ln826">                  // Qt looses the QComboBox set into StaffListItem when it is re-inserted into the tree:</a>
+<a name="ln827">                  // get currently selected staff type and re-insert</a>
+<a name="ln828">                  int staffTypeIdx = item1-&gt;staffTypeIdx();</a>
+<a name="ln829">                  parent-&gt;insertChild(idx+1, item1);</a>
+<a name="ln830">                  // after item has been inserted into the tree, create a new QComboBox and set its index</a>
+<a name="ln831">                  item1-&gt;initStaffTypeCombo(true);</a>
+<a name="ln832">                  item1-&gt;setStaffType(staffTypeIdx);</a>
+<a name="ln833">                  partiturList-&gt;setCurrentItem(item1);</a>
+<a name="ln834">                  }</a>
+<a name="ln835">            else {</a>
+<a name="ln836">                  // if staff item is last of its part...</a>
+<a name="ln837">                  int parentIdx = partiturList-&gt;indexOfTopLevelItem(parent);</a>
+<a name="ln838">                  int n1 = partiturList-&gt;topLevelItemCount();</a>
+<a name="ln839">                  //..and there is a next part, move to next part</a>
+<a name="ln840">                  if (parentIdx &lt; (n1-1)) {</a>
+<a name="ln841">                        partiturList-&gt;selectionModel()-&gt;clear();</a>
+<a name="ln842">                        StaffListItem* sli = static_cast&lt;StaffListItem*&gt;(parent-&gt;takeChild(idx));</a>
+<a name="ln843">                        QTreeWidgetItem* nextParent = partiturList-&gt;topLevelItem(parentIdx - 1);</a>
+<a name="ln844">                        int staffTypeIdx = sli-&gt;staffTypeIdx();</a>
+<a name="ln845">                        nextParent-&gt;addChild(sli);</a>
+<a name="ln846">                        sli-&gt;initStaffTypeCombo(true);</a>
+<a name="ln847">                        sli-&gt;setStaffType(staffTypeIdx);</a>
+<a name="ln848">                        partiturList-&gt;setCurrentItem(sli);</a>
+<a name="ln849">//                        PartListItem* pli = static_cast&lt;PartListItem*&gt;(nextParent);</a>
+<a name="ln850">//                        cs-&gt;undo(new MoveStaff(sli-&gt;staff(), pli-&gt;part, 0));</a>
+<a name="ln851">                        //</a>
+<a name="ln852">                        // TODO : if staff was linked to a staff of the old parent part, unlink it!</a>
+<a name="ln853">                        //</a>
+<a name="ln854">                        }</a>
+<a name="ln855">                  }</a>
+<a name="ln856">            }</a>
+<a name="ln857">      }</a>
+<a name="ln858"> </a>
+<a name="ln859">//---------------------------------------------------------</a>
+<a name="ln860">//   on_addStaffButton_clicked</a>
+<a name="ln861">//---------------------------------------------------------</a>
+<a name="ln862"> </a>
+<a name="ln863">StaffListItem* InstrumentsWidget::on_addStaffButton_clicked()</a>
+<a name="ln864">      {</a>
+<a name="ln865">      QList&lt;QTreeWidgetItem*&gt; wi = partiturList-&gt;selectedItems();</a>
+<a name="ln866">      if (wi.isEmpty())</a>
+<a name="ln867">            return 0;</a>
+<a name="ln868">      QTreeWidgetItem* item = wi.front();</a>
+<a name="ln869">      if (item-&gt;type() != STAFF_LIST_ITEM)</a>
+<a name="ln870">            return 0;</a>
+<a name="ln871"> </a>
+<a name="ln872">      StaffListItem* sli  = static_cast&lt;StaffListItem*&gt;(item);</a>
+<a name="ln873">//      Staff* staff        = sli-&gt;staff();</a>
+<a name="ln874">      PartListItem* pli   = static_cast&lt;PartListItem*&gt;(sli-&gt;QTreeWidgetItem::parent());</a>
+<a name="ln875">      StaffListItem* nsli = new StaffListItem();</a>
+<a name="ln876">//      nsli-&gt;setStaff(staff);</a>
+<a name="ln877">      nsli-&gt;setStaff(0);</a>
+<a name="ln878">//      if (staff)</a>
+<a name="ln879">            nsli-&gt;setOp(ListItemOp::ADD);</a>
+<a name="ln880">      int ridx = pli-&gt;indexOfChild(sli) + 1;</a>
+<a name="ln881">      pli-&gt;insertChild(ridx, nsli);</a>
+<a name="ln882">      nsli-&gt;initStaffTypeCombo();               // StaffListItem needs to be inserted in the tree hierarchy</a>
+<a name="ln883">      nsli-&gt;setStaffType(sli-&gt;staffType());     // before a widget can be set into it</a>
+<a name="ln884"> </a>
+<a name="ln885">      ClefTypeList clefType;</a>
+<a name="ln886">      if (pli-&gt;it)</a>
+<a name="ln887">            clefType = pli-&gt;it-&gt;clefType(ridx);</a>
+<a name="ln888">      else</a>
+<a name="ln889">            clefType = pli-&gt;part-&gt;instrument()-&gt;clefType(ridx);</a>
+<a name="ln890">      nsli-&gt;setDefaultClefType(clefType);</a>
+<a name="ln891">      pli-&gt;updateClefs();</a>
+<a name="ln892"> </a>
+<a name="ln893">      partiturList-&gt;clearSelection();           // should not be necessary</a>
+<a name="ln894">      partiturList-&gt;setCurrentItem(nsli);</a>
+<a name="ln895">      pli-&gt;updateClefs();</a>
+<a name="ln896">      return nsli;</a>
+<a name="ln897">      }</a>
+<a name="ln898"> </a>
+<a name="ln899">//---------------------------------------------------------</a>
+<a name="ln900">//   on_addLinkedStaffButton_clicked</a>
+<a name="ln901">//---------------------------------------------------------</a>
+<a name="ln902"> </a>
+<a name="ln903">void InstrumentsWidget::on_addLinkedStaffButton_clicked()</a>
+<a name="ln904">      {</a>
+<a name="ln905">      StaffListItem* nsli = on_addStaffButton_clicked();</a>
+<a name="ln906">      if (nsli)</a>
+<a name="ln907">            nsli-&gt;setLinked(true);</a>
+<a name="ln908">      }</a>
+<a name="ln909"> </a>
+<a name="ln910">//---------------------------------------------------------</a>
+<a name="ln911">//   on_instrumentSearch_textChanged</a>
+<a name="ln912">//---------------------------------------------------------</a>
+<a name="ln913"> </a>
+<a name="ln914">void InstrumentsWidget::on_instrumentSearch_textChanged(const QString&amp;)</a>
+<a name="ln915">      {</a>
+<a name="ln916">      // searching is done in Ms::SearchBox so here we just reset the</a>
+<a name="ln917">      // genre dropdown to ensure that the search includes all genres</a>
+<a name="ln918">      const int idxAllGenres = 0;</a>
+<a name="ln919">      if (instrumentGenreFilter-&gt;currentIndex() != idxAllGenres) {</a>
+<a name="ln920">            instrumentGenreFilter-&gt;blockSignals(true);</a>
+<a name="ln921">            instrumentGenreFilter-&gt;setCurrentIndex(idxAllGenres);</a>
+<a name="ln922">            instrumentGenreFilter-&gt;blockSignals(false);</a>
+<a name="ln923">            }</a>
+<a name="ln924">      }</a>
+<a name="ln925"> </a>
+<a name="ln926">//---------------------------------------------------------</a>
+<a name="ln927">//   on_instrumentGenreFilter_currentTextChanged</a>
+<a name="ln928">//---------------------------------------------------------</a>
+<a name="ln929"> </a>
+<a name="ln930">void InstrumentsWidget::on_instrumentGenreFilter_currentIndexChanged(int index)</a>
+<a name="ln931">      {</a>
+<a name="ln932">      QSettings settings;</a>
+<a name="ln933">      settings.beginGroup(&quot;selectInstrument&quot;);  // hard coded, since this is also used in selinstrument</a>
+<a name="ln934">      settings.setValue(&quot;selectedGenre&quot;, instrumentGenreFilter-&gt;currentText());</a>
+<a name="ln935">      settings.endGroup();</a>
+<a name="ln936"> </a>
+<a name="ln937">      QString id = instrumentGenreFilter-&gt;itemData(index).toString();</a>
+<a name="ln938">      // Redisplay tree, only showing items from the selected genre</a>
+<a name="ln939">      filterInstrumentsByGenre(instrumentList, id);</a>
+<a name="ln940">      }</a>
+<a name="ln941"> </a>
+<a name="ln942">//---------------------------------------------------------</a>
+<a name="ln943">//   filterInstrumentsByGenre</a>
+<a name="ln944">//---------------------------------------------------------</a>
+<a name="ln945"> </a>
+<a name="ln946">void InstrumentsWidget::filterInstrumentsByGenre(QTreeWidget *instrList, QString genre)</a>
+<a name="ln947">      {</a>
+<a name="ln948">      QTreeWidgetItemIterator iList(instrList);</a>
+<a name="ln949">      while (*iList) {</a>
+<a name="ln950">            (*iList)-&gt;setHidden(true);</a>
+<a name="ln951">            InstrumentTemplateListItem* itli = static_cast&lt;InstrumentTemplateListItem*&gt;(*iList);</a>
+<a name="ln952">            InstrumentTemplate *it=itli-&gt;instrumentTemplate();</a>
+<a name="ln953"> </a>
+<a name="ln954">            if(it) {</a>
+<a name="ln955">                  if (genre == &quot;all&quot; || it-&gt;genreMember(genre)) {</a>
+<a name="ln956">                        (*iList)-&gt;setHidden(false);</a>
+<a name="ln957"> </a>
+<a name="ln958">                        QTreeWidgetItem *iParent = (*iList)-&gt;parent();</a>
+<a name="ln959">                        while(iParent) {</a>
+<a name="ln960">                              if(!iParent-&gt;isHidden())</a>
+<a name="ln961">                                    break;</a>
+<a name="ln962"> </a>
+<a name="ln963">                              iParent-&gt;setHidden(false);</a>
+<a name="ln964">                              iParent = iParent-&gt;parent();</a>
+<a name="ln965">                              }</a>
+<a name="ln966">                        }</a>
+<a name="ln967">                  }</a>
+<a name="ln968">            ++iList;</a>
+<a name="ln969">            }</a>
+<a name="ln970">      }</a>
+<a name="ln971"> </a>
+<a name="ln972">//---------------------------------------------------------</a>
+<a name="ln973">//   createInstruments</a>
+<a name="ln974">//---------------------------------------------------------</a>
+<a name="ln975"> </a>
+<a name="ln976">void InstrumentsWidget::createInstruments(Score* cs)</a>
+<a name="ln977">      {</a>
+<a name="ln978">      //</a>
+<a name="ln979">      // process modified partitur list</a>
+<a name="ln980">      //</a>
+<a name="ln981">      QTreeWidget* pl = partiturList;</a>
+<a name="ln982">      Part* part   = 0;</a>
+<a name="ln983">      int staffIdx = 0;</a>
+<a name="ln984"> </a>
+<a name="ln985">      QTreeWidgetItem* item = 0;</a>
+<a name="ln986">      for (int idx = 0; (item = pl-&gt;topLevelItem(idx)); ++idx) {</a>
+<a name="ln987">            PartListItem* pli = (PartListItem*)item;</a>
+<a name="ln988">            if (pli-&gt;op != ListItemOp::ADD) {</a>
+<a name="ln989">                  qDebug(&quot;bad op&quot;);</a>
+<a name="ln990">                  continue;</a>
+<a name="ln991">                  }</a>
+<a name="ln992">            const InstrumentTemplate* t = ((PartListItem*)item)-&gt;it;</a>
+<a name="ln993">            part = new Part(cs);</a>
+<a name="ln994">            part-&gt;initFromInstrTemplate(t);</a>
+<a name="ln995"> </a>
+<a name="ln996">            pli-&gt;part = part;</a>
+<a name="ln997">            QTreeWidgetItem* ci = 0;</a>
+<a name="ln998">            int rstaff = 0;</a>
+<a name="ln999">            for (int cidx = 0; (ci = pli-&gt;child(cidx)); ++cidx) {</a>
+<a name="ln1000">                  if (ci-&gt;isHidden())</a>
+<a name="ln1001">                        continue;</a>
+<a name="ln1002">                  StaffListItem* sli = (StaffListItem*)ci;</a>
+<a name="ln1003">                  Staff* staff       = new Staff(cs);</a>
+<a name="ln1004">                  staff-&gt;setPart(part);</a>
+<a name="ln1005">                  sli-&gt;setStaff(staff);</a>
+<a name="ln1006">                  ++rstaff;</a>
+<a name="ln1007"> </a>
+<a name="ln1008">                  staff-&gt;init(t, sli-&gt;staffType(), cidx);</a>
+<a name="ln1009">                  staff-&gt;setDefaultClefType(sli-&gt;defaultClefType());</a>
+<a name="ln1010"> </a>
+<a name="ln1011">                  if (sli-&gt;linked() &amp;&amp; !part-&gt;staves()-&gt;isEmpty()) {</a>
+<a name="ln1012">                        Staff* linkedStaff = part-&gt;staves()-&gt;back();</a>
+<a name="ln1013">                        staff-&gt;linkTo(linkedStaff);</a>
+<a name="ln1014">                        }</a>
+<a name="ln1015">                  part-&gt;staves()-&gt;push_back(staff);</a>
+<a name="ln1016">                  cs-&gt;staves().insert(staffIdx + rstaff, staff);</a>
+<a name="ln1017">                  }</a>
+<a name="ln1018">            // if a staff was removed from instrument:</a>
+<a name="ln1019">            if (part-&gt;staff(0)-&gt;barLineSpan() &gt; rstaff) {</a>
+<a name="ln1020">//TODO                  part-&gt;staff(0)-&gt;setBarLineSpan(rstaff);</a>
+<a name="ln1021">                  part-&gt;staff(0)-&gt;setBracketType(0, BracketType::NO_BRACKET);</a>
+<a name="ln1022">                  }</a>
+<a name="ln1023"> </a>
+<a name="ln1024">            // insert part</a>
+<a name="ln1025">            cs-&gt;insertPart(part, staffIdx);</a>
+<a name="ln1026">            int sidx = cs-&gt;staffIdx(part);</a>
+<a name="ln1027">            int eidx = sidx + part-&gt;nstaves();</a>
+<a name="ln1028">            for (Measure* m = cs-&gt;firstMeasure(); m; m = m-&gt;nextMeasure())</a>
+<a name="ln1029">                  m-&gt;cmdAddStaves(sidx, eidx, true);</a>
+<a name="ln1030">            staffIdx += rstaff;</a>
+<a name="ln1031">            }</a>
+<a name="ln1032">#if 0 // TODO</a>
+<a name="ln1033">      //</a>
+<a name="ln1034">      // check for bar lines</a>
+<a name="ln1035">      //</a>
+<a name="ln1036">      for (int staffIdx = 0; staffIdx &lt; cs-&gt;nstaves();) {</a>
+<a name="ln1037">            Staff* staff = cs-&gt;staff(staffIdx);</a>
+<a name="ln1038">            int barLineSpan = staff-&gt;barLineSpan();</a>
+<a name="ln1039">            if (barLineSpan == 0)</a>
+<a name="ln1040">                  staff-&gt;setBarLineSpan(1);</a>
+<a name="ln1041">            int nstaffIdx = staffIdx + barLineSpan;</a>
+<a name="ln1042"> </a>
+<a name="ln1043">            for (int idx = staffIdx+1; idx &lt; nstaffIdx; ++idx) {</a>
+<a name="ln1044">                  Staff* tStaff = cs-&gt;staff(idx);</a>
+<a name="ln1045">                  if (tStaff)</a>
+<a name="ln1046">                        tStaff-&gt;setBarLineSpan(0);</a>
+<a name="ln1047">                  }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">            staffIdx = nstaffIdx;</a>
+<a name="ln1050">            }</a>
+<a name="ln1051">#endif</a>
+<a name="ln1052">      cs-&gt;setLayoutAll();</a>
+<a name="ln1053">      }</a>
+<a name="ln1054"> </a>
+<a name="ln1055">//---------------------------------------------------------</a>
+<a name="ln1056">//   init</a>
+<a name="ln1057">//---------------------------------------------------------</a>
+<a name="ln1058"> </a>
+<a name="ln1059">void InstrumentsWidget::init()</a>
+<a name="ln1060">      {</a>
+<a name="ln1061">      partiturList-&gt;clear();</a>
+<a name="ln1062">      instrumentList-&gt;clearSelection();</a>
+<a name="ln1063">      addButton-&gt;setEnabled(false);</a>
+<a name="ln1064">      removeButton-&gt;setEnabled(false);</a>
+<a name="ln1065">      upButton-&gt;setEnabled(false);</a>
+<a name="ln1066">      downButton-&gt;setEnabled(false);</a>
+<a name="ln1067">      addLinkedStaffButton-&gt;setEnabled(false);</a>
+<a name="ln1068">      addStaffButton-&gt;setEnabled(false);</a>
+<a name="ln1069"> </a>
+<a name="ln1070">      // get last saved, user-selected instrument genre and set filter to it</a>
+<a name="ln1071">      QSettings settings;</a>
+<a name="ln1072">      settings.beginGroup(&quot;selectInstrument&quot;);</a>
+<a name="ln1073">      if (!settings.value(&quot;selectedGenre&quot;).isNull()){</a>
+<a name="ln1074">            QString selectedGenre = settings.value(&quot;selectedGenre&quot;).value&lt;QString&gt;();</a>
+<a name="ln1075">            instrumentGenreFilter-&gt;setCurrentText(selectedGenre);</a>
+<a name="ln1076">            }</a>
+<a name="ln1077">      settings.endGroup();</a>
+<a name="ln1078"> </a>
+<a name="ln1079">      emit completeChanged(false);</a>
+<a name="ln1080">      }</a>
+<a name="ln1081"> </a>
+<a name="ln1082">//---------------------------------------------------------</a>
+<a name="ln1083">//   getPartiturList</a>
+<a name="ln1084">//---------------------------------------------------------</a>
+<a name="ln1085"> </a>
+<a name="ln1086">QTreeWidget* InstrumentsWidget::getPartiturList()</a>
+<a name="ln1087">      {</a>
+<a name="ln1088">      return partiturList;</a>
+<a name="ln1089">      }</a>
+<a name="ln1090">}</a>
+
+</code></pre>
+<div class="balloon" rel="529"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'item' pointer was utilized before it was verified against nullptr. Check lines: 529, 544.</p></div>
+<div class="balloon" rel="639"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v774/" target="_blank">V774</a> The expression 'static_cast< PartListItem * > (parent)' contains a pointer, which is used after the memory was released.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1791 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>sfont.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/* FluidSynth - A Software Synthesizer</a>
+<a name="ln2"> *</a>
+<a name="ln3"> * Copyright (C) 2003  Peter Hanappe and others.</a>
+<a name="ln4"> *</a>
+<a name="ln5"> * SoundFont file loading code borrowed from Smurf SoundFont Editor</a>
+<a name="ln6"> * Copyright (C) 1999-2001 Josh Green</a>
+<a name="ln7"> *</a>
+<a name="ln8"> * This library is free software; you can redistribute it and/or</a>
+<a name="ln9"> * modify it under the terms of the GNU Library General Public License</a>
+<a name="ln10"> * as published by the Free Software Foundation; either version 2 of</a>
+<a name="ln11"> * the License, or (at your option) any later version.</a>
+<a name="ln12"> *</a>
+<a name="ln13"> * This library is distributed in the hope that it will be useful, but</a>
+<a name="ln14"> * WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln15"> * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU</a>
+<a name="ln16"> * Library General Public License for more details.</a>
+<a name="ln17"> *</a>
+<a name="ln18"> * You should have received a copy of the GNU Library General Public</a>
+<a name="ln19"> * License along with this library; if not, write to the Free</a>
+<a name="ln20"> * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA</a>
+<a name="ln21"> * 02111-1307, USA</a>
+<a name="ln22"> */</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;sfont.h&quot;</a>
+<a name="ln25">#include &quot;fluid.h&quot;</a>
+<a name="ln26">#include &quot;voice.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">// #define DEBUG_SFONT</a>
+<a name="ln29"> </a>
+<a name="ln30">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln31"> </a>
+<a name="ln32">static bool debugMode = false;</a>
+<a name="ln33"> </a>
+<a name="ln34">namespace FluidS {</a>
+<a name="ln35"> </a>
+<a name="ln36">//---------------------------------------------------------</a>
+<a name="ln37">//   SFVersion</a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39"> </a>
+<a name="ln40">SFVersion::SFVersion()</a>
+<a name="ln41">      {</a>
+<a name="ln42">      major = 0;</a>
+<a name="ln43">      minor = 0;</a>
+<a name="ln44">      }</a>
+<a name="ln45"> </a>
+<a name="ln46">//---------------------------------------------------------</a>
+<a name="ln47">//   SFont</a>
+<a name="ln48">//---------------------------------------------------------</a>
+<a name="ln49"> </a>
+<a name="ln50">SFont::SFont(Fluid* f)</a>
+<a name="ln51">      {</a>
+<a name="ln52">      synth       = f;</a>
+<a name="ln53">      samplepos   = 0;</a>
+<a name="ln54">      samplesize  = 0;</a>
+<a name="ln55">      _bankOffset = 0;</a>
+<a name="ln56">      }</a>
+<a name="ln57"> </a>
+<a name="ln58">SFont::~SFont()</a>
+<a name="ln59">      {</a>
+<a name="ln60">      for(Sample* s : sample)</a>
+<a name="ln61">            delete s;</a>
+<a name="ln62">      for(Preset* p : presets)</a>
+<a name="ln63">            delete p;</a>
+<a name="ln64">      for(unsigned char* p : infos)</a>
+<a name="ln65">            delete[] p;</a>
+<a name="ln66">      for(Instrument* i : instruments) {</a>
+<a name="ln67">//            for(Zone* z : i-&gt;zones)</a>
+<a name="ln68">//                  delete z;</a>
+<a name="ln69">            delete i;</a>
+<a name="ln70">            }</a>
+<a name="ln71">      }</a>
+<a name="ln72"> </a>
+<a name="ln73">//---------------------------------------------------------</a>
+<a name="ln74">//   read</a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76"> </a>
+<a name="ln77">bool SFont::read(const QString&amp; s)</a>
+<a name="ln78">      {</a>
+<a name="ln79">      f.setFileName(s);</a>
+<a name="ln80">      if (!load())</a>
+<a name="ln81">            return false;</a>
+<a name="ln82"> </a>
+<a name="ln83">      synth-&gt;setLoadProgress(0);</a>
+<a name="ln84">      for (auto instrument : instruments) {</a>
+<a name="ln85">            if (synth-&gt;loadWasCanceled())</a>
+<a name="ln86">                  return false;</a>
+<a name="ln87"> </a>
+<a name="ln88">            if (!instrument-&gt;import_sfont())</a>
+<a name="ln89">                  return false;</a>
+<a name="ln90">            }</a>
+<a name="ln91"> </a>
+<a name="ln92">      for (auto preset : presets) {</a>
+<a name="ln93">            if (synth-&gt;loadWasCanceled())</a>
+<a name="ln94">                  return false;</a>
+<a name="ln95"> </a>
+<a name="ln96">            if (!preset-&gt;importSfont())</a>
+<a name="ln97">                  return false;</a>
+<a name="ln98">            }</a>
+<a name="ln99">      return true;</a>
+<a name="ln100">      }</a>
+<a name="ln101"> </a>
+<a name="ln102">//---------------------------------------------------------</a>
+<a name="ln103">//   get_preset</a>
+<a name="ln104">//---------------------------------------------------------</a>
+<a name="ln105"> </a>
+<a name="ln106">Preset* SFont::get_preset(int bank, int num)</a>
+<a name="ln107">      {</a>
+<a name="ln108">      bank -= _bankOffset;</a>
+<a name="ln109">      for (Preset* p : presets) {</a>
+<a name="ln110">            if ((p-&gt;get_banknum() == bank) &amp;&amp; (p-&gt;get_num() == num))</a>
+<a name="ln111">                  return p;</a>
+<a name="ln112">            }</a>
+<a name="ln113">      return 0;</a>
+<a name="ln114">      }</a>
+<a name="ln115"> </a>
+<a name="ln116">//---------------------------------------------------------</a>
+<a name="ln117">//   Preset</a>
+<a name="ln118">//---------------------------------------------------------</a>
+<a name="ln119"> </a>
+<a name="ln120">Preset::Preset(SFont* s)</a>
+<a name="ln121">      {</a>
+<a name="ln122">      sfont        = s;</a>
+<a name="ln123">      bank         = 0;</a>
+<a name="ln124">      num          = 0;</a>
+<a name="ln125">      _global_zone = 0;</a>
+<a name="ln126">      }</a>
+<a name="ln127"> </a>
+<a name="ln128">//---------------------------------------------------------</a>
+<a name="ln129">//   Preset</a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131"> </a>
+<a name="ln132">Preset::~Preset()</a>
+<a name="ln133">      {</a>
+<a name="ln134">      delete _global_zone;</a>
+<a name="ln135">      for(Zone* z : zones)</a>
+<a name="ln136">            delete z;</a>
+<a name="ln137">      }</a>
+<a name="ln138"> </a>
+<a name="ln139">//---------------------------------------------------------</a>
+<a name="ln140">//   loadSamples</a>
+<a name="ln141">//    this is called if the preset is associated with a</a>
+<a name="ln142">//    channel</a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144"> </a>
+<a name="ln145">void Preset::loadSamples()</a>
+<a name="ln146">      {</a>
+<a name="ln147">      bool locked = sfont-&gt;synth-&gt;mutex.tryLock();</a>
+<a name="ln148"> </a>
+<a name="ln149">      if (_global_zone &amp;&amp; _global_zone-&gt;instrument) {</a>
+<a name="ln150">            Instrument* i = _global_zone-&gt;instrument;</a>
+<a name="ln151">            if (i-&gt;global_zone &amp;&amp; i-&gt;global_zone-&gt;sample)</a>
+<a name="ln152">                  i-&gt;global_zone-&gt;sample-&gt;load();</a>
+<a name="ln153"> </a>
+<a name="ln154">            for (Zone* iz : i-&gt;zones)</a>
+<a name="ln155">                  iz-&gt;sample-&gt;load();</a>
+<a name="ln156">            }</a>
+<a name="ln157"> </a>
+<a name="ln158">      int currentInstrZone = 0;</a>
+<a name="ln159">      float instrSize = (float)zones.size(); //float is used to properly calculate progress</a>
+<a name="ln160">      for (Zone* z : zones) {</a>
+<a name="ln161">            sfont-&gt;synth-&gt;setLoadProgress(currentInstrZone++ / instrSize * 100);</a>
+<a name="ln162">            Instrument* i = z-&gt;instrument;</a>
+<a name="ln163">            if (i-&gt;global_zone &amp;&amp; i-&gt;global_zone-&gt;sample)</a>
+<a name="ln164">                  i-&gt;global_zone-&gt;sample-&gt;load();</a>
+<a name="ln165"> </a>
+<a name="ln166">            for (Zone* iz : i-&gt;zones) {</a>
+<a name="ln167">                  if (sfont-&gt;synth-&gt;globalTerminate()) {</a>
+<a name="ln168">                        if (locked)</a>
+<a name="ln169">                              sfont-&gt;synth-&gt;mutex.unlock();</a>
+<a name="ln170">                        return;</a>
+<a name="ln171">                  }</a>
+<a name="ln172"> </a>
+<a name="ln173">                  iz-&gt;sample-&gt;load();</a>
+<a name="ln174">                  }</a>
+<a name="ln175">            }</a>
+<a name="ln176"> </a>
+<a name="ln177">      if (locked)</a>
+<a name="ln178">            sfont-&gt;synth-&gt;mutex.unlock();</a>
+<a name="ln179">      }</a>
+<a name="ln180"> </a>
+<a name="ln181">//---------------------------------------------------------</a>
+<a name="ln182">//   noteon</a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184"> </a>
+<a name="ln185">bool Preset::noteon(Fluid* synth, unsigned id, int chan, int key, int vel, double nt)</a>
+<a name="ln186">      {</a>
+<a name="ln187">      Mod* mod;</a>
+<a name="ln188">      Mod* mod_list[FLUID_NUM_MOD]; /* list for 'sorting' preset modulators */</a>
+<a name="ln189"> </a>
+<a name="ln190">      Zone* global_preset_zone = global_zone();</a>
+<a name="ln191"> </a>
+<a name="ln192">      /* run thru all the zones of this preset */</a>
+<a name="ln193">      for (Zone* preset_zone : zones) {</a>
+<a name="ln194">            /* check if the note falls into the key and velocity range of this</a>
+<a name="ln195">               preset */</a>
+<a name="ln196">            if (preset_zone-&gt;inside_range(key, vel)) {</a>
+<a name="ln197"> </a>
+<a name="ln198">                  Instrument* inst = preset_zone-&gt;get_inst();</a>
+<a name="ln199">                  Zone* global_inst_zone = inst-&gt;get_global_zone();</a>
+<a name="ln200"> </a>
+<a name="ln201">                  /* run thru all the zones of this instrument */</a>
+<a name="ln202">                  for(Zone* inst_zone : inst-&gt;get_zone()) {</a>
+<a name="ln203">                        /* make sure this instrument zone has a valid sample */</a>
+<a name="ln204">                        Sample* sample = inst_zone-&gt;get_sample();</a>
+<a name="ln205">                        if (sample == 0 || sample-&gt;inRom())</a>
+<a name="ln206">                              continue;</a>
+<a name="ln207">                        /* check if the note falls into the key and velocity range of this</a>
+<a name="ln208">                           instrument */</a>
+<a name="ln209">                        if (inst_zone-&gt;inside_range(key, vel) &amp;&amp; (sample != 0)) {</a>
+<a name="ln210"> </a>
+<a name="ln211">                              /* this is a good zone. allocate a new synthesis process and</a>
+<a name="ln212">                                 initialize it */</a>
+<a name="ln213"> </a>
+<a name="ln214">                              Voice* voice = synth-&gt;alloc_voice(id, sample, chan, key, vel, nt);</a>
+<a name="ln215">                              if (voice == 0)</a>
+<a name="ln216">                                    return false;</a>
+<a name="ln217"> </a>
+<a name="ln218">                              /* Instrumentrument level, generators */</a>
+<a name="ln219"> </a>
+<a name="ln220">                              for (int i = 0; i &lt; GEN_LAST; i++) {</a>
+<a name="ln221">                  	            /* SF 2.01 section 9.4 'bullet' 4:</a>
+<a name="ln222">                  	             *</a>
+<a name="ln223">                  	             * A generator in a local instrument zone supersedes a</a>
+<a name="ln224">                  	             * global instrument zone generator.  Both cases supersede</a>
+<a name="ln225">                  	             * the default generator -&gt; voice_gen_set */</a>
+<a name="ln226"> </a>
+<a name="ln227">	                              if (inst_zone-&gt;genlist[i].flags)</a>
+<a name="ln228">                                          voice-&gt;gen_set(i, inst_zone-&gt;genlist[i].val);</a>
+<a name="ln229">                                    else if ((global_inst_zone != 0) &amp;&amp; (global_inst_zone-&gt;genlist[i].flags))</a>
+<a name="ln230">                                          voice-&gt;gen_set(i, global_inst_zone-&gt;genlist[i].val);</a>
+<a name="ln231">                                    else {</a>
+<a name="ln232">                                          /* The generator has not been defined in this instrument.</a>
+<a name="ln233">                                           * Do nothing, leave it at the default.</a>
+<a name="ln234">                                           */</a>
+<a name="ln235">                                          }</a>
+<a name="ln236"> </a>
+<a name="ln237">                                    } /* for all generators */</a>
+<a name="ln238"> </a>
+<a name="ln239">                              /* global instrument zone, modulators: Put them all into a</a>
+<a name="ln240">                                 * list. */</a>
+<a name="ln241"> </a>
+<a name="ln242">                              int mod_list_count = 0;</a>
+<a name="ln243"> </a>
+<a name="ln244">                              if (global_inst_zone){</a>
+<a name="ln245">                                    for(Mod* mod1 : global_inst_zone-&gt;modlist)</a>
+<a name="ln246">                                          mod_list[mod_list_count++] = mod1;</a>
+<a name="ln247">                                    }</a>
+<a name="ln248"> </a>
+<a name="ln249">                              /* local instrument zone, modulators.</a>
+<a name="ln250">                               * Replace modulators with the same definition in the list:</a>
+<a name="ln251">                               * SF 2.01 page 69, 'bullet' 8</a>
+<a name="ln252">                               */</a>
+<a name="ln253">                              for(Mod* mod1 : inst_zone-&gt;modlist) {</a>
+<a name="ln254">	                              /* 'Identical' modulators will be deleted by setting their</a>
+<a name="ln255">	                               *  list entry to 0.  The list length is known, 0</a>
+<a name="ln256">	                               *  entries will be ignored later.  SF2.01 section 9.5.1</a>
+<a name="ln257">                                     *  page 69, 'bullet' 3 defines 'identical'.  */</a>
+<a name="ln258"> </a>
+<a name="ln259">                                    for (int i = 0; i &lt; mod_list_count; i++){</a>
+<a name="ln260">                                          if (mod_list[i] &amp;&amp; test_identity(mod1, mod_list[i])){</a>
+<a name="ln261">                                                mod_list[i] = 0;</a>
+<a name="ln262">	                                          }</a>
+<a name="ln263">	                                    }</a>
+<a name="ln264"> </a>
+<a name="ln265">                                    /* Finally add the new modulator to to the list. */</a>
+<a name="ln266">                                    mod_list[mod_list_count++] = mod1;</a>
+<a name="ln267">                                    }</a>
+<a name="ln268"> </a>
+<a name="ln269">                              /* Add instrument modulators (global / local) to the voice. */</a>
+<a name="ln270">                              for (int i = 0; i &lt; mod_list_count; i++){</a>
+<a name="ln271">                                    mod = mod_list[i];</a>
+<a name="ln272">                                    if (mod) {  // disabled modulators CANNOT be skipped.</a>
+<a name="ln273">                                          /* Instrumentrument modulators -supersede- existing (default)</a>
+<a name="ln274">	                                     * modulators.  SF 2.01 page 69, 'bullet' 6 */</a>
+<a name="ln275">                                          voice-&gt;add_mod(mod, FLUID_VOICE_OVERWRITE);</a>
+<a name="ln276">                                          }</a>
+<a name="ln277">                                    }</a>
+<a name="ln278"> </a>
+<a name="ln279">                              /* Preset level, generators */</a>
+<a name="ln280"> </a>
+<a name="ln281">                              for (int i = 0; i &lt; GEN_LAST; i++) {</a>
+<a name="ln282">                                    /* SF 2.01 section 8.5 page 58: If some generators are</a>
+<a name="ln283">                                     * encountered at preset level, they should be ignored */</a>
+<a name="ln284">                                    if ((i != GEN_STARTADDROFS)</a>
+<a name="ln285">                                       &amp;&amp; (i != GEN_ENDADDROFS)</a>
+<a name="ln286">                                       &amp;&amp; (i != GEN_STARTLOOPADDROFS)</a>
+<a name="ln287">                                       &amp;&amp; (i != GEN_ENDLOOPADDROFS)</a>
+<a name="ln288">                                       &amp;&amp; (i != GEN_STARTADDRCOARSEOFS)</a>
+<a name="ln289">                                       &amp;&amp; (i != GEN_ENDADDRCOARSEOFS)</a>
+<a name="ln290">                                       &amp;&amp; (i != GEN_STARTLOOPADDRCOARSEOFS)</a>
+<a name="ln291">                                       &amp;&amp; (i != GEN_KEYNUM)</a>
+<a name="ln292">                                       &amp;&amp; (i != GEN_VELOCITY)</a>
+<a name="ln293">                                       &amp;&amp; (i != GEN_ENDLOOPADDRCOARSEOFS)</a>
+<a name="ln294">                                       &amp;&amp; (i != GEN_SAMPLEMODE)</a>
+<a name="ln295">                                       &amp;&amp; (i != GEN_EXCLUSIVECLASS)</a>
+<a name="ln296">                                       &amp;&amp; (i != GEN_OVERRIDEROOTKEY)) {</a>
+<a name="ln297"> </a>
+<a name="ln298">                                          /* SF 2.01 section 9.4 'bullet' 9: A generator in a</a>
+<a name="ln299">	                                     * local preset zone supersedes a global preset zone</a>
+<a name="ln300">	                                     * generator.  The effect is -added- to the destination</a>
+<a name="ln301">	                                     * summing node -&gt; voice_gen_incr */</a>
+<a name="ln302"> </a>
+<a name="ln303">                                          if (preset_zone-&gt;genlist[i].flags) {</a>
+<a name="ln304">                                                voice-&gt;gen_incr(i, preset_zone-&gt;genlist[i].val);</a>
+<a name="ln305">                                                }</a>
+<a name="ln306">                                          else if ((global_preset_zone != 0) &amp;&amp; global_preset_zone-&gt;genlist[i].flags) {</a>
+<a name="ln307">                                                voice-&gt;gen_incr(i, global_preset_zone-&gt;genlist[i].val);</a>
+<a name="ln308">                                                }</a>
+<a name="ln309">                                          else {</a>
+<a name="ln310">                                                /* The generator has not been defined in this preset</a>
+<a name="ln311">                                                 * Do nothing, leave it unchanged.</a>
+<a name="ln312">                                                 */</a>
+<a name="ln313">                                                }</a>
+<a name="ln314">                                          } /* if available at preset level */</a>
+<a name="ln315">                                    } /* for all generators */</a>
+<a name="ln316"> </a>
+<a name="ln317"> </a>
+<a name="ln318">                              /* Global preset zone, modulators: put them all into a</a>
+<a name="ln319">                               * list. */</a>
+<a name="ln320">                              mod_list_count = 0;</a>
+<a name="ln321">                              if (global_preset_zone){</a>
+<a name="ln322">                                    for(Mod* mod1 : global_preset_zone-&gt;modlist)</a>
+<a name="ln323">                                          mod_list[mod_list_count++] = mod1;</a>
+<a name="ln324">                                    }</a>
+<a name="ln325"> </a>
+<a name="ln326">                              /* Process the modulators of the local preset zone.  Kick</a>
+<a name="ln327">                               * out all identical modulators from the global preset zone</a>
+<a name="ln328">                               * (SF 2.01 page 69, second-last bullet) */</a>
+<a name="ln329"> </a>
+<a name="ln330">                              for(Mod* mod1 : preset_zone-&gt;modlist) {</a>
+<a name="ln331">                                    for (int i = 0; i &lt; mod_list_count; i++) {</a>
+<a name="ln332">                                          if (mod_list[i] &amp;&amp; test_identity(mod1,mod_list[i]))</a>
+<a name="ln333">                                                mod_list[i] = 0;</a>
+<a name="ln334">                                          }</a>
+<a name="ln335">                                    /* Finally add the new modulator to the list. */</a>
+<a name="ln336">                                    mod_list[mod_list_count++] = mod1;</a>
+<a name="ln337">                                    }</a>
+<a name="ln338"> </a>
+<a name="ln339">                              /* Add preset modulators (global / local) to the voice. */</a>
+<a name="ln340">                              for (int i = 0; i &lt; mod_list_count; i++){</a>
+<a name="ln341">                                    mod = mod_list[i];</a>
+<a name="ln342">                                    if ((mod != 0) &amp;&amp; (mod-&gt;amount != 0)) { /* disabled modulators can be skipped. */</a>
+<a name="ln343">                                          /* Preset modulators -add- to existing instrument /</a>
+<a name="ln344">	                                     * default modulators.  SF2.01 page 70 first bullet on</a>
+<a name="ln345">	                                     * page */</a>
+<a name="ln346">                                          voice-&gt;add_mod(mod, FLUID_VOICE_ADD);</a>
+<a name="ln347">                                          }</a>
+<a name="ln348">                                    }</a>
+<a name="ln349"> </a>
+<a name="ln350">	                        /* add the synthesis process to the synthesis loop. */</a>
+<a name="ln351">	                        synth-&gt;start_voice(voice);</a>
+<a name="ln352"> </a>
+<a name="ln353">                              /* Store the ID of the first voice that was created by this noteon event.</a>
+<a name="ln354">                               * Exclusive class may only terminate older voices.</a>
+<a name="ln355">                               * That avoids killing voices, which have just been created.</a>
+<a name="ln356">                               * (a noteon event can create several voice processes with the same exclusive</a>
+<a name="ln357">                               * class - for example when using stereo samples)</a>
+<a name="ln358">                               */</a>
+<a name="ln359">                              }</a>
+<a name="ln360">                        }</a>
+<a name="ln361">                  }</a>
+<a name="ln362">            }</a>
+<a name="ln363">      return true;</a>
+<a name="ln364">      }</a>
+<a name="ln365"> </a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367">//   importSfont</a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369"> </a>
+<a name="ln370">bool Preset::importSfont()</a>
+<a name="ln371">      {</a>
+<a name="ln372">      if (name.isEmpty())</a>
+<a name="ln373">            name = QString(&quot;Bank%1,Preset%2&quot;).arg(bank).arg(num);</a>
+<a name="ln374"> </a>
+<a name="ln375">      int idx = 0;</a>
+<a name="ln376">      for(Zone* zone : zones) {</a>
+<a name="ln377">            // zone-&gt;name = QString(&quot;%1/%2&quot;).arg(name).arg(idx);</a>
+<a name="ln378">            if (!zone-&gt;importZone())</a>
+<a name="ln379">                  return false;</a>
+<a name="ln380">            if ((idx == 0) &amp;&amp; (zone-&gt;get_inst() == 0))</a>
+<a name="ln381">                  setGlobalZone(zones.takeAt(0));</a>
+<a name="ln382">            ++idx;</a>
+<a name="ln383">            }</a>
+<a name="ln384">      return true;</a>
+<a name="ln385">      }</a>
+<a name="ln386"> </a>
+<a name="ln387">//---------------------------------------------------------</a>
+<a name="ln388">//   import_sfont</a>
+<a name="ln389">//---------------------------------------------------------</a>
+<a name="ln390"> </a>
+<a name="ln391">bool Instrument::import_sfont()</a>
+<a name="ln392">      {</a>
+<a name="ln393">      int idx = 0;</a>
+<a name="ln394">      for(Zone* zone : zones) {</a>
+<a name="ln395">            if (!zone-&gt;importZone())</a>
+<a name="ln396">                  return false;</a>
+<a name="ln397">            if ((idx == 0) &amp;&amp; (zone-&gt;get_sample() == 0))</a>
+<a name="ln398">                  global_zone = zones.takeAt(0);</a>
+<a name="ln399">            idx++;</a>
+<a name="ln400">            }</a>
+<a name="ln401">      return true;</a>
+<a name="ln402">      }</a>
+<a name="ln403"> </a>
+<a name="ln404">//---------------------------------------------------------</a>
+<a name="ln405">//   Zone</a>
+<a name="ln406">//---------------------------------------------------------</a>
+<a name="ln407"> </a>
+<a name="ln408">Zone::Zone()</a>
+<a name="ln409">      {</a>
+<a name="ln410">      instrument = 0;</a>
+<a name="ln411">      sample     = 0;</a>
+<a name="ln412">      sampIdx    = 0;</a>
+<a name="ln413">      instIdx    = 0;</a>
+<a name="ln414">      keylo      = 0;</a>
+<a name="ln415">      keyhi      = 128;</a>
+<a name="ln416">      vello      = 0;</a>
+<a name="ln417">      velhi      = 128;</a>
+<a name="ln418"> </a>
+<a name="ln419">      /* Flag all generators as unused (default, they will be set when they are found</a>
+<a name="ln420">       * in the sound font).</a>
+<a name="ln421">       * This also sets the generator values to default, but that is of no concern here.*/</a>
+<a name="ln422"> </a>
+<a name="ln423">      fluid_gen_set_default_values(&amp;genlist[0]);</a>
+<a name="ln424">      }</a>
+<a name="ln425"> </a>
+<a name="ln426">Zone::~Zone()</a>
+<a name="ln427">      {</a>
+<a name="ln428">      for(Mod* m : modlist)</a>
+<a name="ln429">            delete m;</a>
+<a name="ln430">      for(SFGen* p : gen)</a>
+<a name="ln431">            delete p;</a>
+<a name="ln432">      for(SFMod* p : mod)</a>
+<a name="ln433">            delete p;</a>
+<a name="ln434">      }</a>
+<a name="ln435"> </a>
+<a name="ln436">//---------------------------------------------------------</a>
+<a name="ln437">//   inside_range</a>
+<a name="ln438">//---------------------------------------------------------</a>
+<a name="ln439"> </a>
+<a name="ln440">bool Zone::inside_range(int key, int vel) const</a>
+<a name="ln441">      {</a>
+<a name="ln442">      return ((keylo &lt;= key) &amp;&amp; (keyhi &gt;= key) &amp;&amp; (vello &lt;= vel) &amp;&amp; (velhi &gt;= vel));</a>
+<a name="ln443">      }</a>
+<a name="ln444"> </a>
+<a name="ln445">//---------------------------------------------------------</a>
+<a name="ln446">//   Instrument</a>
+<a name="ln447">//---------------------------------------------------------</a>
+<a name="ln448"> </a>
+<a name="ln449">Instrument::Instrument()</a>
+<a name="ln450">      {</a>
+<a name="ln451">      global_zone = 0;</a>
+<a name="ln452">      }</a>
+<a name="ln453"> </a>
+<a name="ln454">Instrument::~Instrument()</a>
+<a name="ln455">      {</a>
+<a name="ln456">      delete global_zone;</a>
+<a name="ln457">      for(Zone* z : zones)</a>
+<a name="ln458">            delete z;</a>
+<a name="ln459">      }</a>
+<a name="ln460"> </a>
+<a name="ln461">//---------------------------------------------------------</a>
+<a name="ln462">//   importZone</a>
+<a name="ln463">//---------------------------------------------------------</a>
+<a name="ln464"> </a>
+<a name="ln465">bool Zone::importZone()</a>
+<a name="ln466">      {</a>
+<a name="ln467">      for (SFGen* sfgen : gen) {</a>
+<a name="ln468">            switch (sfgen-&gt;id) {</a>
+<a name="ln469">                  case GEN_KEYRANGE:</a>
+<a name="ln470">                        keylo = sfgen-&gt;amount.range.lo;</a>
+<a name="ln471">                        keyhi = sfgen-&gt;amount.range.hi;</a>
+<a name="ln472">                        break;</a>
+<a name="ln473">                  case GEN_VELRANGE:</a>
+<a name="ln474">                        vello = sfgen-&gt;amount.range.lo;</a>
+<a name="ln475">                        velhi = sfgen-&gt;amount.range.hi;</a>
+<a name="ln476">                        break;</a>
+<a name="ln477">                  default:</a>
+<a name="ln478">                        /* FIXME: some generators have an unsigned word amount value but i don't know which ones</a>
+<a name="ln479">                         */</a>
+<a name="ln480">                        genlist[sfgen-&gt;id].val   = (float) sfgen-&gt;amount.sword;</a>
+<a name="ln481">                        genlist[sfgen-&gt;id].flags = GEN_SET;</a>
+<a name="ln482">                        break;</a>
+<a name="ln483">                  }</a>
+<a name="ln484">            }</a>
+<a name="ln485"> </a>
+<a name="ln486">      // Import the modulators (only SF2.1 and higher)</a>
+<a name="ln487">      for(SFMod* mod_src : mod) {</a>
+<a name="ln488">            Mod* mod_dest = new Mod;</a>
+<a name="ln489">            int type;</a>
+<a name="ln490">            // mod_dest-&gt;next = 0; /* pointer to next modulator, this is the end of the list now.*/</a>
+<a name="ln491"> </a>
+<a name="ln492">            /* *** Amount *** */</a>
+<a name="ln493">            mod_dest-&gt;amount = mod_src-&gt;amount;</a>
+<a name="ln494"> </a>
+<a name="ln495">            /* *** Source *** */</a>
+<a name="ln496">            mod_dest-&gt;src1 = mod_src-&gt;src &amp; 127; /* index of source 1, seven-bit value, SF2.01 section 8.2, page 50 */</a>
+<a name="ln497">            mod_dest-&gt;flags1 = 0;</a>
+<a name="ln498"> </a>
+<a name="ln499">            /* Bit 7: CC flag SF 2.01 section 8.2.1 page 50*/</a>
+<a name="ln500">            if (mod_src-&gt;src &amp; (1&lt;&lt;7))</a>
+<a name="ln501">                  mod_dest-&gt;flags1 |= FLUID_MOD_CC;</a>
+<a name="ln502">            else</a>
+<a name="ln503">                  mod_dest-&gt;flags1 |= FLUID_MOD_GC;</a>
+<a name="ln504"> </a>
+<a name="ln505">            /* Bit 8: D flag SF 2.01 section 8.2.2 page 51*/</a>
+<a name="ln506">            if (mod_src-&gt;src &amp; (1&lt;&lt;8))</a>
+<a name="ln507">                  mod_dest-&gt;flags1 |= FLUID_MOD_NEGATIVE;</a>
+<a name="ln508">            else</a>
+<a name="ln509">                  mod_dest-&gt;flags1 |= FLUID_MOD_POSITIVE;</a>
+<a name="ln510"> </a>
+<a name="ln511">            /* Bit 9: P flag SF 2.01 section 8.2.3 page 51*/</a>
+<a name="ln512">            if (mod_src-&gt;src &amp; (1&lt;&lt;9))</a>
+<a name="ln513">                  mod_dest-&gt;flags1 |= FLUID_MOD_BIPOLAR;</a>
+<a name="ln514">            else</a>
+<a name="ln515">                  mod_dest-&gt;flags1 |= FLUID_MOD_UNIPOLAR;</a>
+<a name="ln516"> </a>
+<a name="ln517">            /* modulator source types: SF2.01 section 8.2.1 page 52 */</a>
+<a name="ln518">            type = (mod_src-&gt;src) &gt;&gt; 10;</a>
+<a name="ln519">            type &amp;= 63; /* type is a 6-bit value */</a>
+<a name="ln520">            if (type == 0)</a>
+<a name="ln521">                  mod_dest-&gt;flags1 |= FLUID_MOD_LINEAR;</a>
+<a name="ln522">            else if (type == 1)</a>
+<a name="ln523">                  mod_dest-&gt;flags1 |= FLUID_MOD_CONCAVE;</a>
+<a name="ln524">            else if (type == 2)</a>
+<a name="ln525">                  mod_dest-&gt;flags1 |= FLUID_MOD_CONVEX;</a>
+<a name="ln526">            else if (type == 3)</a>
+<a name="ln527">                  mod_dest-&gt;flags1 |= FLUID_MOD_SWITCH;</a>
+<a name="ln528">            else {</a>
+<a name="ln529">                  /* This shouldn't happen - unknown type!</a>
+<a name="ln530">                   * Deactivate the modulator by setting the amount to 0.</a>
+<a name="ln531">                   */</a>
+<a name="ln532">                  mod_dest-&gt;amount=0;</a>
+<a name="ln533">                  }</a>
+<a name="ln534"> </a>
+<a name="ln535">            /* *** Dest *** */</a>
+<a name="ln536">            mod_dest-&gt;dest = mod_src-&gt;dest; /* index of controlled generator */</a>
+<a name="ln537"> </a>
+<a name="ln538">            /* *** Amount source *** */</a>
+<a name="ln539">            mod_dest-&gt;src2 = mod_src-&gt;amtsrc &amp; 127; /* index of source 2, seven-bit value, SF2.01 section 8.2, p.50 */</a>
+<a name="ln540">            mod_dest-&gt;flags2 = 0;</a>
+<a name="ln541"> </a>
+<a name="ln542">            /* Bit 7: CC flag SF 2.01 section 8.2.1 page 50*/</a>
+<a name="ln543">            if (mod_src-&gt;amtsrc &amp; (1&lt;&lt;7))</a>
+<a name="ln544">                  mod_dest-&gt;flags2 |= FLUID_MOD_CC;</a>
+<a name="ln545">            else</a>
+<a name="ln546">                  mod_dest-&gt;flags2 |= FLUID_MOD_GC;</a>
+<a name="ln547"> </a>
+<a name="ln548">            /* Bit 8: D flag SF 2.01 section 8.2.2 page 51*/</a>
+<a name="ln549">            if (mod_src-&gt;amtsrc &amp; (1&lt;&lt;8))</a>
+<a name="ln550">                  mod_dest-&gt;flags2 |= FLUID_MOD_NEGATIVE;</a>
+<a name="ln551">            else</a>
+<a name="ln552">                  mod_dest-&gt;flags2 |= FLUID_MOD_POSITIVE;</a>
+<a name="ln553"> </a>
+<a name="ln554">            /* Bit 9: P flag SF 2.01 section 8.2.3 page 51*/</a>
+<a name="ln555">            if (mod_src-&gt;amtsrc &amp; (1&lt;&lt;9))</a>
+<a name="ln556">                  mod_dest-&gt;flags2 |= FLUID_MOD_BIPOLAR;</a>
+<a name="ln557">            else</a>
+<a name="ln558">                  mod_dest-&gt;flags2 |= FLUID_MOD_UNIPOLAR;</a>
+<a name="ln559"> </a>
+<a name="ln560">            /* modulator source types: SF2.01 section 8.2.1 page 52 */</a>
+<a name="ln561">            type = (mod_src-&gt;amtsrc) &gt;&gt; 10;</a>
+<a name="ln562">            type &amp;= 63; /* type is a 6-bit value */</a>
+<a name="ln563">            if (type == 0)</a>
+<a name="ln564">                  mod_dest-&gt;flags2 |= FLUID_MOD_LINEAR;</a>
+<a name="ln565">            else if (type == 1)</a>
+<a name="ln566">                  mod_dest-&gt;flags2 |= FLUID_MOD_CONCAVE;</a>
+<a name="ln567">            else if (type == 2)</a>
+<a name="ln568">                  mod_dest-&gt;flags2 |= FLUID_MOD_CONVEX;</a>
+<a name="ln569">            else if (type == 3)</a>
+<a name="ln570">                  mod_dest-&gt;flags2 |= FLUID_MOD_SWITCH;</a>
+<a name="ln571">            else {</a>
+<a name="ln572">                  /* This shouldn't happen - unknown type!</a>
+<a name="ln573">                   * Deactivate the modulator by setting the amount to 0. */</a>
+<a name="ln574">                  mod_dest-&gt;amount=0;</a>
+<a name="ln575">                  }</a>
+<a name="ln576"> </a>
+<a name="ln577">            /* *** Transform *** */</a>
+<a name="ln578">            /* SF2.01 only uses the 'linear' transform (0).</a>
+<a name="ln579">             * Deactivate the modulator by setting the amount to 0 in any other case.</a>
+<a name="ln580">             */</a>
+<a name="ln581">            if (mod_src-&gt;trans !=0)</a>
+<a name="ln582">                  mod_dest-&gt;amount = 0;</a>
+<a name="ln583"> </a>
+<a name="ln584">            /* Store the new modulator in the zone The order of modulators</a>
+<a name="ln585">             * will make a difference, at least in an instrument context: The</a>
+<a name="ln586">             * second modulator overwrites the first one, if they only differ</a>
+<a name="ln587">             * in amount.</a>
+<a name="ln588">             */</a>
+<a name="ln589">            modlist.append(mod_dest);</a>
+<a name="ln590">            }</a>
+<a name="ln591">      return true;</a>
+<a name="ln592">      }</a>
+<a name="ln593"> </a>
+<a name="ln594">//---------------------------------------------------------</a>
+<a name="ln595">//   Sample</a>
+<a name="ln596">//---------------------------------------------------------</a>
+<a name="ln597"> </a>
+<a name="ln598">Sample::Sample(SFont* s)</a>
+<a name="ln599">      {</a>
+<a name="ln600">      sf          = s;</a>
+<a name="ln601">      _valid      = false;</a>
+<a name="ln602">      start       = 0;</a>
+<a name="ln603">      end         = 0;</a>
+<a name="ln604">      loopstart   = 0;</a>
+<a name="ln605">      loopend     = 0;</a>
+<a name="ln606">      samplerate  = 0;</a>
+<a name="ln607">      origpitch   = 0;</a>
+<a name="ln608">      pitchadj    = 0;</a>
+<a name="ln609">      sampletype  = 0;</a>
+<a name="ln610">      data        = 0;</a>
+<a name="ln611">      amplitude_that_reaches_noise_floor_is_valid = false;</a>
+<a name="ln612">      amplitude_that_reaches_noise_floor = 0.0;</a>
+<a name="ln613">      }</a>
+<a name="ln614"> </a>
+<a name="ln615">//---------------------------------------------------------</a>
+<a name="ln616">//   Sample</a>
+<a name="ln617">//---------------------------------------------------------</a>
+<a name="ln618"> </a>
+<a name="ln619">Sample::~Sample()</a>
+<a name="ln620">      {</a>
+<a name="ln621">      delete[] data;</a>
+<a name="ln622">      }</a>
+<a name="ln623"> </a>
+<a name="ln624">//---------------------------------------------------------</a>
+<a name="ln625">//   load</a>
+<a name="ln626">//---------------------------------------------------------</a>
+<a name="ln627"> </a>
+<a name="ln628">void Sample::load()</a>
+<a name="ln629">      {</a>
+<a name="ln630">      if (!_valid || data)</a>
+<a name="ln631">            return;</a>
+<a name="ln632">      QFile fd(sf-&gt;get_name());</a>
+<a name="ln633">      if (!fd.open(QIODevice::ReadOnly))</a>
+<a name="ln634">            return;</a>
+<a name="ln635">      if (sampletype &amp; FLUID_SAMPLETYPE_OGG_VORBIS) {</a>
+<a name="ln636">            if (!fd.seek(sf-&gt;samplePos() + start))</a>
+<a name="ln637">                  return;</a>
+<a name="ln638">            }</a>
+<a name="ln639">      else {</a>
+<a name="ln640">            if (!fd.seek(sf-&gt;samplePos() + start * sizeof(short)))</a>
+<a name="ln641">                  return;</a>
+<a name="ln642">            }</a>
+<a name="ln643">      unsigned int size = end - start;</a>
+<a name="ln644"> </a>
+<a name="ln645">      if (sampletype &amp; FLUID_SAMPLETYPE_OGG_VORBIS) {</a>
+<a name="ln646">#ifdef SOUNDFONT3</a>
+<a name="ln647">            std::vector&lt;char&gt; p;</a>
+<a name="ln648">            p.resize(size);</a>
+<a name="ln649">            if (fd.read(p.data(), size) != size) {</a>
+<a name="ln650">                  qDebug(&quot;read %d failed&quot;, size);</a>
+<a name="ln651">                  return;</a>
+<a name="ln652">                  }</a>
+<a name="ln653">            decompressOggVorbis(p.data(), size);</a>
+<a name="ln654">#endif</a>
+<a name="ln655">            }</a>
+<a name="ln656">      else {</a>
+<a name="ln657">            data = new short[size];</a>
+<a name="ln658">            size *= sizeof(short);</a>
+<a name="ln659"> </a>
+<a name="ln660">            if (fd.read((char*)data, size) != size)</a>
+<a name="ln661">                  return;</a>
+<a name="ln662"> </a>
+<a name="ln663">            if (QSysInfo::ByteOrder == QSysInfo::BigEndian) {</a>
+<a name="ln664">                  unsigned char hi, lo;</a>
+<a name="ln665">                  unsigned int i, j;</a>
+<a name="ln666">                  short s;</a>
+<a name="ln667">                  uchar* cbuf = (uchar*) data;</a>
+<a name="ln668">                  for (i = 0, j = 0; j &lt; size; i++) {</a>
+<a name="ln669">                        lo = cbuf[j++];</a>
+<a name="ln670">                        hi = cbuf[j++];</a>
+<a name="ln671">                        s = (hi &lt;&lt; 8) | lo;</a>
+<a name="ln672">                        data[i] = s;</a>
+<a name="ln673">                        }</a>
+<a name="ln674">                  }</a>
+<a name="ln675">            end       -= (start + 1);       // marks last sample, contrary to SF spec.</a>
+<a name="ln676">            loopstart -= start;</a>
+<a name="ln677">            loopend   -= start;</a>
+<a name="ln678">            start      = 0;</a>
+<a name="ln679">            }</a>
+<a name="ln680">      optimize();</a>
+<a name="ln681">      }</a>
+<a name="ln682"> </a>
+<a name="ln683">//---------------------------------------------------------</a>
+<a name="ln684">//   inRom</a>
+<a name="ln685">//---------------------------------------------------------</a>
+<a name="ln686"> </a>
+<a name="ln687">bool Sample::inRom() const</a>
+<a name="ln688">      {</a>
+<a name="ln689">      return sampletype &amp; FLUID_SAMPLETYPE_ROM;</a>
+<a name="ln690">      }</a>
+<a name="ln691"> </a>
+<a name="ln692">static const char idlist[] = {</a>
+<a name="ln693">      &quot;RIFFLISTsfbkINFOsdtapdtaifilisngINAMiromiverICRDIENGIPRD&quot;</a>
+<a name="ln694">      &quot;ICOPICMTISFTsnamsmplphdrpbagpmodpgeninstibagimodigenshdr&quot;</a>
+<a name="ln695">      };</a>
+<a name="ln696"> </a>
+<a name="ln697">//---------------------------------------------------------</a>
+<a name="ln698">//   chunkid</a>
+<a name="ln699">//---------------------------------------------------------</a>
+<a name="ln700"> </a>
+<a name="ln701">static int chunkid (unsigned int id)</a>
+<a name="ln702">      {</a>
+<a name="ln703">      unsigned int* p = (unsigned int *) &amp; idlist;</a>
+<a name="ln704">      for (unsigned i = 0; i &lt; sizeof (idlist) / sizeof (int); i++, p++) {</a>
+<a name="ln705">            if (*p == id)</a>
+<a name="ln706">                  return (i + 1);</a>
+<a name="ln707">            }</a>
+<a name="ln708">      return UNKN_ID;</a>
+<a name="ln709">      }</a>
+<a name="ln710"> </a>
+<a name="ln711">//---------------------------------------------------------</a>
+<a name="ln712">//   preset_compare</a>
+<a name="ln713">//---------------------------------------------------------</a>
+<a name="ln714"> </a>
+<a name="ln715">static bool preset_compare (Preset* a, Preset* b)</a>
+<a name="ln716">      {</a>
+<a name="ln717">      int aval = (a-&gt;bank) &lt;&lt; 16 | a-&gt;num;</a>
+<a name="ln718">      int bval = (b-&gt;bank) &lt;&lt; 16 | b-&gt;num;</a>
+<a name="ln719">      return aval &lt; bval;</a>
+<a name="ln720">      }</a>
+<a name="ln721"> </a>
+<a name="ln722">//---------------------------------------------------------</a>
+<a name="ln723">//   readchunk</a>
+<a name="ln724">//---------------------------------------------------------</a>
+<a name="ln725"> </a>
+<a name="ln726">void SFont::readchunk(SFChunk* var)</a>
+<a name="ln727">      {</a>
+<a name="ln728">	safe_fread(var, 8);</a>
+<a name="ln729">	if (QSysInfo::ByteOrder == QSysInfo::BigEndian)</a>
+<a name="ln730">		var-&gt;size = GUINT32_FROM_BE(var-&gt;size);</a>
+<a name="ln731">      else</a>
+<a name="ln732">            var-&gt;size = GUINT32_FROM_LE(var-&gt;size);</a>
+<a name="ln733">      }</a>
+<a name="ln734"> </a>
+<a name="ln735">//---------------------------------------------------------</a>
+<a name="ln736">//   load</a>
+<a name="ln737">//    return true on success</a>
+<a name="ln738">//---------------------------------------------------------</a>
+<a name="ln739"> </a>
+<a name="ln740">bool SFont::load()</a>
+<a name="ln741">      {</a>
+<a name="ln742">      if (!f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln743">            qCritical(&quot;Unable to open file \&quot;%s\&quot;&quot;, qPrintable(f.fileName()));</a>
+<a name="ln744">            return false;</a>
+<a name="ln745">            }</a>
+<a name="ln746">      SFChunk chunk;</a>
+<a name="ln747"> </a>
+<a name="ln748">      try {</a>
+<a name="ln749">            readchunk(&amp;chunk);</a>
+<a name="ln750">            if (chunkid(chunk.id) != RIFF_ID)</a>
+<a name="ln751">                  throw(QString(&quot;Not a RIFF file&quot;));</a>
+<a name="ln752"> </a>
+<a name="ln753">            safe_fread(&amp;chunk.id, 4);</a>
+<a name="ln754">            if (chunkid (chunk.id) != SFBK_ID)        /* error if not SFBK_ID */</a>
+<a name="ln755">                  throw(QString(&quot;Not a sound font file&quot;));</a>
+<a name="ln756">            if (chunk.size != f.size() - 8)</a>
+<a name="ln757">                  throw(QString(&quot;Sound font file size mismatch %1 %2&quot;).arg(chunk.size).arg(f.size() - 8));</a>
+<a name="ln758"> </a>
+<a name="ln759">            /* Process INFO block */</a>
+<a name="ln760">            read_listchunk(&amp;chunk);</a>
+<a name="ln761">            if (chunkid(chunk.id) != INFO_ID)</a>
+<a name="ln762">                  throw(QString(&quot;Invalid ID found when expecting INFO chunk&quot;));</a>
+<a name="ln763">            process_info(chunk.size);</a>
+<a name="ln764"> </a>
+<a name="ln765">            /* Process sample chunk */</a>
+<a name="ln766">            read_listchunk(&amp;chunk);</a>
+<a name="ln767">            if (chunkid (chunk.id) != SDTA_ID)</a>
+<a name="ln768">                  throw(QString(&quot;Invalid ID found when expecting SAMPLE chunk&quot;));</a>
+<a name="ln769">            process_sdta(chunk.size);</a>
+<a name="ln770"> </a>
+<a name="ln771">            /* process HYDRA chunk */</a>
+<a name="ln772">            read_listchunk(&amp;chunk);</a>
+<a name="ln773">            if (chunkid (chunk.id) != PDTA_ID)</a>
+<a name="ln774">                  throw(QString(&quot;Invalid ID found when expecting HYDRA chunk&quot;));</a>
+<a name="ln775">            process_pdta (chunk.size);</a>
+<a name="ln776"> </a>
+<a name="ln777">            fixup_pgen();</a>
+<a name="ln778">            fixup_igen();</a>
+<a name="ln779">            }</a>
+<a name="ln780">      catch (QString s) {</a>
+<a name="ln781">            qDebug(&quot;fluid: error loading sound font: %s&quot;, qPrintable(s));</a>
+<a name="ln782">            f.close();</a>
+<a name="ln783">            return false;</a>
+<a name="ln784">            }</a>
+<a name="ln785">      f.close();</a>
+<a name="ln786">      /* sort preset list by bank, preset # */</a>
+<a name="ln787">      qSort(presets.begin(), presets.end(), preset_compare);</a>
+<a name="ln788">      return true;</a>
+<a name="ln789">      }</a>
+<a name="ln790"> </a>
+<a name="ln791">//---------------------------------------------------------</a>
+<a name="ln792">//   READW</a>
+<a name="ln793">//---------------------------------------------------------</a>
+<a name="ln794"> </a>
+<a name="ln795">unsigned short SFont::READW()</a>
+<a name="ln796">      {</a>
+<a name="ln797">	unsigned short _temp;</a>
+<a name="ln798">	safe_fread(&amp;_temp, 2);</a>
+<a name="ln799">      if (QSysInfo::ByteOrder == QSysInfo::BigEndian)</a>
+<a name="ln800">		return GINT16_FROM_BE(_temp);</a>
+<a name="ln801">      else</a>
+<a name="ln802">	      return GINT16_FROM_LE(_temp);</a>
+<a name="ln803">      }</a>
+<a name="ln804"> </a>
+<a name="ln805">//---------------------------------------------------------</a>
+<a name="ln806">//   READD</a>
+<a name="ln807">//---------------------------------------------------------</a>
+<a name="ln808"> </a>
+<a name="ln809">void SFont::READD(unsigned int&amp; var)</a>
+<a name="ln810">      {</a>
+<a name="ln811">      unsigned int _temp;</a>
+<a name="ln812">	safe_fread(&amp;_temp, 4);</a>
+<a name="ln813">	if (QSysInfo::ByteOrder == QSysInfo::BigEndian)</a>
+<a name="ln814">		var = GINT32_FROM_BE(_temp);</a>
+<a name="ln815">      else</a>
+<a name="ln816">	      var = GINT32_FROM_LE(_temp);</a>
+<a name="ln817">      }</a>
+<a name="ln818"> </a>
+<a name="ln819">//---------------------------------------------------------</a>
+<a name="ln820">//   READB</a>
+<a name="ln821">//---------------------------------------------------------</a>
+<a name="ln822"> </a>
+<a name="ln823">unsigned char SFont::READB()</a>
+<a name="ln824">      {</a>
+<a name="ln825">      unsigned char var;</a>
+<a name="ln826">      safe_fread(&amp;var, 1);</a>
+<a name="ln827">      return var;</a>
+<a name="ln828">      }</a>
+<a name="ln829"> </a>
+<a name="ln830">//---------------------------------------------------------</a>
+<a name="ln831">//   READC</a>
+<a name="ln832">//---------------------------------------------------------</a>
+<a name="ln833"> </a>
+<a name="ln834">signed char SFont::READC()</a>
+<a name="ln835">      {</a>
+<a name="ln836">      signed char var;</a>
+<a name="ln837">      safe_fread(&amp;var, 1);</a>
+<a name="ln838">      return var;</a>
+<a name="ln839">      }</a>
+<a name="ln840"> </a>
+<a name="ln841">//---------------------------------------------------------</a>
+<a name="ln842">//   FSKIPW</a>
+<a name="ln843">//---------------------------------------------------------</a>
+<a name="ln844"> </a>
+<a name="ln845">void SFont::FSKIPW()</a>
+<a name="ln846">      {</a>
+<a name="ln847">      safe_fseek(2);</a>
+<a name="ln848">      }</a>
+<a name="ln849"> </a>
+<a name="ln850">void SFont::READSTR(char* name)</a>
+<a name="ln851">      {</a>
+<a name="ln852">      safe_fread(name, 20);</a>
+<a name="ln853">      name[20] = '\0';</a>
+<a name="ln854">      }</a>
+<a name="ln855"> </a>
+<a name="ln856">//---------------------------------------------------------</a>
+<a name="ln857">//   read_listchunk</a>
+<a name="ln858">//---------------------------------------------------------</a>
+<a name="ln859"> </a>
+<a name="ln860">void SFont::read_listchunk (SFChunk* chunk)</a>
+<a name="ln861">      {</a>
+<a name="ln862">      readchunk (chunk);</a>
+<a name="ln863">      if (chunkid (chunk-&gt;id) != LIST_ID)</a>
+<a name="ln864">            throw(QString(&quot;Invalid chunk id in level 0 parse&quot;));</a>
+<a name="ln865">      safe_fread(&amp;chunk-&gt;id, 4);</a>
+<a name="ln866">      chunk-&gt;size -= 4;</a>
+<a name="ln867">      }</a>
+<a name="ln868"> </a>
+<a name="ln869">//---------------------------------------------------------</a>
+<a name="ln870">//   process_info</a>
+<a name="ln871">//---------------------------------------------------------</a>
+<a name="ln872"> </a>
+<a name="ln873">void SFont::process_info(int size)</a>
+<a name="ln874">      {</a>
+<a name="ln875">      while (size &gt; 0) {</a>
+<a name="ln876">            SFChunk chunk;</a>
+<a name="ln877">            readchunk (&amp;chunk);</a>
+<a name="ln878">            size -= 8;</a>
+<a name="ln879"> </a>
+<a name="ln880">            unsigned char id = chunkid (chunk.id);</a>
+<a name="ln881"> </a>
+<a name="ln882">            if (id == IFIL_ID) {    // sound font version chunk?</a>
+<a name="ln883">                  if (chunk.size != 4)</a>
+<a name="ln884">                        throw(QString(&quot;Sound font version info chunk has invalid size&quot;));</a>
+<a name="ln885"> </a>
+<a name="ln886">                  _version.major = READW();</a>
+<a name="ln887">                  _version.minor = READW();</a>
+<a name="ln888"> </a>
+<a name="ln889">                  if (_version.major &lt; 2 || _version.major &gt; 3)</a>
+<a name="ln890">                        throw(QString(&quot;Bad Sound font version %1.%2&quot;).arg(_version.major).arg(_version.minor));</a>
+<a name="ln891">                  }</a>
+<a name="ln892">            else if (id == IVER_ID) {   /* ROM version chunk? */</a>
+<a name="ln893">                  if (chunk.size != 4)</a>
+<a name="ln894">                        throw(QString(&quot;ROM version info chunk has invalid size&quot;));</a>
+<a name="ln895">                  romver.major = READW();</a>
+<a name="ln896">                  romver.minor = READW();</a>
+<a name="ln897">                  }</a>
+<a name="ln898">            else if (id != UNKN_ID) {</a>
+<a name="ln899">                  if ((id != ICMT_ID &amp;&amp; chunk.size &gt; 256) || (chunk.size &gt; 65536) || (chunk.size % 2))</a>
+<a name="ln900">                        throw(QString(&quot;INFO sub chunk has invalid chunk size&quot;));</a>
+<a name="ln901"> </a>
+<a name="ln902">                  /* alloc for chunk id and da chunk */</a>
+<a name="ln903">                  unsigned char* item = new unsigned char[chunk.size + 1];</a>
+<a name="ln904"> </a>
+<a name="ln905">                  *(unsigned char *) item = id;</a>
+<a name="ln906">                  safe_fread (&amp;item[1], chunk.size);</a>
+<a name="ln907"> </a>
+<a name="ln908">                  /* force terminate info item (don't forget uint8 info ID) */</a>
+<a name="ln909">                  *(item + chunk.size) = '\0';</a>
+<a name="ln910">                  infos.append(item);</a>
+<a name="ln911"> </a>
+<a name="ln912">                  if (id == INAM_ID)</a>
+<a name="ln913">                        _fontName = QString(reinterpret_cast&lt;char*&gt;(item + 1));</a>
+<a name="ln914">                  }</a>
+<a name="ln915">            else</a>
+<a name="ln916">                  throw(QString(&quot;Invalid chunk id in INFO chunk&quot;));</a>
+<a name="ln917">            size -= chunk.size;</a>
+<a name="ln918">            }</a>
+<a name="ln919">      if (size &lt; 0)</a>
+<a name="ln920">            throw(QString(&quot;INFO chunk size mismatch&quot;));</a>
+<a name="ln921">      }</a>
+<a name="ln922"> </a>
+<a name="ln923">//---------------------------------------------------------</a>
+<a name="ln924">//   process_sdta</a>
+<a name="ln925">//    return true on success</a>
+<a name="ln926">//---------------------------------------------------------</a>
+<a name="ln927"> </a>
+<a name="ln928">void SFont::process_sdta (unsigned int size)</a>
+<a name="ln929">      {</a>
+<a name="ln930">      if (size == 0)</a>
+<a name="ln931">            return;		// no sample data?</a>
+<a name="ln932"> </a>
+<a name="ln933">      /* read sub chunk */</a>
+<a name="ln934">      SFChunk chunk;</a>
+<a name="ln935">      readchunk (&amp;chunk);</a>
+<a name="ln936">      size -= 8;</a>
+<a name="ln937"> </a>
+<a name="ln938">      if (chunkid (chunk.id) != SMPL_ID)</a>
+<a name="ln939">            throw(QString(&quot;Expected SMPL chunk found invalid id instead&quot;));</a>
+<a name="ln940"> </a>
+<a name="ln941">      /* SDTA chunk may also contain sm24 chunk for 24 bit samples</a>
+<a name="ln942">      * (not yet supported), only an error if SMPL chunk size is</a>
+<a name="ln943">      * greater than SDTA. */</a>
+<a name="ln944">      if (chunk.size &gt; size)</a>
+<a name="ln945">            throw(QString(&quot;SDTA chunk size mismatch %1 != %2&quot;).arg(size).arg(chunk.size));</a>
+<a name="ln946">      /* sample data follows */</a>
+<a name="ln947">      setSamplepos(f.pos());</a>
+<a name="ln948">      setSamplesize(chunk.size);</a>
+<a name="ln949">      FSKIP(size);</a>
+<a name="ln950">      }</a>
+<a name="ln951"> </a>
+<a name="ln952">//---------------------------------------------------------</a>
+<a name="ln953">//   pdtahelper</a>
+<a name="ln954">//---------------------------------------------------------</a>
+<a name="ln955"> </a>
+<a name="ln956">void SFont::pdtahelper (unsigned expid, unsigned reclen, SFChunk* chunk, int* size)</a>
+<a name="ln957">      {</a>
+<a name="ln958">      const char* expstr = CHNKIDSTR (expid);</a>
+<a name="ln959"> </a>
+<a name="ln960">      readchunk (chunk);</a>
+<a name="ln961">      *size -= 8;</a>
+<a name="ln962"> </a>
+<a name="ln963">      unsigned id = chunkid(chunk-&gt;id);</a>
+<a name="ln964">      if (id != expid)</a>
+<a name="ln965">            throw(QString(&quot;Expected PDTA sub-chunk %1 found invalid id instead&quot;).arg(expstr));</a>
+<a name="ln966"> </a>
+<a name="ln967">      if (chunk-&gt;size % reclen)	/* valid chunk size? */</a>
+<a name="ln968">            throw(QString(&quot;chunk size is not a multiple of %1 bytes&quot;).arg(reclen));</a>
+<a name="ln969">      if ((*size -= chunk-&gt;size) &lt; 0)</a>
+<a name="ln970">            throw(QString(&quot;%1 chunk size exceeds remaining PDTA chunk size&quot;).arg(expstr));</a>
+<a name="ln971">      }</a>
+<a name="ln972"> </a>
+<a name="ln973">//---------------------------------------------------------</a>
+<a name="ln974">//   process_pdta</a>
+<a name="ln975">//---------------------------------------------------------</a>
+<a name="ln976"> </a>
+<a name="ln977">void SFont::process_pdta (int size)</a>
+<a name="ln978">      {</a>
+<a name="ln979">      static const unsigned id[] = {</a>
+<a name="ln980">            PHDR_ID, PBAG_ID, PMOD_ID, PGEN_ID, IHDR_ID, IBAG_ID, IMOD_ID, IGEN_ID, SHDR_ID</a>
+<a name="ln981">            };</a>
+<a name="ln982">      static const unsigned len[] = {</a>
+<a name="ln983">            SFPHDRSIZE, SFBAGSIZE, SFMODSIZE, SFGENSIZE, SFIHDRSIZE,</a>
+<a name="ln984">            SFBAGSIZE, SFMODSIZE, SFGENSIZE, SFSHDRSIZE</a>
+<a name="ln985">            };</a>
+<a name="ln986">      typedef void (SFont::*LoadFunc)(int);</a>
+<a name="ln987">      static const LoadFunc funcArray[] = {</a>
+<a name="ln988">            &amp;SFont::load_phdr, &amp;SFont::load_pbag, &amp;SFont::load_pmod, &amp;SFont::load_pgen,</a>
+<a name="ln989">            &amp;SFont::load_ihdr, &amp;SFont::load_ibag, &amp;SFont::load_imod, &amp;SFont::load_igen,</a>
+<a name="ln990">            &amp;SFont::load_shdr</a>
+<a name="ln991">            };</a>
+<a name="ln992">      SFChunk chunk;</a>
+<a name="ln993">      for (int i = 0; i &lt; 9; ++i) {</a>
+<a name="ln994">            pdtahelper(id[i], len[i], &amp;chunk, &amp;size);</a>
+<a name="ln995">            (this-&gt;*funcArray[i])(chunk.size);</a>
+<a name="ln996">            }</a>
+<a name="ln997">      }</a>
+<a name="ln998"> </a>
+<a name="ln999">/* preset header loader */</a>
+<a name="ln1000">void SFont::load_phdr (int size)</a>
+<a name="ln1001">      {</a>
+<a name="ln1002">      Preset* pr = 0;	/* ptr to current &amp; previous preset */</a>
+<a name="ln1003">      unsigned short zndx, pzndx = 0;</a>
+<a name="ln1004"> </a>
+<a name="ln1005">      if (size % SFPHDRSIZE || size == 0)</a>
+<a name="ln1006">            throw(QString(&quot;Preset header chunk size is invalid&quot;));</a>
+<a name="ln1007"> </a>
+<a name="ln1008">      int i = size / SFPHDRSIZE - 1;</a>
+<a name="ln1009">      if (i == 0) {				/* at least one preset + term record */</a>
+<a name="ln1010">            qWarning(&quot;File contains no presets&quot;);</a>
+<a name="ln1011">            FSKIP (SFPHDRSIZE);</a>
+<a name="ln1012">            return;</a>
+<a name="ln1013">            }</a>
+<a name="ln1014">      for (; i &gt; 0; i--) {				/* load all preset headers */</a>
+<a name="ln1015">            Preset* p = new Preset(this);</a>
+<a name="ln1016">            presets.append(p);</a>
+<a name="ln1017">            char str[21];</a>
+<a name="ln1018">            READSTR (str);</a>
+<a name="ln1019">            p-&gt;name   = QString::fromLatin1(str);</a>
+<a name="ln1020"> </a>
+<a name="ln1021">            p-&gt;num  = READW();</a>
+<a name="ln1022">            p-&gt;bank = READW();</a>
+<a name="ln1023">            zndx    = READW();</a>
+<a name="ln1024">            unsigned int tmp;</a>
+<a name="ln1025">            READD (tmp);</a>
+<a name="ln1026">            READD (tmp);</a>
+<a name="ln1027">            READD (tmp);</a>
+<a name="ln1028"> </a>
+<a name="ln1029">            if (pr) {			/* not first preset? */</a>
+<a name="ln1030">                  if (zndx &lt; pzndx)</a>
+<a name="ln1031">                        throw(QString(&quot;Preset header indices not monotonic&quot;));</a>
+<a name="ln1032">                  int i2 = zndx - pzndx;</a>
+<a name="ln1033">                  while (i2--)</a>
+<a name="ln1034">                        pr-&gt;zones.prepend(0);</a>
+<a name="ln1035">                  }</a>
+<a name="ln1036">            else if (zndx &gt; 0)      /* 1st preset, warn if ofs &gt;0 */</a>
+<a name="ln1037">                  qWarning(&quot;%d preset zones not referenced, discarding&quot;, zndx);</a>
+<a name="ln1038">            pr = p;			/* update preset ptr */</a>
+<a name="ln1039">            pzndx = zndx;</a>
+<a name="ln1040">            }</a>
+<a name="ln1041">      FSKIP (24);</a>
+<a name="ln1042">      zndx = READW();		/* Read terminal generator index */</a>
+<a name="ln1043">      FSKIP (12);</a>
+<a name="ln1044">      if (zndx &lt; pzndx)</a>
+<a name="ln1045">            throw(QString(&quot;Preset header indices not monotonic&quot;));</a>
+<a name="ln1046">      int i2 = zndx - pzndx;</a>
+<a name="ln1047">      while (i2--)</a>
+<a name="ln1048">            pr-&gt;zones.prepend(0);</a>
+<a name="ln1049">      }</a>
+<a name="ln1050"> </a>
+<a name="ln1051">/* preset bag loader */</a>
+<a name="ln1052">void SFont::load_pbag (int size)</a>
+<a name="ln1053">      {</a>
+<a name="ln1054">      Zone *z, *pz = 0;</a>
+<a name="ln1055">      unsigned short genndx, modndx;</a>
+<a name="ln1056">      unsigned short pgenndx = 0, pmodndx = 0;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">      if (size % SFBAGSIZE || size == 0)	/* size is multiple of SFBAGSIZE? */</a>
+<a name="ln1059">            throw(QString(&quot;Preset bag chunk size is invalid&quot;));</a>
+<a name="ln1060"> </a>
+<a name="ln1061">      for(Preset* p : presets) {</a>
+<a name="ln1062">            for (int i = 0; i &lt; p-&gt;zones.size(); ++i) {</a>
+<a name="ln1063">	            if ((size -= SFBAGSIZE) &lt; 0)</a>
+<a name="ln1064">	                  throw(QString(&quot;1:Preset bag chunk size mismatch&quot;));</a>
+<a name="ln1065">	            z      = new Zone;</a>
+<a name="ln1066">	            genndx = READW();	/* possible read failure ^ */</a>
+<a name="ln1067">	            modndx = READW();</a>
+<a name="ln1068">	            z-&gt;sample = 0;</a>
+<a name="ln1069"> </a>
+<a name="ln1070">                  if (pz) {			/* if not first zone */</a>
+<a name="ln1071">                        if (genndx &lt; pgenndx)</a>
+<a name="ln1072">                              throw(QString(&quot;Preset bag generator indices not monotonic&quot;));</a>
+<a name="ln1073">                        if (modndx &lt; pmodndx)</a>
+<a name="ln1074">                              throw(QString(&quot;Preset bag modulator indices not monotonic&quot;));</a>
+<a name="ln1075">                        int ii = genndx - pgenndx;</a>
+<a name="ln1076">                        while (ii--)</a>
+<a name="ln1077">                              pz-&gt;gen.prepend(0);</a>
+<a name="ln1078">                        ii = modndx - pmodndx;</a>
+<a name="ln1079">                        while (ii--)</a>
+<a name="ln1080">                              pz-&gt;mod.prepend(0);</a>
+<a name="ln1081">                        }</a>
+<a name="ln1082">                  pz           = z;		/* update previous zone ptr */</a>
+<a name="ln1083">                  pgenndx      = genndx;	/* update previous zone gen index */</a>
+<a name="ln1084">                  pmodndx      = modndx;	/* update previous zone mod index */</a>
+<a name="ln1085">	            p-&gt;zones[i]  = z;</a>
+<a name="ln1086">                  }</a>
+<a name="ln1087">            }</a>
+<a name="ln1088">      size -= SFBAGSIZE;</a>
+<a name="ln1089">      if (size != 0)</a>
+<a name="ln1090">            throw(QString(&quot;2:Preset bag chunk size mismatch&quot;));</a>
+<a name="ln1091"> </a>
+<a name="ln1092">      genndx = READW();</a>
+<a name="ln1093">      modndx = READW();</a>
+<a name="ln1094"> </a>
+<a name="ln1095">      if (!pz) {</a>
+<a name="ln1096">            if (genndx &gt; 0)</a>
+<a name="ln1097">                  qWarning(&quot;No preset generators and terminal index not 0&quot;);</a>
+<a name="ln1098">            if (modndx &gt; 0)</a>
+<a name="ln1099">                  qWarning(&quot;No preset modulators and terminal index not 0&quot;);</a>
+<a name="ln1100">            return;</a>
+<a name="ln1101">            }</a>
+<a name="ln1102">      if (genndx &lt; pgenndx)</a>
+<a name="ln1103">            throw(QString(&quot;Preset bag generator indices not monotonic&quot;));</a>
+<a name="ln1104">      if (modndx &lt; pmodndx)</a>
+<a name="ln1105">            throw(QString(&quot;Preset bag modulator indices not monotonic&quot;));</a>
+<a name="ln1106">      int i = genndx - pgenndx;</a>
+<a name="ln1107">      while (i--)</a>
+<a name="ln1108">            pz-&gt;gen.prepend(0);</a>
+<a name="ln1109">      i = modndx - pmodndx;</a>
+<a name="ln1110">      while (i--)</a>
+<a name="ln1111">            pz-&gt;mod.prepend(0);</a>
+<a name="ln1112">      }</a>
+<a name="ln1113"> </a>
+<a name="ln1114">//---------------------------------------------------------</a>
+<a name="ln1115">//   load_pmod</a>
+<a name="ln1116">//    preset modulator loader</a>
+<a name="ln1117">//---------------------------------------------------------</a>
+<a name="ln1118"> </a>
+<a name="ln1119">void SFont::load_pmod (int size)</a>
+<a name="ln1120">      {</a>
+<a name="ln1121">      for (Preset* p : presets) {</a>
+<a name="ln1122">            for(Zone* p2 : p-&gt;zones) {</a>
+<a name="ln1123">                  for (int i = 0; i &lt; p2-&gt;mod.size(); ++i) {</a>
+<a name="ln1124">	                  if ((size -= SFMODSIZE) &lt; 0)</a>
+<a name="ln1125">		                  throw(QString(&quot;Preset modulator chunk size mismatch&quot;));</a>
+<a name="ln1126">	                  SFMod* m  = new SFMod;</a>
+<a name="ln1127">	                  m-&gt;src    = READW();</a>
+<a name="ln1128">	                  m-&gt;dest   = READW();</a>
+<a name="ln1129">	                  m-&gt;amount = READW();</a>
+<a name="ln1130">	                  m-&gt;amtsrc = READW();</a>
+<a name="ln1131">	                  m-&gt;trans  = READW();</a>
+<a name="ln1132">	                  p2-&gt;mod[i] = m;</a>
+<a name="ln1133">	                  }</a>
+<a name="ln1134">                  }</a>
+<a name="ln1135">            }</a>
+<a name="ln1136"> </a>
+<a name="ln1137">  /*</a>
+<a name="ln1138">     If there isn't even a terminal record</a>
+<a name="ln1139">     Hmmm, the specs say there should be one, but..</a>
+<a name="ln1140">   */</a>
+<a name="ln1141">      if (size == 0)</a>
+<a name="ln1142">            return;</a>
+<a name="ln1143"> </a>
+<a name="ln1144">      size -= SFMODSIZE;</a>
+<a name="ln1145">      if (size != 0)</a>
+<a name="ln1146">            throw(QString(&quot;Preset modulator chunk size mismatch&quot;));</a>
+<a name="ln1147">      FSKIP (SFMODSIZE);	/* terminal mod */</a>
+<a name="ln1148">      }</a>
+<a name="ln1149"> </a>
+<a name="ln1150">static const unsigned short badgen[] = {</a>
+<a name="ln1151">      Gen_Unused1, Gen_Unused2, Gen_Unused3, Gen_Unused4,</a>
+<a name="ln1152">      Gen_Reserved1, Gen_Reserved2, Gen_Reserved3, 0</a>
+<a name="ln1153">      };</a>
+<a name="ln1154"> </a>
+<a name="ln1155">static const unsigned short badpgen[] = {</a>
+<a name="ln1156">      Gen_StartAddrOfs, Gen_EndAddrOfs, Gen_StartLoopAddrOfs,</a>
+<a name="ln1157">      Gen_EndLoopAddrOfs, Gen_StartAddrCoarseOfs, Gen_EndAddrCoarseOfs,</a>
+<a name="ln1158">      Gen_StartLoopAddrCoarseOfs, Gen_Keynum, Gen_Velocity,</a>
+<a name="ln1159">      Gen_EndLoopAddrCoarseOfs, Gen_SampleModes, Gen_ExclusiveClass,</a>
+<a name="ln1160">      Gen_OverrideRootKey, 0</a>
+<a name="ln1161">      };</a>
+<a name="ln1162"> </a>
+<a name="ln1163">/* check validity of instrument generator */</a>
+<a name="ln1164">static int gen_valid (int gen)</a>
+<a name="ln1165">      {				/* is generator id valid? */</a>
+<a name="ln1166">      int i = 0;</a>
+<a name="ln1167"> </a>
+<a name="ln1168">      if (gen &gt; Gen_MaxValid)</a>
+<a name="ln1169">            return false;</a>
+<a name="ln1170">      while (badgen[i] &amp;&amp; badgen[i] != gen)</a>
+<a name="ln1171">            i++;</a>
+<a name="ln1172">      return (badgen[i] == 0);</a>
+<a name="ln1173">      }</a>
+<a name="ln1174"> </a>
+<a name="ln1175">/* check validity of preset generator */</a>
+<a name="ln1176">static int gen_validp (int gen)</a>
+<a name="ln1177">      {				/* is preset generator valid? */</a>
+<a name="ln1178">      int i = 0;</a>
+<a name="ln1179"> </a>
+<a name="ln1180">      if (!gen_valid (gen))</a>
+<a name="ln1181">            return false;</a>
+<a name="ln1182">      while (badpgen[i] &amp;&amp; badpgen[i] != (unsigned short) gen)</a>
+<a name="ln1183">            i++;</a>
+<a name="ln1184">      return (badpgen[i] == 0);</a>
+<a name="ln1185">      }</a>
+<a name="ln1186"> </a>
+<a name="ln1187">//---------------------------------------------------------</a>
+<a name="ln1188">//   gen_inlist</a>
+<a name="ln1189">//    Find generator in gen list</a>
+<a name="ln1190">//---------------------------------------------------------</a>
+<a name="ln1191"> </a>
+<a name="ln1192">static SFGen* gen_inlist (int gen, const QList&lt;SFGen*&gt;&amp; genlist)</a>
+<a name="ln1193">      {</a>
+<a name="ln1194">      for(SFGen* p : genlist) {</a>
+<a name="ln1195">            if (p == 0)</a>
+<a name="ln1196">                  break;</a>
+<a name="ln1197">            if (gen == p-&gt;id)</a>
+<a name="ln1198">	            return p;</a>
+<a name="ln1199">            }</a>
+<a name="ln1200">      return 0;</a>
+<a name="ln1201">      }</a>
+<a name="ln1202"> </a>
+<a name="ln1203">/* delete zone from zone list */</a>
+<a name="ln1204">static void sfont_zone_delete (QList&lt;Zone*&gt;* l, Zone * zone)</a>
+<a name="ln1205">      {</a>
+<a name="ln1206">      l-&gt;removeOne(zone);</a>
+<a name="ln1207">      delete zone;</a>
+<a name="ln1208">      }</a>
+<a name="ln1209"> </a>
+<a name="ln1210">/* -------------------------------------------------------------------</a>
+<a name="ln1211"> * preset generator loader</a>
+<a name="ln1212"> * generator (per preset) loading rules:</a>
+<a name="ln1213"> * Zones with no generators or modulators shall be annihilated</a>
+<a name="ln1214"> * Global zone must be 1st zone, discard additional ones (instrumentless zones)</a>
+<a name="ln1215"> *</a>
+<a name="ln1216"> * generator (per zone) loading rules (in order of decreasing precedence):</a>
+<a name="ln1217"> * KeyRange is 1st in list (if exists), else discard</a>
+<a name="ln1218"> * if a VelRange exists only preceded by a KeyRange, else discard</a>
+<a name="ln1219"> * if a generator follows an instrument discard it</a>
+<a name="ln1220"> * if a duplicate generator exists replace previous one</a>
+<a name="ln1221"> * ------------------------------------------------------------------- */</a>
+<a name="ln1222"> </a>
+<a name="ln1223">void SFont::load_pgen (int size)</a>
+<a name="ln1224">      {</a>
+<a name="ln1225">      for(Preset* p : presets) {</a>
+<a name="ln1226">            bool gzone          = false;</a>
+<a name="ln1227">            bool discarded      = false;</a>
+<a name="ln1228"> </a>
+<a name="ln1229">            QList&lt;Zone*&gt;&amp; zl = p-&gt;zones;</a>
+<a name="ln1230">            for (int k = 0; k &lt; zl.size(); ++k) {</a>
+<a name="ln1231">	            int level = 0;</a>
+<a name="ln1232">                  Zone* z = zl[k];</a>
+<a name="ln1233">                  int i = 0;</a>
+<a name="ln1234">                  for (; i &lt; z-&gt;gen.size();) {</a>
+<a name="ln1235">	                  SFGen* dup = 0;</a>
+<a name="ln1236">	                  bool skip = false;</a>
+<a name="ln1237">	                  bool drop = false;</a>
+<a name="ln1238">	                  if ((size -= SFGENSIZE) &lt; 0)</a>
+<a name="ln1239">		                  throw(QString(&quot;1:Preset generator chunk size mismatch&quot;));</a>
+<a name="ln1240"> </a>
+<a name="ln1241">	                  unsigned short genid = READW();</a>
+<a name="ln1242">                     SFGenAmount    genval;</a>
+<a name="ln1243">                     genval.uword = 0;          // Initialize to prevent &quot;potentially uninitialized local variable&quot; warning in VS.</a>
+<a name="ln1244">	                  if (genid == Gen_KeyRange) {  /* nothing precedes */</a>
+<a name="ln1245">		                  if (level == 0) {</a>
+<a name="ln1246">		                        level = 1;</a>
+<a name="ln1247">		                        genval.range.lo = READB();</a>
+<a name="ln1248">		                        genval.range.hi = READB();</a>
+<a name="ln1249">		                        }</a>
+<a name="ln1250">		                  else</a>
+<a name="ln1251">		                        skip = true;</a>
+<a name="ln1252">		                  }</a>
+<a name="ln1253">	                  else if (genid == Gen_VelRange) {   // only KeyRange precedes</a>
+<a name="ln1254">		                  if (level &lt;= 1) {</a>
+<a name="ln1255">		                        level = 2;</a>
+<a name="ln1256">		                        genval.range.lo = READB();</a>
+<a name="ln1257">		                        genval.range.hi = READB();</a>
+<a name="ln1258">		                        }</a>
+<a name="ln1259">		                  else</a>
+<a name="ln1260">		                        skip = true;</a>
+<a name="ln1261">		                  }</a>
+<a name="ln1262">	                  else if (genid == Gen_Instrument) { /* inst is last gen */</a>
+<a name="ln1263">		                  level = 3;</a>
+<a name="ln1264">		                  genval.uword = READW();</a>
+<a name="ln1265">		                  z-&gt;instIdx  = genval.uword + 1;</a>
+<a name="ln1266">		                  break;	/* break out of generator loop */</a>
+<a name="ln1267">		                  }</a>
+<a name="ln1268">	                  else {</a>
+<a name="ln1269">		                  level = 2;</a>
+<a name="ln1270">		                  if (gen_validp (genid)) {     /* generator valid? */</a>
+<a name="ln1271">		                        genval.sword = READW();</a>
+<a name="ln1272">		                        dup = gen_inlist (genid, z-&gt;gen);</a>
+<a name="ln1273">		                        }</a>
+<a name="ln1274">		                  else</a>
+<a name="ln1275">		                        skip = true;</a>
+<a name="ln1276">		                  }</a>
+<a name="ln1277">	                  if (!skip) {</a>
+<a name="ln1278">                              SFGen *g;</a>
+<a name="ln1279">		                  if (!dup) {		/* if gen ! dup alloc new */</a>
+<a name="ln1280">		                        g = new SFGen;</a>
+<a name="ln1281">		                        g-&gt;id = genid;</a>
+<a name="ln1282">                                    z-&gt;gen[i] = g;</a>
+<a name="ln1283">		                        }</a>
+<a name="ln1284">		                  else {</a>
+<a name="ln1285">		                        g    = dup;	// ptr to orig gen</a>
+<a name="ln1286">		                        drop = true;</a>
+<a name="ln1287">		                        }</a>
+<a name="ln1288">		                  g-&gt;amount = genval;</a>
+<a name="ln1289">		                  }</a>
+<a name="ln1290">	                  else {		/* Skip this generator */</a>
+<a name="ln1291">		                  discarded = true;</a>
+<a name="ln1292">		                  drop = true;</a>
+<a name="ln1293">		                  FSKIPW ();</a>
+<a name="ln1294">		                  }</a>
+<a name="ln1295">	                  if (!drop)</a>
+<a name="ln1296">		                  ++i;</a>
+<a name="ln1297">	                  else {</a>
+<a name="ln1298">		                  z-&gt;gen.removeAt(i);     // drop place holder</a>
+<a name="ln1299">                              }</a>
+<a name="ln1300">	                  }</a>
+<a name="ln1301">                  if (level == 3)</a>
+<a name="ln1302">                        z-&gt;gen.removeAt(i);     // drop place holder</a>
+<a name="ln1303">	            else {			// congratulations its a global zone</a>
+<a name="ln1304">	                  if (!gzone) {	// Prior global zones?</a>
+<a name="ln1305">		                  gzone = true;</a>
+<a name="ln1306"> </a>
+<a name="ln1307">		                  // if global zone is not 1st zone, relocate</a>
+<a name="ln1308">		                  if (k != 0) {</a>
+<a name="ln1309">		                        Zone* save = zl.takeAt(k);</a>
+<a name="ln1310">		                        qDebug(&quot;Preset \&quot;%s\&quot;: Global zone is not first zone&quot;, qPrintable(p-&gt;name));</a>
+<a name="ln1311">		                        zl.prepend(save);</a>
+<a name="ln1312">		                        continue;</a>
+<a name="ln1313">		                        }</a>
+<a name="ln1314">		                  }</a>
+<a name="ln1315">	                  else {      // previous global zone exists, discard</a>
+<a name="ln1316">		                  qDebug(&quot;Preset \&quot;%s\&quot;: Discarding invalid global zone&quot;, qPrintable(p-&gt;name));</a>
+<a name="ln1317">		                  sfont_zone_delete(&amp;zl, z);</a>
+<a name="ln1318">		                  }</a>
+<a name="ln1319">	                  }</a>
+<a name="ln1320">                  for (; i &lt; z-&gt;gen.size();) {</a>
+<a name="ln1321">	                  discarded = true;</a>
+<a name="ln1322">	                  if ((size -= SFGENSIZE) &lt; 0)</a>
+<a name="ln1323">		                  throw(QString(&quot;2:Preset generator chunk size mismatch&quot;));</a>
+<a name="ln1324">	                  FSKIP (SFGENSIZE);</a>
+<a name="ln1325">                        z-&gt;gen.removeAt(i);</a>
+<a name="ln1326">	                  }</a>
+<a name="ln1327">	            }</a>
+<a name="ln1328">            if (discarded)</a>
+<a name="ln1329">	            qDebug(&quot;Preset \&quot;%s\&quot;: Some invalid generators were discarded&quot;, qPrintable(p-&gt;name));</a>
+<a name="ln1330">            }</a>
+<a name="ln1331">      /* in case there isn't a terminal record */</a>
+<a name="ln1332">      if (size == 0)</a>
+<a name="ln1333">            return;</a>
+<a name="ln1334"> </a>
+<a name="ln1335">      size -= SFGENSIZE;</a>
+<a name="ln1336">      if (size != 0)</a>
+<a name="ln1337">            throw(QString(&quot;3:Preset generator chunk size mismatch&quot;));</a>
+<a name="ln1338">      FSKIP (SFGENSIZE);	/* terminal gen */</a>
+<a name="ln1339">      }</a>
+<a name="ln1340"> </a>
+<a name="ln1341">/* instrument header loader */</a>
+<a name="ln1342">void SFont::load_ihdr(int size)</a>
+<a name="ln1343">      {</a>
+<a name="ln1344">      Instrument *p, *pr = 0;	/* ptr to current &amp; previous instrument */</a>
+<a name="ln1345">      unsigned short zndx, pzndx = 0;</a>
+<a name="ln1346"> </a>
+<a name="ln1347">      if (size % SFIHDRSIZE || size == 0)	/* chunk size is valid? */</a>
+<a name="ln1348">            throw(QString(&quot;Instrumentrument header has invalid size&quot;));</a>
+<a name="ln1349"> </a>
+<a name="ln1350">      size = size / SFIHDRSIZE - 1;</a>
+<a name="ln1351">      if (size == 0) {  /* at least one preset + term record */</a>
+<a name="ln1352">            qWarning(&quot;File contains no instruments&quot;);</a>
+<a name="ln1353">            FSKIP (SFIHDRSIZE);</a>
+<a name="ln1354">            return;</a>
+<a name="ln1355">            }</a>
+<a name="ln1356">      for (int i = 0; i &lt; size; i++) {  /* load all instrument headers */</a>
+<a name="ln1357">            p = new Instrument;</a>
+<a name="ln1358">            instruments.append(p);</a>
+<a name="ln1359">            char buffer[21];</a>
+<a name="ln1360">            READSTR (buffer);	/* Possible read failure ^ */</a>
+<a name="ln1361">            zndx = READW();</a>
+<a name="ln1362"> </a>
+<a name="ln1363">            if (pr) {   /* not first instrument? */</a>
+<a name="ln1364">	            if (zndx &lt; pzndx)</a>
+<a name="ln1365">                        throw(QString(&quot;Instrument header indices not monotonic&quot;));</a>
+<a name="ln1366">	            int i2 = zndx - pzndx;</a>
+<a name="ln1367">	            while (i2--)</a>
+<a name="ln1368">                        pr-&gt;zones.prepend(0);</a>
+<a name="ln1369">                  }</a>
+<a name="ln1370">            else if (zndx &gt; 0) {	/* 1st inst, warn if ofs &gt;0 */</a>
+<a name="ln1371">	            qWarning(&quot;%d instrument zones not referenced, discarding&quot;, zndx);</a>
+<a name="ln1372">                  }</a>
+<a name="ln1373">            pzndx = zndx;</a>
+<a name="ln1374">            pr = p;			/* update instrument ptr */</a>
+<a name="ln1375">            }</a>
+<a name="ln1376"> </a>
+<a name="ln1377">      FSKIP (20);</a>
+<a name="ln1378">      zndx = READW();</a>
+<a name="ln1379"> </a>
+<a name="ln1380">      if (zndx &lt; pzndx)</a>
+<a name="ln1381">            throw(QString(&quot;Instrumentrument header indices not monotonic&quot;));</a>
+<a name="ln1382">      int i2 = zndx - pzndx;</a>
+<a name="ln1383">      while (i2--)</a>
+<a name="ln1384">            pr-&gt;zones.prepend(0);</a>
+<a name="ln1385">      }</a>
+<a name="ln1386"> </a>
+<a name="ln1387">/* instrument bag loader */</a>
+<a name="ln1388">void SFont::load_ibag(int size)</a>
+<a name="ln1389">      {</a>
+<a name="ln1390">      Zone *z, *pz = 0;</a>
+<a name="ln1391">      unsigned short genndx, modndx, pgenndx = 0, pmodndx = 0;</a>
+<a name="ln1392"> </a>
+<a name="ln1393">      if (size % SFBAGSIZE || size == 0)	/* size is multiple of SFBAGSIZE? */</a>
+<a name="ln1394">            throw(QString(&quot;Instrumentrument bag chunk size is invalid&quot;));</a>
+<a name="ln1395"> </a>
+<a name="ln1396">      for(Instrument* in : instruments) {</a>
+<a name="ln1397">            int n = in-&gt;zones.size();</a>
+<a name="ln1398">            for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln1399">	            if ((size -= SFBAGSIZE) &lt; 0) {</a>
+<a name="ln1400">	                  throw(QString(&quot;Instrument bag chunk size mismatch&quot;));</a>
+<a name="ln1401">                        }</a>
+<a name="ln1402">	            z             = new Zone;</a>
+<a name="ln1403">                  in-&gt;zones[i]  = z;</a>
+<a name="ln1404">	            genndx        = READW();</a>
+<a name="ln1405">	            modndx        = READW();</a>
+<a name="ln1406">	            z-&gt;sample     = 0;</a>
+<a name="ln1407"> </a>
+<a name="ln1408">	            if (pz) {			/* if not first zone */</a>
+<a name="ln1409">	                  if (genndx &lt; pgenndx)</a>
+<a name="ln1410">		                  throw(QString(&quot;Instrumentrument generator indices not monotonic&quot;));</a>
+<a name="ln1411">	                  if (modndx &lt; pmodndx)</a>
+<a name="ln1412">		                  throw(QString(&quot;Instrumentrument modulator indices not monotonic&quot;));</a>
+<a name="ln1413">	                  int i2 = genndx - pgenndx;</a>
+<a name="ln1414">	                  while (i2--)</a>
+<a name="ln1415">		                  pz-&gt;gen.prepend(0);</a>
+<a name="ln1416">	                  i2 = modndx - pmodndx;</a>
+<a name="ln1417">	                  while (i2--)</a>
+<a name="ln1418">		                  pz-&gt;mod.prepend(0);</a>
+<a name="ln1419">	                  }</a>
+<a name="ln1420">	            pz = z;		/* update previous zone ptr */</a>
+<a name="ln1421">	            pgenndx = genndx;</a>
+<a name="ln1422">	            pmodndx = modndx;</a>
+<a name="ln1423">	            }</a>
+<a name="ln1424">            }</a>
+<a name="ln1425">      size -= SFBAGSIZE;</a>
+<a name="ln1426">      if (size != 0)</a>
+<a name="ln1427">            throw(QString(&quot;Instrumentrument chunk size mismatch&quot;));</a>
+<a name="ln1428"> </a>
+<a name="ln1429">      genndx = READW();</a>
+<a name="ln1430">      modndx = READW();</a>
+<a name="ln1431"> </a>
+<a name="ln1432">      if (!pz) {  /* in case that all are no zoners */</a>
+<a name="ln1433">            if (genndx &gt; 0)</a>
+<a name="ln1434">	            qWarning(&quot;No instrument generators and terminal index not 0&quot;);</a>
+<a name="ln1435">            if (modndx &gt; 0)</a>
+<a name="ln1436">                  qWarning(&quot;No instrument modulators and terminal index not 0&quot;);</a>
+<a name="ln1437">            return;</a>
+<a name="ln1438">            }</a>
+<a name="ln1439">      if (genndx &lt; pgenndx)</a>
+<a name="ln1440">            throw(QString(&quot;Instrumentrument generator indices not monotonic&quot;));</a>
+<a name="ln1441">      if (modndx &lt; pmodndx)</a>
+<a name="ln1442">            throw(QString(&quot;Instrumentrument modulator indices not monotonic&quot;));</a>
+<a name="ln1443">      int i = genndx - pgenndx;</a>
+<a name="ln1444">      while (i--)</a>
+<a name="ln1445">            pz-&gt;gen.prepend(0);</a>
+<a name="ln1446">      i = modndx - pmodndx;</a>
+<a name="ln1447">      while (i--)</a>
+<a name="ln1448">            pz-&gt;mod.prepend(0);</a>
+<a name="ln1449">      }</a>
+<a name="ln1450"> </a>
+<a name="ln1451">/* instrument modulator loader */</a>
+<a name="ln1452">void SFont::load_imod(int size)</a>
+<a name="ln1453">      {</a>
+<a name="ln1454">      for(Instrument* i : instruments) {</a>
+<a name="ln1455">            for(Zone* p2 : i-&gt;zones) {</a>
+<a name="ln1456">                  for (int k = 0; k &lt; p2-&gt;mod.size(); ++k) {</a>
+<a name="ln1457">                        if ((size -= SFMODSIZE) &lt; 0)</a>
+<a name="ln1458">                              throw(QString(&quot;Instrumentrument modulator chunk size mismatch&quot;));</a>
+<a name="ln1459">                        SFMod* m  = new SFMod;</a>
+<a name="ln1460">	                  m-&gt;src    = READW();</a>
+<a name="ln1461">	                  m-&gt;dest   = READW();</a>
+<a name="ln1462">	                  m-&gt;amount = READW();</a>
+<a name="ln1463">	                  m-&gt;amtsrc = READW();</a>
+<a name="ln1464">	                  m-&gt;trans  = READW();</a>
+<a name="ln1465">                        p2-&gt;mod[k] = m;</a>
+<a name="ln1466">	                  }</a>
+<a name="ln1467">	            }</a>
+<a name="ln1468">            }</a>
+<a name="ln1469">      /*</a>
+<a name="ln1470">        If there isn't even a terminal record</a>
+<a name="ln1471">        Hmmm, the specs say there should be one, but..</a>
+<a name="ln1472">      */</a>
+<a name="ln1473">      if (size == 0)</a>
+<a name="ln1474">            return;</a>
+<a name="ln1475">      size -= SFMODSIZE;</a>
+<a name="ln1476">      if (size != 0)</a>
+<a name="ln1477">            throw(QString(&quot;Instrumentrument modulator chunk size mismatch&quot;));</a>
+<a name="ln1478">      FSKIP (SFMODSIZE);	/* terminal mod */</a>
+<a name="ln1479">      }</a>
+<a name="ln1480"> </a>
+<a name="ln1481">//---------------------------------------------------------</a>
+<a name="ln1482">//   load_igen</a>
+<a name="ln1483">//    load instrument generators</a>
+<a name="ln1484">//    (see load_pgen for loading rules)</a>
+<a name="ln1485">//---------------------------------------------------------</a>
+<a name="ln1486"> </a>
+<a name="ln1487">void SFont::load_igen (int size)</a>
+<a name="ln1488">      {</a>
+<a name="ln1489">      for(Instrument* instr : instruments) {</a>
+<a name="ln1490">            bool gzone     = false;</a>
+<a name="ln1491">            bool discarded = false;</a>
+<a name="ln1492"> </a>
+<a name="ln1493">            QList&lt;Zone*&gt; zl = instr-&gt;zones;</a>
+<a name="ln1494"> </a>
+<a name="ln1495">            for (int k = 0; k &lt; zl.size(); ++k) {</a>
+<a name="ln1496">                  int level = 0;</a>
+<a name="ln1497">                  Zone* z = zl[k];</a>
+<a name="ln1498"> </a>
+<a name="ln1499">                  int i = 0;</a>
+<a name="ln1500">                  for (; i &lt; z-&gt;gen.size();) {</a>
+<a name="ln1501">                        SFGenAmount genval;</a>
+<a name="ln1502">                        SFGen* dup = 0;</a>
+<a name="ln1503">                        bool skip = false;</a>
+<a name="ln1504">                        bool drop = false;</a>
+<a name="ln1505">                        genval.uword = 0;          // Initialize to prevent &quot;potentially uninitialized local variable&quot; warning in VS.</a>
+<a name="ln1506">                        if ((size -= SFGENSIZE) &lt; 0)</a>
+<a name="ln1507">                              throw(QString(&quot;IGEN chunk size mismatch&quot;));</a>
+<a name="ln1508"> </a>
+<a name="ln1509">                        unsigned short genid = READW();</a>
+<a name="ln1510"> </a>
+<a name="ln1511">                        if (genid == Gen_KeyRange) {  /* nothing precedes */</a>
+<a name="ln1512">                              if (level == 0) {</a>
+<a name="ln1513">                                    level = 1;</a>
+<a name="ln1514">		                        genval.range.lo = READB();</a>
+<a name="ln1515">		                        genval.range.hi = READB();</a>
+<a name="ln1516">		                        }</a>
+<a name="ln1517">		                  else</a>
+<a name="ln1518">		                        skip = true;</a>
+<a name="ln1519">		                  }</a>
+<a name="ln1520">	                  else if (genid == Gen_VelRange) {   // only KeyRange precedes</a>
+<a name="ln1521">		                  if (level &lt;= 1) {</a>
+<a name="ln1522">		                        level = 2;</a>
+<a name="ln1523">		                        genval.range.lo = READB();</a>
+<a name="ln1524">		                        genval.range.hi = READB();</a>
+<a name="ln1525">		                        }</a>
+<a name="ln1526">		                  else</a>
+<a name="ln1527">		                        skip = true;</a>
+<a name="ln1528">		                  }</a>
+<a name="ln1529">	                  else if (genid == Gen_SampleId) {   // sample is last gen</a>
+<a name="ln1530">		                  level = 3;</a>
+<a name="ln1531">		                  genval.uword = READW();</a>
+<a name="ln1532">		                  z-&gt;sampIdx  = genval.uword + 1;</a>
+<a name="ln1533">		                  break;	/* break out of generator loop */</a>
+<a name="ln1534">		                  }</a>
+<a name="ln1535">	                  else {</a>
+<a name="ln1536">		                  level = 2;</a>
+<a name="ln1537">		                  if (gen_valid (genid)) {      // gen valid?</a>
+<a name="ln1538">		                        genval.sword = READW();</a>
+<a name="ln1539">		                        dup = gen_inlist (genid, z-&gt;gen);</a>
+<a name="ln1540">		                        }</a>
+<a name="ln1541">		                  else</a>
+<a name="ln1542">		                        skip = true;</a>
+<a name="ln1543">		                  }</a>
+<a name="ln1544">                        if (!skip) {</a>
+<a name="ln1545">                              SFGen* g;</a>
+<a name="ln1546">		                  if (!dup) {   /* if gen ! dup alloc new */</a>
+<a name="ln1547">		                        g = new SFGen;</a>
+<a name="ln1548">		                        g-&gt;id = genid;</a>
+<a name="ln1549">                                    z-&gt;gen[i] = g;</a>
+<a name="ln1550">		                        }</a>
+<a name="ln1551">		                  else {</a>
+<a name="ln1552">		                        g = dup;</a>
+<a name="ln1553">		                        drop = true;</a>
+<a name="ln1554">		                        }</a>
+<a name="ln1555">		                  g-&gt;amount = genval;</a>
+<a name="ln1556">		                  }</a>
+<a name="ln1557">	                  else {		/* skip this generator */</a>
+<a name="ln1558">		                  discarded = true;</a>
+<a name="ln1559">		                  drop = true;</a>
+<a name="ln1560">		                  FSKIPW ();</a>
+<a name="ln1561">		                  }</a>
+<a name="ln1562">	                  if (!drop)</a>
+<a name="ln1563">		                  ++i;</a>
+<a name="ln1564">	                  else</a>
+<a name="ln1565">		                  z-&gt;gen.removeAt(i);</a>
+<a name="ln1566">	                  }</a>
+<a name="ln1567">                  if (level == 3)</a>
+<a name="ln1568">                        z-&gt;gen.removeAt(i);</a>
+<a name="ln1569">	            else {      /* its a global zone */</a>
+<a name="ln1570">	                  if (!gzone) {</a>
+<a name="ln1571">		                  gzone = true;</a>
+<a name="ln1572"> </a>
+<a name="ln1573">		                  /* if global zone is not 1st zone, relocate */</a>
+<a name="ln1574">      		            if (k != 0) {</a>
+<a name="ln1575">	      	                  Zone* save = zl.takeAt(k);</a>
+<a name="ln1576">	      	                  zl.prepend(save);</a>
+<a name="ln1577">		                        continue;</a>
+<a name="ln1578">		                        }</a>
+<a name="ln1579">      		            }</a>
+<a name="ln1580">	                  else {      /* previous global zone exists, discard */</a>
+<a name="ln1581">		                  sfont_zone_delete (&amp;zl, z);</a>
+<a name="ln1582">		                  }</a>
+<a name="ln1583">      	            }</a>
+<a name="ln1584"> </a>
+<a name="ln1585">                  for (; i &lt; z-&gt;gen.size();) {</a>
+<a name="ln1586">	                  discarded = true;</a>
+<a name="ln1587">      	            if ((size -= SFGENSIZE) &lt; 0)</a>
+<a name="ln1588">	      	            throw(QString(&quot;Instrumentrument generator chunk size mismatch&quot;));</a>
+<a name="ln1589">      	            FSKIP (SFGENSIZE);</a>
+<a name="ln1590">                        z-&gt;gen.removeAt(i);</a>
+<a name="ln1591">	                  }</a>
+<a name="ln1592">                  }</a>
+<a name="ln1593">            if (discarded &amp;&amp; debugMode)</a>
+<a name="ln1594">                  qWarning(&quot;Instrument: Some invalid generators were discarded&quot;);</a>
+<a name="ln1595">            }</a>
+<a name="ln1596">      /* for those non-terminal record cases, grr! */</a>
+<a name="ln1597">      if (size == 0)</a>
+<a name="ln1598">            return;</a>
+<a name="ln1599"> </a>
+<a name="ln1600">      size -= SFGENSIZE;</a>
+<a name="ln1601">      if (size != 0)</a>
+<a name="ln1602">            throw(QString(&quot;IGEN chunk size mismatch&quot;));</a>
+<a name="ln1603">      FSKIP (SFGENSIZE);	/* terminal gen */</a>
+<a name="ln1604">      }</a>
+<a name="ln1605"> </a>
+<a name="ln1606">//---------------------------------------------------------</a>
+<a name="ln1607">//   load_shdr</a>
+<a name="ln1608">//    sample header loader</a>
+<a name="ln1609">//---------------------------------------------------------</a>
+<a name="ln1610"> </a>
+<a name="ln1611">void SFont::load_shdr (int size)</a>
+<a name="ln1612">      {</a>
+<a name="ln1613">      if (size % SFSHDRSIZE || size == 0)	/* size is multiple of SHDR size? */</a>
+<a name="ln1614">            throw(QString(&quot;Sample header has invalid size&quot;));</a>
+<a name="ln1615"> </a>
+<a name="ln1616">      size = size / SFSHDRSIZE - 1;</a>
+<a name="ln1617">      if (size == 0) {        // at least one sample + term record?</a>
+<a name="ln1618">            qWarning(&quot;File contains no samples&quot;);</a>
+<a name="ln1619">            FSKIP (SFSHDRSIZE);</a>
+<a name="ln1620">            return;</a>
+<a name="ln1621">            }</a>
+<a name="ln1622"> </a>
+<a name="ln1623">      /* load all sample headers */</a>
+<a name="ln1624">      for (int i = 0; i &lt; size; i++) {</a>
+<a name="ln1625">            Sample* p = new Sample(this);</a>
+<a name="ln1626">            sample.append(p);</a>
+<a name="ln1627">            char buffer[21];</a>
+<a name="ln1628">            READSTR (buffer);</a>
+<a name="ln1629">            // READSTR (p-&gt;name);</a>
+<a name="ln1630">            READD (p-&gt;start);</a>
+<a name="ln1631">            READD (p-&gt;end);	      /* - end, loopstart and loopend */</a>
+<a name="ln1632">            READD (p-&gt;loopstart);	/* - will be checked and turned into */</a>
+<a name="ln1633">            READD (p-&gt;loopend);</a>
+<a name="ln1634">            READD (p-&gt;samplerate);</a>
+<a name="ln1635">            p-&gt;origpitch = READB();</a>
+<a name="ln1636">            p-&gt;pitchadj  = READC();</a>
+<a name="ln1637">            FSKIPW ();		      // skip sample link</a>
+<a name="ln1638">            p-&gt;sampletype = READW();</a>
+<a name="ln1639">            if (p-&gt;sampletype &amp; FLUID_SAMPLETYPE_ROM) {</a>
+<a name="ln1640">                  p-&gt;setValid(false);</a>
+<a name="ln1641">                  continue;</a>
+<a name="ln1642">                  }</a>
+<a name="ln1643">            if ((p-&gt;end &gt; getSamplesize()) || (p-&gt;start &gt; (p-&gt;end - 4))) {</a>
+<a name="ln1644">                  qWarning(&quot;Sample start/end file positions are invalid, disabling&quot;);</a>
+<a name="ln1645">                  p-&gt;setValid(false);</a>
+<a name="ln1646">                  continue;</a>
+<a name="ln1647">                  }</a>
+<a name="ln1648">            p-&gt;setValid(true);</a>
+<a name="ln1649">            if (p-&gt;sampletype &amp; FLUID_SAMPLETYPE_OGG_VORBIS) {</a>
+<a name="ln1650">                  }</a>
+<a name="ln1651">            else {</a>
+<a name="ln1652">                  // loop is fowled?? (cluck cluck :)</a>
+<a name="ln1653">                  if (p-&gt;loopend &gt; p-&gt;end || p-&gt;loopstart &gt;= p-&gt;loopend || p-&gt;loopstart &lt;= p-&gt;start) {</a>
+<a name="ln1654">                        /* can pad loop by 8 samples and ensure at least 4 for loop (2*8+4) */</a>
+<a name="ln1655">                        if ((p-&gt;end - p-&gt;start) &gt;= 20) {</a>
+<a name="ln1656">                              p-&gt;loopstart = p-&gt;start + 8;</a>
+<a name="ln1657">                              p-&gt;loopend   = p-&gt;end - 8;</a>
+<a name="ln1658">                              }</a>
+<a name="ln1659">                        else {      // loop is fowled, sample is tiny (can't pad 8 samples)</a>
+<a name="ln1660">                              p-&gt;loopstart = p-&gt;start + 1;</a>
+<a name="ln1661">                              p-&gt;loopend   = p-&gt;end - 1;</a>
+<a name="ln1662">                              }</a>
+<a name="ln1663">                        }</a>
+<a name="ln1664">                  if ((p-&gt;end - p-&gt;start) &lt; 8)</a>
+<a name="ln1665">                        p-&gt;setValid(false);</a>
+<a name="ln1666">                  }</a>
+<a name="ln1667">            }</a>
+<a name="ln1668">      FSKIP (SFSHDRSIZE);	/* skip terminal shdr */</a>
+<a name="ln1669">      }</a>
+<a name="ln1670"> </a>
+<a name="ln1671">//---------------------------------------------------------</a>
+<a name="ln1672">//   fixup_pgen</a>
+<a name="ln1673">//    &quot;fixup&quot; (inst # -&gt; inst ptr) instrument references</a>
+<a name="ln1674">//    in preset list</a>
+<a name="ln1675">//---------------------------------------------------------</a>
+<a name="ln1676"> </a>
+<a name="ln1677">void SFont::fixup_pgen()</a>
+<a name="ln1678">      {</a>
+<a name="ln1679">      for(Preset* p : presets) {</a>
+<a name="ln1680">            for(Zone* z : p-&gt;zones) {</a>
+<a name="ln1681">                  if (z-&gt;instIdx) {        // load instrument #</a>
+<a name="ln1682">                        z-&gt;instrument = instruments[z-&gt;instIdx-1];</a>
+<a name="ln1683">                        if (!z-&gt;instrument)</a>
+<a name="ln1684">                              throw(QString(&quot;Preset %1 %2: Invalid instrument reference&quot;).arg(p-&gt;bank).arg(p-&gt;num));</a>
+<a name="ln1685">                        }</a>
+<a name="ln1686">                  }</a>
+<a name="ln1687">            }</a>
+<a name="ln1688">      }</a>
+<a name="ln1689"> </a>
+<a name="ln1690">/* &quot;fixup&quot; (sample # -&gt; sample ptr) sample references in instrument list */</a>
+<a name="ln1691">void SFont::fixup_igen()</a>
+<a name="ln1692">      {</a>
+<a name="ln1693">      for(Instrument* p : instruments) {</a>
+<a name="ln1694">            for(Zone* z : p-&gt;zones) {</a>
+<a name="ln1695">                  if (z-&gt;sampIdx) {</a>
+<a name="ln1696">                        z-&gt;sample = sample[z-&gt;sampIdx - 1];</a>
+<a name="ln1697">                        if (!z-&gt;sample)</a>
+<a name="ln1698">                              throw(QString(&quot;Instrument: Invalid sample reference&quot;));</a>
+<a name="ln1699">                              // throw(QString(&quot;Instrument &lt;%1&gt;: Invalid sample reference&quot;).arg(p-&gt;name));</a>
+<a name="ln1700">                        }</a>
+<a name="ln1701">                  }</a>
+<a name="ln1702">            }</a>
+<a name="ln1703">      }</a>
+<a name="ln1704"> </a>
+<a name="ln1705">//---------------------------------------------------------</a>
+<a name="ln1706">//   safe_fread</a>
+<a name="ln1707">//---------------------------------------------------------</a>
+<a name="ln1708"> </a>
+<a name="ln1709">void SFont::safe_fread(void* buf, int count)</a>
+<a name="ln1710">      {</a>
+<a name="ln1711">      if (f.read((char*)buf, count) != count) {</a>
+<a name="ln1712">            if (f.atEnd())</a>
+<a name="ln1713">                  throw(QString(&quot;EOF while attempting to read %1 bytes&quot;).arg(count));</a>
+<a name="ln1714">            else</a>
+<a name="ln1715">                  throw(QString(&quot;File read failed&quot;));</a>
+<a name="ln1716">            }</a>
+<a name="ln1717">      }</a>
+<a name="ln1718"> </a>
+<a name="ln1719">//---------------------------------------------------------</a>
+<a name="ln1720">//   safe_fseek</a>
+<a name="ln1721">//---------------------------------------------------------</a>
+<a name="ln1722"> </a>
+<a name="ln1723">void SFont::safe_fseek(long ofs)</a>
+<a name="ln1724">      {</a>
+<a name="ln1725">      qint64 newpos = ofs + f.pos();</a>
+<a name="ln1726">      if (!f.seek(newpos))</a>
+<a name="ln1727">            throw(QString(&quot;File seek failed with offset = %1&quot;).arg(ofs));</a>
+<a name="ln1728">      }</a>
+<a name="ln1729">}</a>
+<a name="ln1730"> </a>
+
+</code></pre>
+<div class="balloon" rel="209"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: (sample != 0).</p></div>
+<div class="balloon" rel="703"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v641/" target="_blank">V641</a> The size of the '& idlist' buffer is not a multiple of the element size of the type 'unsigned int'.</p></div>
+<div class="balloon" rel="732"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v570/" target="_blank">V570</a> The 'var->size' variable is assigned to itself.</p></div>
+<div class="balloon" rel="743"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'critical' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="781"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="906"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v557/" target="_blank">V557</a> Array overrun is possible. The '1' index is pointing beyond array bound.</p></div>
+<div class="balloon" rel="1072"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v773/" target="_blank">V773</a> The exception was thrown without releasing the 'z' pointer. A memory leak is possible.</p></div>
+<div class="balloon" rel="1310"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1316"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1320"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v774/" target="_blank">V774</a> The 'z' pointer was used after the memory was released.</p></div>
+<div class="balloon" rel="1325"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v774/" target="_blank">V774</a> The 'z' pointer was used after the memory was released.</p></div>
+<div class="balloon" rel="1329"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1585"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v774/" target="_blank">V774</a> The 'z' pointer was used after the memory was released.</p></div>
+<div class="balloon" rel="1590"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v774/" target="_blank">V774</a> The 'z' pointer was used after the memory was released.</p></div>
+<div class="balloon" rel="50"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _id.</p></div>
+<div class="balloon" rel="9"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

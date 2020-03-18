@@ -1,0 +1,2120 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ttgxvar.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ttgxvar.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    TrueType GX Font Variation loader                                    */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2004-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, Werner Lemberg, and George Williams.     */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">  /*************************************************************************/</a>
+<a name="ln20">  /*                                                                       */</a>
+<a name="ln21">  /* Apple documents the `fvar', `gvar', `cvar', and `avar' tables at      */</a>
+<a name="ln22">  /*                                                                       */</a>
+<a name="ln23">  /*   https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6[fgca]var.html */</a>
+<a name="ln24">  /*                                                                       */</a>
+<a name="ln25">  /* The documentation for `fvar' is inconsistent.  At one point it says   */</a>
+<a name="ln26">  /* that `countSizePairs' should be 3, at another point 2.  It should     */</a>
+<a name="ln27">  /* be 2.                                                                 */</a>
+<a name="ln28">  /*                                                                       */</a>
+<a name="ln29">  /* The documentation for `gvar' is not intelligible; `cvar' refers you   */</a>
+<a name="ln30">  /* to `gvar' and is thus also incomprehensible.                          */</a>
+<a name="ln31">  /*                                                                       */</a>
+<a name="ln32">  /* The documentation for `avar' appears correct, but Apple has no fonts  */</a>
+<a name="ln33">  /* with an `avar' table, so it is hard to test.                          */</a>
+<a name="ln34">  /*                                                                       */</a>
+<a name="ln35">  /* Many thanks to John Jenkins (at Apple) in figuring this out.          */</a>
+<a name="ln36">  /*                                                                       */</a>
+<a name="ln37">  /*                                                                       */</a>
+<a name="ln38">  /* Apple's `kern' table has some references to tuple indices, but as     */</a>
+<a name="ln39">  /* there is no indication where these indices are defined, nor how to    */</a>
+<a name="ln40">  /* interpolate the kerning values (different tuples have different       */</a>
+<a name="ln41">  /* classes) this issue is ignored.                                       */</a>
+<a name="ln42">  /*                                                                       */</a>
+<a name="ln43">  /*************************************************************************/</a>
+<a name="ln44"> </a>
+<a name="ln45"> </a>
+<a name="ln46">#include &lt;ft2build.h&gt;</a>
+<a name="ln47">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln48">#include FT_CONFIG_CONFIG_H</a>
+<a name="ln49">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln50">#include FT_INTERNAL_SFNT_H</a>
+<a name="ln51">#include FT_TRUETYPE_TAGS_H</a>
+<a name="ln52">#include FT_MULTIPLE_MASTERS_H</a>
+<a name="ln53"> </a>
+<a name="ln54">#include &quot;ttpload.h&quot;</a>
+<a name="ln55">#include &quot;ttgxvar.h&quot;</a>
+<a name="ln56"> </a>
+<a name="ln57">#include &quot;tterrors.h&quot;</a>
+<a name="ln58"> </a>
+<a name="ln59"> </a>
+<a name="ln60">#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT</a>
+<a name="ln61"> </a>
+<a name="ln62"> </a>
+<a name="ln63">#define FT_Stream_FTell( stream )                         \</a>
+<a name="ln64">          (FT_ULong)( (stream)-&gt;cursor - (stream)-&gt;base )</a>
+<a name="ln65">#define FT_Stream_SeekSet( stream, off )                  \</a>
+<a name="ln66">          ( (stream)-&gt;cursor = (stream)-&gt;base + (off) )</a>
+<a name="ln67"> </a>
+<a name="ln68"> </a>
+<a name="ln69">  /*************************************************************************/</a>
+<a name="ln70">  /*                                                                       */</a>
+<a name="ln71">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln72">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln73">  /* messages during execution.                                            */</a>
+<a name="ln74">  /*                                                                       */</a>
+<a name="ln75">#undef  FT_COMPONENT</a>
+<a name="ln76">#define FT_COMPONENT  trace_ttgxvar</a>
+<a name="ln77"> </a>
+<a name="ln78"> </a>
+<a name="ln79">  /*************************************************************************/</a>
+<a name="ln80">  /*************************************************************************/</a>
+<a name="ln81">  /*****                                                               *****/</a>
+<a name="ln82">  /*****                       Internal Routines                       *****/</a>
+<a name="ln83">  /*****                                                               *****/</a>
+<a name="ln84">  /*************************************************************************/</a>
+<a name="ln85">  /*************************************************************************/</a>
+<a name="ln86"> </a>
+<a name="ln87"> </a>
+<a name="ln88">  /*************************************************************************/</a>
+<a name="ln89">  /*                                                                       */</a>
+<a name="ln90">  /* The macro ALL_POINTS is used in `ft_var_readpackedpoints'.  It        */</a>
+<a name="ln91">  /* indicates that there is a delta for every point without needing to    */</a>
+<a name="ln92">  /* enumerate all of them.                                                */</a>
+<a name="ln93">  /*                                                                       */</a>
+<a name="ln94"> </a>
+<a name="ln95">  /* ensure that value `0' has the same width as a pointer */</a>
+<a name="ln96">#define ALL_POINTS  (FT_UShort*)~(FT_PtrDist)0</a>
+<a name="ln97"> </a>
+<a name="ln98"> </a>
+<a name="ln99">#define GX_PT_POINTS_ARE_WORDS      0x80U</a>
+<a name="ln100">#define GX_PT_POINT_RUN_COUNT_MASK  0x7FU</a>
+<a name="ln101"> </a>
+<a name="ln102"> </a>
+<a name="ln103">  /*************************************************************************/</a>
+<a name="ln104">  /*                                                                       */</a>
+<a name="ln105">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln106">  /*    ft_var_readpackedpoints                                            */</a>
+<a name="ln107">  /*                                                                       */</a>
+<a name="ln108">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln109">  /*    Read a set of points to which the following deltas will apply.     */</a>
+<a name="ln110">  /*    Points are packed with a run length encoding.                      */</a>
+<a name="ln111">  /*                                                                       */</a>
+<a name="ln112">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln113">  /*    stream    :: The data stream.                                      */</a>
+<a name="ln114">  /*                                                                       */</a>
+<a name="ln115">  /* &lt;Output&gt;                                                              */</a>
+<a name="ln116">  /*    point_cnt :: The number of points read.  A zero value means that   */</a>
+<a name="ln117">  /*                 all points in the glyph will be affected, without     */</a>
+<a name="ln118">  /*                 enumerating them individually.                        */</a>
+<a name="ln119">  /*                                                                       */</a>
+<a name="ln120">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln121">  /*    An array of FT_UShort containing the affected points or the        */</a>
+<a name="ln122">  /*    special value ALL_POINTS.                                          */</a>
+<a name="ln123">  /*                                                                       */</a>
+<a name="ln124">  static FT_UShort*</a>
+<a name="ln125">  ft_var_readpackedpoints( FT_Stream  stream,</a>
+<a name="ln126">                           FT_UInt   *point_cnt )</a>
+<a name="ln127">  {</a>
+<a name="ln128">    FT_UShort *points = NULL;</a>
+<a name="ln129">    FT_UInt    n;</a>
+<a name="ln130">    FT_UInt    runcnt;</a>
+<a name="ln131">    FT_UInt    i, j;</a>
+<a name="ln132">    FT_UShort  first;</a>
+<a name="ln133">    FT_Memory  memory = stream-&gt;memory;</a>
+<a name="ln134">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln135"> </a>
+<a name="ln136">    FT_UNUSED( error );</a>
+<a name="ln137"> </a>
+<a name="ln138"> </a>
+<a name="ln139">    *point_cnt = 0;</a>
+<a name="ln140"> </a>
+<a name="ln141">    n = FT_GET_BYTE();</a>
+<a name="ln142">    if ( n == 0 )</a>
+<a name="ln143">      return ALL_POINTS;</a>
+<a name="ln144"> </a>
+<a name="ln145">    if ( n &amp; GX_PT_POINTS_ARE_WORDS )</a>
+<a name="ln146">    {</a>
+<a name="ln147">      n  &amp;= GX_PT_POINT_RUN_COUNT_MASK;</a>
+<a name="ln148">      n &lt;&lt;= 8;</a>
+<a name="ln149">      n  |= FT_GET_BYTE();</a>
+<a name="ln150">    }</a>
+<a name="ln151"> </a>
+<a name="ln152">    if ( FT_NEW_ARRAY( points, n ) )</a>
+<a name="ln153">      return NULL;</a>
+<a name="ln154"> </a>
+<a name="ln155">    *point_cnt = n;</a>
+<a name="ln156"> </a>
+<a name="ln157">    i = 0;</a>
+<a name="ln158">    while ( i &lt; n )</a>
+<a name="ln159">    {</a>
+<a name="ln160">      runcnt = FT_GET_BYTE();</a>
+<a name="ln161">      if ( runcnt &amp; GX_PT_POINTS_ARE_WORDS )</a>
+<a name="ln162">      {</a>
+<a name="ln163">        runcnt     &amp;= GX_PT_POINT_RUN_COUNT_MASK;</a>
+<a name="ln164">        first       = FT_GET_USHORT();</a>
+<a name="ln165">        points[i++] = first;</a>
+<a name="ln166"> </a>
+<a name="ln167">        if ( runcnt &lt; 1 || i + runcnt &gt; n )</a>
+<a name="ln168">          goto Exit;</a>
+<a name="ln169"> </a>
+<a name="ln170">        /* first point not included in run count */</a>
+<a name="ln171">        for ( j = 0; j &lt; runcnt; j++ )</a>
+<a name="ln172">        {</a>
+<a name="ln173">          first      += FT_GET_USHORT();</a>
+<a name="ln174">          points[i++] = first;</a>
+<a name="ln175">        }</a>
+<a name="ln176">      }</a>
+<a name="ln177">      else</a>
+<a name="ln178">      {</a>
+<a name="ln179">        first       = FT_GET_BYTE();</a>
+<a name="ln180">        points[i++] = first;</a>
+<a name="ln181"> </a>
+<a name="ln182">        if ( runcnt &lt; 1 || i + runcnt &gt; n )</a>
+<a name="ln183">          goto Exit;</a>
+<a name="ln184"> </a>
+<a name="ln185">        for ( j = 0; j &lt; runcnt; j++ )</a>
+<a name="ln186">        {</a>
+<a name="ln187">          first      += FT_GET_BYTE();</a>
+<a name="ln188">          points[i++] = first;</a>
+<a name="ln189">        }</a>
+<a name="ln190">      }</a>
+<a name="ln191">    }</a>
+<a name="ln192"> </a>
+<a name="ln193">  Exit:</a>
+<a name="ln194">    return points;</a>
+<a name="ln195">  }</a>
+<a name="ln196"> </a>
+<a name="ln197"> </a>
+<a name="ln198">#define GX_DT_DELTAS_ARE_ZERO       0x80U</a>
+<a name="ln199">#define GX_DT_DELTAS_ARE_WORDS      0x40U</a>
+<a name="ln200">#define GX_DT_DELTA_RUN_COUNT_MASK  0x3FU</a>
+<a name="ln201"> </a>
+<a name="ln202"> </a>
+<a name="ln203">  /*************************************************************************/</a>
+<a name="ln204">  /*                                                                       */</a>
+<a name="ln205">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln206">  /*    ft_var_readpackeddeltas                                            */</a>
+<a name="ln207">  /*                                                                       */</a>
+<a name="ln208">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln209">  /*    Read a set of deltas.  These are packed slightly differently than  */</a>
+<a name="ln210">  /*    points.  In particular there is no overall count.                  */</a>
+<a name="ln211">  /*                                                                       */</a>
+<a name="ln212">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln213">  /*    stream    :: The data stream.                                      */</a>
+<a name="ln214">  /*                                                                       */</a>
+<a name="ln215">  /*    delta_cnt :: The number of deltas to be read.                      */</a>
+<a name="ln216">  /*                                                                       */</a>
+<a name="ln217">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln218">  /*    An array of FT_Short containing the deltas for the affected        */</a>
+<a name="ln219">  /*    points.  (This only gets the deltas for one dimension.  It will    */</a>
+<a name="ln220">  /*    generally be called twice, once for x, once for y.  When used in   */</a>
+<a name="ln221">  /*    cvt table, it will only be called once.)                           */</a>
+<a name="ln222">  /*                                                                       */</a>
+<a name="ln223">  static FT_Short*</a>
+<a name="ln224">  ft_var_readpackeddeltas( FT_Stream  stream,</a>
+<a name="ln225">                           FT_UInt    delta_cnt )</a>
+<a name="ln226">  {</a>
+<a name="ln227">    FT_Short  *deltas = NULL;</a>
+<a name="ln228">    FT_UInt    runcnt, cnt;</a>
+<a name="ln229">    FT_UInt    i, j;</a>
+<a name="ln230">    FT_Memory  memory = stream-&gt;memory;</a>
+<a name="ln231">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln232"> </a>
+<a name="ln233">    FT_UNUSED( error );</a>
+<a name="ln234"> </a>
+<a name="ln235"> </a>
+<a name="ln236">    if ( FT_NEW_ARRAY( deltas, delta_cnt ) )</a>
+<a name="ln237">      return NULL;</a>
+<a name="ln238"> </a>
+<a name="ln239">    i = 0;</a>
+<a name="ln240">    while ( i &lt; delta_cnt )</a>
+<a name="ln241">    {</a>
+<a name="ln242">      runcnt = FT_GET_BYTE();</a>
+<a name="ln243">      cnt    = runcnt &amp; GX_DT_DELTA_RUN_COUNT_MASK;</a>
+<a name="ln244"> </a>
+<a name="ln245">      if ( runcnt &amp; GX_DT_DELTAS_ARE_ZERO )</a>
+<a name="ln246">      {</a>
+<a name="ln247">        /* `runcnt' zeroes get added */</a>
+<a name="ln248">        for ( j = 0; j &lt;= cnt &amp;&amp; i &lt; delta_cnt; j++ )</a>
+<a name="ln249">          deltas[i++] = 0;</a>
+<a name="ln250">      }</a>
+<a name="ln251">      else if ( runcnt &amp; GX_DT_DELTAS_ARE_WORDS )</a>
+<a name="ln252">      {</a>
+<a name="ln253">        /* `runcnt' shorts from the stack */</a>
+<a name="ln254">        for ( j = 0; j &lt;= cnt &amp;&amp; i &lt; delta_cnt; j++ )</a>
+<a name="ln255">          deltas[i++] = FT_GET_SHORT();</a>
+<a name="ln256">      }</a>
+<a name="ln257">      else</a>
+<a name="ln258">      {</a>
+<a name="ln259">        /* `runcnt' signed bytes from the stack */</a>
+<a name="ln260">        for ( j = 0; j &lt;= cnt &amp;&amp; i &lt; delta_cnt; j++ )</a>
+<a name="ln261">          deltas[i++] = FT_GET_CHAR();</a>
+<a name="ln262">      }</a>
+<a name="ln263"> </a>
+<a name="ln264">      if ( j &lt;= cnt )</a>
+<a name="ln265">      {</a>
+<a name="ln266">        /* bad format */</a>
+<a name="ln267">        FT_FREE( deltas );</a>
+<a name="ln268">        return NULL;</a>
+<a name="ln269">      }</a>
+<a name="ln270">    }</a>
+<a name="ln271"> </a>
+<a name="ln272">    return deltas;</a>
+<a name="ln273">  }</a>
+<a name="ln274"> </a>
+<a name="ln275"> </a>
+<a name="ln276">  /*************************************************************************/</a>
+<a name="ln277">  /*                                                                       */</a>
+<a name="ln278">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln279">  /*    ft_var_load_avar                                                   */</a>
+<a name="ln280">  /*                                                                       */</a>
+<a name="ln281">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln282">  /*    Parse the `avar' table if present.  It need not be, so we return   */</a>
+<a name="ln283">  /*    nothing.                                                           */</a>
+<a name="ln284">  /*                                                                       */</a>
+<a name="ln285">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln286">  /*    face :: The font face.                                             */</a>
+<a name="ln287">  /*                                                                       */</a>
+<a name="ln288">  static void</a>
+<a name="ln289">  ft_var_load_avar( TT_Face  face )</a>
+<a name="ln290">  {</a>
+<a name="ln291">    FT_Stream       stream = FT_FACE_STREAM( face );</a>
+<a name="ln292">    FT_Memory       memory = stream-&gt;memory;</a>
+<a name="ln293">    GX_Blend        blend  = face-&gt;blend;</a>
+<a name="ln294">    GX_AVarSegment  segment;</a>
+<a name="ln295">    FT_Error        error = FT_Err_Ok;</a>
+<a name="ln296">    FT_Long         version;</a>
+<a name="ln297">    FT_Long         axisCount;</a>
+<a name="ln298">    FT_Int          i, j;</a>
+<a name="ln299">    FT_ULong        table_len;</a>
+<a name="ln300"> </a>
+<a name="ln301">    FT_UNUSED( error );</a>
+<a name="ln302"> </a>
+<a name="ln303"> </a>
+<a name="ln304">    FT_TRACE2(( &quot;AVAR &quot; ));</a>
+<a name="ln305"> </a>
+<a name="ln306">    blend-&gt;avar_checked = TRUE;</a>
+<a name="ln307">    error = face-&gt;goto_table( face, TTAG_avar, stream, &amp;table_len );</a>
+<a name="ln308">    if ( error )</a>
+<a name="ln309">    {</a>
+<a name="ln310">      FT_TRACE2(( &quot;is missing\n&quot; ));</a>
+<a name="ln311">      return;</a>
+<a name="ln312">    }</a>
+<a name="ln313"> </a>
+<a name="ln314">    if ( FT_FRAME_ENTER( table_len ) )</a>
+<a name="ln315">      return;</a>
+<a name="ln316"> </a>
+<a name="ln317">    version   = FT_GET_LONG();</a>
+<a name="ln318">    axisCount = FT_GET_LONG();</a>
+<a name="ln319"> </a>
+<a name="ln320">    if ( version != 0x00010000L )</a>
+<a name="ln321">    {</a>
+<a name="ln322">      FT_TRACE2(( &quot;bad table version\n&quot; ));</a>
+<a name="ln323">      goto Exit;</a>
+<a name="ln324">    }</a>
+<a name="ln325"> </a>
+<a name="ln326">    FT_TRACE2(( &quot;loaded\n&quot; ));</a>
+<a name="ln327"> </a>
+<a name="ln328">    if ( axisCount != (FT_Long)blend-&gt;mmvar-&gt;num_axis )</a>
+<a name="ln329">    {</a>
+<a name="ln330">      FT_TRACE2(( &quot;ft_var_load_avar: number of axes in `avar' and `cvar'\n&quot;</a>
+<a name="ln331">                  &quot;                  table are different\n&quot; ));</a>
+<a name="ln332">      goto Exit;</a>
+<a name="ln333">    }</a>
+<a name="ln334"> </a>
+<a name="ln335">    if ( FT_NEW_ARRAY( blend-&gt;avar_segment, axisCount ) )</a>
+<a name="ln336">      goto Exit;</a>
+<a name="ln337"> </a>
+<a name="ln338">    segment = &amp;blend-&gt;avar_segment[0];</a>
+<a name="ln339">    for ( i = 0; i &lt; axisCount; i++, segment++ )</a>
+<a name="ln340">    {</a>
+<a name="ln341">      FT_TRACE5(( &quot;  axis %d:\n&quot;, i ));</a>
+<a name="ln342"> </a>
+<a name="ln343">      segment-&gt;pairCount = FT_GET_USHORT();</a>
+<a name="ln344">      if ( FT_NEW_ARRAY( segment-&gt;correspondence, segment-&gt;pairCount ) )</a>
+<a name="ln345">      {</a>
+<a name="ln346">        /* Failure.  Free everything we have done so far.  We must do */</a>
+<a name="ln347">        /* it right now since loading the `avar' table is optional.   */</a>
+<a name="ln348"> </a>
+<a name="ln349">        for ( j = i - 1; j &gt;= 0; j-- )</a>
+<a name="ln350">          FT_FREE( blend-&gt;avar_segment[j].correspondence );</a>
+<a name="ln351"> </a>
+<a name="ln352">        FT_FREE( blend-&gt;avar_segment );</a>
+<a name="ln353">        blend-&gt;avar_segment = NULL;</a>
+<a name="ln354">        goto Exit;</a>
+<a name="ln355">      }</a>
+<a name="ln356"> </a>
+<a name="ln357">      for ( j = 0; j &lt; segment-&gt;pairCount; j++ )</a>
+<a name="ln358">      {</a>
+<a name="ln359">        /* convert to Fixed */</a>
+<a name="ln360">        segment-&gt;correspondence[j].fromCoord = FT_GET_SHORT() * 4;</a>
+<a name="ln361">        segment-&gt;correspondence[j].toCoord   = FT_GET_SHORT() * 4;</a>
+<a name="ln362"> </a>
+<a name="ln363">        FT_TRACE5(( &quot;    mapping %.4f to %.4f\n&quot;,</a>
+<a name="ln364">                    segment-&gt;correspondence[j].fromCoord / 65536.0,</a>
+<a name="ln365">                    segment-&gt;correspondence[j].toCoord / 65536.0 ));</a>
+<a name="ln366">      }</a>
+<a name="ln367"> </a>
+<a name="ln368">      FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln369">    }</a>
+<a name="ln370"> </a>
+<a name="ln371">  Exit:</a>
+<a name="ln372">    FT_FRAME_EXIT();</a>
+<a name="ln373">  }</a>
+<a name="ln374"> </a>
+<a name="ln375"> </a>
+<a name="ln376">  typedef struct  GX_GVar_Head_</a>
+<a name="ln377">  {</a>
+<a name="ln378">    FT_Long    version;</a>
+<a name="ln379">    FT_UShort  axisCount;</a>
+<a name="ln380">    FT_UShort  globalCoordCount;</a>
+<a name="ln381">    FT_ULong   offsetToCoord;</a>
+<a name="ln382">    FT_UShort  glyphCount;</a>
+<a name="ln383">    FT_UShort  flags;</a>
+<a name="ln384">    FT_ULong   offsetToData;</a>
+<a name="ln385"> </a>
+<a name="ln386">  } GX_GVar_Head;</a>
+<a name="ln387"> </a>
+<a name="ln388"> </a>
+<a name="ln389">  /*************************************************************************/</a>
+<a name="ln390">  /*                                                                       */</a>
+<a name="ln391">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln392">  /*    ft_var_load_gvar                                                   */</a>
+<a name="ln393">  /*                                                                       */</a>
+<a name="ln394">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln395">  /*    Parse the `gvar' table if present.  If `fvar' is there, `gvar' had */</a>
+<a name="ln396">  /*    better be there too.                                               */</a>
+<a name="ln397">  /*                                                                       */</a>
+<a name="ln398">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln399">  /*    face :: The font face.                                             */</a>
+<a name="ln400">  /*                                                                       */</a>
+<a name="ln401">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln402">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln403">  /*                                                                       */</a>
+<a name="ln404">  static FT_Error</a>
+<a name="ln405">  ft_var_load_gvar( TT_Face  face )</a>
+<a name="ln406">  {</a>
+<a name="ln407">    FT_Stream     stream = FT_FACE_STREAM( face );</a>
+<a name="ln408">    FT_Memory     memory = stream-&gt;memory;</a>
+<a name="ln409">    GX_Blend      blend  = face-&gt;blend;</a>
+<a name="ln410">    FT_Error      error;</a>
+<a name="ln411">    FT_UInt       i, j;</a>
+<a name="ln412">    FT_ULong      table_len;</a>
+<a name="ln413">    FT_ULong      gvar_start;</a>
+<a name="ln414">    FT_ULong      offsetToData;</a>
+<a name="ln415">    GX_GVar_Head  gvar_head;</a>
+<a name="ln416"> </a>
+<a name="ln417">    static const FT_Frame_Field  gvar_fields[] =</a>
+<a name="ln418">    {</a>
+<a name="ln419"> </a>
+<a name="ln420">#undef  FT_STRUCTURE</a>
+<a name="ln421">#define FT_STRUCTURE  GX_GVar_Head</a>
+<a name="ln422"> </a>
+<a name="ln423">      FT_FRAME_START( 20 ),</a>
+<a name="ln424">        FT_FRAME_LONG  ( version ),</a>
+<a name="ln425">        FT_FRAME_USHORT( axisCount ),</a>
+<a name="ln426">        FT_FRAME_USHORT( globalCoordCount ),</a>
+<a name="ln427">        FT_FRAME_ULONG ( offsetToCoord ),</a>
+<a name="ln428">        FT_FRAME_USHORT( glyphCount ),</a>
+<a name="ln429">        FT_FRAME_USHORT( flags ),</a>
+<a name="ln430">        FT_FRAME_ULONG ( offsetToData ),</a>
+<a name="ln431">      FT_FRAME_END</a>
+<a name="ln432">    };</a>
+<a name="ln433"> </a>
+<a name="ln434"> </a>
+<a name="ln435">    FT_TRACE2(( &quot;GVAR &quot; ));</a>
+<a name="ln436"> </a>
+<a name="ln437">    if ( ( error = face-&gt;goto_table( face,</a>
+<a name="ln438">                                     TTAG_gvar,</a>
+<a name="ln439">                                     stream,</a>
+<a name="ln440">                                     &amp;table_len ) ) != 0 )</a>
+<a name="ln441">    {</a>
+<a name="ln442">      FT_TRACE2(( &quot;is missing\n&quot; ));</a>
+<a name="ln443">      goto Exit;</a>
+<a name="ln444">    }</a>
+<a name="ln445"> </a>
+<a name="ln446">    gvar_start = FT_STREAM_POS( );</a>
+<a name="ln447">    if ( FT_STREAM_READ_FIELDS( gvar_fields, &amp;gvar_head ) )</a>
+<a name="ln448">      goto Exit;</a>
+<a name="ln449"> </a>
+<a name="ln450">    blend-&gt;tuplecount  = gvar_head.globalCoordCount;</a>
+<a name="ln451">    blend-&gt;gv_glyphcnt = gvar_head.glyphCount;</a>
+<a name="ln452">    offsetToData       = gvar_start + gvar_head.offsetToData;</a>
+<a name="ln453"> </a>
+<a name="ln454">    if ( gvar_head.version != 0x00010000L )</a>
+<a name="ln455">    {</a>
+<a name="ln456">      FT_TRACE1(( &quot;bad table version\n&quot; ));</a>
+<a name="ln457">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln458">      goto Exit;</a>
+<a name="ln459">    }</a>
+<a name="ln460"> </a>
+<a name="ln461">    FT_TRACE2(( &quot;loaded\n&quot; ));</a>
+<a name="ln462"> </a>
+<a name="ln463">    if ( gvar_head.axisCount != (FT_UShort)blend-&gt;mmvar-&gt;num_axis )</a>
+<a name="ln464">    {</a>
+<a name="ln465">      FT_TRACE1(( &quot;ft_var_load_gvar: number of axes in `gvar' and `cvar'\n&quot;</a>
+<a name="ln466">                  &quot;                  table are different\n&quot; ));</a>
+<a name="ln467">      error = FT_THROW( Invalid_Table );</a>
+<a name="ln468">      goto Exit;</a>
+<a name="ln469">    }</a>
+<a name="ln470"> </a>
+<a name="ln471">    FT_TRACE5(( &quot;gvar: there are %d shared coordinates:\n&quot;,</a>
+<a name="ln472">                blend-&gt;tuplecount ));</a>
+<a name="ln473"> </a>
+<a name="ln474">    if ( FT_NEW_ARRAY( blend-&gt;glyphoffsets, blend-&gt;gv_glyphcnt + 1 ) )</a>
+<a name="ln475">      goto Exit;</a>
+<a name="ln476"> </a>
+<a name="ln477">    if ( gvar_head.flags &amp; 1 )</a>
+<a name="ln478">    {</a>
+<a name="ln479">      /* long offsets (one more offset than glyphs, to mark size of last) */</a>
+<a name="ln480">      if ( FT_FRAME_ENTER( ( blend-&gt;gv_glyphcnt + 1 ) * 4L ) )</a>
+<a name="ln481">        goto Exit;</a>
+<a name="ln482"> </a>
+<a name="ln483">      for ( i = 0; i &lt;= blend-&gt;gv_glyphcnt; i++ )</a>
+<a name="ln484">        blend-&gt;glyphoffsets[i] = offsetToData + FT_GET_ULONG();</a>
+<a name="ln485"> </a>
+<a name="ln486">      FT_FRAME_EXIT();</a>
+<a name="ln487">    }</a>
+<a name="ln488">    else</a>
+<a name="ln489">    {</a>
+<a name="ln490">      /* short offsets (one more offset than glyphs, to mark size of last) */</a>
+<a name="ln491">      if ( FT_FRAME_ENTER( ( blend-&gt;gv_glyphcnt + 1 ) * 2L ) )</a>
+<a name="ln492">        goto Exit;</a>
+<a name="ln493"> </a>
+<a name="ln494">      for ( i = 0; i &lt;= blend-&gt;gv_glyphcnt; i++ )</a>
+<a name="ln495">        blend-&gt;glyphoffsets[i] = offsetToData + FT_GET_USHORT() * 2;</a>
+<a name="ln496">                                               /* XXX: Undocumented: `*2'! */</a>
+<a name="ln497"> </a>
+<a name="ln498">      FT_FRAME_EXIT();</a>
+<a name="ln499">    }</a>
+<a name="ln500"> </a>
+<a name="ln501">    if ( blend-&gt;tuplecount != 0 )</a>
+<a name="ln502">    {</a>
+<a name="ln503">      if ( FT_NEW_ARRAY( blend-&gt;tuplecoords,</a>
+<a name="ln504">                         gvar_head.axisCount * blend-&gt;tuplecount ) )</a>
+<a name="ln505">        goto Exit;</a>
+<a name="ln506"> </a>
+<a name="ln507">      if ( FT_STREAM_SEEK( gvar_start + gvar_head.offsetToCoord )         ||</a>
+<a name="ln508">           FT_FRAME_ENTER( blend-&gt;tuplecount * gvar_head.axisCount * 2L ) )</a>
+<a name="ln509">        goto Exit;</a>
+<a name="ln510"> </a>
+<a name="ln511">      for ( i = 0; i &lt; blend-&gt;tuplecount; i++ )</a>
+<a name="ln512">      {</a>
+<a name="ln513">        FT_TRACE5(( &quot;  [ &quot; ));</a>
+<a name="ln514">        for ( j = 0 ; j &lt; (FT_UInt)gvar_head.axisCount; j++ )</a>
+<a name="ln515">        {</a>
+<a name="ln516">          blend-&gt;tuplecoords[i * gvar_head.axisCount + j] =</a>
+<a name="ln517">            FT_GET_SHORT() * 4;                 /* convert to FT_Fixed */</a>
+<a name="ln518">          FT_TRACE5(( &quot;%.4f &quot;,</a>
+<a name="ln519">            blend-&gt;tuplecoords[i * gvar_head.axisCount + j] / 65536.0 ));</a>
+<a name="ln520">        }</a>
+<a name="ln521">        FT_TRACE5(( &quot;]\n&quot; ));</a>
+<a name="ln522">      }</a>
+<a name="ln523"> </a>
+<a name="ln524">      FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln525"> </a>
+<a name="ln526">      FT_FRAME_EXIT();</a>
+<a name="ln527">    }</a>
+<a name="ln528"> </a>
+<a name="ln529">  Exit:</a>
+<a name="ln530">    return error;</a>
+<a name="ln531">  }</a>
+<a name="ln532"> </a>
+<a name="ln533"> </a>
+<a name="ln534">  /*************************************************************************/</a>
+<a name="ln535">  /*                                                                       */</a>
+<a name="ln536">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln537">  /*    ft_var_apply_tuple                                                 */</a>
+<a name="ln538">  /*                                                                       */</a>
+<a name="ln539">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln540">  /*    Figure out whether a given tuple (design) applies to the current   */</a>
+<a name="ln541">  /*    blend, and if so, what is the scaling factor.                      */</a>
+<a name="ln542">  /*                                                                       */</a>
+<a name="ln543">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln544">  /*    blend           :: The current blend of the font.                  */</a>
+<a name="ln545">  /*                                                                       */</a>
+<a name="ln546">  /*    tupleIndex      :: A flag saying whether this is an intermediate   */</a>
+<a name="ln547">  /*                       tuple or not.                                   */</a>
+<a name="ln548">  /*                                                                       */</a>
+<a name="ln549">  /*    tuple_coords    :: The coordinates of the tuple in normalized axis */</a>
+<a name="ln550">  /*                       units.                                          */</a>
+<a name="ln551">  /*                                                                       */</a>
+<a name="ln552">  /*    im_start_coords :: The initial coordinates where this tuple starts */</a>
+<a name="ln553">  /*                       to apply (for intermediate coordinates).        */</a>
+<a name="ln554">  /*                                                                       */</a>
+<a name="ln555">  /*    im_end_coords   :: The final coordinates after which this tuple no */</a>
+<a name="ln556">  /*                       longer applies (for intermediate coordinates).  */</a>
+<a name="ln557">  /*                                                                       */</a>
+<a name="ln558">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln559">  /*    An FT_Fixed value containing the scaling factor.                   */</a>
+<a name="ln560">  /*                                                                       */</a>
+<a name="ln561">  static FT_Fixed</a>
+<a name="ln562">  ft_var_apply_tuple( GX_Blend   blend,</a>
+<a name="ln563">                      FT_UShort  tupleIndex,</a>
+<a name="ln564">                      FT_Fixed*  tuple_coords,</a>
+<a name="ln565">                      FT_Fixed*  im_start_coords,</a>
+<a name="ln566">                      FT_Fixed*  im_end_coords )</a>
+<a name="ln567">  {</a>
+<a name="ln568">    FT_UInt   i;</a>
+<a name="ln569">    FT_Fixed  apply = 0x10000L;</a>
+<a name="ln570"> </a>
+<a name="ln571"> </a>
+<a name="ln572">    for ( i = 0; i &lt; blend-&gt;num_axis; i++ )</a>
+<a name="ln573">    {</a>
+<a name="ln574">      FT_TRACE6(( &quot;    axis coordinate %d (%.4f):\n&quot;,</a>
+<a name="ln575">                  i, blend-&gt;normalizedcoords[i] / 65536.0 ));</a>
+<a name="ln576"> </a>
+<a name="ln577">      /* It's not clear why (for intermediate tuples) we don't need     */</a>
+<a name="ln578">      /* to check against start/end -- the documentation says we don't. */</a>
+<a name="ln579">      /* Similarly, it's unclear why we don't need to scale along the   */</a>
+<a name="ln580">      /* axis.                                                          */</a>
+<a name="ln581"> </a>
+<a name="ln582">      if ( tuple_coords[i] == 0 )</a>
+<a name="ln583">      {</a>
+<a name="ln584">        FT_TRACE6(( &quot;      tuple coordinate is zero, ignored\n&quot;, i ));</a>
+<a name="ln585">        continue;</a>
+<a name="ln586">      }</a>
+<a name="ln587"> </a>
+<a name="ln588">      else if ( blend-&gt;normalizedcoords[i] == 0 )</a>
+<a name="ln589">      {</a>
+<a name="ln590">        FT_TRACE6(( &quot;      axis coordinate is zero, stop\n&quot; ));</a>
+<a name="ln591">        apply = 0;</a>
+<a name="ln592">        break;</a>
+<a name="ln593">      }</a>
+<a name="ln594"> </a>
+<a name="ln595">      else if ( ( blend-&gt;normalizedcoords[i] &lt; 0 &amp;&amp; tuple_coords[i] &gt; 0 ) ||</a>
+<a name="ln596">                ( blend-&gt;normalizedcoords[i] &gt; 0 &amp;&amp; tuple_coords[i] &lt; 0 ) )</a>
+<a name="ln597">      {</a>
+<a name="ln598">        FT_TRACE6(( &quot;      tuple coordinate value %.4f is exceeded, stop\n&quot;,</a>
+<a name="ln599">                    tuple_coords[i] / 65536.0 ));</a>
+<a name="ln600">        apply = 0;</a>
+<a name="ln601">        break;</a>
+<a name="ln602">      }</a>
+<a name="ln603"> </a>
+<a name="ln604">      else if ( !( tupleIndex &amp; GX_TI_INTERMEDIATE_TUPLE ) )</a>
+<a name="ln605">      {</a>
+<a name="ln606">        FT_TRACE6(( &quot;      tuple coordinate value %.4f fits\n&quot;,</a>
+<a name="ln607">                    tuple_coords[i] / 65536.0 ));</a>
+<a name="ln608">        /* not an intermediate tuple */</a>
+<a name="ln609">        apply = FT_MulFix( apply,</a>
+<a name="ln610">                           blend-&gt;normalizedcoords[i] &gt; 0</a>
+<a name="ln611">                             ? blend-&gt;normalizedcoords[i]</a>
+<a name="ln612">                             : -blend-&gt;normalizedcoords[i] );</a>
+<a name="ln613">      }</a>
+<a name="ln614"> </a>
+<a name="ln615">      else if ( blend-&gt;normalizedcoords[i] &lt; im_start_coords[i] ||</a>
+<a name="ln616">                blend-&gt;normalizedcoords[i] &gt; im_end_coords[i]   )</a>
+<a name="ln617">      {</a>
+<a name="ln618">        FT_TRACE6(( &quot;      intermediate tuple range [%.4f;%.4f] is exceeded,&quot;</a>
+<a name="ln619">                    &quot; stop\n&quot;,</a>
+<a name="ln620">                    im_start_coords[i] / 65536.0,</a>
+<a name="ln621">                    im_end_coords[i] / 65536.0 ));</a>
+<a name="ln622">        apply = 0;</a>
+<a name="ln623">        break;</a>
+<a name="ln624">      }</a>
+<a name="ln625"> </a>
+<a name="ln626">      else if ( blend-&gt;normalizedcoords[i] &lt; tuple_coords[i] )</a>
+<a name="ln627">      {</a>
+<a name="ln628">        FT_TRACE6(( &quot;      intermediate tuple range [%.4f;%.4f] fits\n&quot;,</a>
+<a name="ln629">                    im_start_coords[i] / 65536.0,</a>
+<a name="ln630">                    im_end_coords[i] / 65536.0 ));</a>
+<a name="ln631">        apply = FT_MulDiv( apply,</a>
+<a name="ln632">                           blend-&gt;normalizedcoords[i] - im_start_coords[i],</a>
+<a name="ln633">                           tuple_coords[i] - im_start_coords[i] );</a>
+<a name="ln634">      }</a>
+<a name="ln635"> </a>
+<a name="ln636">      else</a>
+<a name="ln637">      {</a>
+<a name="ln638">        FT_TRACE6(( &quot;      intermediate tuple range [%.4f;%.4f] fits\n&quot;,</a>
+<a name="ln639">                    im_start_coords[i] / 65536.0,</a>
+<a name="ln640">                    im_end_coords[i] / 65536.0 ));</a>
+<a name="ln641">        apply = FT_MulDiv( apply,</a>
+<a name="ln642">                           im_end_coords[i] - blend-&gt;normalizedcoords[i],</a>
+<a name="ln643">                           im_end_coords[i] - tuple_coords[i] );</a>
+<a name="ln644">      }</a>
+<a name="ln645">    }</a>
+<a name="ln646"> </a>
+<a name="ln647">    FT_TRACE6(( &quot;    apply factor is %.4f\n&quot;, apply / 65536.0 ));</a>
+<a name="ln648"> </a>
+<a name="ln649">    return apply;</a>
+<a name="ln650">  }</a>
+<a name="ln651"> </a>
+<a name="ln652"> </a>
+<a name="ln653">  /*************************************************************************/</a>
+<a name="ln654">  /*************************************************************************/</a>
+<a name="ln655">  /*****                                                               *****/</a>
+<a name="ln656">  /*****               MULTIPLE MASTERS SERVICE FUNCTIONS              *****/</a>
+<a name="ln657">  /*****                                                               *****/</a>
+<a name="ln658">  /*************************************************************************/</a>
+<a name="ln659">  /*************************************************************************/</a>
+<a name="ln660"> </a>
+<a name="ln661"> </a>
+<a name="ln662">  typedef struct  GX_FVar_Head_</a>
+<a name="ln663">  {</a>
+<a name="ln664">    FT_Long    version;</a>
+<a name="ln665">    FT_UShort  offsetToData;</a>
+<a name="ln666">    FT_UShort  countSizePairs;</a>
+<a name="ln667">    FT_UShort  axisCount;</a>
+<a name="ln668">    FT_UShort  axisSize;</a>
+<a name="ln669">    FT_UShort  instanceCount;</a>
+<a name="ln670">    FT_UShort  instanceSize;</a>
+<a name="ln671"> </a>
+<a name="ln672">  } GX_FVar_Head;</a>
+<a name="ln673"> </a>
+<a name="ln674"> </a>
+<a name="ln675">  typedef struct  fvar_axis_</a>
+<a name="ln676">  {</a>
+<a name="ln677">    FT_ULong   axisTag;</a>
+<a name="ln678">    FT_Fixed   minValue;</a>
+<a name="ln679">    FT_Fixed   defaultValue;</a>
+<a name="ln680">    FT_Fixed   maxValue;</a>
+<a name="ln681">    FT_UShort  flags;</a>
+<a name="ln682">    FT_UShort  nameID;</a>
+<a name="ln683"> </a>
+<a name="ln684">  } GX_FVar_Axis;</a>
+<a name="ln685"> </a>
+<a name="ln686"> </a>
+<a name="ln687">  /*************************************************************************/</a>
+<a name="ln688">  /*                                                                       */</a>
+<a name="ln689">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln690">  /*    TT_Get_MM_Var                                                      */</a>
+<a name="ln691">  /*                                                                       */</a>
+<a name="ln692">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln693">  /*    Check that the font's `fvar' table is valid, parse it, and return  */</a>
+<a name="ln694">  /*    those data.                                                        */</a>
+<a name="ln695">  /*                                                                       */</a>
+<a name="ln696">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln697">  /*    face   :: The font face.                                           */</a>
+<a name="ln698">  /*              TT_Get_MM_Var initializes the blend structure.           */</a>
+<a name="ln699">  /*                                                                       */</a>
+<a name="ln700">  /* &lt;Output&gt;                                                              */</a>
+<a name="ln701">  /*    master :: The `fvar' data (must be freed by caller).  Can be NULL, */</a>
+<a name="ln702">  /*              which makes this function simply load MM support.        */</a>
+<a name="ln703">  /*                                                                       */</a>
+<a name="ln704">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln705">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln706">  /*                                                                       */</a>
+<a name="ln707">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln708">  TT_Get_MM_Var( TT_Face      face,</a>
+<a name="ln709">                 FT_MM_Var*  *master )</a>
+<a name="ln710">  {</a>
+<a name="ln711">    FT_Stream            stream = face-&gt;root.stream;</a>
+<a name="ln712">    FT_Memory            memory = face-&gt;root.memory;</a>
+<a name="ln713">    FT_ULong             table_len;</a>
+<a name="ln714">    FT_Error             error  = FT_Err_Ok;</a>
+<a name="ln715">    FT_ULong             fvar_start;</a>
+<a name="ln716">    FT_Int               i, j;</a>
+<a name="ln717">    FT_MM_Var*           mmvar = NULL;</a>
+<a name="ln718">    FT_Fixed*            next_coords;</a>
+<a name="ln719">    FT_String*           next_name;</a>
+<a name="ln720">    FT_Var_Axis*         a;</a>
+<a name="ln721">    FT_Var_Named_Style*  ns;</a>
+<a name="ln722">    GX_FVar_Head         fvar_head;</a>
+<a name="ln723"> </a>
+<a name="ln724">    static const FT_Frame_Field  fvar_fields[] =</a>
+<a name="ln725">    {</a>
+<a name="ln726"> </a>
+<a name="ln727">#undef  FT_STRUCTURE</a>
+<a name="ln728">#define FT_STRUCTURE  GX_FVar_Head</a>
+<a name="ln729"> </a>
+<a name="ln730">      FT_FRAME_START( 16 ),</a>
+<a name="ln731">        FT_FRAME_LONG  ( version ),</a>
+<a name="ln732">        FT_FRAME_USHORT( offsetToData ),</a>
+<a name="ln733">        FT_FRAME_USHORT( countSizePairs ),</a>
+<a name="ln734">        FT_FRAME_USHORT( axisCount ),</a>
+<a name="ln735">        FT_FRAME_USHORT( axisSize ),</a>
+<a name="ln736">        FT_FRAME_USHORT( instanceCount ),</a>
+<a name="ln737">        FT_FRAME_USHORT( instanceSize ),</a>
+<a name="ln738">      FT_FRAME_END</a>
+<a name="ln739">    };</a>
+<a name="ln740"> </a>
+<a name="ln741">    static const FT_Frame_Field  fvaraxis_fields[] =</a>
+<a name="ln742">    {</a>
+<a name="ln743"> </a>
+<a name="ln744">#undef  FT_STRUCTURE</a>
+<a name="ln745">#define FT_STRUCTURE  GX_FVar_Axis</a>
+<a name="ln746"> </a>
+<a name="ln747">      FT_FRAME_START( 20 ),</a>
+<a name="ln748">        FT_FRAME_ULONG ( axisTag ),</a>
+<a name="ln749">        FT_FRAME_LONG  ( minValue ),</a>
+<a name="ln750">        FT_FRAME_LONG  ( defaultValue ),</a>
+<a name="ln751">        FT_FRAME_LONG  ( maxValue ),</a>
+<a name="ln752">        FT_FRAME_USHORT( flags ),</a>
+<a name="ln753">        FT_FRAME_USHORT( nameID ),</a>
+<a name="ln754">      FT_FRAME_END</a>
+<a name="ln755">    };</a>
+<a name="ln756"> </a>
+<a name="ln757"> </a>
+<a name="ln758">    /* read the font data and set up the internal representation */</a>
+<a name="ln759">    /* if not already done                                       */</a>
+<a name="ln760"> </a>
+<a name="ln761">    if ( face-&gt;blend == NULL )</a>
+<a name="ln762">    {</a>
+<a name="ln763">      FT_TRACE2(( &quot;FVAR &quot; ));</a>
+<a name="ln764"> </a>
+<a name="ln765">      /* both `fvar' and `gvar' must be present */</a>
+<a name="ln766">      if ( ( error = face-&gt;goto_table( face, TTAG_gvar,</a>
+<a name="ln767">                                       stream, &amp;table_len ) ) != 0 )</a>
+<a name="ln768">      {</a>
+<a name="ln769">        FT_TRACE1(( &quot;\n&quot;</a>
+<a name="ln770">                    &quot;TT_Get_MM_Var: `gvar' table is missing\n&quot; ));</a>
+<a name="ln771">        goto Exit;</a>
+<a name="ln772">      }</a>
+<a name="ln773"> </a>
+<a name="ln774">      if ( ( error = face-&gt;goto_table( face, TTAG_fvar,</a>
+<a name="ln775">                                       stream, &amp;table_len ) ) != 0 )</a>
+<a name="ln776">      {</a>
+<a name="ln777">        FT_TRACE1(( &quot;is missing\n&quot; ));</a>
+<a name="ln778">        goto Exit;</a>
+<a name="ln779">      }</a>
+<a name="ln780"> </a>
+<a name="ln781">      fvar_start = FT_STREAM_POS( );</a>
+<a name="ln782"> </a>
+<a name="ln783">      if ( FT_STREAM_READ_FIELDS( fvar_fields, &amp;fvar_head ) )</a>
+<a name="ln784">        goto Exit;</a>
+<a name="ln785"> </a>
+<a name="ln786">      if ( fvar_head.version != (FT_Long)0x00010000L                      ||</a>
+<a name="ln787">#if 0</a>
+<a name="ln788">           /* fonts like `JamRegular.ttf' have an incorrect value for */</a>
+<a name="ln789">           /* `countSizePairs'; since value 2 is hard-coded in `fvar' */</a>
+<a name="ln790">           /* version 1.0, we simply ignore it                        */</a>
+<a name="ln791">           fvar_head.countSizePairs != 2                                  ||</a>
+<a name="ln792">#endif</a>
+<a name="ln793">           fvar_head.axisSize != 20                                       ||</a>
+<a name="ln794">           /* axisCount limit implied by 16-bit instanceSize */</a>
+<a name="ln795">           fvar_head.axisCount &gt; 0x3FFE                                   ||</a>
+<a name="ln796">           fvar_head.instanceSize != 4 + 4 * fvar_head.axisCount          ||</a>
+<a name="ln797">           /* instanceCount limit implied by limited range of name IDs */</a>
+<a name="ln798">           fvar_head.instanceCount &gt; 0x7EFF                               ||</a>
+<a name="ln799">           fvar_head.offsetToData + fvar_head.axisCount * 20U +</a>
+<a name="ln800">             fvar_head.instanceCount * fvar_head.instanceSize &gt; table_len )</a>
+<a name="ln801">      {</a>
+<a name="ln802">        FT_TRACE1(( &quot;\n&quot;</a>
+<a name="ln803">                    &quot;TT_Get_MM_Var: invalid `fvar' header\n&quot; ));</a>
+<a name="ln804">        error = FT_THROW( Invalid_Table );</a>
+<a name="ln805">        goto Exit;</a>
+<a name="ln806">      }</a>
+<a name="ln807"> </a>
+<a name="ln808">      FT_TRACE2(( &quot;loaded\n&quot; ));</a>
+<a name="ln809"> </a>
+<a name="ln810">      FT_TRACE5(( &quot;number of GX style axes: %d\n&quot;, fvar_head.axisCount ));</a>
+<a name="ln811"> </a>
+<a name="ln812">      if ( FT_NEW( face-&gt;blend ) )</a>
+<a name="ln813">        goto Exit;</a>
+<a name="ln814"> </a>
+<a name="ln815">      /* cannot overflow 32-bit arithmetic because of limits above */</a>
+<a name="ln816">      face-&gt;blend-&gt;mmvar_len =</a>
+<a name="ln817">        sizeof ( FT_MM_Var ) +</a>
+<a name="ln818">        fvar_head.axisCount * sizeof ( FT_Var_Axis ) +</a>
+<a name="ln819">        fvar_head.instanceCount * sizeof ( FT_Var_Named_Style ) +</a>
+<a name="ln820">        fvar_head.instanceCount * fvar_head.axisCount * sizeof ( FT_Fixed ) +</a>
+<a name="ln821">        5 * fvar_head.axisCount;</a>
+<a name="ln822"> </a>
+<a name="ln823">      if ( FT_ALLOC( mmvar, face-&gt;blend-&gt;mmvar_len ) )</a>
+<a name="ln824">        goto Exit;</a>
+<a name="ln825">      face-&gt;blend-&gt;mmvar = mmvar;</a>
+<a name="ln826"> </a>
+<a name="ln827">      /* set up pointers and offsets into the `mmvar' array; */</a>
+<a name="ln828">      /* the data gets filled in later on                    */</a>
+<a name="ln829"> </a>
+<a name="ln830">      mmvar-&gt;num_axis =</a>
+<a name="ln831">        fvar_head.axisCount;</a>
+<a name="ln832">      mmvar-&gt;num_designs =</a>
+<a name="ln833">        ~0U;                   /* meaningless in this context; each glyph */</a>
+<a name="ln834">                               /* may have a different number of designs  */</a>
+<a name="ln835">                               /* (or tuples, as called by Apple)         */</a>
+<a name="ln836">      mmvar-&gt;num_namedstyles =</a>
+<a name="ln837">        fvar_head.instanceCount;</a>
+<a name="ln838">      mmvar-&gt;axis =</a>
+<a name="ln839">        (FT_Var_Axis*)&amp;( mmvar[1] );</a>
+<a name="ln840">      mmvar-&gt;namedstyle =</a>
+<a name="ln841">        (FT_Var_Named_Style*)&amp;( mmvar-&gt;axis[fvar_head.axisCount] );</a>
+<a name="ln842"> </a>
+<a name="ln843">      next_coords =</a>
+<a name="ln844">        (FT_Fixed*)&amp;( mmvar-&gt;namedstyle[fvar_head.instanceCount] );</a>
+<a name="ln845">      for ( i = 0; i &lt; fvar_head.instanceCount; i++ )</a>
+<a name="ln846">      {</a>
+<a name="ln847">        mmvar-&gt;namedstyle[i].coords  = next_coords;</a>
+<a name="ln848">        next_coords                 += fvar_head.axisCount;</a>
+<a name="ln849">      }</a>
+<a name="ln850"> </a>
+<a name="ln851">      next_name = (FT_String*)next_coords;</a>
+<a name="ln852">      for ( i = 0; i &lt; fvar_head.axisCount; i++ )</a>
+<a name="ln853">      {</a>
+<a name="ln854">        mmvar-&gt;axis[i].name  = next_name;</a>
+<a name="ln855">        next_name           += 5;</a>
+<a name="ln856">      }</a>
+<a name="ln857"> </a>
+<a name="ln858">      /* now fill in the data */</a>
+<a name="ln859"> </a>
+<a name="ln860">      if ( FT_STREAM_SEEK( fvar_start + fvar_head.offsetToData ) )</a>
+<a name="ln861">        goto Exit;</a>
+<a name="ln862"> </a>
+<a name="ln863">      a = mmvar-&gt;axis;</a>
+<a name="ln864">      for ( i = 0; i &lt; fvar_head.axisCount; i++ )</a>
+<a name="ln865">      {</a>
+<a name="ln866">        GX_FVar_Axis  axis_rec;</a>
+<a name="ln867"> </a>
+<a name="ln868"> </a>
+<a name="ln869">        if ( FT_STREAM_READ_FIELDS( fvaraxis_fields, &amp;axis_rec ) )</a>
+<a name="ln870">          goto Exit;</a>
+<a name="ln871">        a-&gt;tag     = axis_rec.axisTag;</a>
+<a name="ln872">        a-&gt;minimum = axis_rec.minValue;</a>
+<a name="ln873">        a-&gt;def     = axis_rec.defaultValue;</a>
+<a name="ln874">        a-&gt;maximum = axis_rec.maxValue;</a>
+<a name="ln875">        a-&gt;strid   = axis_rec.nameID;</a>
+<a name="ln876"> </a>
+<a name="ln877">        a-&gt;name[0] = (FT_String)(   a-&gt;tag &gt;&gt; 24 );</a>
+<a name="ln878">        a-&gt;name[1] = (FT_String)( ( a-&gt;tag &gt;&gt; 16 ) &amp; 0xFF );</a>
+<a name="ln879">        a-&gt;name[2] = (FT_String)( ( a-&gt;tag &gt;&gt;  8 ) &amp; 0xFF );</a>
+<a name="ln880">        a-&gt;name[3] = (FT_String)( ( a-&gt;tag       ) &amp; 0xFF );</a>
+<a name="ln881">        a-&gt;name[4] = '\0';</a>
+<a name="ln882"> </a>
+<a name="ln883">        FT_TRACE5(( &quot;  \&quot;%s\&quot;: minimum=%.4f, default=%.4f, maximum=%.4f\n&quot;,</a>
+<a name="ln884">                    a-&gt;name,</a>
+<a name="ln885">                    a-&gt;minimum / 65536.0,</a>
+<a name="ln886">                    a-&gt;def / 65536.0,</a>
+<a name="ln887">                    a-&gt;maximum / 65536.0 ));</a>
+<a name="ln888"> </a>
+<a name="ln889">        a++;</a>
+<a name="ln890">      }</a>
+<a name="ln891"> </a>
+<a name="ln892">      FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln893"> </a>
+<a name="ln894">      ns = mmvar-&gt;namedstyle;</a>
+<a name="ln895">      for ( i = 0; i &lt; fvar_head.instanceCount; i++, ns++ )</a>
+<a name="ln896">      {</a>
+<a name="ln897">        if ( FT_FRAME_ENTER( 4L + 4L * fvar_head.axisCount ) )</a>
+<a name="ln898">          goto Exit;</a>
+<a name="ln899"> </a>
+<a name="ln900">        ns-&gt;strid       =    FT_GET_USHORT();</a>
+<a name="ln901">        (void) /* flags = */ FT_GET_USHORT();</a>
+<a name="ln902"> </a>
+<a name="ln903">        for ( j = 0; j &lt; fvar_head.axisCount; j++ )</a>
+<a name="ln904">          ns-&gt;coords[j] = FT_GET_LONG();</a>
+<a name="ln905"> </a>
+<a name="ln906">        FT_FRAME_EXIT();</a>
+<a name="ln907">      }</a>
+<a name="ln908">    }</a>
+<a name="ln909"> </a>
+<a name="ln910">    /* fill the output array if requested */</a>
+<a name="ln911"> </a>
+<a name="ln912">    if ( master != NULL )</a>
+<a name="ln913">    {</a>
+<a name="ln914">      FT_UInt  n;</a>
+<a name="ln915"> </a>
+<a name="ln916"> </a>
+<a name="ln917">      if ( FT_ALLOC( mmvar, face-&gt;blend-&gt;mmvar_len ) )</a>
+<a name="ln918">        goto Exit;</a>
+<a name="ln919">      FT_MEM_COPY( mmvar, face-&gt;blend-&gt;mmvar, face-&gt;blend-&gt;mmvar_len );</a>
+<a name="ln920"> </a>
+<a name="ln921">      mmvar-&gt;axis =</a>
+<a name="ln922">        (FT_Var_Axis*)&amp;( mmvar[1] );</a>
+<a name="ln923">      mmvar-&gt;namedstyle =</a>
+<a name="ln924">        (FT_Var_Named_Style*)&amp;( mmvar-&gt;axis[mmvar-&gt;num_axis] );</a>
+<a name="ln925">      next_coords =</a>
+<a name="ln926">        (FT_Fixed*)&amp;( mmvar-&gt;namedstyle[mmvar-&gt;num_namedstyles] );</a>
+<a name="ln927"> </a>
+<a name="ln928">      for ( n = 0; n &lt; mmvar-&gt;num_namedstyles; n++ )</a>
+<a name="ln929">      {</a>
+<a name="ln930">        mmvar-&gt;namedstyle[n].coords  = next_coords;</a>
+<a name="ln931">        next_coords                 += mmvar-&gt;num_axis;</a>
+<a name="ln932">      }</a>
+<a name="ln933"> </a>
+<a name="ln934">      a         = mmvar-&gt;axis;</a>
+<a name="ln935">      next_name = (FT_String*)next_coords;</a>
+<a name="ln936">      for ( n = 0; n &lt; mmvar-&gt;num_axis; n++ )</a>
+<a name="ln937">      {</a>
+<a name="ln938">        a-&gt;name = next_name;</a>
+<a name="ln939"> </a>
+<a name="ln940">        /* standard PostScript names for some standard apple tags */</a>
+<a name="ln941">        if ( a-&gt;tag == TTAG_wght )</a>
+<a name="ln942">          a-&gt;name = (char*)&quot;Weight&quot;;</a>
+<a name="ln943">        else if ( a-&gt;tag == TTAG_wdth )</a>
+<a name="ln944">          a-&gt;name = (char*)&quot;Width&quot;;</a>
+<a name="ln945">        else if ( a-&gt;tag == TTAG_opsz )</a>
+<a name="ln946">          a-&gt;name = (char*)&quot;OpticalSize&quot;;</a>
+<a name="ln947">        else if ( a-&gt;tag == TTAG_slnt )</a>
+<a name="ln948">          a-&gt;name = (char*)&quot;Slant&quot;;</a>
+<a name="ln949"> </a>
+<a name="ln950">        next_name += 5;</a>
+<a name="ln951">        a++;</a>
+<a name="ln952">      }</a>
+<a name="ln953"> </a>
+<a name="ln954">      *master = mmvar;</a>
+<a name="ln955">    }</a>
+<a name="ln956"> </a>
+<a name="ln957">  Exit:</a>
+<a name="ln958">    return error;</a>
+<a name="ln959">  }</a>
+<a name="ln960"> </a>
+<a name="ln961"> </a>
+<a name="ln962">  /*************************************************************************/</a>
+<a name="ln963">  /*                                                                       */</a>
+<a name="ln964">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln965">  /*    TT_Set_MM_Blend                                                    */</a>
+<a name="ln966">  /*                                                                       */</a>
+<a name="ln967">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln968">  /*    Set the blend (normalized) coordinates for this instance of the    */</a>
+<a name="ln969">  /*    font.  Check that the `gvar' table is reasonable and does some     */</a>
+<a name="ln970">  /*    initial preparation.                                               */</a>
+<a name="ln971">  /*                                                                       */</a>
+<a name="ln972">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln973">  /*    face       :: The font.                                            */</a>
+<a name="ln974">  /*                  Initialize the blend structure with `gvar' data.     */</a>
+<a name="ln975">  /*                                                                       */</a>
+<a name="ln976">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln977">  /*    num_coords :: The number of available coordinates.  If it is       */</a>
+<a name="ln978">  /*                  larger than the number of axes, ignore the excess    */</a>
+<a name="ln979">  /*                  values.  If it is smaller than the number of axes,   */</a>
+<a name="ln980">  /*                  use the default value (0) for the remaining axes.    */</a>
+<a name="ln981">  /*                                                                       */</a>
+<a name="ln982">  /*    coords     :: An array of `num_coords', each between [-1,1].       */</a>
+<a name="ln983">  /*                                                                       */</a>
+<a name="ln984">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln985">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln986">  /*                                                                       */</a>
+<a name="ln987">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln988">  TT_Set_MM_Blend( TT_Face    face,</a>
+<a name="ln989">                   FT_UInt    num_coords,</a>
+<a name="ln990">                   FT_Fixed*  coords )</a>
+<a name="ln991">  {</a>
+<a name="ln992">    FT_Error    error = FT_Err_Ok;</a>
+<a name="ln993">    GX_Blend    blend;</a>
+<a name="ln994">    FT_MM_Var*  mmvar;</a>
+<a name="ln995">    FT_UInt     i;</a>
+<a name="ln996">    FT_Memory   memory = face-&gt;root.memory;</a>
+<a name="ln997"> </a>
+<a name="ln998">    enum</a>
+<a name="ln999">    {</a>
+<a name="ln1000">      mcvt_retain,</a>
+<a name="ln1001">      mcvt_modify,</a>
+<a name="ln1002">      mcvt_load</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    } manageCvt;</a>
+<a name="ln1005"> </a>
+<a name="ln1006"> </a>
+<a name="ln1007">    face-&gt;doblend = FALSE;</a>
+<a name="ln1008"> </a>
+<a name="ln1009">    if ( face-&gt;blend == NULL )</a>
+<a name="ln1010">    {</a>
+<a name="ln1011">      if ( ( error = TT_Get_MM_Var( face, NULL ) ) != 0 )</a>
+<a name="ln1012">        goto Exit;</a>
+<a name="ln1013">    }</a>
+<a name="ln1014"> </a>
+<a name="ln1015">    blend = face-&gt;blend;</a>
+<a name="ln1016">    mmvar = blend-&gt;mmvar;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    if ( num_coords &gt; mmvar-&gt;num_axis )</a>
+<a name="ln1019">    {</a>
+<a name="ln1020">      FT_TRACE2(( &quot;TT_Set_MM_Blend: only using first %d of %d coordinates\n&quot;,</a>
+<a name="ln1021">                  mmvar-&gt;num_axis, num_coords ));</a>
+<a name="ln1022">      num_coords = mmvar-&gt;num_axis;</a>
+<a name="ln1023">    }</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    FT_TRACE5(( &quot;normalized design coordinates:\n&quot; ));</a>
+<a name="ln1026"> </a>
+<a name="ln1027">    for ( i = 0; i &lt; num_coords; i++ )</a>
+<a name="ln1028">    {</a>
+<a name="ln1029">      FT_TRACE5(( &quot;  %.4f\n&quot;, coords[i] / 65536.0 ));</a>
+<a name="ln1030">      if ( coords[i] &lt; -0x00010000L || coords[i] &gt; 0x00010000L )</a>
+<a name="ln1031">      {</a>
+<a name="ln1032">        FT_TRACE1(( &quot;TT_Set_MM_Blend: normalized design coordinate %.4f\n&quot;</a>
+<a name="ln1033">                    &quot;                 is out of range [-1;1]\n&quot;,</a>
+<a name="ln1034">                    coords[i] / 65536.0 ));</a>
+<a name="ln1035">        error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1036">        goto Exit;</a>
+<a name="ln1037">      }</a>
+<a name="ln1038">    }</a>
+<a name="ln1039"> </a>
+<a name="ln1040">    FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln1041"> </a>
+<a name="ln1042">    if ( blend-&gt;glyphoffsets == NULL )</a>
+<a name="ln1043">      if ( ( error = ft_var_load_gvar( face ) ) != 0 )</a>
+<a name="ln1044">        goto Exit;</a>
+<a name="ln1045"> </a>
+<a name="ln1046">    if ( blend-&gt;normalizedcoords == NULL )</a>
+<a name="ln1047">    {</a>
+<a name="ln1048">      if ( FT_NEW_ARRAY( blend-&gt;normalizedcoords, mmvar-&gt;num_axis ) )</a>
+<a name="ln1049">        goto Exit;</a>
+<a name="ln1050"> </a>
+<a name="ln1051">      manageCvt = mcvt_modify;</a>
+<a name="ln1052"> </a>
+<a name="ln1053">      /* If we have not set the blend coordinates before this, then the  */</a>
+<a name="ln1054">      /* cvt table will still be what we read from the `cvt ' table and  */</a>
+<a name="ln1055">      /* we don't need to reload it.  We may need to change it though... */</a>
+<a name="ln1056">    }</a>
+<a name="ln1057">    else</a>
+<a name="ln1058">    {</a>
+<a name="ln1059">      manageCvt = mcvt_retain;</a>
+<a name="ln1060"> </a>
+<a name="ln1061">      for ( i = 0; i &lt; num_coords; i++ )</a>
+<a name="ln1062">      {</a>
+<a name="ln1063">        if ( blend-&gt;normalizedcoords[i] != coords[i] )</a>
+<a name="ln1064">        {</a>
+<a name="ln1065">          manageCvt = mcvt_load;</a>
+<a name="ln1066">          break;</a>
+<a name="ln1067">        }</a>
+<a name="ln1068">      }</a>
+<a name="ln1069"> </a>
+<a name="ln1070">      for ( ; i &lt; mmvar-&gt;num_axis; i++ )</a>
+<a name="ln1071">      {</a>
+<a name="ln1072">        if ( blend-&gt;normalizedcoords[i] != 0 )</a>
+<a name="ln1073">        {</a>
+<a name="ln1074">          manageCvt = mcvt_load;</a>
+<a name="ln1075">          break;</a>
+<a name="ln1076">        }</a>
+<a name="ln1077">      }</a>
+<a name="ln1078"> </a>
+<a name="ln1079">      /* If we don't change the blend coords then we don't need to do  */</a>
+<a name="ln1080">      /* anything to the cvt table.  It will be correct.  Otherwise we */</a>
+<a name="ln1081">      /* no longer have the original cvt (it was modified when we set  */</a>
+<a name="ln1082">      /* the blend last time), so we must reload and then modify it.   */</a>
+<a name="ln1083">    }</a>
+<a name="ln1084"> </a>
+<a name="ln1085">    blend-&gt;num_axis = mmvar-&gt;num_axis;</a>
+<a name="ln1086">    FT_MEM_COPY( blend-&gt;normalizedcoords,</a>
+<a name="ln1087">                 coords,</a>
+<a name="ln1088">                 num_coords * sizeof ( FT_Fixed ) );</a>
+<a name="ln1089"> </a>
+<a name="ln1090">    face-&gt;doblend = TRUE;</a>
+<a name="ln1091"> </a>
+<a name="ln1092">    if ( face-&gt;cvt != NULL )</a>
+<a name="ln1093">    {</a>
+<a name="ln1094">      switch ( manageCvt )</a>
+<a name="ln1095">      {</a>
+<a name="ln1096">      case mcvt_load:</a>
+<a name="ln1097">        /* The cvt table has been loaded already; every time we change the */</a>
+<a name="ln1098">        /* blend we may need to reload and remodify the cvt table.         */</a>
+<a name="ln1099">        FT_FREE( face-&gt;cvt );</a>
+<a name="ln1100">        face-&gt;cvt = NULL;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">        error = tt_face_load_cvt( face, face-&gt;root.stream );</a>
+<a name="ln1103">        break;</a>
+<a name="ln1104"> </a>
+<a name="ln1105">      case mcvt_modify:</a>
+<a name="ln1106">        /* The original cvt table is in memory.  All we need to do is */</a>
+<a name="ln1107">        /* apply the `cvar' table (if any).                           */</a>
+<a name="ln1108">        error = tt_face_vary_cvt( face, face-&gt;root.stream );</a>
+<a name="ln1109">        break;</a>
+<a name="ln1110"> </a>
+<a name="ln1111">      case mcvt_retain:</a>
+<a name="ln1112">        /* The cvt table is correct for this set of coordinates. */</a>
+<a name="ln1113">        break;</a>
+<a name="ln1114">      }</a>
+<a name="ln1115">    }</a>
+<a name="ln1116"> </a>
+<a name="ln1117">  Exit:</a>
+<a name="ln1118">    return error;</a>
+<a name="ln1119">  }</a>
+<a name="ln1120"> </a>
+<a name="ln1121"> </a>
+<a name="ln1122">  /*************************************************************************/</a>
+<a name="ln1123">  /*                                                                       */</a>
+<a name="ln1124">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln1125">  /*    TT_Set_Var_Design                                                  */</a>
+<a name="ln1126">  /*                                                                       */</a>
+<a name="ln1127">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln1128">  /*    Set the coordinates for the instance, measured in the user         */</a>
+<a name="ln1129">  /*    coordinate system.  Parse the `avar' table (if present) to convert */</a>
+<a name="ln1130">  /*    from user to normalized coordinates.                               */</a>
+<a name="ln1131">  /*                                                                       */</a>
+<a name="ln1132">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln1133">  /*    face       :: The font face.                                       */</a>
+<a name="ln1134">  /*                  Initialize the blend struct with `gvar' data.        */</a>
+<a name="ln1135">  /*                                                                       */</a>
+<a name="ln1136">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln1137">  /*    num_coords :: The number of available coordinates.  If it is       */</a>
+<a name="ln1138">  /*                  larger than the number of axes, ignore the excess    */</a>
+<a name="ln1139">  /*                  values.  If it is smaller than the number of axes,   */</a>
+<a name="ln1140">  /*                  use the default values for the remaining axes.       */</a>
+<a name="ln1141">  /*                                                                       */</a>
+<a name="ln1142">  /*    coords     :: A coordinate array with `num_coords' elements.       */</a>
+<a name="ln1143">  /*                                                                       */</a>
+<a name="ln1144">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln1145">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln1146">  /*                                                                       */</a>
+<a name="ln1147">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1148">  TT_Set_Var_Design( TT_Face    face,</a>
+<a name="ln1149">                     FT_UInt    num_coords,</a>
+<a name="ln1150">                     FT_Fixed*  coords )</a>
+<a name="ln1151">  {</a>
+<a name="ln1152">    FT_Error        error      = FT_Err_Ok;</a>
+<a name="ln1153">    FT_Fixed*       normalized = NULL;</a>
+<a name="ln1154">    GX_Blend        blend;</a>
+<a name="ln1155">    FT_MM_Var*      mmvar;</a>
+<a name="ln1156">    FT_UInt         i, j;</a>
+<a name="ln1157">    FT_Var_Axis*    a;</a>
+<a name="ln1158">    GX_AVarSegment  av;</a>
+<a name="ln1159">    FT_Memory       memory = face-&gt;root.memory;</a>
+<a name="ln1160"> </a>
+<a name="ln1161"> </a>
+<a name="ln1162">    if ( face-&gt;blend == NULL )</a>
+<a name="ln1163">    {</a>
+<a name="ln1164">      if ( ( error = TT_Get_MM_Var( face, NULL ) ) != 0 )</a>
+<a name="ln1165">        goto Exit;</a>
+<a name="ln1166">    }</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    blend = face-&gt;blend;</a>
+<a name="ln1169">    mmvar = blend-&gt;mmvar;</a>
+<a name="ln1170"> </a>
+<a name="ln1171">    if ( num_coords &gt; mmvar-&gt;num_axis )</a>
+<a name="ln1172">    {</a>
+<a name="ln1173">      FT_TRACE2(( &quot;TT_Set_Var_Design:&quot;</a>
+<a name="ln1174">                  &quot; only using first %d of %d coordinates\n&quot;,</a>
+<a name="ln1175">                  mmvar-&gt;num_axis, num_coords ));</a>
+<a name="ln1176">      num_coords = mmvar-&gt;num_axis;</a>
+<a name="ln1177">    }</a>
+<a name="ln1178"> </a>
+<a name="ln1179">    /* Axis normalization is a two stage process.  First we normalize */</a>
+<a name="ln1180">    /* based on the [min,def,max] values for the axis to be [-1,0,1]. */</a>
+<a name="ln1181">    /* Then, if there's an `avar' table, we renormalize this range.   */</a>
+<a name="ln1182"> </a>
+<a name="ln1183">    if ( FT_NEW_ARRAY( normalized, mmvar-&gt;num_axis ) )</a>
+<a name="ln1184">      goto Exit;</a>
+<a name="ln1185"> </a>
+<a name="ln1186">    FT_TRACE5(( &quot;design coordinates:\n&quot; ));</a>
+<a name="ln1187"> </a>
+<a name="ln1188">    a = mmvar-&gt;axis;</a>
+<a name="ln1189">    for ( i = 0; i &lt; num_coords; i++, a++ )</a>
+<a name="ln1190">    {</a>
+<a name="ln1191">      FT_TRACE5(( &quot;  %.4f\n&quot;, coords[i] / 65536.0 ));</a>
+<a name="ln1192">      if ( coords[i] &gt; a-&gt;maximum || coords[i] &lt; a-&gt;minimum )</a>
+<a name="ln1193">      {</a>
+<a name="ln1194">        FT_TRACE1(( &quot;TT_Set_Var_Design: normalized design coordinate %.4f\n&quot;</a>
+<a name="ln1195">                    &quot;                   is out of range [%.4f;%.4f]\n&quot;,</a>
+<a name="ln1196">                    coords[i] / 65536.0,</a>
+<a name="ln1197">                    a-&gt;minimum / 65536.0,</a>
+<a name="ln1198">                    a-&gt;maximum / 65536.0 ));</a>
+<a name="ln1199">        error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1200">        goto Exit;</a>
+<a name="ln1201">      }</a>
+<a name="ln1202"> </a>
+<a name="ln1203">      if ( coords[i] &lt; a-&gt;def )</a>
+<a name="ln1204">        normalized[i] = -FT_DivFix( coords[i] - a-&gt;def,</a>
+<a name="ln1205">                                    a-&gt;minimum - a-&gt;def );</a>
+<a name="ln1206">      else if ( a-&gt;maximum == a-&gt;def )</a>
+<a name="ln1207">        normalized[i] = 0;</a>
+<a name="ln1208">      else</a>
+<a name="ln1209">        normalized[i] = FT_DivFix( coords[i] - a-&gt;def,</a>
+<a name="ln1210">                                   a-&gt;maximum - a-&gt;def );</a>
+<a name="ln1211">    }</a>
+<a name="ln1212"> </a>
+<a name="ln1213">    FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln1214"> </a>
+<a name="ln1215">    for ( ; i &lt; mmvar-&gt;num_axis; i++ )</a>
+<a name="ln1216">      normalized[i] = 0;</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    if ( !blend-&gt;avar_checked )</a>
+<a name="ln1219">      ft_var_load_avar( face );</a>
+<a name="ln1220"> </a>
+<a name="ln1221">    if ( blend-&gt;avar_segment != NULL )</a>
+<a name="ln1222">    {</a>
+<a name="ln1223">      FT_TRACE5(( &quot;normalized design coordinates&quot;</a>
+<a name="ln1224">                  &quot; before applying `avar' data:\n&quot; ));</a>
+<a name="ln1225"> </a>
+<a name="ln1226">      av = blend-&gt;avar_segment;</a>
+<a name="ln1227">      for ( i = 0; i &lt; mmvar-&gt;num_axis; i++, av++ )</a>
+<a name="ln1228">      {</a>
+<a name="ln1229">        for ( j = 1; j &lt; (FT_UInt)av-&gt;pairCount; j++ )</a>
+<a name="ln1230">        {</a>
+<a name="ln1231">          FT_TRACE5(( &quot;  %.4f\n&quot;, normalized[i] / 65536.0 ));</a>
+<a name="ln1232">          if ( normalized[i] &lt; av-&gt;correspondence[j].fromCoord )</a>
+<a name="ln1233">          {</a>
+<a name="ln1234">            normalized[i] =</a>
+<a name="ln1235">              FT_MulDiv( normalized[i] - av-&gt;correspondence[j - 1].fromCoord,</a>
+<a name="ln1236">                         av-&gt;correspondence[j].toCoord -</a>
+<a name="ln1237">                           av-&gt;correspondence[j - 1].toCoord,</a>
+<a name="ln1238">                         av-&gt;correspondence[j].fromCoord -</a>
+<a name="ln1239">                           av-&gt;correspondence[j - 1].fromCoord ) +</a>
+<a name="ln1240">              av-&gt;correspondence[j - 1].toCoord;</a>
+<a name="ln1241">            break;</a>
+<a name="ln1242">          }</a>
+<a name="ln1243">        }</a>
+<a name="ln1244">      }</a>
+<a name="ln1245">    }</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    error = TT_Set_MM_Blend( face, mmvar-&gt;num_axis, normalized );</a>
+<a name="ln1248"> </a>
+<a name="ln1249">  Exit:</a>
+<a name="ln1250">    FT_FREE( normalized );</a>
+<a name="ln1251">    return error;</a>
+<a name="ln1252">  }</a>
+<a name="ln1253"> </a>
+<a name="ln1254"> </a>
+<a name="ln1255">  /*************************************************************************/</a>
+<a name="ln1256">  /*************************************************************************/</a>
+<a name="ln1257">  /*****                                                               *****/</a>
+<a name="ln1258">  /*****                     GX VAR PARSING ROUTINES                   *****/</a>
+<a name="ln1259">  /*****                                                               *****/</a>
+<a name="ln1260">  /*************************************************************************/</a>
+<a name="ln1261">  /*************************************************************************/</a>
+<a name="ln1262"> </a>
+<a name="ln1263"> </a>
+<a name="ln1264">  /*************************************************************************/</a>
+<a name="ln1265">  /*                                                                       */</a>
+<a name="ln1266">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln1267">  /*    tt_face_vary_cvt                                                   */</a>
+<a name="ln1268">  /*                                                                       */</a>
+<a name="ln1269">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln1270">  /*    Modify the loaded cvt table according to the `cvar' table and the  */</a>
+<a name="ln1271">  /*    font's blend.                                                      */</a>
+<a name="ln1272">  /*                                                                       */</a>
+<a name="ln1273">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln1274">  /*    face   :: A handle to the target face object.                      */</a>
+<a name="ln1275">  /*                                                                       */</a>
+<a name="ln1276">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln1277">  /*    stream :: A handle to the input stream.                            */</a>
+<a name="ln1278">  /*                                                                       */</a>
+<a name="ln1279">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln1280">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln1281">  /*                                                                       */</a>
+<a name="ln1282">  /*    Most errors are ignored.  It is perfectly valid not to have a      */</a>
+<a name="ln1283">  /*    `cvar' table even if there is a `gvar' and `fvar' table.           */</a>
+<a name="ln1284">  /*                                                                       */</a>
+<a name="ln1285">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1286">  tt_face_vary_cvt( TT_Face    face,</a>
+<a name="ln1287">                    FT_Stream  stream )</a>
+<a name="ln1288">  {</a>
+<a name="ln1289">    FT_Error    error;</a>
+<a name="ln1290">    FT_Memory   memory = stream-&gt;memory;</a>
+<a name="ln1291">    FT_ULong    table_start;</a>
+<a name="ln1292">    FT_ULong    table_len;</a>
+<a name="ln1293">    FT_UInt     tupleCount;</a>
+<a name="ln1294">    FT_ULong    offsetToData;</a>
+<a name="ln1295">    FT_ULong    here;</a>
+<a name="ln1296">    FT_UInt     i, j;</a>
+<a name="ln1297">    FT_Fixed*   tuple_coords    = NULL;</a>
+<a name="ln1298">    FT_Fixed*   im_start_coords = NULL;</a>
+<a name="ln1299">    FT_Fixed*   im_end_coords   = NULL;</a>
+<a name="ln1300">    GX_Blend    blend           = face-&gt;blend;</a>
+<a name="ln1301">    FT_UInt     point_count;</a>
+<a name="ln1302">    FT_UShort*  localpoints;</a>
+<a name="ln1303">    FT_Short*   deltas;</a>
+<a name="ln1304"> </a>
+<a name="ln1305"> </a>
+<a name="ln1306">    FT_TRACE2(( &quot;CVAR &quot; ));</a>
+<a name="ln1307"> </a>
+<a name="ln1308">    if ( blend == NULL )</a>
+<a name="ln1309">    {</a>
+<a name="ln1310">      FT_TRACE2(( &quot;\n&quot;</a>
+<a name="ln1311">                  &quot;tt_face_vary_cvt: no blend specified\n&quot; ));</a>
+<a name="ln1312">      error = FT_Err_Ok;</a>
+<a name="ln1313">      goto Exit;</a>
+<a name="ln1314">    }</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    if ( face-&gt;cvt == NULL )</a>
+<a name="ln1317">    {</a>
+<a name="ln1318">      FT_TRACE2(( &quot;\n&quot;</a>
+<a name="ln1319">                  &quot;tt_face_vary_cvt: no `cvt ' table\n&quot; ));</a>
+<a name="ln1320">      error = FT_Err_Ok;</a>
+<a name="ln1321">      goto Exit;</a>
+<a name="ln1322">    }</a>
+<a name="ln1323"> </a>
+<a name="ln1324">    error = face-&gt;goto_table( face, TTAG_cvar, stream, &amp;table_len );</a>
+<a name="ln1325">    if ( error )</a>
+<a name="ln1326">    {</a>
+<a name="ln1327">      FT_TRACE2(( &quot;is missing\n&quot; ));</a>
+<a name="ln1328"> </a>
+<a name="ln1329">      error = FT_Err_Ok;</a>
+<a name="ln1330">      goto Exit;</a>
+<a name="ln1331">    }</a>
+<a name="ln1332"> </a>
+<a name="ln1333">    if ( FT_FRAME_ENTER( table_len ) )</a>
+<a name="ln1334">    {</a>
+<a name="ln1335">      error = FT_Err_Ok;</a>
+<a name="ln1336">      goto Exit;</a>
+<a name="ln1337">    }</a>
+<a name="ln1338"> </a>
+<a name="ln1339">    table_start = FT_Stream_FTell( stream );</a>
+<a name="ln1340">    if ( FT_GET_LONG() != 0x00010000L )</a>
+<a name="ln1341">    {</a>
+<a name="ln1342">      FT_TRACE2(( &quot;bad table version\n&quot; ));</a>
+<a name="ln1343"> </a>
+<a name="ln1344">      error = FT_Err_Ok;</a>
+<a name="ln1345">      goto FExit;</a>
+<a name="ln1346">    }</a>
+<a name="ln1347"> </a>
+<a name="ln1348">    FT_TRACE2(( &quot;loaded\n&quot; ));</a>
+<a name="ln1349"> </a>
+<a name="ln1350">    if ( FT_NEW_ARRAY( tuple_coords, blend-&gt;num_axis )    ||</a>
+<a name="ln1351">         FT_NEW_ARRAY( im_start_coords, blend-&gt;num_axis ) ||</a>
+<a name="ln1352">         FT_NEW_ARRAY( im_end_coords, blend-&gt;num_axis )   )</a>
+<a name="ln1353">      goto FExit;</a>
+<a name="ln1354"> </a>
+<a name="ln1355">    tupleCount   = FT_GET_USHORT();</a>
+<a name="ln1356">    offsetToData = table_start + FT_GET_USHORT();</a>
+<a name="ln1357"> </a>
+<a name="ln1358">    /* The documentation implies there are flags packed into the        */</a>
+<a name="ln1359">    /* tuplecount, but John Jenkins says that shared points don't apply */</a>
+<a name="ln1360">    /* to `cvar', and no other flags are defined.                       */</a>
+<a name="ln1361"> </a>
+<a name="ln1362">    FT_TRACE5(( &quot;cvar: there are %d tuples:\n&quot;, tupleCount ));</a>
+<a name="ln1363"> </a>
+<a name="ln1364">    for ( i = 0; i &lt; ( tupleCount &amp; 0xFFF ); i++ )</a>
+<a name="ln1365">    {</a>
+<a name="ln1366">      FT_UInt   tupleDataSize;</a>
+<a name="ln1367">      FT_UInt   tupleIndex;</a>
+<a name="ln1368">      FT_Fixed  apply;</a>
+<a name="ln1369"> </a>
+<a name="ln1370"> </a>
+<a name="ln1371">      FT_TRACE6(( &quot;  tuple %d:\n&quot;, i ));</a>
+<a name="ln1372"> </a>
+<a name="ln1373">      tupleDataSize = FT_GET_USHORT();</a>
+<a name="ln1374">      tupleIndex    = FT_GET_USHORT();</a>
+<a name="ln1375"> </a>
+<a name="ln1376">      /* There is no provision here for a global tuple coordinate section, */</a>
+<a name="ln1377">      /* so John says.  There are no tuple indices, just embedded tuples.  */</a>
+<a name="ln1378"> </a>
+<a name="ln1379">      if ( tupleIndex &amp; GX_TI_EMBEDDED_TUPLE_COORD )</a>
+<a name="ln1380">      {</a>
+<a name="ln1381">        for ( j = 0; j &lt; blend-&gt;num_axis; j++ )</a>
+<a name="ln1382">          tuple_coords[j] = FT_GET_SHORT() * 4;  /* convert from        */</a>
+<a name="ln1383">                                                 /* short frac to fixed */</a>
+<a name="ln1384">      }</a>
+<a name="ln1385">      else</a>
+<a name="ln1386">      {</a>
+<a name="ln1387">        /* skip this tuple; it makes no sense */</a>
+<a name="ln1388"> </a>
+<a name="ln1389">        if ( tupleIndex &amp; GX_TI_INTERMEDIATE_TUPLE )</a>
+<a name="ln1390">          for ( j = 0; j &lt; 2 * blend-&gt;num_axis; j++ )</a>
+<a name="ln1391">            (void)FT_GET_SHORT();</a>
+<a name="ln1392"> </a>
+<a name="ln1393">        offsetToData += tupleDataSize;</a>
+<a name="ln1394">        continue;</a>
+<a name="ln1395">      }</a>
+<a name="ln1396"> </a>
+<a name="ln1397">      if ( tupleIndex &amp; GX_TI_INTERMEDIATE_TUPLE )</a>
+<a name="ln1398">      {</a>
+<a name="ln1399">        for ( j = 0; j &lt; blend-&gt;num_axis; j++ )</a>
+<a name="ln1400">          im_start_coords[j] = FT_GET_SHORT() * 4;</a>
+<a name="ln1401">        for ( j = 0; j &lt; blend-&gt;num_axis; j++ )</a>
+<a name="ln1402">          im_end_coords[j] = FT_GET_SHORT() * 4;</a>
+<a name="ln1403">      }</a>
+<a name="ln1404"> </a>
+<a name="ln1405">      apply = ft_var_apply_tuple( blend,</a>
+<a name="ln1406">                                  (FT_UShort)tupleIndex,</a>
+<a name="ln1407">                                  tuple_coords,</a>
+<a name="ln1408">                                  im_start_coords,</a>
+<a name="ln1409">                                  im_end_coords );</a>
+<a name="ln1410">      if ( /* tuple isn't active for our blend */</a>
+<a name="ln1411">           apply == 0                                    ||</a>
+<a name="ln1412">           /* global points not allowed,           */</a>
+<a name="ln1413">           /* if they aren't local, makes no sense */</a>
+<a name="ln1414">           !( tupleIndex &amp; GX_TI_PRIVATE_POINT_NUMBERS ) )</a>
+<a name="ln1415">      {</a>
+<a name="ln1416">        offsetToData += tupleDataSize;</a>
+<a name="ln1417">        continue;</a>
+<a name="ln1418">      }</a>
+<a name="ln1419"> </a>
+<a name="ln1420">      here = FT_Stream_FTell( stream );</a>
+<a name="ln1421"> </a>
+<a name="ln1422">      FT_Stream_SeekSet( stream, offsetToData );</a>
+<a name="ln1423"> </a>
+<a name="ln1424">      localpoints = ft_var_readpackedpoints( stream, &amp;point_count );</a>
+<a name="ln1425">      deltas      = ft_var_readpackeddeltas( stream,</a>
+<a name="ln1426">                                             point_count == 0 ? face-&gt;cvt_size</a>
+<a name="ln1427">                                                              : point_count );</a>
+<a name="ln1428">      if ( localpoints == NULL || deltas == NULL )</a>
+<a name="ln1429">        ; /* failure, ignore it */</a>
+<a name="ln1430"> </a>
+<a name="ln1431">      else if ( localpoints == ALL_POINTS )</a>
+<a name="ln1432">      {</a>
+<a name="ln1433">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1434">        int  count = 0;</a>
+<a name="ln1435">#endif</a>
+<a name="ln1436"> </a>
+<a name="ln1437"> </a>
+<a name="ln1438">        FT_TRACE7(( &quot;    CVT deltas:\n&quot; ));</a>
+<a name="ln1439"> </a>
+<a name="ln1440">        /* this means that there are deltas for every entry in cvt */</a>
+<a name="ln1441">        for ( j = 0; j &lt; face-&gt;cvt_size; j++ )</a>
+<a name="ln1442">        {</a>
+<a name="ln1443">          FT_Long  orig_cvt = face-&gt;cvt[j];</a>
+<a name="ln1444"> </a>
+<a name="ln1445"> </a>
+<a name="ln1446">          face-&gt;cvt[j] = (FT_Short)( orig_cvt +</a>
+<a name="ln1447">                                     FT_MulFix( deltas[j], apply ) );</a>
+<a name="ln1448"> </a>
+<a name="ln1449">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1450">          if ( orig_cvt != face-&gt;cvt[j] )</a>
+<a name="ln1451">          {</a>
+<a name="ln1452">            FT_TRACE7(( &quot;      %d: %d -&gt; %d\n&quot;,</a>
+<a name="ln1453">                        j, orig_cvt, face-&gt;cvt[j] ));</a>
+<a name="ln1454">            count++;</a>
+<a name="ln1455">          }</a>
+<a name="ln1456">#endif</a>
+<a name="ln1457">        }</a>
+<a name="ln1458"> </a>
+<a name="ln1459">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1460">        if ( !count )</a>
+<a name="ln1461">          FT_TRACE7(( &quot;      none\n&quot; ));</a>
+<a name="ln1462">#endif</a>
+<a name="ln1463">      }</a>
+<a name="ln1464"> </a>
+<a name="ln1465">      else</a>
+<a name="ln1466">      {</a>
+<a name="ln1467">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1468">        int  count = 0;</a>
+<a name="ln1469">#endif</a>
+<a name="ln1470"> </a>
+<a name="ln1471"> </a>
+<a name="ln1472">        FT_TRACE7(( &quot;    CVT deltas:\n&quot; ));</a>
+<a name="ln1473"> </a>
+<a name="ln1474">        for ( j = 0; j &lt; point_count; j++ )</a>
+<a name="ln1475">        {</a>
+<a name="ln1476">          int      pindex   = localpoints[j];</a>
+<a name="ln1477">          FT_Long  orig_cvt = face-&gt;cvt[pindex];</a>
+<a name="ln1478"> </a>
+<a name="ln1479"> </a>
+<a name="ln1480">          face-&gt;cvt[pindex] = (FT_Short)( orig_cvt +</a>
+<a name="ln1481">                                          FT_MulFix( deltas[j], apply ) );</a>
+<a name="ln1482"> </a>
+<a name="ln1483">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1484">          if ( orig_cvt != face-&gt;cvt[pindex] )</a>
+<a name="ln1485">          {</a>
+<a name="ln1486">            FT_TRACE7(( &quot;      %d: %d -&gt; %d\n&quot;,</a>
+<a name="ln1487">                        pindex, orig_cvt, face-&gt;cvt[pindex] ));</a>
+<a name="ln1488">            count++;</a>
+<a name="ln1489">          }</a>
+<a name="ln1490">#endif</a>
+<a name="ln1491">        }</a>
+<a name="ln1492"> </a>
+<a name="ln1493">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1494">        if ( !count )</a>
+<a name="ln1495">          FT_TRACE7(( &quot;      none\n&quot; ));</a>
+<a name="ln1496">#endif</a>
+<a name="ln1497">      }</a>
+<a name="ln1498"> </a>
+<a name="ln1499">      if ( localpoints != ALL_POINTS )</a>
+<a name="ln1500">        FT_FREE( localpoints );</a>
+<a name="ln1501">      FT_FREE( deltas );</a>
+<a name="ln1502"> </a>
+<a name="ln1503">      offsetToData += tupleDataSize;</a>
+<a name="ln1504"> </a>
+<a name="ln1505">      FT_Stream_SeekSet( stream, here );</a>
+<a name="ln1506">    }</a>
+<a name="ln1507"> </a>
+<a name="ln1508">    FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln1509"> </a>
+<a name="ln1510">  FExit:</a>
+<a name="ln1511">    FT_FRAME_EXIT();</a>
+<a name="ln1512"> </a>
+<a name="ln1513">  Exit:</a>
+<a name="ln1514">    FT_FREE( tuple_coords );</a>
+<a name="ln1515">    FT_FREE( im_start_coords );</a>
+<a name="ln1516">    FT_FREE( im_end_coords );</a>
+<a name="ln1517"> </a>
+<a name="ln1518">    return error;</a>
+<a name="ln1519">  }</a>
+<a name="ln1520"> </a>
+<a name="ln1521"> </a>
+<a name="ln1522">  /* Shift the original coordinates of all points between indices `p1' */</a>
+<a name="ln1523">  /* and `p2', using the same difference as given by index `ref'.      */</a>
+<a name="ln1524"> </a>
+<a name="ln1525">  /* modeled after `af_iup_shift' */</a>
+<a name="ln1526"> </a>
+<a name="ln1527">  static void</a>
+<a name="ln1528">  tt_delta_shift( int         p1,</a>
+<a name="ln1529">                  int         p2,</a>
+<a name="ln1530">                  int         ref,</a>
+<a name="ln1531">                  FT_Vector*  in_points,</a>
+<a name="ln1532">                  FT_Vector*  out_points )</a>
+<a name="ln1533">  {</a>
+<a name="ln1534">    int        p;</a>
+<a name="ln1535">    FT_Vector  delta;</a>
+<a name="ln1536"> </a>
+<a name="ln1537"> </a>
+<a name="ln1538">    delta.x = out_points[ref].x - in_points[ref].x;</a>
+<a name="ln1539">    delta.y = out_points[ref].y - in_points[ref].y;</a>
+<a name="ln1540"> </a>
+<a name="ln1541">    if ( delta.x == 0 &amp;&amp; delta.y == 0 )</a>
+<a name="ln1542">      return;</a>
+<a name="ln1543"> </a>
+<a name="ln1544">    for ( p = p1; p &lt; ref; p++ )</a>
+<a name="ln1545">    {</a>
+<a name="ln1546">      out_points[p].x += delta.x;</a>
+<a name="ln1547">      out_points[p].y += delta.y;</a>
+<a name="ln1548">    }</a>
+<a name="ln1549"> </a>
+<a name="ln1550">    for ( p = ref + 1; p &lt;= p2; p++ )</a>
+<a name="ln1551">    {</a>
+<a name="ln1552">      out_points[p].x += delta.x;</a>
+<a name="ln1553">      out_points[p].y += delta.y;</a>
+<a name="ln1554">    }</a>
+<a name="ln1555">  }</a>
+<a name="ln1556"> </a>
+<a name="ln1557"> </a>
+<a name="ln1558">  /* Interpolate the original coordinates of all points with indices */</a>
+<a name="ln1559">  /* between `p1' and `p2', using `ref1' and `ref2' as the reference */</a>
+<a name="ln1560">  /* point indices.                                                  */</a>
+<a name="ln1561"> </a>
+<a name="ln1562">  /* modeled after `af_iup_interp', `_iup_worker_interpolate', and */</a>
+<a name="ln1563">  /* `Ins_IUP'                                                     */</a>
+<a name="ln1564"> </a>
+<a name="ln1565">  static void</a>
+<a name="ln1566">  tt_delta_interpolate( int         p1,</a>
+<a name="ln1567">                        int         p2,</a>
+<a name="ln1568">                        int         ref1,</a>
+<a name="ln1569">                        int         ref2,</a>
+<a name="ln1570">                        FT_Vector*  in_points,</a>
+<a name="ln1571">                        FT_Vector*  out_points )</a>
+<a name="ln1572">  {</a>
+<a name="ln1573">    int  p, i;</a>
+<a name="ln1574"> </a>
+<a name="ln1575">    FT_Pos  out, in1, in2, out1, out2, d1, d2;</a>
+<a name="ln1576"> </a>
+<a name="ln1577"> </a>
+<a name="ln1578">    if ( p1 &gt; p2 )</a>
+<a name="ln1579">      return;</a>
+<a name="ln1580"> </a>
+<a name="ln1581">    /* handle both horizontal and vertical coordinates */</a>
+<a name="ln1582">    for ( i = 0; i &lt;= 1; i++ )</a>
+<a name="ln1583">    {</a>
+<a name="ln1584">      /* shift array pointers so that we can access `foo.y' as `foo.x' */</a>
+<a name="ln1585">      in_points  = (FT_Vector*)( (FT_Pos*)in_points + i );</a>
+<a name="ln1586">      out_points = (FT_Vector*)( (FT_Pos*)out_points + i );</a>
+<a name="ln1587"> </a>
+<a name="ln1588">      if ( in_points[ref1].x &gt; in_points[ref2].x )</a>
+<a name="ln1589">      {</a>
+<a name="ln1590">        p    = ref1;</a>
+<a name="ln1591">        ref1 = ref2;</a>
+<a name="ln1592">        ref2 = p;</a>
+<a name="ln1593">      }</a>
+<a name="ln1594"> </a>
+<a name="ln1595">      in1  = in_points[ref1].x;</a>
+<a name="ln1596">      in2  = in_points[ref2].x;</a>
+<a name="ln1597">      out1 = out_points[ref1].x;</a>
+<a name="ln1598">      out2 = out_points[ref2].x;</a>
+<a name="ln1599">      d1   = out1 - in1;</a>
+<a name="ln1600">      d2   = out2 - in2;</a>
+<a name="ln1601"> </a>
+<a name="ln1602">      if ( out1 == out2 || in1 == in2 )</a>
+<a name="ln1603">      {</a>
+<a name="ln1604">        for ( p = p1; p &lt;= p2; p++ )</a>
+<a name="ln1605">        {</a>
+<a name="ln1606">          out = in_points[p].x;</a>
+<a name="ln1607"> </a>
+<a name="ln1608">          if ( out &lt;= in1 )</a>
+<a name="ln1609">            out += d1;</a>
+<a name="ln1610">          else if ( out &gt;= in2 )</a>
+<a name="ln1611">            out += d2;</a>
+<a name="ln1612">          else</a>
+<a name="ln1613">            out = out1;</a>
+<a name="ln1614"> </a>
+<a name="ln1615">          out_points[p].x = out;</a>
+<a name="ln1616">        }</a>
+<a name="ln1617">      }</a>
+<a name="ln1618">      else</a>
+<a name="ln1619">      {</a>
+<a name="ln1620">        FT_Fixed  scale = FT_DivFix( out2 - out1, in2 - in1 );</a>
+<a name="ln1621"> </a>
+<a name="ln1622"> </a>
+<a name="ln1623">        for ( p = p1; p &lt;= p2; p++ )</a>
+<a name="ln1624">        {</a>
+<a name="ln1625">          out = in_points[p].x;</a>
+<a name="ln1626"> </a>
+<a name="ln1627">          if ( out &lt;= in1 )</a>
+<a name="ln1628">            out += d1;</a>
+<a name="ln1629">          else if ( out &gt;= in2 )</a>
+<a name="ln1630">            out += d2;</a>
+<a name="ln1631">          else</a>
+<a name="ln1632">            out = out1 + FT_MulFix( out - in1, scale );</a>
+<a name="ln1633"> </a>
+<a name="ln1634">          out_points[p].x = out;</a>
+<a name="ln1635">        }</a>
+<a name="ln1636">      }</a>
+<a name="ln1637">    }</a>
+<a name="ln1638">  }</a>
+<a name="ln1639"> </a>
+<a name="ln1640"> </a>
+<a name="ln1641">  /* Interpolate points without delta values, similar to */</a>
+<a name="ln1642">  /* the `IUP' hinting instruction.                      */</a>
+<a name="ln1643"> </a>
+<a name="ln1644">  /* modeled after `Ins_IUP */</a>
+<a name="ln1645"> </a>
+<a name="ln1646">  static void</a>
+<a name="ln1647">  tt_handle_deltas( FT_Outline*  outline,</a>
+<a name="ln1648">                    FT_Vector*   in_points,</a>
+<a name="ln1649">                    FT_Bool*     has_delta )</a>
+<a name="ln1650">  {</a>
+<a name="ln1651">    FT_Vector*  out_points;</a>
+<a name="ln1652"> </a>
+<a name="ln1653">    FT_Int  first_point;</a>
+<a name="ln1654">    FT_Int  end_point;</a>
+<a name="ln1655"> </a>
+<a name="ln1656">    FT_Int  first_delta;</a>
+<a name="ln1657">    FT_Int  cur_delta;</a>
+<a name="ln1658"> </a>
+<a name="ln1659">    FT_Int    point;</a>
+<a name="ln1660">    FT_Short  contour;</a>
+<a name="ln1661"> </a>
+<a name="ln1662"> </a>
+<a name="ln1663">    /* ignore empty outlines */</a>
+<a name="ln1664">    if ( !outline-&gt;n_contours )</a>
+<a name="ln1665">      return;</a>
+<a name="ln1666"> </a>
+<a name="ln1667">    out_points = outline-&gt;points;</a>
+<a name="ln1668"> </a>
+<a name="ln1669">    contour = 0;</a>
+<a name="ln1670">    point   = 0;</a>
+<a name="ln1671"> </a>
+<a name="ln1672">    do</a>
+<a name="ln1673">    {</a>
+<a name="ln1674">      end_point   = outline-&gt;contours[contour];</a>
+<a name="ln1675">      first_point = point;</a>
+<a name="ln1676"> </a>
+<a name="ln1677">      /* search first point that has a delta */</a>
+<a name="ln1678">      while ( point &lt;= end_point &amp;&amp; !has_delta[point] )</a>
+<a name="ln1679">        point++;</a>
+<a name="ln1680"> </a>
+<a name="ln1681">      if ( point &lt;= end_point )</a>
+<a name="ln1682">      {</a>
+<a name="ln1683">        first_delta = point;</a>
+<a name="ln1684">        cur_delta   = point;</a>
+<a name="ln1685"> </a>
+<a name="ln1686">        point++;</a>
+<a name="ln1687"> </a>
+<a name="ln1688">        while ( point &lt;= end_point )</a>
+<a name="ln1689">        {</a>
+<a name="ln1690">          /* search next point that has a delta  */</a>
+<a name="ln1691">          /* and interpolate intermediate points */</a>
+<a name="ln1692">          if ( has_delta[point] )</a>
+<a name="ln1693">          {</a>
+<a name="ln1694">            tt_delta_interpolate( cur_delta + 1,</a>
+<a name="ln1695">                                  point - 1,</a>
+<a name="ln1696">                                  cur_delta,</a>
+<a name="ln1697">                                  point,</a>
+<a name="ln1698">                                  in_points,</a>
+<a name="ln1699">                                  out_points );</a>
+<a name="ln1700">            cur_delta = point;</a>
+<a name="ln1701">          }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">          point++;</a>
+<a name="ln1704">        }</a>
+<a name="ln1705"> </a>
+<a name="ln1706">        /* shift contour if we only have a single delta */</a>
+<a name="ln1707">        if ( cur_delta == first_delta )</a>
+<a name="ln1708">          tt_delta_shift( first_point,</a>
+<a name="ln1709">                          end_point,</a>
+<a name="ln1710">                          cur_delta,</a>
+<a name="ln1711">                          in_points,</a>
+<a name="ln1712">                          out_points );</a>
+<a name="ln1713">        else</a>
+<a name="ln1714">        {</a>
+<a name="ln1715">          /* otherwise handle remaining points       */</a>
+<a name="ln1716">          /* at the end and beginning of the contour */</a>
+<a name="ln1717">          tt_delta_interpolate( cur_delta + 1,</a>
+<a name="ln1718">                                end_point,</a>
+<a name="ln1719">                                cur_delta,</a>
+<a name="ln1720">                                first_delta,</a>
+<a name="ln1721">                                in_points,</a>
+<a name="ln1722">                                out_points );</a>
+<a name="ln1723"> </a>
+<a name="ln1724">          if ( first_delta &gt; 0 )</a>
+<a name="ln1725">            tt_delta_interpolate( first_point,</a>
+<a name="ln1726">                                  first_delta - 1,</a>
+<a name="ln1727">                                  cur_delta,</a>
+<a name="ln1728">                                  first_delta,</a>
+<a name="ln1729">                                  in_points,</a>
+<a name="ln1730">                                  out_points );</a>
+<a name="ln1731">        }</a>
+<a name="ln1732">      }</a>
+<a name="ln1733">      contour++;</a>
+<a name="ln1734"> </a>
+<a name="ln1735">    } while ( contour &lt; outline-&gt;n_contours );</a>
+<a name="ln1736">  }</a>
+<a name="ln1737"> </a>
+<a name="ln1738"> </a>
+<a name="ln1739">  /*************************************************************************/</a>
+<a name="ln1740">  /*                                                                       */</a>
+<a name="ln1741">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln1742">  /*    TT_Vary_Apply_Glyph_Deltas                                         */</a>
+<a name="ln1743">  /*                                                                       */</a>
+<a name="ln1744">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln1745">  /*    Apply the appropriate deltas to the current glyph.                 */</a>
+<a name="ln1746">  /*                                                                       */</a>
+<a name="ln1747">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln1748">  /*    face        :: A handle to the target face object.                 */</a>
+<a name="ln1749">  /*                                                                       */</a>
+<a name="ln1750">  /*    glyph_index :: The index of the glyph being modified.              */</a>
+<a name="ln1751">  /*                                                                       */</a>
+<a name="ln1752">  /*    n_points    :: The number of the points in the glyph, including    */</a>
+<a name="ln1753">  /*                   phantom points.                                     */</a>
+<a name="ln1754">  /*                                                                       */</a>
+<a name="ln1755">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln1756">  /*    outline     :: The outline to change.                              */</a>
+<a name="ln1757">  /*                                                                       */</a>
+<a name="ln1758">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln1759">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln1760">  /*                                                                       */</a>
+<a name="ln1761">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1762">  TT_Vary_Apply_Glyph_Deltas( TT_Face      face,</a>
+<a name="ln1763">                              FT_UInt      glyph_index,</a>
+<a name="ln1764">                              FT_Outline*  outline,</a>
+<a name="ln1765">                              FT_UInt      n_points )</a>
+<a name="ln1766">  {</a>
+<a name="ln1767">    FT_Stream   stream = face-&gt;root.stream;</a>
+<a name="ln1768">    FT_Memory   memory = stream-&gt;memory;</a>
+<a name="ln1769">    GX_Blend    blend  = face-&gt;blend;</a>
+<a name="ln1770"> </a>
+<a name="ln1771">    FT_Vector*  points_org = NULL;</a>
+<a name="ln1772">    FT_Bool*    has_delta  = NULL;</a>
+<a name="ln1773"> </a>
+<a name="ln1774">    FT_Error    error;</a>
+<a name="ln1775">    FT_ULong    glyph_start;</a>
+<a name="ln1776">    FT_UInt     tupleCount;</a>
+<a name="ln1777">    FT_ULong    offsetToData;</a>
+<a name="ln1778">    FT_ULong    here;</a>
+<a name="ln1779">    FT_UInt     i, j;</a>
+<a name="ln1780">    FT_Fixed*   tuple_coords    = NULL;</a>
+<a name="ln1781">    FT_Fixed*   im_start_coords = NULL;</a>
+<a name="ln1782">    FT_Fixed*   im_end_coords   = NULL;</a>
+<a name="ln1783">    FT_UInt     point_count, spoint_count = 0;</a>
+<a name="ln1784">    FT_UShort*  sharedpoints = NULL;</a>
+<a name="ln1785">    FT_UShort*  localpoints  = NULL;</a>
+<a name="ln1786">    FT_UShort*  points;</a>
+<a name="ln1787">    FT_Short    *deltas_x, *deltas_y;</a>
+<a name="ln1788"> </a>
+<a name="ln1789"> </a>
+<a name="ln1790">    if ( !face-&gt;doblend || blend == NULL )</a>
+<a name="ln1791">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1792"> </a>
+<a name="ln1793">    if ( glyph_index &gt;= blend-&gt;gv_glyphcnt      ||</a>
+<a name="ln1794">         blend-&gt;glyphoffsets[glyph_index] ==</a>
+<a name="ln1795">           blend-&gt;glyphoffsets[glyph_index + 1] )</a>
+<a name="ln1796">    {</a>
+<a name="ln1797">      FT_TRACE2(( &quot;TT_Vary_Apply_Glyph_Deltas:&quot;</a>
+<a name="ln1798">                  &quot; no variation data for this glyph\n&quot; ));</a>
+<a name="ln1799">      return FT_Err_Ok;</a>
+<a name="ln1800">    }</a>
+<a name="ln1801"> </a>
+<a name="ln1802">    if ( FT_NEW_ARRAY( points_org, n_points ) ||</a>
+<a name="ln1803">         FT_NEW_ARRAY( has_delta, n_points )  )</a>
+<a name="ln1804">      goto Fail1;</a>
+<a name="ln1805"> </a>
+<a name="ln1806">    if ( FT_STREAM_SEEK( blend-&gt;glyphoffsets[glyph_index] )   ||</a>
+<a name="ln1807">         FT_FRAME_ENTER( blend-&gt;glyphoffsets[glyph_index + 1] -</a>
+<a name="ln1808">                           blend-&gt;glyphoffsets[glyph_index] ) )</a>
+<a name="ln1809">      goto Fail1;</a>
+<a name="ln1810"> </a>
+<a name="ln1811">    glyph_start = FT_Stream_FTell( stream );</a>
+<a name="ln1812"> </a>
+<a name="ln1813">    /* each set of glyph variation data is formatted similarly to `cvar' */</a>
+<a name="ln1814">    /* (except we get shared points and global tuples)                   */</a>
+<a name="ln1815"> </a>
+<a name="ln1816">    if ( FT_NEW_ARRAY( tuple_coords, blend-&gt;num_axis )    ||</a>
+<a name="ln1817">         FT_NEW_ARRAY( im_start_coords, blend-&gt;num_axis ) ||</a>
+<a name="ln1818">         FT_NEW_ARRAY( im_end_coords, blend-&gt;num_axis )   )</a>
+<a name="ln1819">      goto Fail2;</a>
+<a name="ln1820"> </a>
+<a name="ln1821">    tupleCount   = FT_GET_USHORT();</a>
+<a name="ln1822">    offsetToData = glyph_start + FT_GET_USHORT();</a>
+<a name="ln1823"> </a>
+<a name="ln1824">    if ( tupleCount &amp; GX_TC_TUPLES_SHARE_POINT_NUMBERS )</a>
+<a name="ln1825">    {</a>
+<a name="ln1826">      here = FT_Stream_FTell( stream );</a>
+<a name="ln1827"> </a>
+<a name="ln1828">      FT_Stream_SeekSet( stream, offsetToData );</a>
+<a name="ln1829"> </a>
+<a name="ln1830">      sharedpoints = ft_var_readpackedpoints( stream, &amp;spoint_count );</a>
+<a name="ln1831">      offsetToData = FT_Stream_FTell( stream );</a>
+<a name="ln1832"> </a>
+<a name="ln1833">      FT_Stream_SeekSet( stream, here );</a>
+<a name="ln1834">    }</a>
+<a name="ln1835"> </a>
+<a name="ln1836">    FT_TRACE5(( &quot;gvar: there are %d tuples:\n&quot;, tupleCount ));</a>
+<a name="ln1837"> </a>
+<a name="ln1838">    for ( i = 0; i &lt; ( tupleCount &amp; GX_TC_TUPLE_COUNT_MASK ); i++ )</a>
+<a name="ln1839">    {</a>
+<a name="ln1840">      FT_UInt   tupleDataSize;</a>
+<a name="ln1841">      FT_UInt   tupleIndex;</a>
+<a name="ln1842">      FT_Fixed  apply;</a>
+<a name="ln1843"> </a>
+<a name="ln1844"> </a>
+<a name="ln1845">      FT_TRACE6(( &quot;  tuple %d:\n&quot;, i ));</a>
+<a name="ln1846"> </a>
+<a name="ln1847">      tupleDataSize = FT_GET_USHORT();</a>
+<a name="ln1848">      tupleIndex    = FT_GET_USHORT();</a>
+<a name="ln1849"> </a>
+<a name="ln1850">      if ( tupleIndex &amp; GX_TI_EMBEDDED_TUPLE_COORD )</a>
+<a name="ln1851">      {</a>
+<a name="ln1852">        for ( j = 0; j &lt; blend-&gt;num_axis; j++ )</a>
+<a name="ln1853">          tuple_coords[j] = FT_GET_SHORT() * 4;   /* convert from        */</a>
+<a name="ln1854">                                                  /* short frac to fixed */</a>
+<a name="ln1855">      }</a>
+<a name="ln1856">      else if ( ( tupleIndex &amp; GX_TI_TUPLE_INDEX_MASK ) &gt;= blend-&gt;tuplecount )</a>
+<a name="ln1857">      {</a>
+<a name="ln1858">        error = FT_THROW( Invalid_Table );</a>
+<a name="ln1859">        goto Fail2;</a>
+<a name="ln1860">      }</a>
+<a name="ln1861">      else</a>
+<a name="ln1862">        FT_MEM_COPY(</a>
+<a name="ln1863">          tuple_coords,</a>
+<a name="ln1864">          &amp;blend-&gt;tuplecoords[( tupleIndex &amp; 0xFFF ) * blend-&gt;num_axis],</a>
+<a name="ln1865">          blend-&gt;num_axis * sizeof ( FT_Fixed ) );</a>
+<a name="ln1866"> </a>
+<a name="ln1867">      if ( tupleIndex &amp; GX_TI_INTERMEDIATE_TUPLE )</a>
+<a name="ln1868">      {</a>
+<a name="ln1869">        for ( j = 0; j &lt; blend-&gt;num_axis; j++ )</a>
+<a name="ln1870">          im_start_coords[j] = FT_GET_SHORT() * 4;</a>
+<a name="ln1871">        for ( j = 0; j &lt; blend-&gt;num_axis; j++ )</a>
+<a name="ln1872">          im_end_coords[j] = FT_GET_SHORT() * 4;</a>
+<a name="ln1873">      }</a>
+<a name="ln1874"> </a>
+<a name="ln1875">      apply = ft_var_apply_tuple( blend,</a>
+<a name="ln1876">                                  (FT_UShort)tupleIndex,</a>
+<a name="ln1877">                                  tuple_coords,</a>
+<a name="ln1878">                                  im_start_coords,</a>
+<a name="ln1879">                                  im_end_coords );</a>
+<a name="ln1880"> </a>
+<a name="ln1881">      if ( apply == 0 )              /* tuple isn't active for our blend */</a>
+<a name="ln1882">      {</a>
+<a name="ln1883">        offsetToData += tupleDataSize;</a>
+<a name="ln1884">        continue;</a>
+<a name="ln1885">      }</a>
+<a name="ln1886"> </a>
+<a name="ln1887">      here = FT_Stream_FTell( stream );</a>
+<a name="ln1888"> </a>
+<a name="ln1889">      if ( tupleIndex &amp; GX_TI_PRIVATE_POINT_NUMBERS )</a>
+<a name="ln1890">      {</a>
+<a name="ln1891">        FT_Stream_SeekSet( stream, offsetToData );</a>
+<a name="ln1892"> </a>
+<a name="ln1893">        localpoints = ft_var_readpackedpoints( stream, &amp;point_count );</a>
+<a name="ln1894">        points      = localpoints;</a>
+<a name="ln1895">      }</a>
+<a name="ln1896">      else</a>
+<a name="ln1897">      {</a>
+<a name="ln1898">        points      = sharedpoints;</a>
+<a name="ln1899">        point_count = spoint_count;</a>
+<a name="ln1900">      }</a>
+<a name="ln1901"> </a>
+<a name="ln1902">      deltas_x = ft_var_readpackeddeltas( stream,</a>
+<a name="ln1903">                                          point_count == 0 ? n_points</a>
+<a name="ln1904">                                                           : point_count );</a>
+<a name="ln1905">      deltas_y = ft_var_readpackeddeltas( stream,</a>
+<a name="ln1906">                                          point_count == 0 ? n_points</a>
+<a name="ln1907">                                                           : point_count );</a>
+<a name="ln1908"> </a>
+<a name="ln1909">      if ( points == NULL || deltas_y == NULL || deltas_x == NULL )</a>
+<a name="ln1910">        ; /* failure, ignore it */</a>
+<a name="ln1911"> </a>
+<a name="ln1912">      else if ( points == ALL_POINTS )</a>
+<a name="ln1913">      {</a>
+<a name="ln1914">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1915">        int  count = 0;</a>
+<a name="ln1916">#endif</a>
+<a name="ln1917"> </a>
+<a name="ln1918"> </a>
+<a name="ln1919">        FT_TRACE7(( &quot;    point deltas:\n&quot; ));</a>
+<a name="ln1920"> </a>
+<a name="ln1921">        /* this means that there are deltas for every point in the glyph */</a>
+<a name="ln1922">        for ( j = 0; j &lt; n_points; j++ )</a>
+<a name="ln1923">        {</a>
+<a name="ln1924">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1925">          FT_Vector  point_org = outline-&gt;points[j];</a>
+<a name="ln1926">#endif</a>
+<a name="ln1927"> </a>
+<a name="ln1928"> </a>
+<a name="ln1929">          outline-&gt;points[j].x += FT_MulFix( deltas_x[j], apply );</a>
+<a name="ln1930">          outline-&gt;points[j].y += FT_MulFix( deltas_y[j], apply );</a>
+<a name="ln1931"> </a>
+<a name="ln1932">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1933">          if ( ( point_org.x != outline-&gt;points[j].x ) ||</a>
+<a name="ln1934">               ( point_org.y != outline-&gt;points[j].y ) )</a>
+<a name="ln1935">          {</a>
+<a name="ln1936">            FT_TRACE7(( &quot;      %d: (%d, %d) -&gt; (%d, %d)\n&quot;,</a>
+<a name="ln1937">                        j,</a>
+<a name="ln1938">                        point_org.x,</a>
+<a name="ln1939">                        point_org.y,</a>
+<a name="ln1940">                        outline-&gt;points[j].x,</a>
+<a name="ln1941">                        outline-&gt;points[j].y ));</a>
+<a name="ln1942">            count++;</a>
+<a name="ln1943">          }</a>
+<a name="ln1944">#endif</a>
+<a name="ln1945">        }</a>
+<a name="ln1946"> </a>
+<a name="ln1947">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1948">        if ( !count )</a>
+<a name="ln1949">          FT_TRACE7(( &quot;      none\n&quot; ));</a>
+<a name="ln1950">#endif</a>
+<a name="ln1951">      }</a>
+<a name="ln1952"> </a>
+<a name="ln1953">      else</a>
+<a name="ln1954">      {</a>
+<a name="ln1955">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1956">        int  count = 0;</a>
+<a name="ln1957">#endif</a>
+<a name="ln1958"> </a>
+<a name="ln1959"> </a>
+<a name="ln1960">        /* we have to interpolate the missing deltas similar to the */</a>
+<a name="ln1961">        /* IUP bytecode instruction                                 */</a>
+<a name="ln1962">        for ( j = 0; j &lt; n_points; j++ )</a>
+<a name="ln1963">        {</a>
+<a name="ln1964">          points_org[j] = outline-&gt;points[j];</a>
+<a name="ln1965">          has_delta[j]  = FALSE;</a>
+<a name="ln1966">        }</a>
+<a name="ln1967"> </a>
+<a name="ln1968">        for ( j = 0; j &lt; point_count; j++ )</a>
+<a name="ln1969">        {</a>
+<a name="ln1970">          FT_UShort  idx = localpoints[j];</a>
+<a name="ln1971"> </a>
+<a name="ln1972"> </a>
+<a name="ln1973">          if ( idx &gt;= n_points )</a>
+<a name="ln1974">            continue;</a>
+<a name="ln1975"> </a>
+<a name="ln1976">          has_delta[idx] = TRUE;</a>
+<a name="ln1977"> </a>
+<a name="ln1978">          outline-&gt;points[idx].x += FT_MulFix( deltas_x[j], apply );</a>
+<a name="ln1979">          outline-&gt;points[idx].y += FT_MulFix( deltas_y[j], apply );</a>
+<a name="ln1980">        }</a>
+<a name="ln1981"> </a>
+<a name="ln1982">        /* no need to handle phantom points here,      */</a>
+<a name="ln1983">        /* since solitary points can't be interpolated */</a>
+<a name="ln1984">        tt_handle_deltas( outline,</a>
+<a name="ln1985">                          points_org,</a>
+<a name="ln1986">                          has_delta );</a>
+<a name="ln1987"> </a>
+<a name="ln1988">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1989">        FT_TRACE7(( &quot;    point deltas:\n&quot; ));</a>
+<a name="ln1990"> </a>
+<a name="ln1991">        for ( j = 0; j &lt; n_points; j++)</a>
+<a name="ln1992">        {</a>
+<a name="ln1993">          if ( ( points_org[j].x != outline-&gt;points[j].x ) ||</a>
+<a name="ln1994">               ( points_org[j].y != outline-&gt;points[j].y ) )</a>
+<a name="ln1995">          {</a>
+<a name="ln1996">            FT_TRACE7(( &quot;      %d: (%d, %d) -&gt; (%d, %d)\n&quot;,</a>
+<a name="ln1997">                        j,</a>
+<a name="ln1998">                        points_org[j].x,</a>
+<a name="ln1999">                        points_org[j].y,</a>
+<a name="ln2000">                        outline-&gt;points[j].x,</a>
+<a name="ln2001">                        outline-&gt;points[j].y ));</a>
+<a name="ln2002">            count++;</a>
+<a name="ln2003">          }</a>
+<a name="ln2004">        }</a>
+<a name="ln2005"> </a>
+<a name="ln2006">        if ( !count )</a>
+<a name="ln2007">          FT_TRACE7(( &quot;      none\n&quot; ));</a>
+<a name="ln2008">#endif</a>
+<a name="ln2009">      }</a>
+<a name="ln2010"> </a>
+<a name="ln2011">      if ( localpoints != ALL_POINTS )</a>
+<a name="ln2012">        FT_FREE( localpoints );</a>
+<a name="ln2013">      FT_FREE( deltas_x );</a>
+<a name="ln2014">      FT_FREE( deltas_y );</a>
+<a name="ln2015"> </a>
+<a name="ln2016">      offsetToData += tupleDataSize;</a>
+<a name="ln2017"> </a>
+<a name="ln2018">      FT_Stream_SeekSet( stream, here );</a>
+<a name="ln2019">    }</a>
+<a name="ln2020"> </a>
+<a name="ln2021">    FT_TRACE5(( &quot;\n&quot; ));</a>
+<a name="ln2022"> </a>
+<a name="ln2023">  Fail2:</a>
+<a name="ln2024">    FT_FREE( tuple_coords );</a>
+<a name="ln2025">    FT_FREE( im_start_coords );</a>
+<a name="ln2026">    FT_FREE( im_end_coords );</a>
+<a name="ln2027"> </a>
+<a name="ln2028">    FT_FRAME_EXIT();</a>
+<a name="ln2029"> </a>
+<a name="ln2030">  Fail1:</a>
+<a name="ln2031">    FT_FREE( points_org );</a>
+<a name="ln2032">    FT_FREE( has_delta );</a>
+<a name="ln2033"> </a>
+<a name="ln2034">    return error;</a>
+<a name="ln2035">  }</a>
+<a name="ln2036"> </a>
+<a name="ln2037"> </a>
+<a name="ln2038">  /*************************************************************************/</a>
+<a name="ln2039">  /*                                                                       */</a>
+<a name="ln2040">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln2041">  /*    tt_done_blend                                                      */</a>
+<a name="ln2042">  /*                                                                       */</a>
+<a name="ln2043">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln2044">  /*    Free the blend internal data structure.                            */</a>
+<a name="ln2045">  /*                                                                       */</a>
+<a name="ln2046">  FT_LOCAL_DEF( void )</a>
+<a name="ln2047">  tt_done_blend( FT_Memory  memory,</a>
+<a name="ln2048">                 GX_Blend   blend )</a>
+<a name="ln2049">  {</a>
+<a name="ln2050">    if ( blend != NULL )</a>
+<a name="ln2051">    {</a>
+<a name="ln2052">      FT_UInt  i;</a>
+<a name="ln2053"> </a>
+<a name="ln2054"> </a>
+<a name="ln2055">      FT_FREE( blend-&gt;normalizedcoords );</a>
+<a name="ln2056">      FT_FREE( blend-&gt;mmvar );</a>
+<a name="ln2057"> </a>
+<a name="ln2058">      if ( blend-&gt;avar_segment != NULL )</a>
+<a name="ln2059">      {</a>
+<a name="ln2060">        for ( i = 0; i &lt; blend-&gt;num_axis; i++ )</a>
+<a name="ln2061">          FT_FREE( blend-&gt;avar_segment[i].correspondence );</a>
+<a name="ln2062">        FT_FREE( blend-&gt;avar_segment );</a>
+<a name="ln2063">      }</a>
+<a name="ln2064"> </a>
+<a name="ln2065">      FT_FREE( blend-&gt;tuplecoords );</a>
+<a name="ln2066">      FT_FREE( blend-&gt;glyphoffsets );</a>
+<a name="ln2067">      FT_FREE( blend );</a>
+<a name="ln2068">    }</a>
+<a name="ln2069">  }</a>
+<a name="ln2070"> </a>
+<a name="ln2071">#endif /* TT_CONFIG_OPTION_GX_VAR_SUPPORT */</a>
+<a name="ln2072"> </a>
+<a name="ln2073"> </a>
+<a name="ln2074">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="1344"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

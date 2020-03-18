@@ -1,0 +1,410 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>midimapping.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;excerpt.h&quot;</a>
+<a name="ln16">#include &quot;instrument.h&quot;</a>
+<a name="ln17">#include &quot;part.h&quot;</a>
+<a name="ln18"> </a>
+<a name="ln19">namespace Ms {</a>
+<a name="ln20"> </a>
+<a name="ln21">//---------------------------------------------------------</a>
+<a name="ln22">//   rebuildMidiMapping</a>
+<a name="ln23">//---------------------------------------------------------</a>
+<a name="ln24"> </a>
+<a name="ln25">void MasterScore::rebuildMidiMapping()</a>
+<a name="ln26">      {</a>
+<a name="ln27">      Score* playbackScore = _playbackScore ? _playbackScore : this;</a>
+<a name="ln28">      setPlaybackScore(nullptr);</a>
+<a name="ln29"> </a>
+<a name="ln30">      removeDeletedMidiMapping();</a>
+<a name="ln31">      int maxport = updateMidiMapping();</a>
+<a name="ln32">      reorderMidiMapping();</a>
+<a name="ln33">      rebuildExcerptsMidiMapping();</a>
+<a name="ln34">      masterScore()-&gt;setMidiPortCount(maxport);</a>
+<a name="ln35"> </a>
+<a name="ln36">      setPlaybackScore(playbackScore);</a>
+<a name="ln37">      }</a>
+<a name="ln38"> </a>
+<a name="ln39">//---------------------------------------------------------</a>
+<a name="ln40">//   checkMidiMapping</a>
+<a name="ln41">//   midi mapping is simple if all ports and channels</a>
+<a name="ln42">//   don't decrease and don't have 'holes' except drum tracks</a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44"> </a>
+<a name="ln45">void MasterScore::checkMidiMapping()</a>
+<a name="ln46">      {</a>
+<a name="ln47">      isSimpleMidiMaping = true;</a>
+<a name="ln48">      rebuildMidiMapping();</a>
+<a name="ln49"> </a>
+<a name="ln50">      QList&lt;bool&gt; drum;</a>
+<a name="ln51">      drum.reserve(int(_midiMapping.size()));</a>
+<a name="ln52">      for (Part* part : parts()) {</a>
+<a name="ln53">            const InstrumentList* il = part-&gt;instruments();</a>
+<a name="ln54">            for (auto i = il-&gt;begin(); i != il-&gt;end(); ++i) {</a>
+<a name="ln55">                  const Instrument* instr = i-&gt;second;</a>
+<a name="ln56">                  for (int j = 0; j &lt; instr-&gt;channel().size(); ++j)</a>
+<a name="ln57">                        drum.append(instr-&gt;useDrumset());</a>
+<a name="ln58">                  }</a>
+<a name="ln59">            }</a>
+<a name="ln60">      int lastChannel  = -1; // port*16+channel</a>
+<a name="ln61">      int lastDrumPort = -1;</a>
+<a name="ln62">      int index = 0;</a>
+<a name="ln63">      for (const MidiMapping&amp; m : _midiMapping) {</a>
+<a name="ln64">            if (index &gt;= drum.size())</a>
+<a name="ln65">                  break;</a>
+<a name="ln66">            if (drum[index]) {</a>
+<a name="ln67">                  lastDrumPort++;</a>
+<a name="ln68">                  if (m.port() != lastDrumPort) {</a>
+<a name="ln69">                        isSimpleMidiMaping = false;</a>
+<a name="ln70">                        return;</a>
+<a name="ln71">                        }</a>
+<a name="ln72">                  }</a>
+<a name="ln73">            else {</a>
+<a name="ln74">                  lastChannel++;</a>
+<a name="ln75">                  if (lastChannel % 16 == 9)</a>
+<a name="ln76">                        lastChannel++;</a>
+<a name="ln77">                  int p = lastChannel / 16;</a>
+<a name="ln78">                  int c = lastChannel % 16;</a>
+<a name="ln79">                  if (m.port() != p || m.channel() != c) {</a>
+<a name="ln80">                        isSimpleMidiMaping = false;</a>
+<a name="ln81">                        return;</a>
+<a name="ln82">                        }</a>
+<a name="ln83">                  }</a>
+<a name="ln84">            index++;</a>
+<a name="ln85">            }</a>
+<a name="ln86">      }</a>
+<a name="ln87"> </a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89">//   getNextFreeMidiMapping</a>
+<a name="ln90">//---------------------------------------------------------</a>
+<a name="ln91"> </a>
+<a name="ln92">int MasterScore::getNextFreeMidiMapping(int p, int ch)</a>
+<a name="ln93">      {</a>
+<a name="ln94">      if (ch != -1 &amp;&amp; p != -1)</a>
+<a name="ln95">            return p*16+ch;</a>
+<a name="ln96"> </a>
+<a name="ln97">      else if (ch != -1 &amp;&amp; p == -1) {</a>
+<a name="ln98">            for (int port = 0;; port++) {</a>
+<a name="ln99">                  if (!occupiedMidiChannels.contains(port*16+ch)) {</a>
+<a name="ln100">                        occupiedMidiChannels.insert(port*16+ch);</a>
+<a name="ln101">                        return port*16+ch;</a>
+<a name="ln102">                        }</a>
+<a name="ln103">                  }</a>
+<a name="ln104">            }</a>
+<a name="ln105">      else if (ch == -1 &amp;&amp; p != -1) {</a>
+<a name="ln106">            for (int channel = 0; channel &lt; 16; channel++) {</a>
+<a name="ln107">                  if (channel != 9 &amp;&amp; !occupiedMidiChannels.contains(p*16+channel)) {</a>
+<a name="ln108">                        occupiedMidiChannels.insert(p*16+channel);</a>
+<a name="ln109">                        return p*16+channel;</a>
+<a name="ln110">                        }</a>
+<a name="ln111">                  }</a>
+<a name="ln112">            }</a>
+<a name="ln113"> </a>
+<a name="ln114">      for (;;searchMidiMappingFrom++) {</a>
+<a name="ln115">            if (searchMidiMappingFrom % 16 != 9 &amp;&amp; !occupiedMidiChannels.contains(searchMidiMappingFrom)) {</a>
+<a name="ln116">                  occupiedMidiChannels.insert(searchMidiMappingFrom);</a>
+<a name="ln117">                  return searchMidiMappingFrom;</a>
+<a name="ln118">                  }</a>
+<a name="ln119">            }</a>
+<a name="ln120">      }</a>
+<a name="ln121"> </a>
+<a name="ln122">//---------------------------------------------------------</a>
+<a name="ln123">//   getNextFreeDrumMidiMapping</a>
+<a name="ln124">//---------------------------------------------------------</a>
+<a name="ln125"> </a>
+<a name="ln126">int MasterScore::getNextFreeDrumMidiMapping()</a>
+<a name="ln127">      {</a>
+<a name="ln128">      for (int i = 0;; i++) {</a>
+<a name="ln129">            if (!occupiedMidiChannels.contains(i*16+9)) {</a>
+<a name="ln130">                  occupiedMidiChannels.insert(i*16+9);</a>
+<a name="ln131">                  return i*16+9;</a>
+<a name="ln132">                  }</a>
+<a name="ln133">            }</a>
+<a name="ln134">      }</a>
+<a name="ln135"> </a>
+<a name="ln136">//---------------------------------------------------------</a>
+<a name="ln137">//   rebuildExcerptsMidiMapping</a>
+<a name="ln138">//---------------------------------------------------------</a>
+<a name="ln139"> </a>
+<a name="ln140">void MasterScore::rebuildExcerptsMidiMapping()</a>
+<a name="ln141">      {</a>
+<a name="ln142">      for (Excerpt* ex : excerpts()) {</a>
+<a name="ln143">            for (Part* p : ex-&gt;partScore()-&gt;parts()) {</a>
+<a name="ln144">                  const Part* masterPart = p-&gt;masterPart();</a>
+<a name="ln145">                  if (!masterPart-&gt;score()-&gt;isMaster()) {</a>
+<a name="ln146">                        qWarning(&quot;reorderMidiMapping: no part in master score is linked&quot;);</a>
+<a name="ln147">                        continue;</a>
+<a name="ln148">                        }</a>
+<a name="ln149">                  Q_ASSERT(p-&gt;instruments()-&gt;size() == masterPart-&gt;instruments()-&gt;size());</a>
+<a name="ln150">                  for (const auto&amp; item : *masterPart-&gt;instruments()) {</a>
+<a name="ln151">                        const Instrument* iMaster = item.second;</a>
+<a name="ln152">                        const int tick = item.first;</a>
+<a name="ln153">                        Instrument* iLocal = p-&gt;instrument(Fraction::fromTicks(tick));</a>
+<a name="ln154">                        const int nchannels = iMaster-&gt;channel().size();</a>
+<a name="ln155">                        if (iLocal-&gt;channel().size() != nchannels) {</a>
+<a name="ln156">                              // may happen, e.g., if user changes an instrument</a>
+<a name="ln157">                              (*iLocal) = (*iMaster);</a>
+<a name="ln158">                              continue;</a>
+<a name="ln159">                              }</a>
+<a name="ln160">                        for (int c = 0; c &lt; nchannels; ++c) {</a>
+<a name="ln161">                              Channel* cLocal = iLocal-&gt;channel(c);</a>
+<a name="ln162">                              const Channel* cMaster = iMaster-&gt;channel(c);</a>
+<a name="ln163">                              cLocal-&gt;setChannel(cMaster-&gt;channel());</a>
+<a name="ln164">                              }</a>
+<a name="ln165">                        }</a>
+<a name="ln166">                  }</a>
+<a name="ln167">            }</a>
+<a name="ln168">      }</a>
+<a name="ln169"> </a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171">//   reorderMidiMapping</a>
+<a name="ln172">//   Set mappings in order you see in Add-&gt;Instruments</a>
+<a name="ln173">//---------------------------------------------------------</a>
+<a name="ln174"> </a>
+<a name="ln175">void MasterScore::reorderMidiMapping()</a>
+<a name="ln176">      {</a>
+<a name="ln177">      using std::swap;</a>
+<a name="ln178">      int sequenceNumber = 0;</a>
+<a name="ln179">      for (Part* part : parts()) {</a>
+<a name="ln180">            const InstrumentList* il = part-&gt;instruments();</a>
+<a name="ln181">            for (auto i = il-&gt;begin(); i != il-&gt;end(); ++i) {</a>
+<a name="ln182">                  const Instrument* instr = i-&gt;second;</a>
+<a name="ln183">                  for (Channel* channel : instr-&gt;channel()) {</a>
+<a name="ln184">                        if (!(_midiMapping[sequenceNumber].part() == part</a>
+<a name="ln185">                              &amp;&amp; _midiMapping[sequenceNumber].masterChannel == channel)) {</a>
+<a name="ln186">                              int shouldBe = channel-&gt;channel();</a>
+<a name="ln187">                              swap(_midiMapping[sequenceNumber], _midiMapping[shouldBe]);</a>
+<a name="ln188">                              _midiMapping[sequenceNumber].articulation()-&gt;setChannel(sequenceNumber);</a>
+<a name="ln189">                              channel-&gt;setChannel(sequenceNumber);</a>
+<a name="ln190">                              _midiMapping[shouldBe].articulation()-&gt;setChannel(shouldBe);</a>
+<a name="ln191">                              }</a>
+<a name="ln192">                        sequenceNumber++;</a>
+<a name="ln193">                        }</a>
+<a name="ln194">                  }</a>
+<a name="ln195">            }</a>
+<a name="ln196">      }</a>
+<a name="ln197"> </a>
+<a name="ln198">//---------------------------------------------------------</a>
+<a name="ln199">//   removeDeletedMidiMapping</a>
+<a name="ln200">//   Remove mappings to deleted instruments</a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202"> </a>
+<a name="ln203">void MasterScore::removeDeletedMidiMapping()</a>
+<a name="ln204">      {</a>
+<a name="ln205">      int removeOffset = 0;</a>
+<a name="ln206">      int mappingSize = int(_midiMapping.size());</a>
+<a name="ln207">      for (int index = 0; index &lt; mappingSize; index++) {</a>
+<a name="ln208">            Part* p = midiMapping(index)-&gt;part();</a>
+<a name="ln209">            if (!parts().contains(p)) {</a>
+<a name="ln210">                  removeOffset++;</a>
+<a name="ln211">                  continue;</a>
+<a name="ln212">                  }</a>
+<a name="ln213">            // Not all channels could exist</a>
+<a name="ln214">            bool channelExists = false;</a>
+<a name="ln215">            const InstrumentList* il = p-&gt;instruments();</a>
+<a name="ln216">            for (auto i = il-&gt;begin(); i != il-&gt;end() &amp;&amp; !channelExists; ++i) {</a>
+<a name="ln217">                  const Instrument* instr = i-&gt;second;</a>
+<a name="ln218">                  channelExists = (_midiMapping[index].articulation()-&gt;channel() != -1</a>
+<a name="ln219">                      &amp;&amp; instr-&gt;channel().contains(_midiMapping[index].masterChannel)</a>
+<a name="ln220">                      &amp;&amp; !(_midiMapping[index].port() == -1 &amp;&amp; _midiMapping[index].channel() == -1));</a>
+<a name="ln221">                  if (channelExists)</a>
+<a name="ln222">                        break;</a>
+<a name="ln223">                  }</a>
+<a name="ln224">            if (!channelExists) {</a>
+<a name="ln225">                  removeOffset++;</a>
+<a name="ln226">                  continue;</a>
+<a name="ln227">                  }</a>
+<a name="ln228">            // Let's do a left shift by 'removeOffset' items if necessary</a>
+<a name="ln229">            if (index != 0 &amp;&amp; removeOffset != 0) {</a>
+<a name="ln230">                  _midiMapping[index-removeOffset] = std::move(_midiMapping[index]);</a>
+<a name="ln231"> </a>
+<a name="ln232">                  const int chanVal = _midiMapping[index-removeOffset].articulation()-&gt;channel();</a>
+<a name="ln233">                  _midiMapping[index-removeOffset].articulation()-&gt;setChannel(chanVal - removeOffset);</a>
+<a name="ln234">                  }</a>
+<a name="ln235">            }</a>
+<a name="ln236">      // We have 'removeOffset' deleted instruments, let's remove their mappings</a>
+<a name="ln237">      for (int index = 0; index &lt; removeOffset; index++)</a>
+<a name="ln238">            _midiMapping.pop_back();</a>
+<a name="ln239">      }</a>
+<a name="ln240"> </a>
+<a name="ln241">//---------------------------------------------------------</a>
+<a name="ln242">//   updateMidiMapping</a>
+<a name="ln243">//   Add mappings to new instruments and repair existing ones</a>
+<a name="ln244">//---------------------------------------------------------</a>
+<a name="ln245"> </a>
+<a name="ln246">int MasterScore::updateMidiMapping()</a>
+<a name="ln247">      {</a>
+<a name="ln248">      int maxport = 0;</a>
+<a name="ln249">      occupiedMidiChannels.clear();</a>
+<a name="ln250">      searchMidiMappingFrom = 0;</a>
+<a name="ln251">      occupiedMidiChannels.reserve(int(_midiMapping.size())); // Bringing down the complexity of insertion to amortized O(1)</a>
+<a name="ln252"> </a>
+<a name="ln253">      for (const MidiMapping&amp; mm :_midiMapping) {</a>
+<a name="ln254">            if (mm.port() == -1 || mm.channel() == -1)</a>
+<a name="ln255">                  continue;</a>
+<a name="ln256">            occupiedMidiChannels.insert(static_cast&lt;int&gt;(mm.port())*16+(int)mm.channel());</a>
+<a name="ln257">            if (maxport &lt; mm.port())</a>
+<a name="ln258">                  maxport = mm.port();</a>
+<a name="ln259">            }</a>
+<a name="ln260"> </a>
+<a name="ln261">      for (Part* part : parts()) {</a>
+<a name="ln262">            const InstrumentList* il = part-&gt;instruments();</a>
+<a name="ln263">            for (auto i = il-&gt;begin(); i != il-&gt;end(); ++i) {</a>
+<a name="ln264">                  const Instrument* instr = i-&gt;second;</a>
+<a name="ln265">                  bool drum = instr-&gt;useDrumset();</a>
+<a name="ln266">                  for (Channel* channel : instr-&gt;channel()) {</a>
+<a name="ln267">                        bool channelExists = false;</a>
+<a name="ln268">                        for (const MidiMapping&amp; mapping: _midiMapping) {</a>
+<a name="ln269">                              if (channel == mapping.masterChannel &amp;&amp; channel-&gt;channel() != -1) {</a>
+<a name="ln270">                                    channelExists = true;</a>
+<a name="ln271">                                    break;</a>
+<a name="ln272">                                    }</a>
+<a name="ln273">                              }</a>
+<a name="ln274">                        // Channel could already exist, but have unassigned port or channel. Repair and continue</a>
+<a name="ln275">                        if (channelExists) {</a>
+<a name="ln276">                              if (_midiMapping[channel-&gt;channel()].port() == -1) {</a>
+<a name="ln277">                                    const int nm = getNextFreeMidiMapping(-1, _midiMapping[channel-&gt;channel()].channel());</a>
+<a name="ln278">                                    _midiMapping[channel-&gt;channel()]._port = nm / 16;</a>
+<a name="ln279">                                    }</a>
+<a name="ln280">                              else if (_midiMapping[channel-&gt;channel()].channel() == -1) {</a>
+<a name="ln281">                                    if (drum) {</a>
+<a name="ln282">                                          _midiMapping[channel-&gt;channel()]._port = getNextFreeDrumMidiMapping() / 16;</a>
+<a name="ln283">                                          _midiMapping[channel-&gt;channel()]._channel = 9;</a>
+<a name="ln284">                                          continue;</a>
+<a name="ln285">                                          }</a>
+<a name="ln286">                                    int nm = getNextFreeMidiMapping(_midiMapping[channel-&gt;channel()].port());</a>
+<a name="ln287">                                    _midiMapping[channel-&gt;channel()]._port    = nm / 16;</a>
+<a name="ln288">                                    _midiMapping[channel-&gt;channel()]._channel = nm % 16;</a>
+<a name="ln289">                                    }</a>
+<a name="ln290">                              continue;</a>
+<a name="ln291">                              }</a>
+<a name="ln292"> </a>
+<a name="ln293">                        int midiPort;</a>
+<a name="ln294">                        int midiChannel;</a>
+<a name="ln295">                        if (drum) {</a>
+<a name="ln296">                              midiPort = getNextFreeDrumMidiMapping() / 16;</a>
+<a name="ln297">                              midiChannel = 9;</a>
+<a name="ln298">                              }</a>
+<a name="ln299">                        else {</a>
+<a name="ln300">                              int nm = getNextFreeMidiMapping();</a>
+<a name="ln301">                              midiPort    = nm / 16;</a>
+<a name="ln302">                              midiChannel = nm % 16;</a>
+<a name="ln303">                              }</a>
+<a name="ln304"> </a>
+<a name="ln305">                        if (midiPort &gt; maxport)</a>
+<a name="ln306">                              maxport = midiPort;</a>
+<a name="ln307"> </a>
+<a name="ln308">                        addMidiMapping(channel, part, midiPort, midiChannel);</a>
+<a name="ln309">                        }</a>
+<a name="ln310">                  }</a>
+<a name="ln311">            }</a>
+<a name="ln312">      return maxport;</a>
+<a name="ln313">      }</a>
+<a name="ln314"> </a>
+<a name="ln315">//---------------------------------------------------------</a>
+<a name="ln316">//   addMidiMapping</a>
+<a name="ln317">//---------------------------------------------------------</a>
+<a name="ln318"> </a>
+<a name="ln319">void MasterScore::addMidiMapping(Channel* channel, Part* part, int midiPort, int midiChannel)</a>
+<a name="ln320">      {</a>
+<a name="ln321">      if (!part-&gt;score()-&gt;isMaster())</a>
+<a name="ln322">            return;</a>
+<a name="ln323"> </a>
+<a name="ln324">      MidiMapping mm;</a>
+<a name="ln325">      mm._part = part;</a>
+<a name="ln326">      mm.masterChannel = channel;</a>
+<a name="ln327">      mm._articulation.reset(new Channel(*channel));</a>
+<a name="ln328">      mm.link = PartChannelSettingsLink(mm.articulation(), mm.masterChannel, /* excerpt */ false);</a>
+<a name="ln329"> </a>
+<a name="ln330">      mm._port = midiPort;</a>
+<a name="ln331">      mm._channel = midiChannel;</a>
+<a name="ln332"> </a>
+<a name="ln333">      const int mscoreChannel = int(_midiMapping.size());</a>
+<a name="ln334">      mm._articulation-&gt;setChannel(mscoreChannel);</a>
+<a name="ln335">      mm.masterChannel-&gt;setChannel(mscoreChannel);</a>
+<a name="ln336"> </a>
+<a name="ln337">      _midiMapping.push_back(std::move(mm));</a>
+<a name="ln338">      }</a>
+<a name="ln339"> </a>
+<a name="ln340">//---------------------------------------------------------</a>
+<a name="ln341">//   updateMidiMapping</a>
+<a name="ln342">//---------------------------------------------------------</a>
+<a name="ln343"> </a>
+<a name="ln344">void MasterScore::updateMidiMapping(Channel* channel, Part* part, int midiPort, int midiChannel)</a>
+<a name="ln345">      {</a>
+<a name="ln346">      const int c = channel-&gt;channel();</a>
+<a name="ln347">      if (c &lt; 0)</a>
+<a name="ln348">            return;</a>
+<a name="ln349">      if (c &gt;= int(masterScore()-&gt;midiMapping().size())) {</a>
+<a name="ln350">            qDebug(&quot;Can't set midi channel: midiMapping is empty!&quot;);</a>
+<a name="ln351">            return;</a>
+<a name="ln352">            }</a>
+<a name="ln353">      MidiMapping&amp; mm = _midiMapping[c];</a>
+<a name="ln354"> </a>
+<a name="ln355">      if (midiChannel != -1)</a>
+<a name="ln356">            mm._channel = midiChannel;</a>
+<a name="ln357">      if (midiPort != -1)</a>
+<a name="ln358">            mm._port = midiPort;</a>
+<a name="ln359">      if (part)</a>
+<a name="ln360">            mm._part = part-&gt;masterPart();</a>
+<a name="ln361">      }</a>
+<a name="ln362"> </a>
+<a name="ln363">} // namespace Ms</a>
+<a name="ln364"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

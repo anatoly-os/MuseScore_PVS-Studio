@@ -1,0 +1,547 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>drumview.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MusE Score</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2010 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;drumview.h&quot;</a>
+<a name="ln21">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln22">#include &quot;piano.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/slur.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">namespace Ms {</a>
+<a name="ln31"> </a>
+<a name="ln32">static const int MAP_OFFSET = 480;</a>
+<a name="ln33"> </a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35">//   pitch2y</a>
+<a name="ln36">//---------------------------------------------------------</a>
+<a name="ln37"> </a>
+<a name="ln38">static int pitch2y(int pitch)</a>
+<a name="ln39">      {</a>
+<a name="ln40">      static int tt[] = {</a>
+<a name="ln41">            12, 19, 25, 32, 38, 51, 58, 64, 71, 77, 84, 90</a>
+<a name="ln42">            };</a>
+<a name="ln43">      int y = (75 * keyHeight) - (tt[pitch % 12] + (7 * keyHeight) * (pitch / 12));</a>
+<a name="ln44">      if (y &lt; 0)</a>
+<a name="ln45">            y = 0;</a>
+<a name="ln46">      return y;</a>
+<a name="ln47">      }</a>
+<a name="ln48"> </a>
+<a name="ln49">//---------------------------------------------------------</a>
+<a name="ln50">//   DrumItem</a>
+<a name="ln51">//---------------------------------------------------------</a>
+<a name="ln52"> </a>
+<a name="ln53">DrumItem::DrumItem(Note* n)</a>
+<a name="ln54">   : QGraphicsPolygonItem(), _note(n)</a>
+<a name="ln55">      {</a>
+<a name="ln56">      setFlags(flags() | QGraphicsItem::ItemIsSelectable);</a>
+<a name="ln57">      int pitch = _note-&gt;pitch();</a>
+<a name="ln58">      QPolygonF p;</a>
+<a name="ln59">      double h2 = keyHeight/2;</a>
+<a name="ln60">      p &lt;&lt; QPointF(0, -h2) &lt;&lt; QPointF(h2, 0.0) &lt;&lt; QPointF(0.0, h2) &lt;&lt; QPointF(-h2, 0.0);</a>
+<a name="ln61">      setPolygon(p);</a>
+<a name="ln62">      setBrush(QBrush());</a>
+<a name="ln63">      setSelected(_note-&gt;selected());</a>
+<a name="ln64">      setData(0, QVariant::fromValue&lt;void*&gt;(_note));</a>
+<a name="ln65"> </a>
+<a name="ln66">      setPos(_note-&gt;chord()-&gt;tick().ticks() + 480, pitch2y(pitch) + keyHeight / 4);</a>
+<a name="ln67">      setFlag(QGraphicsItem::ItemIgnoresTransformations, true);</a>
+<a name="ln68">      }</a>
+<a name="ln69"> </a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71">//   paint</a>
+<a name="ln72">//---------------------------------------------------------</a>
+<a name="ln73"> </a>
+<a name="ln74">void DrumItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*)</a>
+<a name="ln75">      {</a>
+<a name="ln76">//      Chord* chord = note-&gt;chord();</a>
+<a name="ln77">      int x1       = 0; // note-&gt;onTimeOffset() + note-&gt;onTimeUserOffset();</a>
+<a name="ln78">      painter-&gt;setPen(pen());</a>
+<a name="ln79">      painter-&gt;setBrush(isSelected() ? Qt::yellow : Qt::blue);</a>
+<a name="ln80">      painter-&gt;drawPolygon(polygon().translated(x1, 0.0));</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84">//   pix2pos</a>
+<a name="ln85">//---------------------------------------------------------</a>
+<a name="ln86"> </a>
+<a name="ln87">Pos DrumView::pix2pos(int x) const</a>
+<a name="ln88">      {</a>
+<a name="ln89">      x -= MAP_OFFSET;</a>
+<a name="ln90">      if (x &lt; 0)</a>
+<a name="ln91">            x = 0;</a>
+<a name="ln92">      return Pos(staff-&gt;score()-&gt;tempomap(), staff-&gt;score()-&gt;sigmap(), x, _timeType);</a>
+<a name="ln93">      }</a>
+<a name="ln94"> </a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96">//   pos2pix</a>
+<a name="ln97">//---------------------------------------------------------</a>
+<a name="ln98"> </a>
+<a name="ln99">int DrumView::pos2pix(const Pos&amp; p) const</a>
+<a name="ln100">      {</a>
+<a name="ln101">      return p.time(_timeType) + MAP_OFFSET;</a>
+<a name="ln102">      }</a>
+<a name="ln103"> </a>
+<a name="ln104">//---------------------------------------------------------</a>
+<a name="ln105">//   drawBackground</a>
+<a name="ln106">//---------------------------------------------------------</a>
+<a name="ln107"> </a>
+<a name="ln108">void DrumView::drawBackground(QPainter* p, const QRectF&amp; r)</a>
+<a name="ln109">      {</a>
+<a name="ln110">      if (staff == 0)</a>
+<a name="ln111">            return;</a>
+<a name="ln112">      Score* _score = staff-&gt;score();</a>
+<a name="ln113"> </a>
+<a name="ln114">      QRectF r1;</a>
+<a name="ln115">      r1.setCoords(-1000000.0, 0.0, 480.0, 1000000.0);</a>
+<a name="ln116">      QRectF r2;</a>
+<a name="ln117">      r2.setCoords(ticks + 480, 0.0, 1000000.0, 1000000.0);</a>
+<a name="ln118">      QColor bg(0x71, 0x8d, 0xbe);</a>
+<a name="ln119"> </a>
+<a name="ln120">      p-&gt;fillRect(r, bg);</a>
+<a name="ln121">      if (r.intersects(r1))</a>
+<a name="ln122">            p-&gt;fillRect(r.intersected(r1), bg.darker(150));</a>
+<a name="ln123">      if (r.intersects(r2))</a>
+<a name="ln124">            p-&gt;fillRect(r.intersected(r2), bg.darker(150));</a>
+<a name="ln125"> </a>
+<a name="ln126">      //</a>
+<a name="ln127">      // draw horizontal grid lines</a>
+<a name="ln128">      //</a>
+<a name="ln129">      qreal y1 = r.y();</a>
+<a name="ln130">      qreal y2 = y1 + r.height();</a>
+<a name="ln131">      qreal kh = 13.0;</a>
+<a name="ln132">      qreal x1 = r.x();</a>
+<a name="ln133">      qreal x2 = x1 + r.width();</a>
+<a name="ln134"> </a>
+<a name="ln135">      int key = floor(y1 / 75);</a>
+<a name="ln136">      qreal y = key * kh;</a>
+<a name="ln137"> </a>
+<a name="ln138">      for (; key &lt; 75; ++key, y += kh) {</a>
+<a name="ln139">            if (y &lt; y1)</a>
+<a name="ln140">                  continue;</a>
+<a name="ln141">            if (y &gt; y2)</a>
+<a name="ln142">                  break;</a>
+<a name="ln143">            p-&gt;setPen(QPen((key % 7) == 5 ? Qt::lightGray : Qt::gray));</a>
+<a name="ln144">            p-&gt;drawLine(QLineF(x1, y, x2, y));</a>
+<a name="ln145">            }</a>
+<a name="ln146"> </a>
+<a name="ln147">      //</a>
+<a name="ln148">      // draw vertical grid lines</a>
+<a name="ln149">      //</a>
+<a name="ln150">      static const int mag[7] = {</a>
+<a name="ln151">            1, 1, 2, 5, 10, 20, 50</a>
+<a name="ln152">            };</a>
+<a name="ln153"> </a>
+<a name="ln154">      Pos pos1 = pix2pos(x1);</a>
+<a name="ln155">      Pos pos2 = pix2pos(x2);</a>
+<a name="ln156"> </a>
+<a name="ln157">      //---------------------------------------------------</a>
+<a name="ln158">      //    draw raster</a>
+<a name="ln159">      //---------------------------------------------------</a>
+<a name="ln160"> </a>
+<a name="ln161">      int bar1, bar2, beat, tick;</a>
+<a name="ln162">      pos1.mbt(&amp;bar1, &amp;beat, &amp;tick);</a>
+<a name="ln163">      pos2.mbt(&amp;bar2, &amp;beat, &amp;tick);</a>
+<a name="ln164"> </a>
+<a name="ln165">      int mi = mag[magStep &lt; 0 ? 0 : magStep];</a>
+<a name="ln166"> </a>
+<a name="ln167">      bar1 = (bar1 / mi) * mi;           // round down</a>
+<a name="ln168">      if (bar1 &amp;&amp; mi &gt;= 2)</a>
+<a name="ln169">            bar1 -= 1;</a>
+<a name="ln170">      bar2 = ((bar2 + mi - 1) / mi) * mi; // round up</a>
+<a name="ln171"> </a>
+<a name="ln172">      for (int bar = bar1; bar &lt;= bar2;) {</a>
+<a name="ln173">            Pos stick(_score-&gt;tempomap(), _score-&gt;sigmap(), bar, 0, 0);</a>
+<a name="ln174">            if (magStep &gt; 0) {</a>
+<a name="ln175">                  double x = double(pos2pix(stick));</a>
+<a name="ln176">                  if (x &gt; 0) {</a>
+<a name="ln177">                        p-&gt;setPen(Qt::lightGray);</a>
+<a name="ln178">                        p-&gt;drawLine(x, y1, x, y2);</a>
+<a name="ln179">                        }</a>
+<a name="ln180">                  else {</a>
+<a name="ln181">                        p-&gt;setPen(Qt::black);</a>
+<a name="ln182">                        p-&gt;drawLine(x, y1, x, y1);</a>
+<a name="ln183">                        }</a>
+<a name="ln184">                  }</a>
+<a name="ln185">            else {</a>
+<a name="ln186">                  int z = stick.timesig().timesig().numerator();</a>
+<a name="ln187">                  for (int b = 0; b &lt; z; b++) {</a>
+<a name="ln188">                        if (magStep == 0) {</a>
+<a name="ln189">                              Pos xx(_score-&gt;tempomap(), _score-&gt;sigmap(), bar, b, 0);</a>
+<a name="ln190">                              int xp = pos2pix(xx);</a>
+<a name="ln191">                              if (xp &lt; 0)</a>
+<a name="ln192">                                    continue;</a>
+<a name="ln193">                              if (xp &gt; 0) {</a>
+<a name="ln194">                                    p-&gt;setPen(b == 0 ? Qt::lightGray : Qt::gray);</a>
+<a name="ln195">                                    p-&gt;drawLine(xp, y1, xp, y2);</a>
+<a name="ln196">                                    }</a>
+<a name="ln197">                              else {</a>
+<a name="ln198">                                    p-&gt;setPen(Qt::black);</a>
+<a name="ln199">                                    p-&gt;drawLine(xp, y1, xp, y2);</a>
+<a name="ln200">                                    }</a>
+<a name="ln201">                              }</a>
+<a name="ln202">                        else {</a>
+<a name="ln203">                              int k;</a>
+<a name="ln204">                              if (magStep == -1)</a>
+<a name="ln205">                                    k = 2;</a>
+<a name="ln206">                              else if (magStep == -2)</a>
+<a name="ln207">                                    k = 4;</a>
+<a name="ln208">                              else if (magStep == -3)</a>
+<a name="ln209">                                    k = 8;</a>
+<a name="ln210">                              else if (magStep == -4)</a>
+<a name="ln211">                                    k = 16;</a>
+<a name="ln212">                              else</a>
+<a name="ln213">                                    k = 32;</a>
+<a name="ln214"> </a>
+<a name="ln215">                              int n = (MScore::division * 4) / stick.timesig().timesig().denominator();</a>
+<a name="ln216">                              for (int i = 0; i &lt; k; ++i) {</a>
+<a name="ln217">                                    Pos xx(_score-&gt;tempomap(), _score-&gt;sigmap(), bar, b, (n * i)/ k);</a>
+<a name="ln218">                                    int xp = pos2pix(xx);</a>
+<a name="ln219">                                    if (xp &lt; 0)</a>
+<a name="ln220">                                          continue;</a>
+<a name="ln221">                                    if (xp &gt; 0) {</a>
+<a name="ln222">                                          p-&gt;setPen(i == 0 &amp;&amp; b == 0 ? Qt::lightGray : Qt::gray);</a>
+<a name="ln223">                                          p-&gt;drawLine(xp, y1, xp, y2);</a>
+<a name="ln224">                                          }</a>
+<a name="ln225">                                    else {</a>
+<a name="ln226">                                          p-&gt;setPen(Qt::black);</a>
+<a name="ln227">                                          p-&gt;drawLine(xp, y1, xp, y2);</a>
+<a name="ln228">                                          }</a>
+<a name="ln229">                                    }</a>
+<a name="ln230">                              }</a>
+<a name="ln231">                        }</a>
+<a name="ln232">                  }</a>
+<a name="ln233">            if (bar == 0 &amp;&amp; mi &gt;= 2)</a>
+<a name="ln234">                  bar += (mi-1);</a>
+<a name="ln235">            else</a>
+<a name="ln236">                  bar += mi;</a>
+<a name="ln237">            }</a>
+<a name="ln238">      }</a>
+<a name="ln239"> </a>
+<a name="ln240">//---------------------------------------------------------</a>
+<a name="ln241">//   DrumView</a>
+<a name="ln242">//---------------------------------------------------------</a>
+<a name="ln243"> </a>
+<a name="ln244">DrumView::DrumView()</a>
+<a name="ln245">   : QGraphicsView()</a>
+<a name="ln246">      {</a>
+<a name="ln247">      setScene(new QGraphicsScene);</a>
+<a name="ln248">      setTransformationAnchor(QGraphicsView::AnchorUnderMouse);</a>
+<a name="ln249">      setResizeAnchor(QGraphicsView::AnchorUnderMouse);</a>
+<a name="ln250">      setMouseTracking(true);</a>
+<a name="ln251">      setRubberBandSelectionMode(Qt::IntersectsItemBoundingRect);</a>
+<a name="ln252">      setDragMode(QGraphicsView::RubberBandDrag);</a>
+<a name="ln253">      _timeType = TType::TICKS;</a>
+<a name="ln254">      magStep   = 0;</a>
+<a name="ln255">      }</a>
+<a name="ln256"> </a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258">//   setStaff</a>
+<a name="ln259">//---------------------------------------------------------</a>
+<a name="ln260"> </a>
+<a name="ln261">void DrumView::setStaff(Staff* s, Pos* l)</a>
+<a name="ln262">      {</a>
+<a name="ln263">      static const QColor lcColors[3] = { Qt::red, Qt::blue, Qt::blue };</a>
+<a name="ln264"> </a>
+<a name="ln265">      staff    = s;</a>
+<a name="ln266">      _locator = l;</a>
+<a name="ln267">      pos.setContext(s-&gt;score()-&gt;tempomap(), s-&gt;score()-&gt;sigmap());</a>
+<a name="ln268"> </a>
+<a name="ln269">      scene()-&gt;blockSignals(true);</a>
+<a name="ln270"> </a>
+<a name="ln271">      scene()-&gt;clear();</a>
+<a name="ln272">      for (int i = 0; i &lt; 3; ++i) {</a>
+<a name="ln273">            locatorLines[i] = new QGraphicsLineItem(QLineF(0.0, 0.0, 0.0, keyHeight * 75.0 * 5));</a>
+<a name="ln274">            QPen pen(lcColors[i]);</a>
+<a name="ln275">            pen.setWidth(2);</a>
+<a name="ln276">            locatorLines[i]-&gt;setPen(pen);</a>
+<a name="ln277">            locatorLines[i]-&gt;setZValue(1000+i);       // set stacking order</a>
+<a name="ln278">            locatorLines[i]-&gt;setFlag(QGraphicsItem::ItemIgnoresTransformations, true);</a>
+<a name="ln279">            scene()-&gt;addItem(locatorLines[i]);</a>
+<a name="ln280">            }</a>
+<a name="ln281"> </a>
+<a name="ln282">      int staffIdx = staff-&gt;idx();</a>
+<a name="ln283">      int startTrack = staffIdx * VOICES;</a>
+<a name="ln284">      int endTrack   = startTrack + VOICES;</a>
+<a name="ln285">      for (Segment* seg = staff-&gt;score()-&gt;firstSegment(SegmentType::All); seg; seg = seg-&gt;next1()) {</a>
+<a name="ln286">            for (int track = startTrack; track &lt; endTrack; ++track) {</a>
+<a name="ln287">                  Element* e = seg-&gt;element(track);</a>
+<a name="ln288">                  if (e == 0 || e-&gt;type() != ElementType::CHORD)</a>
+<a name="ln289">                        continue;</a>
+<a name="ln290">                  Chord* chord = static_cast&lt;Chord*&gt;(e);</a>
+<a name="ln291">                  foreach(Note* n, chord-&gt;notes()) {</a>
+<a name="ln292">                        if (n-&gt;tieBack())</a>
+<a name="ln293">                              continue;</a>
+<a name="ln294">                        scene()-&gt;addItem(new DrumItem(n));</a>
+<a name="ln295">                        }</a>
+<a name="ln296">                  }</a>
+<a name="ln297">            }</a>
+<a name="ln298">      scene()-&gt;blockSignals(false);</a>
+<a name="ln299"> </a>
+<a name="ln300">      Measure* lm = staff-&gt;score()-&gt;lastMeasure();</a>
+<a name="ln301">      ticks       = (lm-&gt;tick() + lm-&gt;ticks()).ticks();</a>
+<a name="ln302">      scene()-&gt;setSceneRect(0.0, 0.0, double(ticks + 960), keyHeight * 75);</a>
+<a name="ln303"> </a>
+<a name="ln304">      for (int i = 0; i &lt; 3; ++i)</a>
+<a name="ln305">            moveLocator(i);</a>
+<a name="ln306">      //</a>
+<a name="ln307">      // move to something interesting</a>
+<a name="ln308">      //</a>
+<a name="ln309">      QList&lt;QGraphicsItem*&gt; items = scene()-&gt;selectedItems();</a>
+<a name="ln310">      QRectF boundingRect;</a>
+<a name="ln311">      foreach(QGraphicsItem* item, items) {</a>
+<a name="ln312">            Note* note = static_cast&lt;Note*&gt;(item-&gt;data(0).value&lt;void*&gt;());</a>
+<a name="ln313">            if (note)</a>
+<a name="ln314">                  boundingRect |= item-&gt;mapToScene(item-&gt;boundingRect()).boundingRect();</a>
+<a name="ln315">            }</a>
+<a name="ln316">      centerOn(boundingRect.center());</a>
+<a name="ln317">      }</a>
+<a name="ln318"> </a>
+<a name="ln319">//---------------------------------------------------------</a>
+<a name="ln320">//   moveLocator</a>
+<a name="ln321">//---------------------------------------------------------</a>
+<a name="ln322"> </a>
+<a name="ln323">void DrumView::moveLocator(int i)</a>
+<a name="ln324">      {</a>
+<a name="ln325">      if (_locator[i].valid()) {</a>
+<a name="ln326">            locatorLines[i]-&gt;setVisible(true);</a>
+<a name="ln327">            qreal x = qreal(pos2pix(_locator[i]));</a>
+<a name="ln328">            locatorLines[i]-&gt;setPos(QPointF(x, 0.0));</a>
+<a name="ln329">            }</a>
+<a name="ln330">      else</a>
+<a name="ln331">            locatorLines[i]-&gt;setVisible(false);</a>
+<a name="ln332">      }</a>
+<a name="ln333"> </a>
+<a name="ln334">//---------------------------------------------------------</a>
+<a name="ln335">//   wheelEvent</a>
+<a name="ln336">//---------------------------------------------------------</a>
+<a name="ln337"> </a>
+<a name="ln338">void DrumView::wheelEvent(QWheelEvent* event)</a>
+<a name="ln339">      {</a>
+<a name="ln340">      int step = event-&gt;delta() / 120;</a>
+<a name="ln341">      double xmag = transform().m11();</a>
+<a name="ln342">      double ymag = transform().m22();</a>
+<a name="ln343"> </a>
+<a name="ln344">      if (event-&gt;modifiers() == Qt::ControlModifier) {</a>
+<a name="ln345">            if (step &gt; 0) {</a>
+<a name="ln346">                  for (int i = 0; i &lt; step; ++i) {</a>
+<a name="ln347">                        if (xmag &gt; 10.0)</a>
+<a name="ln348">                              break;</a>
+<a name="ln349">                        scale(1.1, 1.0);</a>
+<a name="ln350">                        xmag *= 1.1;</a>
+<a name="ln351">                        }</a>
+<a name="ln352">                  }</a>
+<a name="ln353">            else {</a>
+<a name="ln354">                  for (int i = 0; i &lt; -step; ++i) {</a>
+<a name="ln355">                        if (xmag &lt; 0.001)</a>
+<a name="ln356">                              break;</a>
+<a name="ln357">                        scale(.9, 1.0);</a>
+<a name="ln358">                        xmag *= .9;</a>
+<a name="ln359">                        }</a>
+<a name="ln360">                  }</a>
+<a name="ln361">            emit magChanged(xmag, ymag);</a>
+<a name="ln362"> </a>
+<a name="ln363">            int tpix  = (480 * 4) * xmag;</a>
+<a name="ln364">            magStep = -5;</a>
+<a name="ln365">            if (tpix &lt;= 4000)</a>
+<a name="ln366">                  magStep = -4;</a>
+<a name="ln367">            if (tpix &lt;= 2000)</a>
+<a name="ln368">                  magStep = -3;</a>
+<a name="ln369">            if (tpix &lt;= 1000)</a>
+<a name="ln370">                  magStep = -2;</a>
+<a name="ln371">            if (tpix &lt;= 500)</a>
+<a name="ln372">                  magStep = -1;</a>
+<a name="ln373">            if (tpix &lt;= 128)</a>
+<a name="ln374">                  magStep = 0;</a>
+<a name="ln375">            if (tpix &lt;= 64)</a>
+<a name="ln376">                  magStep = 1;</a>
+<a name="ln377">            if (tpix &lt;= 32)</a>
+<a name="ln378">                  magStep = 2;</a>
+<a name="ln379">            if (tpix &lt;= 16)</a>
+<a name="ln380">                  magStep = 3;</a>
+<a name="ln381">            if (tpix &lt;= 8)</a>
+<a name="ln382">                  magStep = 4;</a>
+<a name="ln383">            if (tpix &lt;= 4)</a>
+<a name="ln384">                  magStep = 5;</a>
+<a name="ln385">            if (tpix &lt;= 2)</a>
+<a name="ln386">                  magStep = 6;</a>
+<a name="ln387"> </a>
+<a name="ln388">            //</a>
+<a name="ln389">            // if xpos &lt;= 0, then the scene is centered</a>
+<a name="ln390">            // there is no scroll bar anymore sending</a>
+<a name="ln391">            // change signals, so we have to do it here:</a>
+<a name="ln392">            //</a>
+<a name="ln393">            double xpos = -(mapFromScene(QPointF()).x());</a>
+<a name="ln394">            if (xpos &lt;= 0)</a>
+<a name="ln395">                  emit xposChanged(xpos);</a>
+<a name="ln396">            }</a>
+<a name="ln397">      else if (event-&gt;modifiers() == Qt::ShiftModifier) {</a>
+<a name="ln398">            QWheelEvent we(event-&gt;pos(), event-&gt;delta(), event-&gt;buttons(), 0, Qt::Horizontal);</a>
+<a name="ln399">            QGraphicsView::wheelEvent(&amp;we);</a>
+<a name="ln400">            }</a>
+<a name="ln401">      else if (event-&gt;modifiers() == 0) {</a>
+<a name="ln402">            QGraphicsView::wheelEvent(event);</a>
+<a name="ln403">            }</a>
+<a name="ln404">      else if (event-&gt;modifiers() == (Qt::ShiftModifier | Qt::ControlModifier)) {</a>
+<a name="ln405">            if (step &gt; 0) {</a>
+<a name="ln406">                  for (int i = 0; i &lt; step; ++i) {</a>
+<a name="ln407">                        if (ymag &gt; 3.0)</a>
+<a name="ln408">                              break;</a>
+<a name="ln409">                        scale(1.0, 1.1);</a>
+<a name="ln410">                        ymag *= 1.1;</a>
+<a name="ln411">                        }</a>
+<a name="ln412">                  }</a>
+<a name="ln413">            else {</a>
+<a name="ln414">                  for (int i = 0; i &lt; -step; ++i) {</a>
+<a name="ln415">                        if (ymag &lt; 0.4)</a>
+<a name="ln416">                              break;</a>
+<a name="ln417">                        scale(1.0, .9);</a>
+<a name="ln418">                        ymag *= .9;</a>
+<a name="ln419">                        }</a>
+<a name="ln420">                  }</a>
+<a name="ln421">            emit magChanged(xmag, ymag);</a>
+<a name="ln422">            }</a>
+<a name="ln423">      }</a>
+<a name="ln424"> </a>
+<a name="ln425">//---------------------------------------------------------</a>
+<a name="ln426">//   y2pitch</a>
+<a name="ln427">//---------------------------------------------------------</a>
+<a name="ln428"> </a>
+<a name="ln429">int DrumView::y2pitch(int y) const</a>
+<a name="ln430">      {</a>
+<a name="ln431">      int pitch;</a>
+<a name="ln432">      const int total = (10 * 7 + 5) * keyHeight;       // 75 Ganztonschritte</a>
+<a name="ln433">      y = total - y;</a>
+<a name="ln434">      int oct = (y / (7 * keyHeight)) * 12;</a>
+<a name="ln435">      static const char kt[] = {</a>
+<a name="ln436">            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,</a>
+<a name="ln437">            1, 1, 1, 1, 1, 1, 1,</a>
+<a name="ln438">            2, 2, 2, 2, 2, 2,</a>
+<a name="ln439">            3, 3, 3, 3, 3, 3, 3,</a>
+<a name="ln440">            4, 4, 4, 4, 4, 4, 4, 4, 4,</a>
+<a name="ln441">            5, 5, 5, 5, 5, 5, 5, 5, 5, 5,</a>
+<a name="ln442">            6, 6, 6, 6, 6, 6, 6,</a>
+<a name="ln443">            7, 7, 7, 7, 7, 7,</a>
+<a name="ln444">            8, 8, 8, 8, 8, 8, 8,</a>
+<a name="ln445">            9, 9, 9, 9, 9, 9,</a>
+<a name="ln446">            10, 10, 10, 10, 10, 10, 10,</a>
+<a name="ln447">            11, 11, 11, 11, 11, 11, 11, 11, 11, 11</a>
+<a name="ln448">            };</a>
+<a name="ln449">      pitch = kt[y % 91] + oct;</a>
+<a name="ln450">      if (pitch &lt; 0 || pitch &gt; 127)</a>
+<a name="ln451">            pitch = -1;</a>
+<a name="ln452">      return pitch;</a>
+<a name="ln453">      }</a>
+<a name="ln454"> </a>
+<a name="ln455">//---------------------------------------------------------</a>
+<a name="ln456">//   mouseMoveEvent</a>
+<a name="ln457">//---------------------------------------------------------</a>
+<a name="ln458"> </a>
+<a name="ln459">void DrumView::mouseMoveEvent(QMouseEvent* event)</a>
+<a name="ln460">      {</a>
+<a name="ln461">      QPointF p(mapToScene(event-&gt;pos()));</a>
+<a name="ln462">      int pitch = y2pitch(int(p.y()));</a>
+<a name="ln463">      emit pitchChanged(pitch);</a>
+<a name="ln464">      int tick = int(p.x()) -480;</a>
+<a name="ln465">      if (tick &lt; 0) {</a>
+<a name="ln466">            tick = 0;</a>
+<a name="ln467">            pos.setTick(tick);</a>
+<a name="ln468">            pos.setInvalid();</a>
+<a name="ln469">            }</a>
+<a name="ln470">      else</a>
+<a name="ln471">            pos.setTick(tick);</a>
+<a name="ln472">      emit posChanged(pos);</a>
+<a name="ln473">      QGraphicsView::mouseMoveEvent(event);</a>
+<a name="ln474">      }</a>
+<a name="ln475"> </a>
+<a name="ln476">//---------------------------------------------------------</a>
+<a name="ln477">//   leaveEvent</a>
+<a name="ln478">//---------------------------------------------------------</a>
+<a name="ln479"> </a>
+<a name="ln480">void DrumView::leaveEvent(QEvent* event)</a>
+<a name="ln481">      {</a>
+<a name="ln482">      emit pitchChanged(-1);</a>
+<a name="ln483">      pos.setInvalid();</a>
+<a name="ln484">      emit posChanged(pos);</a>
+<a name="ln485">      QGraphicsView::leaveEvent(event);</a>
+<a name="ln486">      }</a>
+<a name="ln487"> </a>
+<a name="ln488">//---------------------------------------------------------</a>
+<a name="ln489">//   ensureVisible</a>
+<a name="ln490">//---------------------------------------------------------</a>
+<a name="ln491"> </a>
+<a name="ln492">void DrumView::ensureVisible(int tick)</a>
+<a name="ln493">      {</a>
+<a name="ln494">      tick += MAP_OFFSET;</a>
+<a name="ln495">      QPointF pt = mapToScene(0, height() / 2);</a>
+<a name="ln496">      QGraphicsView::ensureVisible(qreal(tick), pt.y(), 240.0, 1.0);</a>
+<a name="ln497">      }</a>
+<a name="ln498">}</a>
+<a name="ln499"> </a>
+
+</code></pre>
+<div class="balloon" rel="59"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v636/" target="_blank">V636</a> The 'keyHeight / 2' expression was implicitly cast from 'int' type to 'double' type. Consider utilizing an explicit type cast to avoid the loss of a fractional part. An example: double A = (double)(X) / Y;.</p></div>
+<div class="balloon" rel="244"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: staff, _locator, locatorLines, ticks.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

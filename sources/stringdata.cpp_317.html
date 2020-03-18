@@ -1,0 +1,551 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>stringdata.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;stringdata.h&quot;</a>
+<a name="ln14">#include &quot;chord.h&quot;</a>
+<a name="ln15">#include &quot;note.h&quot;</a>
+<a name="ln16">#include &quot;part.h&quot;</a>
+<a name="ln17">#include &quot;score.h&quot;</a>
+<a name="ln18">#include &quot;staff.h&quot;</a>
+<a name="ln19">#include &quot;undo.h&quot;</a>
+<a name="ln20">#include &quot;segment.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">namespace Ms {</a>
+<a name="ln23"> </a>
+<a name="ln24">//---------------------------------------------------------</a>
+<a name="ln25">//   StringData</a>
+<a name="ln26">//---------------------------------------------------------</a>
+<a name="ln27"> </a>
+<a name="ln28">bool StringData::bFretting = false;</a>
+<a name="ln29"> </a>
+<a name="ln30">StringData::StringData(int numFrets, int numStrings, int strings[])</a>
+<a name="ln31">      {</a>
+<a name="ln32">      instrString strg = { 0, false};</a>
+<a name="ln33">      _frets = numFrets;</a>
+<a name="ln34"> </a>
+<a name="ln35">      for (int i = 0; i &lt; numStrings; i++) {</a>
+<a name="ln36">            strg.pitch = strings[i];</a>
+<a name="ln37">            stringTable.append(strg);</a>
+<a name="ln38">            }</a>
+<a name="ln39">      }</a>
+<a name="ln40"> </a>
+<a name="ln41">StringData::StringData(int numFrets, QList&lt;instrString&gt;&amp; strings)</a>
+<a name="ln42">      {</a>
+<a name="ln43">      _frets = numFrets;</a>
+<a name="ln44"> </a>
+<a name="ln45">      stringTable.clear();</a>
+<a name="ln46">      foreach(instrString i, strings)</a>
+<a name="ln47">            stringTable.append(i);</a>
+<a name="ln48">      }</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   read</a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53"> </a>
+<a name="ln54">void StringData::read(XmlReader&amp; e)</a>
+<a name="ln55">      {</a>
+<a name="ln56">      stringTable.clear();</a>
+<a name="ln57">      while (e.readNextStartElement()) {</a>
+<a name="ln58">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln59">            if (tag == &quot;frets&quot;)</a>
+<a name="ln60">                  _frets = e.readInt();</a>
+<a name="ln61">            else if (tag == &quot;string&quot;) {</a>
+<a name="ln62">                  instrString strg;</a>
+<a name="ln63">                  strg.open  = e.intAttribute(&quot;open&quot;, 0);</a>
+<a name="ln64">                  strg.pitch = e.readInt();</a>
+<a name="ln65">                  stringTable.append(strg);</a>
+<a name="ln66">                  }</a>
+<a name="ln67">            else</a>
+<a name="ln68">                  e.unknown();</a>
+<a name="ln69">            }</a>
+<a name="ln70">      }</a>
+<a name="ln71"> </a>
+<a name="ln72">//---------------------------------------------------------</a>
+<a name="ln73">//   write</a>
+<a name="ln74">//---------------------------------------------------------</a>
+<a name="ln75"> </a>
+<a name="ln76">void StringData::write(XmlWriter&amp; xml) const</a>
+<a name="ln77">      {</a>
+<a name="ln78">      xml.stag(&quot;StringData&quot;);</a>
+<a name="ln79">      xml.tag(&quot;frets&quot;, _frets);</a>
+<a name="ln80">      foreach(instrString strg, stringTable) {</a>
+<a name="ln81">            if (strg.open)</a>
+<a name="ln82">                  xml.tag(&quot;string open=\&quot;1\&quot;&quot;, strg.pitch);</a>
+<a name="ln83">            else</a>
+<a name="ln84">                  xml.tag(&quot;string&quot;, strg.pitch);</a>
+<a name="ln85">            }</a>
+<a name="ln86">      xml.etag();</a>
+<a name="ln87">      }</a>
+<a name="ln88"> </a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90">//   convertPitch</a>
+<a name="ln91">//   Finds string and fret for a note.</a>
+<a name="ln92">//</a>
+<a name="ln93">//   Fills *string and *fret with suitable values for pitch at given tick of given staff,</a>
+<a name="ln94">//   using the highest possible string.</a>
+<a name="ln95">//   If note cannot be fretted, uses fret 0 on nearest string and returns false</a>
+<a name="ln96">//</a>
+<a name="ln97">//    Note: Strings are stored internally from lowest (0) to highest (strings()-1),</a>
+<a name="ln98">//          but the returned *string value references strings in reversed, 'visual', order:</a>
+<a name="ln99">//          from highest (0) to lowest (strings()-1)</a>
+<a name="ln100">//---------------------------------------------------------</a>
+<a name="ln101"> </a>
+<a name="ln102">bool StringData::convertPitch(int pitch, Staff* staff, const Fraction&amp; tick, int* string, int* fret) const</a>
+<a name="ln103">      {</a>
+<a name="ln104">      return convertPitch(pitch, pitchOffsetAt(staff, tick), string, fret);</a>
+<a name="ln105">      }</a>
+<a name="ln106"> </a>
+<a name="ln107">//---------------------------------------------------------</a>
+<a name="ln108">//   getPitch</a>
+<a name="ln109">//    Returns the pitch corresponding to the string / fret combination</a>
+<a name="ln110">//    at given tick of given staff.</a>
+<a name="ln111">//    Returns INVALID_PITCH if not possible</a>
+<a name="ln112">//    Note: frets above max fret are accepted.</a>
+<a name="ln113">//---------------------------------------------------------</a>
+<a name="ln114"> </a>
+<a name="ln115">int StringData::getPitch(int string, int fret, Staff* staff, const Fraction&amp; tick) const</a>
+<a name="ln116">      {</a>
+<a name="ln117">      return getPitch(string, fret, pitchOffsetAt(staff, tick));</a>
+<a name="ln118">      }</a>
+<a name="ln119"> </a>
+<a name="ln120">//---------------------------------------------------------</a>
+<a name="ln121">//   fret</a>
+<a name="ln122">//    Returns the fret corresponding to the pitch / string combination</a>
+<a name="ln123">//    at given tick of given staff.</a>
+<a name="ln124">//    Returns FRET_NONE if not possible</a>
+<a name="ln125">//---------------------------------------------------------</a>
+<a name="ln126"> </a>
+<a name="ln127">int StringData::fret(int pitch, int string, Staff* staff, const Fraction&amp; tick) const</a>
+<a name="ln128">      {</a>
+<a name="ln129">      return fret(pitch, string, pitchOffsetAt(staff, tick));</a>
+<a name="ln130">      }</a>
+<a name="ln131"> </a>
+<a name="ln132">//---------------------------------------------------------</a>
+<a name="ln133">//   fretChords</a>
+<a name="ln134">//    Assigns fretting to all the notes of each chord in the same segment of chord</a>
+<a name="ln135">//    re-using existing fretting wherever possible</a>
+<a name="ln136">//</a>
+<a name="ln137">//    Minimizes fret conflicts (multiple notes on the same string)</a>
+<a name="ln138">//    but marks as fretConflict notes which cannot be fretted</a>
+<a name="ln139">//    (outside tablature range) or which cannot be assigned</a>
+<a name="ln140">//    a separate string</a>
+<a name="ln141">//---------------------------------------------------------</a>
+<a name="ln142"> </a>
+<a name="ln143">void StringData::fretChords(Chord * chord) const</a>
+<a name="ln144">      {</a>
+<a name="ln145">      int   nFret, minFret, maxFret, nNewFret, nTempFret;</a>
+<a name="ln146">      int   nString, nNewString, nTempString;</a>
+<a name="ln147"> </a>
+<a name="ln148">      if(bFretting)</a>
+<a name="ln149">            return;</a>
+<a name="ln150">      bFretting = true;</a>
+<a name="ln151"> </a>
+<a name="ln152">      // we need to keep track of string allocation</a>
+<a name="ln153">#if (!defined (_MSCVER) &amp;&amp; !defined (_MSC_VER))</a>
+<a name="ln154">      int bUsed[strings()];                    // initially all strings are available</a>
+<a name="ln155">#else</a>
+<a name="ln156">      // MSVC does not support VLA. Replace with std::vector. If profiling determines that the</a>
+<a name="ln157">      //    heap allocation is slow, an optimization might be used.</a>
+<a name="ln158">      std::vector&lt;int&gt; bUsed(strings());</a>
+<a name="ln159">#endif</a>
+<a name="ln160">      for(nString=0; nString&lt;strings(); nString++)</a>
+<a name="ln161">            bUsed[nString] = 0;</a>
+<a name="ln162">      // we also need the notes sorted in order of string (from highest to lowest) and then pitch</a>
+<a name="ln163">      QMap&lt;int, Note *&gt; sortedNotes;</a>
+<a name="ln164">      int   count = 0;</a>
+<a name="ln165">      // store staff pitch offset at this tick, to speed up actual note pitch calculations</a>
+<a name="ln166">      // (ottavas not implemented yet)</a>
+<a name="ln167">      int transp = chord-&gt;staff() ? chord-&gt;part()-&gt;instrument()-&gt;transpose().chromatic : 0;     // TODO: tick?</a>
+<a name="ln168">      int pitchOffset = /*chord-&gt;staff()-&gt;pitchOffset(chord-&gt;segment()-&gt;tick())*/ - transp;</a>
+<a name="ln169">      // if chord parent is not a segment, the chord is special (usually a grace chord):</a>
+<a name="ln170">      // fret it by itself, ignoring the segment</a>
+<a name="ln171">      if (chord-&gt;parent()-&gt;type() != ElementType::SEGMENT)</a>
+<a name="ln172">            sortChordNotes(sortedNotes, chord, pitchOffset, &amp;count);</a>
+<a name="ln173">      else {</a>
+<a name="ln174">            // scan each chord of seg from same staff as 'chord', inserting each of its notes in sortedNotes</a>
+<a name="ln175">            Segment* seg = chord-&gt;segment();</a>
+<a name="ln176">            int trk;</a>
+<a name="ln177">            int trkFrom = (chord-&gt;track() / VOICES) * VOICES;</a>
+<a name="ln178">            int trkTo   = trkFrom + VOICES;</a>
+<a name="ln179">            for(trk = trkFrom; trk &lt; trkTo; ++trk) {</a>
+<a name="ln180">                  Element* ch = seg-&gt;elist().at(trk);</a>
+<a name="ln181">                  if (ch &amp;&amp; ch-&gt;type() == ElementType::CHORD)</a>
+<a name="ln182">                        sortChordNotes(sortedNotes, toChord(ch), pitchOffset, &amp;count);</a>
+<a name="ln183">                  }</a>
+<a name="ln184">            }</a>
+<a name="ln185">      // determine used range of frets</a>
+<a name="ln186">      minFret = INT32_MAX;</a>
+<a name="ln187">      maxFret = INT32_MIN;</a>
+<a name="ln188">      foreach(Note* note, sortedNotes) {</a>
+<a name="ln189">            if (note-&gt;string() != STRING_NONE)</a>
+<a name="ln190">                  bUsed[note-&gt;string()]++;</a>
+<a name="ln191">            if (note-&gt;fret() != FRET_NONE &amp;&amp; note-&gt;fret() &lt; minFret)</a>
+<a name="ln192">                  minFret = note-&gt;fret();</a>
+<a name="ln193">            if (note-&gt;fret() != FRET_NONE &amp;&amp; note-&gt;fret() &gt; maxFret)</a>
+<a name="ln194">                  maxFret = note-&gt;fret();</a>
+<a name="ln195">      }</a>
+<a name="ln196"> </a>
+<a name="ln197">      // scan chord notes from highest, matching with strings from the highest</a>
+<a name="ln198">      foreach(Note * note, sortedNotes) {</a>
+<a name="ln199">            nString     = nNewString    = note-&gt;string();</a>
+<a name="ln200">            nFret       = nNewFret      = note-&gt;fret();</a>
+<a name="ln201">            note-&gt;setFretConflict(false);       // assume no conflicts on this note</a>
+<a name="ln202">            // if no fretting (any invalid fretting has been erased by sortChordNotes() )</a>
+<a name="ln203">            if (nString == STRING_NONE /*|| nFret == FRET_NONE || getPitch(nString, nFret) != note-&gt;pitch()*/) {</a>
+<a name="ln204">                  // get a new fretting</a>
+<a name="ln205">                  if (!convertPitch(note-&gt;pitch(), pitchOffset, &amp;nNewString, &amp;nNewFret) ) {</a>
+<a name="ln206">                        // no way to fit this note in this tab:</a>
+<a name="ln207">                        // mark as fretting conflict</a>
+<a name="ln208">                        note-&gt;setFretConflict(true);</a>
+<a name="ln209">                        // store fretting change without affecting chord context</a>
+<a name="ln210">                        if (nFret != nNewFret)</a>
+<a name="ln211">                              note-&gt;undoChangeProperty(Pid::FRET, nNewFret);</a>
+<a name="ln212">                        if (nString != nNewString)</a>
+<a name="ln213">                              note-&gt;undoChangeProperty(Pid::STRING, nNewString);</a>
+<a name="ln214">                        continue;</a>
+<a name="ln215">                        }</a>
+<a name="ln216">                  // note can be fretted: use string</a>
+<a name="ln217">                  else {</a>
+<a name="ln218">                        bUsed[nNewString]++;</a>
+<a name="ln219">                        }</a>
+<a name="ln220">                  }</a>
+<a name="ln221"> </a>
+<a name="ln222">            // if the note string (either original or newly assigned) is also used by another note</a>
+<a name="ln223">            if (bUsed[nNewString] &gt; 1) {</a>
+<a name="ln224">                  // attempt to find a suitable string, from topmost</a>
+<a name="ln225">                  for (nTempString=0; nTempString &lt; strings(); nTempString++) {</a>
+<a name="ln226">                        if (bUsed[nTempString] &lt; 1</a>
+<a name="ln227">                                    &amp;&amp; (nTempFret=fret(note-&gt;pitch(), nTempString, pitchOffset)) != FRET_NONE) {</a>
+<a name="ln228">                              bUsed[nNewString]--;    // free previous string</a>
+<a name="ln229">                              bUsed[nTempString]++;   // and occupy new string</a>
+<a name="ln230">                              nNewFret   = nTempFret;</a>
+<a name="ln231">                              nNewString = nTempString;</a>
+<a name="ln232">                              break;</a>
+<a name="ln233">                              }</a>
+<a name="ln234">                        }</a>
+<a name="ln235">                  }</a>
+<a name="ln236"> </a>
+<a name="ln237">            // TODO : try to optimize used fret range, avoiding eccessively open positions</a>
+<a name="ln238"> </a>
+<a name="ln239">            // if fretting did change, store as a fret change</a>
+<a name="ln240">            if (nFret != nNewFret)</a>
+<a name="ln241">                  note-&gt;undoChangeProperty(Pid::FRET, nNewFret);</a>
+<a name="ln242">            if (nString != nNewString)</a>
+<a name="ln243">                  note-&gt;undoChangeProperty(Pid::STRING, nNewString);</a>
+<a name="ln244">            }</a>
+<a name="ln245"> </a>
+<a name="ln246">      // check for any remaining fret conflict</a>
+<a name="ln247">      foreach(Note * note, sortedNotes)</a>
+<a name="ln248">            if (bUsed[note-&gt;string()] &gt; 1)</a>
+<a name="ln249">                  note-&gt;setFretConflict(true);</a>
+<a name="ln250"> </a>
+<a name="ln251">      bFretting = false;</a>
+<a name="ln252">      }</a>
+<a name="ln253"> </a>
+<a name="ln254"> </a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256">//   frettedStrings</a>
+<a name="ln257">//    Returns the number of fretted strings.</a>
+<a name="ln258">//---------------------------------------------------------</a>
+<a name="ln259"> </a>
+<a name="ln260">int StringData::frettedStrings() const</a>
+<a name="ln261">      {</a>
+<a name="ln262">      int num = 0;</a>
+<a name="ln263">      for (auto s : stringTable)</a>
+<a name="ln264">            if (!s.open)</a>
+<a name="ln265">                  num++;</a>
+<a name="ln266">      return num;</a>
+<a name="ln267">      }</a>
+<a name="ln268"> </a>
+<a name="ln269"> </a>
+<a name="ln270">//********************</a>
+<a name="ln271">// STATIC METHODS</a>
+<a name="ln272">//********************</a>
+<a name="ln273"> </a>
+<a name="ln274">//---------------------------------------------------------</a>
+<a name="ln275">//   pitchOffsetAt</a>
+<a name="ln276">//   Computes the pitch offset relevant for string data calculation at the given point.</a>
+<a name="ln277">//</a>
+<a name="ln278">//   For string data calculations, pitch offset may depend on transposition, capos and, possibly, ottavas.</a>
+<a name="ln279">//---------------------------------------------------------</a>
+<a name="ln280"> </a>
+<a name="ln281">int StringData::pitchOffsetAt(Staff* staff, const Fraction&amp; /*tick*/)</a>
+<a name="ln282">      {</a>
+<a name="ln283">      int transp = staff ? staff-&gt;part()-&gt;instrument()-&gt;transpose().chromatic : 0;  // TODO: tick?</a>
+<a name="ln284">      return (/*staff-&gt;pitchOffset(tick)*/ - transp);</a>
+<a name="ln285">      }</a>
+<a name="ln286"> </a>
+<a name="ln287">//********************</a>
+<a name="ln288">// PRIVATE METHODS</a>
+<a name="ln289">//********************</a>
+<a name="ln290"> </a>
+<a name="ln291">//---------------------------------------------------------</a>
+<a name="ln292">//   convertPitch</a>
+<a name="ln293">//   Finds string and fret for a note.</a>
+<a name="ln294">//</a>
+<a name="ln295">//   Fills *string and *fret with suitable values for pitch / pitchOffset,</a>
+<a name="ln296">//   using the highest possible string.</a>
+<a name="ln297">//   If note cannot be fretted, uses fret 0 on nearest string and returns false</a>
+<a name="ln298">//</a>
+<a name="ln299">//    Note: Strings are stored internally from lowest (0) to highest (strings()-1),</a>
+<a name="ln300">//          but the returned *string value references strings in reversed, 'visual', order:</a>
+<a name="ln301">//          from highest (0) to lowest (strings()-1)</a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303"> </a>
+<a name="ln304">bool StringData::convertPitch(int pitch, int pitchOffset, int* string, int* fret) const</a>
+<a name="ln305">      {</a>
+<a name="ln306">      int strings = stringTable.size();</a>
+<a name="ln307">      if (strings &lt; 1)</a>
+<a name="ln308">            return false;</a>
+<a name="ln309"> </a>
+<a name="ln310">      pitch += pitchOffset;</a>
+<a name="ln311"> </a>
+<a name="ln312">      // if above max fret on highest string, fret on first string, but return failure</a>
+<a name="ln313">      if(pitch &gt; stringTable.at(strings-1).pitch + _frets) {</a>
+<a name="ln314">            *string = 0;</a>
+<a name="ln315">            *fret   = 0;</a>
+<a name="ln316">            return false;</a>
+<a name="ln317">            }</a>
+<a name="ln318"> </a>
+<a name="ln319">      // look for a suitable string, starting from the highest</a>
+<a name="ln320">      // NOTE: this assumes there are always enough frets to fill</a>
+<a name="ln321">      // the interval between any fretted string and the next</a>
+<a name="ln322">      for (int i = strings-1; i &gt;=0; i--) {</a>
+<a name="ln323">            instrString strg = stringTable.at(i);</a>
+<a name="ln324">            if(pitch &gt;= strg.pitch) {</a>
+<a name="ln325">                  if (pitch == strg.pitch || !strg.open)</a>
+<a name="ln326">                  *string = strings - i - 1;</a>
+<a name="ln327">                  *fret   = pitch - strg.pitch;</a>
+<a name="ln328">                  return true;</a>
+<a name="ln329">                  }</a>
+<a name="ln330">            }</a>
+<a name="ln331"> </a>
+<a name="ln332">      // if no string found, pitch is below lowest string:</a>
+<a name="ln333">      // fret on last string, but return failure</a>
+<a name="ln334">      *string = strings-1;</a>
+<a name="ln335">      *fret   = 0;</a>
+<a name="ln336">      return false;</a>
+<a name="ln337">      }</a>
+<a name="ln338"> </a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340">//   getPitch</a>
+<a name="ln341">//    Returns the pitch corresponding to the string / fret / pitchOffset combination.</a>
+<a name="ln342">//    Returns INVALID_PITCH if not possible</a>
+<a name="ln343">//    Note: frets above max fret are accepted.</a>
+<a name="ln344">//---------------------------------------------------------</a>
+<a name="ln345"> </a>
+<a name="ln346">int StringData::getPitch(int string, int fret, int pitchOffset) const</a>
+<a name="ln347">      {</a>
+<a name="ln348">      int strings = stringTable.size();</a>
+<a name="ln349">      if (string &lt; 0 || string &gt;= strings)</a>
+<a name="ln350">            return INVALID_PITCH;</a>
+<a name="ln351">      instrString strg = stringTable.at(strings - string - 1);</a>
+<a name="ln352">      return strg.pitch - pitchOffset + (strg.open ? 0 : fret);</a>
+<a name="ln353">      }</a>
+<a name="ln354"> </a>
+<a name="ln355">//---------------------------------------------------------</a>
+<a name="ln356">//   fret</a>
+<a name="ln357">//    Returns the fret corresponding to the pitch / string / pitchOffset combination.</a>
+<a name="ln358">//    returns FRET_NONE if not possible</a>
+<a name="ln359">//---------------------------------------------------------</a>
+<a name="ln360"> </a>
+<a name="ln361">int StringData::fret(int pitch, int string, int pitchOffset) const</a>
+<a name="ln362">      {</a>
+<a name="ln363">      int strings = stringTable.size();</a>
+<a name="ln364">      if (strings &lt; 1)                          // no strings at all!</a>
+<a name="ln365">            return FRET_NONE;</a>
+<a name="ln366"> </a>
+<a name="ln367">      if (string &lt; 0 || string &gt;= strings)      // no such a string</a>
+<a name="ln368">            return FRET_NONE;</a>
+<a name="ln369"> </a>
+<a name="ln370">      pitch += pitchOffset;</a>
+<a name="ln371"> </a>
+<a name="ln372">      int fret = pitch - stringTable[strings - string - 1].pitch;</a>
+<a name="ln373">      // fret number is invalid or string cannot be fretted</a>
+<a name="ln374">      if (fret &lt; 0 || fret &gt;= _frets || (fret &gt; 0 &amp;&amp; stringTable[strings - string - 1].open))</a>
+<a name="ln375">            return FRET_NONE;</a>
+<a name="ln376">      return fret;</a>
+<a name="ln377">      }</a>
+<a name="ln378"> </a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380">//   sortChordNotes</a>
+<a name="ln381">//    Adds to sortedNotes the notes of Chord in string/pitch order</a>
+<a name="ln382">//    Note: notes are sorted first by string (top string being 0),</a>
+<a name="ln383">//          then by negated pitch (higher pitches resulting in lower key),</a>
+<a name="ln384">//          then by order of submission to disambiguate notes with the same pitch.</a>
+<a name="ln385">//          Everything else being equal, this makes notes in higher-numbered voices</a>
+<a name="ln386">//          to be sorted after notes in lower-numbered voices (voice 2 after voice 1 and so on)</a>
+<a name="ln387">//    Notes without a string assigned yet, are sorted according to the lowest string which can accommodate them.</a>
+<a name="ln388">//---------------------------------------------------------</a>
+<a name="ln389"> </a>
+<a name="ln390">void StringData::sortChordNotes(QMap&lt;int, Note *&gt;&amp; sortedNotes, const Chord *chord, int pitchOffset, int* count) const</a>
+<a name="ln391">{</a>
+<a name="ln392">      int   key, string, fret;</a>
+<a name="ln393"> </a>
+<a name="ln394">      foreach(Note * note, chord-&gt;notes()) {</a>
+<a name="ln395">            string      = note-&gt;string();</a>
+<a name="ln396">            fret        = note-&gt;fret();</a>
+<a name="ln397">            // if note not fretted yet or current fretting no longer valid,</a>
+<a name="ln398">            // use most convenient string as key</a>
+<a name="ln399">            if (string &lt;= STRING_NONE || fret &lt;= FRET_NONE</a>
+<a name="ln400">                        || getPitch(string, fret, pitchOffset) != note-&gt;pitch()) {</a>
+<a name="ln401">                  note-&gt;setString(STRING_NONE);</a>
+<a name="ln402">                  note-&gt;setFret(FRET_NONE);</a>
+<a name="ln403">                  convertPitch(note-&gt;pitch(), pitchOffset, &amp;string, &amp;fret);</a>
+<a name="ln404">                  }</a>
+<a name="ln405">            key = string * 100000;</a>
+<a name="ln406">            key += -(note-&gt;pitch()+pitchOffset) * 100 + *count;     // disambiguate notes of equal pitch</a>
+<a name="ln407">            sortedNotes.insert(key, note);</a>
+<a name="ln408">            (*count)++;</a>
+<a name="ln409">            }</a>
+<a name="ln410">}</a>
+<a name="ln411"> </a>
+<a name="ln412">#if 0</a>
+<a name="ln413">//---------------------------------------------------------</a>
+<a name="ln414">//   MusicXMLStepAltOct2Pitch</a>
+<a name="ln415">//---------------------------------------------------------</a>
+<a name="ln416"> </a>
+<a name="ln417">/**</a>
+<a name="ln418"> Convert MusicXML \a step / \a alter / \a octave to midi pitch.</a>
+<a name="ln419"> Note: similar to (part of) xmlSetPitch in mscore/importxml.cpp.</a>
+<a name="ln420"> TODO: combine ?</a>
+<a name="ln421"> */</a>
+<a name="ln422"> </a>
+<a name="ln423">static int MusicXMLStepAltOct2Pitch(char step, int alter, int octave)</a>
+<a name="ln424">      {</a>
+<a name="ln425">      int istep = step - 'A';</a>
+<a name="ln426">      //                       a  b   c  d  e  f  g</a>
+<a name="ln427">      static int table[7]  = { 9, 11, 0, 2, 4, 5, 7 };</a>
+<a name="ln428">      if (istep &lt; 0 || istep &gt; 6) {</a>
+<a name="ln429">            qDebug(&quot;MusicXMLStepAltOct2Pitch: illegal step %d, &lt;%c&gt;&quot;, istep, step);</a>
+<a name="ln430">            return -1;</a>
+<a name="ln431">            }</a>
+<a name="ln432">      int pitch = table[istep] + alter + (octave+1) * 12;</a>
+<a name="ln433"> </a>
+<a name="ln434">      if (pitch &lt; 0)</a>
+<a name="ln435">            pitch = -1;</a>
+<a name="ln436">      if (pitch &gt; 127)</a>
+<a name="ln437">            pitch = -1;</a>
+<a name="ln438"> </a>
+<a name="ln439">      return pitch;</a>
+<a name="ln440">      }</a>
+<a name="ln441"> </a>
+<a name="ln442">//---------------------------------------------------------</a>
+<a name="ln443">//   Read MusicXML</a>
+<a name="ln444">//---------------------------------------------------------</a>
+<a name="ln445"> </a>
+<a name="ln446">void StringData::readMusicXML(XmlReader&amp; e)</a>
+<a name="ln447">      {</a>
+<a name="ln448">      _frets = 25;</a>
+<a name="ln449"> </a>
+<a name="ln450">      while (e.readNextStartElement()) {</a>
+<a name="ln451">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln452">            if (tag == &quot;staff-lines&quot;) {</a>
+<a name="ln453">                  int val = e.readInt();</a>
+<a name="ln454">                  if (val &gt; 0) {</a>
+<a name="ln455">                        // resize the string table and init with zeroes</a>
+<a name="ln456">                        stringTable = QVector&lt;int&gt;(val).toList();</a>
+<a name="ln457">                        }</a>
+<a name="ln458">                  else</a>
+<a name="ln459">                        qDebug(&quot;StringData::readMusicXML: illegal staff-lines %d&quot;, val);</a>
+<a name="ln460">                  }</a>
+<a name="ln461">            else if (tag == &quot;staff-tuning&quot;) {</a>
+<a name="ln462">                  int     line   = e.intAttribute(&quot;line&quot;);</a>
+<a name="ln463">                  QString step;</a>
+<a name="ln464">                  int     alter  = 0;</a>
+<a name="ln465">                  int     octave = 0;</a>
+<a name="ln466">                  while (e.readNextStartElement()) {</a>
+<a name="ln467">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln468">                        if (tag == &quot;tuning-alter&quot;)</a>
+<a name="ln469">                              alter = e.readInt();</a>
+<a name="ln470">                        else if (tag == &quot;tuning-octave&quot;)</a>
+<a name="ln471">                              octave = e.readInt();</a>
+<a name="ln472">                        else if (tag == &quot;tuning-step&quot;)</a>
+<a name="ln473">                              step = e.readElementText();</a>
+<a name="ln474">                        else</a>
+<a name="ln475">                              e.unknown();</a>
+<a name="ln476">                        }</a>
+<a name="ln477">                  if (0 &lt; line &amp;&amp; line &lt;= stringTable.size()) {</a>
+<a name="ln478">                        int pitch = MusicXMLStepAltOct2Pitch(step[0].toLatin1(), alter, octave);</a>
+<a name="ln479">                        if (pitch &gt;= 0)</a>
+<a name="ln480">                              stringTable[line - 1] = pitch;</a>
+<a name="ln481">                        else</a>
+<a name="ln482">                              qDebug(&quot;StringData::readMusicXML invalid string %d tuning step/alter/oct %s/%d/%d&quot;,</a>
+<a name="ln483">                                     line, qPrintable(step), alter, octave);</a>
+<a name="ln484">                        }</a>
+<a name="ln485">                  }</a>
+<a name="ln486">            else if (tag == &quot;capo&quot;) {</a>
+<a name="ln487">                  ; // not supported: silently ignored</a>
+<a name="ln488">                  }</a>
+<a name="ln489">            else {</a>
+<a name="ln490">                  ; // others silently ignored</a>
+<a name="ln491">                  }</a>
+<a name="ln492">            }</a>
+<a name="ln493">      }</a>
+<a name="ln494">#endif</a>
+<a name="ln495"> </a>
+<a name="ln496">//---------------------------------------------------------</a>
+<a name="ln497">//   Write MusicXML</a>
+<a name="ln498">//---------------------------------------------------------</a>
+<a name="ln499"> </a>
+<a name="ln500">void StringData::writeMusicXML(XmlWriter&amp; /*xml*/) const</a>
+<a name="ln501">      {</a>
+<a name="ln502">      }</a>
+<a name="ln503"> </a>
+<a name="ln504">}</a>
+<a name="ln505"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

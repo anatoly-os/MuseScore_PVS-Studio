@@ -1,0 +1,948 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>bdfdrivr.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*  bdfdrivr.c</a>
+<a name="ln2"> </a>
+<a name="ln3">    FreeType font driver for bdf files</a>
+<a name="ln4"> </a>
+<a name="ln5">    Copyright (C) 2001-2008, 2011, 2013, 2014 by</a>
+<a name="ln6">    Francesco Zappa Nardelli</a>
+<a name="ln7"> </a>
+<a name="ln8">Permission is hereby granted, free of charge, to any person obtaining a copy</a>
+<a name="ln9">of this software and associated documentation files (the &quot;Software&quot;), to deal</a>
+<a name="ln10">in the Software without restriction, including without limitation the rights</a>
+<a name="ln11">to use, copy, modify, merge, publish, distribute, sublicense, and/or sell</a>
+<a name="ln12">copies of the Software, and to permit persons to whom the Software is</a>
+<a name="ln13">furnished to do so, subject to the following conditions:</a>
+<a name="ln14"> </a>
+<a name="ln15">The above copyright notice and this permission notice shall be included in</a>
+<a name="ln16">all copies or substantial portions of the Software.</a>
+<a name="ln17"> </a>
+<a name="ln18">THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</a>
+<a name="ln19">IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</a>
+<a name="ln20">FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE</a>
+<a name="ln21">AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER</a>
+<a name="ln22">LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,</a>
+<a name="ln23">OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN</a>
+<a name="ln24">THE SOFTWARE.</a>
+<a name="ln25">*/</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &lt;ft2build.h&gt;</a>
+<a name="ln28"> </a>
+<a name="ln29">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln30">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln31">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln32">#include FT_BDF_H</a>
+<a name="ln33">#include FT_TRUETYPE_IDS_H</a>
+<a name="ln34"> </a>
+<a name="ln35">#include FT_SERVICE_BDF_H</a>
+<a name="ln36">#include FT_SERVICE_FONT_FORMAT_H</a>
+<a name="ln37"> </a>
+<a name="ln38">#include &quot;bdf.h&quot;</a>
+<a name="ln39">#include &quot;bdfdrivr.h&quot;</a>
+<a name="ln40"> </a>
+<a name="ln41">#include &quot;bdferror.h&quot;</a>
+<a name="ln42"> </a>
+<a name="ln43"> </a>
+<a name="ln44">  /*************************************************************************/</a>
+<a name="ln45">  /*                                                                       */</a>
+<a name="ln46">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln47">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln48">  /* messages during execution.                                            */</a>
+<a name="ln49">  /*                                                                       */</a>
+<a name="ln50">#undef  FT_COMPONENT</a>
+<a name="ln51">#define FT_COMPONENT  trace_bdfdriver</a>
+<a name="ln52"> </a>
+<a name="ln53"> </a>
+<a name="ln54">  typedef struct  BDF_CMapRec_</a>
+<a name="ln55">  {</a>
+<a name="ln56">    FT_CMapRec        cmap;</a>
+<a name="ln57">    FT_ULong          num_encodings; /* ftobjs.h: FT_CMap-&gt;clazz-&gt;size */</a>
+<a name="ln58">    BDF_encoding_el*  encodings;</a>
+<a name="ln59"> </a>
+<a name="ln60">  } BDF_CMapRec, *BDF_CMap;</a>
+<a name="ln61"> </a>
+<a name="ln62"> </a>
+<a name="ln63">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln64">  bdf_cmap_init( FT_CMap     bdfcmap,</a>
+<a name="ln65">                 FT_Pointer  init_data )</a>
+<a name="ln66">  {</a>
+<a name="ln67">    BDF_CMap  cmap = (BDF_CMap)bdfcmap;</a>
+<a name="ln68">    BDF_Face  face = (BDF_Face)FT_CMAP_FACE( cmap );</a>
+<a name="ln69">    FT_UNUSED( init_data );</a>
+<a name="ln70"> </a>
+<a name="ln71"> </a>
+<a name="ln72">    cmap-&gt;num_encodings = face-&gt;bdffont-&gt;glyphs_used;</a>
+<a name="ln73">    cmap-&gt;encodings     = face-&gt;en_table;</a>
+<a name="ln74"> </a>
+<a name="ln75">    return FT_Err_Ok;</a>
+<a name="ln76">  }</a>
+<a name="ln77"> </a>
+<a name="ln78"> </a>
+<a name="ln79">  FT_CALLBACK_DEF( void )</a>
+<a name="ln80">  bdf_cmap_done( FT_CMap  bdfcmap )</a>
+<a name="ln81">  {</a>
+<a name="ln82">    BDF_CMap  cmap = (BDF_CMap)bdfcmap;</a>
+<a name="ln83"> </a>
+<a name="ln84"> </a>
+<a name="ln85">    cmap-&gt;encodings     = NULL;</a>
+<a name="ln86">    cmap-&gt;num_encodings = 0;</a>
+<a name="ln87">  }</a>
+<a name="ln88"> </a>
+<a name="ln89"> </a>
+<a name="ln90">  FT_CALLBACK_DEF( FT_UInt )</a>
+<a name="ln91">  bdf_cmap_char_index( FT_CMap    bdfcmap,</a>
+<a name="ln92">                       FT_UInt32  charcode )</a>
+<a name="ln93">  {</a>
+<a name="ln94">    BDF_CMap          cmap      = (BDF_CMap)bdfcmap;</a>
+<a name="ln95">    BDF_encoding_el*  encodings = cmap-&gt;encodings;</a>
+<a name="ln96">    FT_ULong          min, max, mid; /* num_encodings */</a>
+<a name="ln97">    FT_UShort         result    = 0; /* encodings-&gt;glyph */</a>
+<a name="ln98"> </a>
+<a name="ln99"> </a>
+<a name="ln100">    min = 0;</a>
+<a name="ln101">    max = cmap-&gt;num_encodings;</a>
+<a name="ln102"> </a>
+<a name="ln103">    while ( min &lt; max )</a>
+<a name="ln104">    {</a>
+<a name="ln105">      FT_ULong  code;</a>
+<a name="ln106"> </a>
+<a name="ln107"> </a>
+<a name="ln108">      mid  = ( min + max ) &gt;&gt; 1;</a>
+<a name="ln109">      code = (FT_ULong)encodings[mid].enc;</a>
+<a name="ln110"> </a>
+<a name="ln111">      if ( charcode == code )</a>
+<a name="ln112">      {</a>
+<a name="ln113">        /* increase glyph index by 1 --              */</a>
+<a name="ln114">        /* we reserve slot 0 for the undefined glyph */</a>
+<a name="ln115">        result = encodings[mid].glyph + 1;</a>
+<a name="ln116">        break;</a>
+<a name="ln117">      }</a>
+<a name="ln118"> </a>
+<a name="ln119">      if ( charcode &lt; code )</a>
+<a name="ln120">        max = mid;</a>
+<a name="ln121">      else</a>
+<a name="ln122">        min = mid + 1;</a>
+<a name="ln123">    }</a>
+<a name="ln124"> </a>
+<a name="ln125">    return result;</a>
+<a name="ln126">  }</a>
+<a name="ln127"> </a>
+<a name="ln128"> </a>
+<a name="ln129">  FT_CALLBACK_DEF( FT_UInt )</a>
+<a name="ln130">  bdf_cmap_char_next( FT_CMap     bdfcmap,</a>
+<a name="ln131">                      FT_UInt32  *acharcode )</a>
+<a name="ln132">  {</a>
+<a name="ln133">    BDF_CMap          cmap      = (BDF_CMap)bdfcmap;</a>
+<a name="ln134">    BDF_encoding_el*  encodings = cmap-&gt;encodings;</a>
+<a name="ln135">    FT_ULong          min, max, mid; /* num_encodings */</a>
+<a name="ln136">    FT_UShort         result   = 0;  /* encodings-&gt;glyph */</a>
+<a name="ln137">    FT_ULong          charcode = *acharcode + 1;</a>
+<a name="ln138"> </a>
+<a name="ln139"> </a>
+<a name="ln140">    min = 0;</a>
+<a name="ln141">    max = cmap-&gt;num_encodings;</a>
+<a name="ln142"> </a>
+<a name="ln143">    while ( min &lt; max )</a>
+<a name="ln144">    {</a>
+<a name="ln145">      FT_ULong  code; /* same as BDF_encoding_el.enc */</a>
+<a name="ln146"> </a>
+<a name="ln147"> </a>
+<a name="ln148">      mid  = ( min + max ) &gt;&gt; 1;</a>
+<a name="ln149">      code = (FT_ULong)encodings[mid].enc;</a>
+<a name="ln150"> </a>
+<a name="ln151">      if ( charcode == code )</a>
+<a name="ln152">      {</a>
+<a name="ln153">        /* increase glyph index by 1 --              */</a>
+<a name="ln154">        /* we reserve slot 0 for the undefined glyph */</a>
+<a name="ln155">        result = encodings[mid].glyph + 1;</a>
+<a name="ln156">        goto Exit;</a>
+<a name="ln157">      }</a>
+<a name="ln158"> </a>
+<a name="ln159">      if ( charcode &lt; code )</a>
+<a name="ln160">        max = mid;</a>
+<a name="ln161">      else</a>
+<a name="ln162">        min = mid + 1;</a>
+<a name="ln163">    }</a>
+<a name="ln164"> </a>
+<a name="ln165">    charcode = 0;</a>
+<a name="ln166">    if ( min &lt; cmap-&gt;num_encodings )</a>
+<a name="ln167">    {</a>
+<a name="ln168">      charcode = (FT_ULong)encodings[min].enc;</a>
+<a name="ln169">      result   = encodings[min].glyph + 1;</a>
+<a name="ln170">    }</a>
+<a name="ln171"> </a>
+<a name="ln172">  Exit:</a>
+<a name="ln173">    if ( charcode &gt; 0xFFFFFFFFUL )</a>
+<a name="ln174">    {</a>
+<a name="ln175">      FT_TRACE1(( &quot;bdf_cmap_char_next: charcode 0x%x &gt; 32bit API&quot; ));</a>
+<a name="ln176">      *acharcode = 0;</a>
+<a name="ln177">      /* XXX: result should be changed to indicate an overflow error */</a>
+<a name="ln178">    }</a>
+<a name="ln179">    else</a>
+<a name="ln180">      *acharcode = (FT_UInt32)charcode;</a>
+<a name="ln181">    return result;</a>
+<a name="ln182">  }</a>
+<a name="ln183"> </a>
+<a name="ln184"> </a>
+<a name="ln185">  static</a>
+<a name="ln186">  const FT_CMap_ClassRec  bdf_cmap_class =</a>
+<a name="ln187">  {</a>
+<a name="ln188">    sizeof ( BDF_CMapRec ),</a>
+<a name="ln189">    bdf_cmap_init,</a>
+<a name="ln190">    bdf_cmap_done,</a>
+<a name="ln191">    bdf_cmap_char_index,</a>
+<a name="ln192">    bdf_cmap_char_next,</a>
+<a name="ln193"> </a>
+<a name="ln194">    NULL, NULL, NULL, NULL, NULL</a>
+<a name="ln195">  };</a>
+<a name="ln196"> </a>
+<a name="ln197"> </a>
+<a name="ln198">  static FT_Error</a>
+<a name="ln199">  bdf_interpret_style( BDF_Face  bdf )</a>
+<a name="ln200">  {</a>
+<a name="ln201">    FT_Error         error  = FT_Err_Ok;</a>
+<a name="ln202">    FT_Face          face   = FT_FACE( bdf );</a>
+<a name="ln203">    FT_Memory        memory = face-&gt;memory;</a>
+<a name="ln204">    bdf_font_t*      font   = bdf-&gt;bdffont;</a>
+<a name="ln205">    bdf_property_t*  prop;</a>
+<a name="ln206"> </a>
+<a name="ln207">    char*   strings[4] = { NULL, NULL, NULL, NULL };</a>
+<a name="ln208">    size_t  nn, len, lengths[4];</a>
+<a name="ln209"> </a>
+<a name="ln210"> </a>
+<a name="ln211">    face-&gt;style_flags = 0;</a>
+<a name="ln212"> </a>
+<a name="ln213">    prop = bdf_get_font_property( font, (char *)&quot;SLANT&quot; );</a>
+<a name="ln214">    if ( prop &amp;&amp; prop-&gt;format == BDF_ATOM                             &amp;&amp;</a>
+<a name="ln215">         prop-&gt;value.atom                                             &amp;&amp;</a>
+<a name="ln216">         ( *(prop-&gt;value.atom) == 'O' || *(prop-&gt;value.atom) == 'o' ||</a>
+<a name="ln217">           *(prop-&gt;value.atom) == 'I' || *(prop-&gt;value.atom) == 'i' ) )</a>
+<a name="ln218">    {</a>
+<a name="ln219">      face-&gt;style_flags |= FT_STYLE_FLAG_ITALIC;</a>
+<a name="ln220">      strings[2] = ( *(prop-&gt;value.atom) == 'O' || *(prop-&gt;value.atom) == 'o' )</a>
+<a name="ln221">                   ? (char *)&quot;Oblique&quot;</a>
+<a name="ln222">                   : (char *)&quot;Italic&quot;;</a>
+<a name="ln223">    }</a>
+<a name="ln224"> </a>
+<a name="ln225">    prop = bdf_get_font_property( font, (char *)&quot;WEIGHT_NAME&quot; );</a>
+<a name="ln226">    if ( prop &amp;&amp; prop-&gt;format == BDF_ATOM                             &amp;&amp;</a>
+<a name="ln227">         prop-&gt;value.atom                                             &amp;&amp;</a>
+<a name="ln228">         ( *(prop-&gt;value.atom) == 'B' || *(prop-&gt;value.atom) == 'b' ) )</a>
+<a name="ln229">    {</a>
+<a name="ln230">      face-&gt;style_flags |= FT_STYLE_FLAG_BOLD;</a>
+<a name="ln231">      strings[1] = (char *)&quot;Bold&quot;;</a>
+<a name="ln232">    }</a>
+<a name="ln233"> </a>
+<a name="ln234">    prop = bdf_get_font_property( font, (char *)&quot;SETWIDTH_NAME&quot; );</a>
+<a name="ln235">    if ( prop &amp;&amp; prop-&gt;format == BDF_ATOM                              &amp;&amp;</a>
+<a name="ln236">         prop-&gt;value.atom &amp;&amp; *(prop-&gt;value.atom)                       &amp;&amp;</a>
+<a name="ln237">         !( *(prop-&gt;value.atom) == 'N' || *(prop-&gt;value.atom) == 'n' ) )</a>
+<a name="ln238">      strings[3] = (char *)(prop-&gt;value.atom);</a>
+<a name="ln239"> </a>
+<a name="ln240">    prop = bdf_get_font_property( font, (char *)&quot;ADD_STYLE_NAME&quot; );</a>
+<a name="ln241">    if ( prop &amp;&amp; prop-&gt;format == BDF_ATOM                              &amp;&amp;</a>
+<a name="ln242">         prop-&gt;value.atom &amp;&amp; *(prop-&gt;value.atom)                       &amp;&amp;</a>
+<a name="ln243">         !( *(prop-&gt;value.atom) == 'N' || *(prop-&gt;value.atom) == 'n' ) )</a>
+<a name="ln244">      strings[0] = (char *)(prop-&gt;value.atom);</a>
+<a name="ln245"> </a>
+<a name="ln246">    for ( len = 0, nn = 0; nn &lt; 4; nn++ )</a>
+<a name="ln247">    {</a>
+<a name="ln248">      lengths[nn] = 0;</a>
+<a name="ln249">      if ( strings[nn] )</a>
+<a name="ln250">      {</a>
+<a name="ln251">        lengths[nn] = ft_strlen( strings[nn] );</a>
+<a name="ln252">        len        += lengths[nn] + 1;</a>
+<a name="ln253">      }</a>
+<a name="ln254">    }</a>
+<a name="ln255"> </a>
+<a name="ln256">    if ( len == 0 )</a>
+<a name="ln257">    {</a>
+<a name="ln258">      strings[0] = (char *)&quot;Regular&quot;;</a>
+<a name="ln259">      lengths[0] = ft_strlen( strings[0] );</a>
+<a name="ln260">      len        = lengths[0] + 1;</a>
+<a name="ln261">    }</a>
+<a name="ln262"> </a>
+<a name="ln263">    {</a>
+<a name="ln264">      char*  s;</a>
+<a name="ln265"> </a>
+<a name="ln266"> </a>
+<a name="ln267">      if ( FT_ALLOC( face-&gt;style_name, len ) )</a>
+<a name="ln268">        return error;</a>
+<a name="ln269"> </a>
+<a name="ln270">      s = face-&gt;style_name;</a>
+<a name="ln271"> </a>
+<a name="ln272">      for ( nn = 0; nn &lt; 4; nn++ )</a>
+<a name="ln273">      {</a>
+<a name="ln274">        char*  src = strings[nn];</a>
+<a name="ln275"> </a>
+<a name="ln276"> </a>
+<a name="ln277">        len = lengths[nn];</a>
+<a name="ln278"> </a>
+<a name="ln279">        if ( src == NULL )</a>
+<a name="ln280">          continue;</a>
+<a name="ln281"> </a>
+<a name="ln282">        /* separate elements with a space */</a>
+<a name="ln283">        if ( s != face-&gt;style_name )</a>
+<a name="ln284">          *s++ = ' ';</a>
+<a name="ln285"> </a>
+<a name="ln286">        ft_memcpy( s, src, len );</a>
+<a name="ln287"> </a>
+<a name="ln288">        /* need to convert spaces to dashes for */</a>
+<a name="ln289">        /* add_style_name and setwidth_name     */</a>
+<a name="ln290">        if ( nn == 0 || nn == 3 )</a>
+<a name="ln291">        {</a>
+<a name="ln292">          size_t  mm;</a>
+<a name="ln293"> </a>
+<a name="ln294"> </a>
+<a name="ln295">          for ( mm = 0; mm &lt; len; mm++ )</a>
+<a name="ln296">            if ( s[mm] == ' ' )</a>
+<a name="ln297">              s[mm] = '-';</a>
+<a name="ln298">        }</a>
+<a name="ln299"> </a>
+<a name="ln300">        s += len;</a>
+<a name="ln301">      }</a>
+<a name="ln302">      *s = 0;</a>
+<a name="ln303">    }</a>
+<a name="ln304"> </a>
+<a name="ln305">    return error;</a>
+<a name="ln306">  }</a>
+<a name="ln307"> </a>
+<a name="ln308"> </a>
+<a name="ln309">  FT_CALLBACK_DEF( void )</a>
+<a name="ln310">  BDF_Face_Done( FT_Face  bdfface )         /* BDF_Face */</a>
+<a name="ln311">  {</a>
+<a name="ln312">    BDF_Face   face = (BDF_Face)bdfface;</a>
+<a name="ln313">    FT_Memory  memory;</a>
+<a name="ln314"> </a>
+<a name="ln315"> </a>
+<a name="ln316">    if ( !face )</a>
+<a name="ln317">      return;</a>
+<a name="ln318"> </a>
+<a name="ln319">    memory = FT_FACE_MEMORY( face );</a>
+<a name="ln320"> </a>
+<a name="ln321">    bdf_free_font( face-&gt;bdffont );</a>
+<a name="ln322"> </a>
+<a name="ln323">    FT_FREE( face-&gt;en_table );</a>
+<a name="ln324"> </a>
+<a name="ln325">    FT_FREE( face-&gt;charset_encoding );</a>
+<a name="ln326">    FT_FREE( face-&gt;charset_registry );</a>
+<a name="ln327">    FT_FREE( bdfface-&gt;family_name );</a>
+<a name="ln328">    FT_FREE( bdfface-&gt;style_name );</a>
+<a name="ln329"> </a>
+<a name="ln330">    FT_FREE( bdfface-&gt;available_sizes );</a>
+<a name="ln331"> </a>
+<a name="ln332">    FT_FREE( face-&gt;bdffont );</a>
+<a name="ln333">  }</a>
+<a name="ln334"> </a>
+<a name="ln335"> </a>
+<a name="ln336">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln337">  BDF_Face_Init( FT_Stream      stream,</a>
+<a name="ln338">                 FT_Face        bdfface,        /* BDF_Face */</a>
+<a name="ln339">                 FT_Int         face_index,</a>
+<a name="ln340">                 FT_Int         num_params,</a>
+<a name="ln341">                 FT_Parameter*  params )</a>
+<a name="ln342">  {</a>
+<a name="ln343">    FT_Error       error  = FT_Err_Ok;</a>
+<a name="ln344">    BDF_Face       face   = (BDF_Face)bdfface;</a>
+<a name="ln345">    FT_Memory      memory = FT_FACE_MEMORY( face );</a>
+<a name="ln346"> </a>
+<a name="ln347">    bdf_font_t*    font = NULL;</a>
+<a name="ln348">    bdf_options_t  options;</a>
+<a name="ln349"> </a>
+<a name="ln350">    FT_UNUSED( num_params );</a>
+<a name="ln351">    FT_UNUSED( params );</a>
+<a name="ln352"> </a>
+<a name="ln353"> </a>
+<a name="ln354">    FT_TRACE2(( &quot;BDF driver\n&quot; ));</a>
+<a name="ln355"> </a>
+<a name="ln356">    if ( FT_STREAM_SEEK( 0 ) )</a>
+<a name="ln357">      goto Exit;</a>
+<a name="ln358"> </a>
+<a name="ln359">    options.correct_metrics = 1;   /* FZ XXX: options semantics */</a>
+<a name="ln360">    options.keep_unencoded  = 1;</a>
+<a name="ln361">    options.keep_comments   = 0;</a>
+<a name="ln362">    options.font_spacing    = BDF_PROPORTIONAL;</a>
+<a name="ln363"> </a>
+<a name="ln364">    error = bdf_load_font( stream, memory, &amp;options, &amp;font );</a>
+<a name="ln365">    if ( FT_ERR_EQ( error, Missing_Startfont_Field ) )</a>
+<a name="ln366">    {</a>
+<a name="ln367">      FT_TRACE2(( &quot;  not a BDF file\n&quot; ));</a>
+<a name="ln368">      goto Fail;</a>
+<a name="ln369">    }</a>
+<a name="ln370">    else if ( error )</a>
+<a name="ln371">      goto Exit;</a>
+<a name="ln372"> </a>
+<a name="ln373">    /* we have a bdf font: let's construct the face object */</a>
+<a name="ln374">    face-&gt;bdffont = font;</a>
+<a name="ln375"> </a>
+<a name="ln376">    /* BDF could not have multiple face in single font file.</a>
+<a name="ln377">     * XXX: non-zero face_index is already invalid argument, but</a>
+<a name="ln378">     *      Type1, Type42 driver has a convention to return</a>
+<a name="ln379">     *      an invalid argument error when the font could be</a>
+<a name="ln380">     *      opened by the specified driver.</a>
+<a name="ln381">     */</a>
+<a name="ln382">    if ( face_index &gt; 0 &amp;&amp; ( face_index &amp; 0xFFFF ) &gt; 0 )</a>
+<a name="ln383">    {</a>
+<a name="ln384">      FT_ERROR(( &quot;BDF_Face_Init: invalid face index\n&quot; ));</a>
+<a name="ln385">      BDF_Face_Done( bdfface );</a>
+<a name="ln386">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln387">    }</a>
+<a name="ln388"> </a>
+<a name="ln389">    {</a>
+<a name="ln390">      bdf_property_t*  prop = NULL;</a>
+<a name="ln391"> </a>
+<a name="ln392"> </a>
+<a name="ln393">      FT_TRACE4(( &quot;  number of glyphs: allocated %d (used %d)\n&quot;,</a>
+<a name="ln394">                  font-&gt;glyphs_size,</a>
+<a name="ln395">                  font-&gt;glyphs_used ));</a>
+<a name="ln396">      FT_TRACE4(( &quot;  number of unencoded glyphs: allocated %d (used %d)\n&quot;,</a>
+<a name="ln397">                  font-&gt;unencoded_size,</a>
+<a name="ln398">                  font-&gt;unencoded_used ));</a>
+<a name="ln399"> </a>
+<a name="ln400">      bdfface-&gt;num_faces  = 1;</a>
+<a name="ln401">      bdfface-&gt;face_index = 0;</a>
+<a name="ln402"> </a>
+<a name="ln403">      bdfface-&gt;face_flags |= FT_FACE_FLAG_FIXED_SIZES |</a>
+<a name="ln404">                             FT_FACE_FLAG_HORIZONTAL  |</a>
+<a name="ln405">                             FT_FACE_FLAG_FAST_GLYPHS;</a>
+<a name="ln406"> </a>
+<a name="ln407">      prop = bdf_get_font_property( font, &quot;SPACING&quot; );</a>
+<a name="ln408">      if ( prop &amp;&amp; prop-&gt;format == BDF_ATOM                             &amp;&amp;</a>
+<a name="ln409">           prop-&gt;value.atom                                             &amp;&amp;</a>
+<a name="ln410">           ( *(prop-&gt;value.atom) == 'M' || *(prop-&gt;value.atom) == 'm' ||</a>
+<a name="ln411">             *(prop-&gt;value.atom) == 'C' || *(prop-&gt;value.atom) == 'c' ) )</a>
+<a name="ln412">        bdfface-&gt;face_flags |= FT_FACE_FLAG_FIXED_WIDTH;</a>
+<a name="ln413"> </a>
+<a name="ln414">      /* FZ XXX: TO DO: FT_FACE_FLAGS_VERTICAL   */</a>
+<a name="ln415">      /* FZ XXX: I need a font to implement this */</a>
+<a name="ln416"> </a>
+<a name="ln417">      prop = bdf_get_font_property( font, &quot;FAMILY_NAME&quot; );</a>
+<a name="ln418">      if ( prop &amp;&amp; prop-&gt;value.atom )</a>
+<a name="ln419">      {</a>
+<a name="ln420">        if ( FT_STRDUP( bdfface-&gt;family_name, prop-&gt;value.atom ) )</a>
+<a name="ln421">          goto Exit;</a>
+<a name="ln422">      }</a>
+<a name="ln423">      else</a>
+<a name="ln424">        bdfface-&gt;family_name = NULL;</a>
+<a name="ln425"> </a>
+<a name="ln426">      if ( ( error = bdf_interpret_style( face ) ) != 0 )</a>
+<a name="ln427">        goto Exit;</a>
+<a name="ln428"> </a>
+<a name="ln429">      /* the number of glyphs (with one slot for the undefined glyph */</a>
+<a name="ln430">      /* at position 0 and all unencoded glyphs)                     */</a>
+<a name="ln431">      bdfface-&gt;num_glyphs = (FT_Long)( font-&gt;glyphs_size + 1 );</a>
+<a name="ln432"> </a>
+<a name="ln433">      bdfface-&gt;num_fixed_sizes = 1;</a>
+<a name="ln434">      if ( FT_NEW_ARRAY( bdfface-&gt;available_sizes, 1 ) )</a>
+<a name="ln435">        goto Exit;</a>
+<a name="ln436"> </a>
+<a name="ln437">      {</a>
+<a name="ln438">        FT_Bitmap_Size*  bsize = bdfface-&gt;available_sizes;</a>
+<a name="ln439">        FT_Short         resolution_x = 0, resolution_y = 0;</a>
+<a name="ln440"> </a>
+<a name="ln441"> </a>
+<a name="ln442">        FT_MEM_ZERO( bsize, sizeof ( FT_Bitmap_Size ) );</a>
+<a name="ln443"> </a>
+<a name="ln444">        bsize-&gt;height = (FT_Short)( font-&gt;font_ascent + font-&gt;font_descent );</a>
+<a name="ln445"> </a>
+<a name="ln446">        prop = bdf_get_font_property( font, &quot;AVERAGE_WIDTH&quot; );</a>
+<a name="ln447">        if ( prop )</a>
+<a name="ln448">          bsize-&gt;width = (FT_Short)( ( prop-&gt;value.l + 5 ) / 10 );</a>
+<a name="ln449">        else</a>
+<a name="ln450">          bsize-&gt;width = (FT_Short)( bsize-&gt;height * 2/3 );</a>
+<a name="ln451"> </a>
+<a name="ln452">        prop = bdf_get_font_property( font, &quot;POINT_SIZE&quot; );</a>
+<a name="ln453">        if ( prop )</a>
+<a name="ln454">          /* convert from 722.7 decipoints to 72 points per inch */</a>
+<a name="ln455">          bsize-&gt;size =</a>
+<a name="ln456">            (FT_Pos)( ( prop-&gt;value.l * 64 * 7200 + 36135L ) / 72270L );</a>
+<a name="ln457">        else</a>
+<a name="ln458">          bsize-&gt;size = bsize-&gt;width &lt;&lt; 6;</a>
+<a name="ln459"> </a>
+<a name="ln460">        prop = bdf_get_font_property( font, &quot;PIXEL_SIZE&quot; );</a>
+<a name="ln461">        if ( prop )</a>
+<a name="ln462">          bsize-&gt;y_ppem = (FT_Short)prop-&gt;value.l &lt;&lt; 6;</a>
+<a name="ln463"> </a>
+<a name="ln464">        prop = bdf_get_font_property( font, &quot;RESOLUTION_X&quot; );</a>
+<a name="ln465">        if ( prop )</a>
+<a name="ln466">          resolution_x = (FT_Short)prop-&gt;value.l;</a>
+<a name="ln467"> </a>
+<a name="ln468">        prop = bdf_get_font_property( font, &quot;RESOLUTION_Y&quot; );</a>
+<a name="ln469">        if ( prop )</a>
+<a name="ln470">          resolution_y = (FT_Short)prop-&gt;value.l;</a>
+<a name="ln471"> </a>
+<a name="ln472">        if ( bsize-&gt;y_ppem == 0 )</a>
+<a name="ln473">        {</a>
+<a name="ln474">          bsize-&gt;y_ppem = bsize-&gt;size;</a>
+<a name="ln475">          if ( resolution_y )</a>
+<a name="ln476">            bsize-&gt;y_ppem = bsize-&gt;y_ppem * resolution_y / 72;</a>
+<a name="ln477">        }</a>
+<a name="ln478">        if ( resolution_x &amp;&amp; resolution_y )</a>
+<a name="ln479">          bsize-&gt;x_ppem = bsize-&gt;y_ppem * resolution_x / resolution_y;</a>
+<a name="ln480">        else</a>
+<a name="ln481">          bsize-&gt;x_ppem = bsize-&gt;y_ppem;</a>
+<a name="ln482">      }</a>
+<a name="ln483"> </a>
+<a name="ln484">      /* encoding table */</a>
+<a name="ln485">      {</a>
+<a name="ln486">        bdf_glyph_t*   cur = font-&gt;glyphs;</a>
+<a name="ln487">        unsigned long  n;</a>
+<a name="ln488"> </a>
+<a name="ln489"> </a>
+<a name="ln490">        if ( FT_NEW_ARRAY( face-&gt;en_table, font-&gt;glyphs_size ) )</a>
+<a name="ln491">          goto Exit;</a>
+<a name="ln492"> </a>
+<a name="ln493">        face-&gt;default_glyph = 0;</a>
+<a name="ln494">        for ( n = 0; n &lt; font-&gt;glyphs_size; n++ )</a>
+<a name="ln495">        {</a>
+<a name="ln496">          (face-&gt;en_table[n]).enc = cur[n].encoding;</a>
+<a name="ln497">          FT_TRACE4(( &quot;  idx %d, val 0x%lX\n&quot;, n, cur[n].encoding ));</a>
+<a name="ln498">          (face-&gt;en_table[n]).glyph = (FT_UShort)n;</a>
+<a name="ln499"> </a>
+<a name="ln500">          if ( cur[n].encoding == font-&gt;default_char )</a>
+<a name="ln501">          {</a>
+<a name="ln502">            if ( n &lt; FT_UINT_MAX )</a>
+<a name="ln503">              face-&gt;default_glyph = (FT_UInt)n;</a>
+<a name="ln504">            else</a>
+<a name="ln505">              FT_TRACE1(( &quot;BDF_Face_Init:&quot;</a>
+<a name="ln506">                          &quot; idx %d is too large for this system\n&quot;, n ));</a>
+<a name="ln507">          }</a>
+<a name="ln508">        }</a>
+<a name="ln509">      }</a>
+<a name="ln510"> </a>
+<a name="ln511">      /* charmaps */</a>
+<a name="ln512">      {</a>
+<a name="ln513">        bdf_property_t  *charset_registry, *charset_encoding;</a>
+<a name="ln514">        FT_Bool          unicode_charmap  = 0;</a>
+<a name="ln515"> </a>
+<a name="ln516"> </a>
+<a name="ln517">        charset_registry =</a>
+<a name="ln518">          bdf_get_font_property( font, &quot;CHARSET_REGISTRY&quot; );</a>
+<a name="ln519">        charset_encoding =</a>
+<a name="ln520">          bdf_get_font_property( font, &quot;CHARSET_ENCODING&quot; );</a>
+<a name="ln521">        if ( charset_registry &amp;&amp; charset_encoding )</a>
+<a name="ln522">        {</a>
+<a name="ln523">          if ( charset_registry-&gt;format == BDF_ATOM &amp;&amp;</a>
+<a name="ln524">               charset_encoding-&gt;format == BDF_ATOM &amp;&amp;</a>
+<a name="ln525">               charset_registry-&gt;value.atom         &amp;&amp;</a>
+<a name="ln526">               charset_encoding-&gt;value.atom         )</a>
+<a name="ln527">          {</a>
+<a name="ln528">            const char*  s;</a>
+<a name="ln529"> </a>
+<a name="ln530"> </a>
+<a name="ln531">            if ( FT_STRDUP( face-&gt;charset_encoding,</a>
+<a name="ln532">                            charset_encoding-&gt;value.atom ) ||</a>
+<a name="ln533">                 FT_STRDUP( face-&gt;charset_registry,</a>
+<a name="ln534">                            charset_registry-&gt;value.atom ) )</a>
+<a name="ln535">              goto Exit;</a>
+<a name="ln536"> </a>
+<a name="ln537">            /* Uh, oh, compare first letters manually to avoid dependency */</a>
+<a name="ln538">            /* on locales.                                                */</a>
+<a name="ln539">            s = face-&gt;charset_registry;</a>
+<a name="ln540">            if ( ( s[0] == 'i' || s[0] == 'I' ) &amp;&amp;</a>
+<a name="ln541">                 ( s[1] == 's' || s[1] == 'S' ) &amp;&amp;</a>
+<a name="ln542">                 ( s[2] == 'o' || s[2] == 'O' ) )</a>
+<a name="ln543">            {</a>
+<a name="ln544">              s += 3;</a>
+<a name="ln545">              if ( !ft_strcmp( s, &quot;10646&quot; )                      ||</a>
+<a name="ln546">                   ( !ft_strcmp( s, &quot;8859&quot; ) &amp;&amp;</a>
+<a name="ln547">                     !ft_strcmp( face-&gt;charset_encoding, &quot;1&quot; ) ) )</a>
+<a name="ln548">              unicode_charmap = 1;</a>
+<a name="ln549">            }</a>
+<a name="ln550"> </a>
+<a name="ln551">            {</a>
+<a name="ln552">              FT_CharMapRec  charmap;</a>
+<a name="ln553"> </a>
+<a name="ln554"> </a>
+<a name="ln555">              charmap.face        = FT_FACE( face );</a>
+<a name="ln556">              charmap.encoding    = FT_ENCODING_NONE;</a>
+<a name="ln557">              /* initial platform/encoding should indicate unset status? */</a>
+<a name="ln558">              charmap.platform_id = TT_PLATFORM_APPLE_UNICODE;</a>
+<a name="ln559">              charmap.encoding_id = TT_APPLE_ID_DEFAULT;</a>
+<a name="ln560"> </a>
+<a name="ln561">              if ( unicode_charmap )</a>
+<a name="ln562">              {</a>
+<a name="ln563">                charmap.encoding    = FT_ENCODING_UNICODE;</a>
+<a name="ln564">                charmap.platform_id = TT_PLATFORM_MICROSOFT;</a>
+<a name="ln565">                charmap.encoding_id = TT_MS_ID_UNICODE_CS;</a>
+<a name="ln566">              }</a>
+<a name="ln567"> </a>
+<a name="ln568">              error = FT_CMap_New( &amp;bdf_cmap_class, NULL, &amp;charmap, NULL );</a>
+<a name="ln569"> </a>
+<a name="ln570">#if 0</a>
+<a name="ln571">              /* Select default charmap */</a>
+<a name="ln572">              if ( bdfface-&gt;num_charmaps )</a>
+<a name="ln573">                bdfface-&gt;charmap = bdfface-&gt;charmaps[0];</a>
+<a name="ln574">#endif</a>
+<a name="ln575">            }</a>
+<a name="ln576"> </a>
+<a name="ln577">            goto Exit;</a>
+<a name="ln578">          }</a>
+<a name="ln579">        }</a>
+<a name="ln580"> </a>
+<a name="ln581">        /* otherwise assume Adobe standard encoding */</a>
+<a name="ln582"> </a>
+<a name="ln583">        {</a>
+<a name="ln584">          FT_CharMapRec  charmap;</a>
+<a name="ln585"> </a>
+<a name="ln586"> </a>
+<a name="ln587">          charmap.face        = FT_FACE( face );</a>
+<a name="ln588">          charmap.encoding    = FT_ENCODING_ADOBE_STANDARD;</a>
+<a name="ln589">          charmap.platform_id = TT_PLATFORM_ADOBE;</a>
+<a name="ln590">          charmap.encoding_id = TT_ADOBE_ID_STANDARD;</a>
+<a name="ln591"> </a>
+<a name="ln592">          error = FT_CMap_New( &amp;bdf_cmap_class, NULL, &amp;charmap, NULL );</a>
+<a name="ln593"> </a>
+<a name="ln594">          /* Select default charmap */</a>
+<a name="ln595">          if ( bdfface-&gt;num_charmaps )</a>
+<a name="ln596">            bdfface-&gt;charmap = bdfface-&gt;charmaps[0];</a>
+<a name="ln597">        }</a>
+<a name="ln598">      }</a>
+<a name="ln599">    }</a>
+<a name="ln600"> </a>
+<a name="ln601">  Exit:</a>
+<a name="ln602">    return error;</a>
+<a name="ln603"> </a>
+<a name="ln604">  Fail:</a>
+<a name="ln605">    BDF_Face_Done( bdfface );</a>
+<a name="ln606">    return FT_THROW( Unknown_File_Format );</a>
+<a name="ln607">  }</a>
+<a name="ln608"> </a>
+<a name="ln609"> </a>
+<a name="ln610">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln611">  BDF_Size_Select( FT_Size   size,</a>
+<a name="ln612">                   FT_ULong  strike_index )</a>
+<a name="ln613">  {</a>
+<a name="ln614">    bdf_font_t*  bdffont = ( (BDF_Face)size-&gt;face )-&gt;bdffont;</a>
+<a name="ln615"> </a>
+<a name="ln616"> </a>
+<a name="ln617">    FT_Select_Metrics( size-&gt;face, strike_index );</a>
+<a name="ln618"> </a>
+<a name="ln619">    size-&gt;metrics.ascender    = bdffont-&gt;font_ascent * 64;</a>
+<a name="ln620">    size-&gt;metrics.descender   = -bdffont-&gt;font_descent * 64;</a>
+<a name="ln621">    size-&gt;metrics.max_advance = bdffont-&gt;bbx.width * 64;</a>
+<a name="ln622"> </a>
+<a name="ln623">    return FT_Err_Ok;</a>
+<a name="ln624">  }</a>
+<a name="ln625"> </a>
+<a name="ln626"> </a>
+<a name="ln627">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln628">  BDF_Size_Request( FT_Size          size,</a>
+<a name="ln629">                    FT_Size_Request  req )</a>
+<a name="ln630">  {</a>
+<a name="ln631">    FT_Face          face    = size-&gt;face;</a>
+<a name="ln632">    FT_Bitmap_Size*  bsize   = face-&gt;available_sizes;</a>
+<a name="ln633">    bdf_font_t*      bdffont = ( (BDF_Face)face )-&gt;bdffont;</a>
+<a name="ln634">    FT_Error         error   = FT_ERR( Invalid_Pixel_Size );</a>
+<a name="ln635">    FT_Long          height;</a>
+<a name="ln636"> </a>
+<a name="ln637"> </a>
+<a name="ln638">    height = FT_REQUEST_HEIGHT( req );</a>
+<a name="ln639">    height = ( height + 32 ) &gt;&gt; 6;</a>
+<a name="ln640"> </a>
+<a name="ln641">    switch ( req-&gt;type )</a>
+<a name="ln642">    {</a>
+<a name="ln643">    case FT_SIZE_REQUEST_TYPE_NOMINAL:</a>
+<a name="ln644">      if ( height == ( ( bsize-&gt;y_ppem + 32 ) &gt;&gt; 6 ) )</a>
+<a name="ln645">        error = FT_Err_Ok;</a>
+<a name="ln646">      break;</a>
+<a name="ln647"> </a>
+<a name="ln648">    case FT_SIZE_REQUEST_TYPE_REAL_DIM:</a>
+<a name="ln649">      if ( height == ( bdffont-&gt;font_ascent +</a>
+<a name="ln650">                       bdffont-&gt;font_descent ) )</a>
+<a name="ln651">        error = FT_Err_Ok;</a>
+<a name="ln652">      break;</a>
+<a name="ln653"> </a>
+<a name="ln654">    default:</a>
+<a name="ln655">      error = FT_THROW( Unimplemented_Feature );</a>
+<a name="ln656">      break;</a>
+<a name="ln657">    }</a>
+<a name="ln658"> </a>
+<a name="ln659">    if ( error )</a>
+<a name="ln660">      return error;</a>
+<a name="ln661">    else</a>
+<a name="ln662">      return BDF_Size_Select( size, 0 );</a>
+<a name="ln663">  }</a>
+<a name="ln664"> </a>
+<a name="ln665"> </a>
+<a name="ln666"> </a>
+<a name="ln667">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln668">  BDF_Glyph_Load( FT_GlyphSlot  slot,</a>
+<a name="ln669">                  FT_Size       size,</a>
+<a name="ln670">                  FT_UInt       glyph_index,</a>
+<a name="ln671">                  FT_Int32      load_flags )</a>
+<a name="ln672">  {</a>
+<a name="ln673">    BDF_Face     bdf    = (BDF_Face)FT_SIZE_FACE( size );</a>
+<a name="ln674">    FT_Face      face   = FT_FACE( bdf );</a>
+<a name="ln675">    FT_Error     error  = FT_Err_Ok;</a>
+<a name="ln676">    FT_Bitmap*   bitmap = &amp;slot-&gt;bitmap;</a>
+<a name="ln677">    bdf_glyph_t  glyph;</a>
+<a name="ln678">    int          bpp    = bdf-&gt;bdffont-&gt;bpp;</a>
+<a name="ln679"> </a>
+<a name="ln680">    FT_UNUSED( load_flags );</a>
+<a name="ln681"> </a>
+<a name="ln682"> </a>
+<a name="ln683">    if ( !face )</a>
+<a name="ln684">    {</a>
+<a name="ln685">      error = FT_THROW( Invalid_Face_Handle );</a>
+<a name="ln686">      goto Exit;</a>
+<a name="ln687">    }</a>
+<a name="ln688"> </a>
+<a name="ln689">    if ( glyph_index &gt;= (FT_UInt)face-&gt;num_glyphs )</a>
+<a name="ln690">    {</a>
+<a name="ln691">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln692">      goto Exit;</a>
+<a name="ln693">    }</a>
+<a name="ln694"> </a>
+<a name="ln695">    FT_TRACE1(( &quot;BDF_Glyph_Load: glyph index %d\n&quot;, glyph_index ));</a>
+<a name="ln696"> </a>
+<a name="ln697">    /* index 0 is the undefined glyph */</a>
+<a name="ln698">    if ( glyph_index == 0 )</a>
+<a name="ln699">      glyph_index = bdf-&gt;default_glyph;</a>
+<a name="ln700">    else</a>
+<a name="ln701">      glyph_index--;</a>
+<a name="ln702"> </a>
+<a name="ln703">    /* slot, bitmap =&gt; freetype, glyph =&gt; bdflib */</a>
+<a name="ln704">    glyph = bdf-&gt;bdffont-&gt;glyphs[glyph_index];</a>
+<a name="ln705"> </a>
+<a name="ln706">    bitmap-&gt;rows  = glyph.bbx.height;</a>
+<a name="ln707">    bitmap-&gt;width = glyph.bbx.width;</a>
+<a name="ln708">    if ( glyph.bpr &gt; INT_MAX )</a>
+<a name="ln709">      FT_TRACE1(( &quot;BDF_Glyph_Load: too large pitch %d is truncated\n&quot;,</a>
+<a name="ln710">                   glyph.bpr ));</a>
+<a name="ln711">    bitmap-&gt;pitch = (int)glyph.bpr; /* same as FT_Bitmap.pitch */</a>
+<a name="ln712"> </a>
+<a name="ln713">    /* note: we don't allocate a new array to hold the bitmap; */</a>
+<a name="ln714">    /*       we can simply point to it                         */</a>
+<a name="ln715">    ft_glyphslot_set_bitmap( slot, glyph.bitmap );</a>
+<a name="ln716"> </a>
+<a name="ln717">    switch ( bpp )</a>
+<a name="ln718">    {</a>
+<a name="ln719">    case 1:</a>
+<a name="ln720">      bitmap-&gt;pixel_mode = FT_PIXEL_MODE_MONO;</a>
+<a name="ln721">      break;</a>
+<a name="ln722">    case 2:</a>
+<a name="ln723">      bitmap-&gt;pixel_mode = FT_PIXEL_MODE_GRAY2;</a>
+<a name="ln724">      break;</a>
+<a name="ln725">    case 4:</a>
+<a name="ln726">      bitmap-&gt;pixel_mode = FT_PIXEL_MODE_GRAY4;</a>
+<a name="ln727">      break;</a>
+<a name="ln728">    case 8:</a>
+<a name="ln729">      bitmap-&gt;pixel_mode = FT_PIXEL_MODE_GRAY;</a>
+<a name="ln730">      bitmap-&gt;num_grays  = 256;</a>
+<a name="ln731">      break;</a>
+<a name="ln732">    }</a>
+<a name="ln733"> </a>
+<a name="ln734">    slot-&gt;format      = FT_GLYPH_FORMAT_BITMAP;</a>
+<a name="ln735">    slot-&gt;bitmap_left = glyph.bbx.x_offset;</a>
+<a name="ln736">    slot-&gt;bitmap_top  = glyph.bbx.ascent;</a>
+<a name="ln737"> </a>
+<a name="ln738">    slot-&gt;metrics.horiAdvance  = (FT_Pos)( glyph.dwidth * 64 );</a>
+<a name="ln739">    slot-&gt;metrics.horiBearingX = (FT_Pos)( glyph.bbx.x_offset * 64 );</a>
+<a name="ln740">    slot-&gt;metrics.horiBearingY = (FT_Pos)( glyph.bbx.ascent * 64 );</a>
+<a name="ln741">    slot-&gt;metrics.width        = (FT_Pos)( bitmap-&gt;width * 64 );</a>
+<a name="ln742">    slot-&gt;metrics.height       = (FT_Pos)( bitmap-&gt;rows * 64 );</a>
+<a name="ln743"> </a>
+<a name="ln744">    /*</a>
+<a name="ln745">     * XXX DWIDTH1 and VVECTOR should be parsed and</a>
+<a name="ln746">     * used here, provided such fonts do exist.</a>
+<a name="ln747">     */</a>
+<a name="ln748">    ft_synthesize_vertical_metrics( &amp;slot-&gt;metrics,</a>
+<a name="ln749">                                    bdf-&gt;bdffont-&gt;bbx.height * 64 );</a>
+<a name="ln750"> </a>
+<a name="ln751">  Exit:</a>
+<a name="ln752">    return error;</a>
+<a name="ln753">  }</a>
+<a name="ln754"> </a>
+<a name="ln755"> </a>
+<a name="ln756"> /*</a>
+<a name="ln757">  *</a>
+<a name="ln758">  *  BDF SERVICE</a>
+<a name="ln759">  *</a>
+<a name="ln760">  */</a>
+<a name="ln761"> </a>
+<a name="ln762">  static FT_Error</a>
+<a name="ln763">  bdf_get_bdf_property( BDF_Face          face,</a>
+<a name="ln764">                        const char*       prop_name,</a>
+<a name="ln765">                        BDF_PropertyRec  *aproperty )</a>
+<a name="ln766">  {</a>
+<a name="ln767">    bdf_property_t*  prop;</a>
+<a name="ln768"> </a>
+<a name="ln769"> </a>
+<a name="ln770">    FT_ASSERT( face &amp;&amp; face-&gt;bdffont );</a>
+<a name="ln771"> </a>
+<a name="ln772">    prop = bdf_get_font_property( face-&gt;bdffont, prop_name );</a>
+<a name="ln773">    if ( prop )</a>
+<a name="ln774">    {</a>
+<a name="ln775">      switch ( prop-&gt;format )</a>
+<a name="ln776">      {</a>
+<a name="ln777">      case BDF_ATOM:</a>
+<a name="ln778">        aproperty-&gt;type   = BDF_PROPERTY_TYPE_ATOM;</a>
+<a name="ln779">        aproperty-&gt;u.atom = prop-&gt;value.atom;</a>
+<a name="ln780">        break;</a>
+<a name="ln781"> </a>
+<a name="ln782">      case BDF_INTEGER:</a>
+<a name="ln783">        if ( prop-&gt;value.l &gt; 0x7FFFFFFFL || prop-&gt;value.l &lt; ( -1 - 0x7FFFFFFFL ) )</a>
+<a name="ln784">        {</a>
+<a name="ln785">          FT_TRACE1(( &quot;bdf_get_bdf_property:&quot;</a>
+<a name="ln786">                      &quot; too large integer 0x%x is truncated\n&quot; ));</a>
+<a name="ln787">        }</a>
+<a name="ln788">        aproperty-&gt;type      = BDF_PROPERTY_TYPE_INTEGER;</a>
+<a name="ln789">        aproperty-&gt;u.integer = (FT_Int32)prop-&gt;value.l;</a>
+<a name="ln790">        break;</a>
+<a name="ln791"> </a>
+<a name="ln792">      case BDF_CARDINAL:</a>
+<a name="ln793">        if ( prop-&gt;value.ul &gt; 0xFFFFFFFFUL )</a>
+<a name="ln794">        {</a>
+<a name="ln795">          FT_TRACE1(( &quot;bdf_get_bdf_property:&quot;</a>
+<a name="ln796">                      &quot; too large cardinal 0x%x is truncated\n&quot; ));</a>
+<a name="ln797">        }</a>
+<a name="ln798">        aproperty-&gt;type       = BDF_PROPERTY_TYPE_CARDINAL;</a>
+<a name="ln799">        aproperty-&gt;u.cardinal = (FT_UInt32)prop-&gt;value.ul;</a>
+<a name="ln800">        break;</a>
+<a name="ln801"> </a>
+<a name="ln802">      default:</a>
+<a name="ln803">        goto Fail;</a>
+<a name="ln804">      }</a>
+<a name="ln805">      return 0;</a>
+<a name="ln806">    }</a>
+<a name="ln807"> </a>
+<a name="ln808">  Fail:</a>
+<a name="ln809">    return FT_THROW( Invalid_Argument );</a>
+<a name="ln810">  }</a>
+<a name="ln811"> </a>
+<a name="ln812"> </a>
+<a name="ln813">  static FT_Error</a>
+<a name="ln814">  bdf_get_charset_id( BDF_Face      face,</a>
+<a name="ln815">                      const char*  *acharset_encoding,</a>
+<a name="ln816">                      const char*  *acharset_registry )</a>
+<a name="ln817">  {</a>
+<a name="ln818">    *acharset_encoding = face-&gt;charset_encoding;</a>
+<a name="ln819">    *acharset_registry = face-&gt;charset_registry;</a>
+<a name="ln820"> </a>
+<a name="ln821">    return 0;</a>
+<a name="ln822">  }</a>
+<a name="ln823"> </a>
+<a name="ln824"> </a>
+<a name="ln825">  static const FT_Service_BDFRec  bdf_service_bdf =</a>
+<a name="ln826">  {</a>
+<a name="ln827">    (FT_BDF_GetCharsetIdFunc)bdf_get_charset_id,</a>
+<a name="ln828">    (FT_BDF_GetPropertyFunc) bdf_get_bdf_property</a>
+<a name="ln829">  };</a>
+<a name="ln830"> </a>
+<a name="ln831"> </a>
+<a name="ln832"> /*</a>
+<a name="ln833">  *</a>
+<a name="ln834">  *  SERVICES LIST</a>
+<a name="ln835">  *</a>
+<a name="ln836">  */</a>
+<a name="ln837"> </a>
+<a name="ln838">  static const FT_ServiceDescRec  bdf_services[] =</a>
+<a name="ln839">  {</a>
+<a name="ln840">    { FT_SERVICE_ID_BDF,         &amp;bdf_service_bdf },</a>
+<a name="ln841">    { FT_SERVICE_ID_FONT_FORMAT, FT_FONT_FORMAT_BDF },</a>
+<a name="ln842">    { NULL, NULL }</a>
+<a name="ln843">  };</a>
+<a name="ln844"> </a>
+<a name="ln845"> </a>
+<a name="ln846">  FT_CALLBACK_DEF( FT_Module_Interface )</a>
+<a name="ln847">  bdf_driver_requester( FT_Module    module,</a>
+<a name="ln848">                        const char*  name )</a>
+<a name="ln849">  {</a>
+<a name="ln850">    FT_UNUSED( module );</a>
+<a name="ln851"> </a>
+<a name="ln852">    return ft_service_list_lookup( bdf_services, name );</a>
+<a name="ln853">  }</a>
+<a name="ln854"> </a>
+<a name="ln855"> </a>
+<a name="ln856"> </a>
+<a name="ln857">  FT_CALLBACK_TABLE_DEF</a>
+<a name="ln858">  const FT_Driver_ClassRec  bdf_driver_class =</a>
+<a name="ln859">  {</a>
+<a name="ln860">    {</a>
+<a name="ln861">      FT_MODULE_FONT_DRIVER         |</a>
+<a name="ln862">      FT_MODULE_DRIVER_NO_OUTLINES,</a>
+<a name="ln863">      sizeof ( FT_DriverRec ),</a>
+<a name="ln864"> </a>
+<a name="ln865">      &quot;bdf&quot;,</a>
+<a name="ln866">      0x10000L,</a>
+<a name="ln867">      0x20000L,</a>
+<a name="ln868"> </a>
+<a name="ln869">      0,</a>
+<a name="ln870"> </a>
+<a name="ln871">      0,                        /* FT_Module_Constructor */</a>
+<a name="ln872">      0,                        /* FT_Module_Destructor  */</a>
+<a name="ln873">      bdf_driver_requester</a>
+<a name="ln874">    },</a>
+<a name="ln875"> </a>
+<a name="ln876">    sizeof ( BDF_FaceRec ),</a>
+<a name="ln877">    sizeof ( FT_SizeRec ),</a>
+<a name="ln878">    sizeof ( FT_GlyphSlotRec ),</a>
+<a name="ln879"> </a>
+<a name="ln880">    BDF_Face_Init,</a>
+<a name="ln881">    BDF_Face_Done,</a>
+<a name="ln882">    0,                          /* FT_Size_InitFunc */</a>
+<a name="ln883">    0,                          /* FT_Size_DoneFunc */</a>
+<a name="ln884">    0,                          /* FT_Slot_InitFunc */</a>
+<a name="ln885">    0,                          /* FT_Slot_DoneFunc */</a>
+<a name="ln886"> </a>
+<a name="ln887">    BDF_Glyph_Load,</a>
+<a name="ln888"> </a>
+<a name="ln889">    0,                          /* FT_Face_GetKerningFunc  */</a>
+<a name="ln890">    0,                          /* FT_Face_AttachFunc      */</a>
+<a name="ln891">    0,                          /* FT_Face_GetAdvancesFunc */</a>
+<a name="ln892"> </a>
+<a name="ln893">    BDF_Size_Request,</a>
+<a name="ln894">    BDF_Size_Select</a>
+<a name="ln895">  };</a>
+<a name="ln896"> </a>
+<a name="ln897"> </a>
+<a name="ln898">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="738"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'glyph.dwidth * 64' operator to the 'FT_Pos' type, not the result.</p></div>
+<div class="balloon" rel="739"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'glyph.bbx.x_offset * 64' operator to the 'FT_Pos' type, not the result.</p></div>
+<div class="balloon" rel="740"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'glyph.bbx.ascent * 64' operator to the 'FT_Pos' type, not the result.</p></div>
+<div class="balloon" rel="741"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'bitmap->width * 64' operator to the 'FT_Pos' type, not the result.</p></div>
+<div class="balloon" rel="742"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'bitmap->rows * 64' operator to the 'FT_Pos' type, not the result.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

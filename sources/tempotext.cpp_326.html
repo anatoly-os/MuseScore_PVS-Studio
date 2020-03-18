@@ -1,0 +1,535 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>tempotext.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2008-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;score.h&quot;</a>
+<a name="ln14">#include &quot;tempotext.h&quot;</a>
+<a name="ln15">#include &quot;tempo.h&quot;</a>
+<a name="ln16">#include &quot;system.h&quot;</a>
+<a name="ln17">#include &quot;measure.h&quot;</a>
+<a name="ln18">#include &quot;staff.h&quot;</a>
+<a name="ln19">#include &quot;xml.h&quot;</a>
+<a name="ln20">#include &quot;undo.h&quot;</a>
+<a name="ln21">#include &quot;musescoreCore.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">namespace Ms {</a>
+<a name="ln24"> </a>
+<a name="ln25">#define MIN_TEMPO 5.0/60</a>
+<a name="ln26">#define MAX_TEMPO 999.0/60</a>
+<a name="ln27"> </a>
+<a name="ln28">//TODO: textChanged() needs to be called during/after editing</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   tempoStyle</a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">static const ElementStyle tempoStyle {</a>
+<a name="ln35">      { Sid::tempoSystemFlag,                    Pid::SYSTEM_FLAG            },</a>
+<a name="ln36">      { Sid::tempoPlacement,                     Pid::PLACEMENT              },</a>
+<a name="ln37">      { Sid::tempoMinDistance,                   Pid::MIN_DISTANCE           },</a>
+<a name="ln38">      };</a>
+<a name="ln39"> </a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41">//   TempoText</a>
+<a name="ln42">//---------------------------------------------------------</a>
+<a name="ln43"> </a>
+<a name="ln44">TempoText::TempoText(Score* s)</a>
+<a name="ln45">   : TextBase(s, Tid::TEMPO, ElementFlags(ElementFlag::SYSTEM))</a>
+<a name="ln46">      {</a>
+<a name="ln47">      initElementStyle(&amp;tempoStyle);</a>
+<a name="ln48">      _tempo      = 2.0;      // propertyDefault(P_TEMPO).toDouble();</a>
+<a name="ln49">      _followText = false;</a>
+<a name="ln50">      _relative   = 1.0;</a>
+<a name="ln51">      _isRelative = false;</a>
+<a name="ln52">      }</a>
+<a name="ln53"> </a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55">//   write</a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57"> </a>
+<a name="ln58">void TempoText::write(XmlWriter&amp; xml) const</a>
+<a name="ln59">      {</a>
+<a name="ln60">      xml.stag(this);</a>
+<a name="ln61">      xml.tag(&quot;tempo&quot;, _tempo);</a>
+<a name="ln62">      if (_followText)</a>
+<a name="ln63">            xml.tag(&quot;followText&quot;, _followText);</a>
+<a name="ln64">      TextBase::writeProperties(xml);</a>
+<a name="ln65">      xml.etag();</a>
+<a name="ln66">      }</a>
+<a name="ln67"> </a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69">//   read</a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71"> </a>
+<a name="ln72">void TempoText::read(XmlReader&amp; e)</a>
+<a name="ln73">      {</a>
+<a name="ln74">      while (e.readNextStartElement()) {</a>
+<a name="ln75">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln76">            if (tag == &quot;tempo&quot;)</a>
+<a name="ln77">                  setTempo(e.readDouble());</a>
+<a name="ln78">            else if (tag == &quot;followText&quot;)</a>
+<a name="ln79">                  _followText = e.readInt();</a>
+<a name="ln80">            else if (!TextBase::readProperties(e))</a>
+<a name="ln81">                  e.unknown();</a>
+<a name="ln82">            }</a>
+<a name="ln83">      // check sanity</a>
+<a name="ln84">      if (xmlText().isEmpty()) {</a>
+<a name="ln85">            setXmlText(QString(&quot;&lt;sym&gt;metNoteQuarterUp&lt;/sym&gt; = %1&quot;).arg(lrint(60 * _tempo)));</a>
+<a name="ln86">            setVisible(false);</a>
+<a name="ln87">            }</a>
+<a name="ln88">      }</a>
+<a name="ln89"> </a>
+<a name="ln90">//---------------------------------------------------------</a>
+<a name="ln91">//   TempoPattern</a>
+<a name="ln92">//---------------------------------------------------------</a>
+<a name="ln93"> </a>
+<a name="ln94">struct TempoPattern {</a>
+<a name="ln95">      const char* pattern;</a>
+<a name="ln96">      qreal f;</a>
+<a name="ln97">      TDuration d;</a>
+<a name="ln98">      TempoPattern(const char* s, qreal v, TDuration::DurationType val, int dots = 0) : pattern(s), f(v), d(val) { d.setDots(dots); }</a>
+<a name="ln99">      };</a>
+<a name="ln100"> </a>
+<a name="ln101">// note: findTempoDuration requires the longer patterns to be before the shorter patterns in tp</a>
+<a name="ln102"> </a>
+<a name="ln103">static const TempoPattern tp[] = {</a>
+<a name="ln104">      TempoPattern(&quot;\uECA5\\s*\uECB7\\s*\uECB7&quot;, 1.75/60.0,  TDuration::DurationType::V_QUARTER, 2), // double dotted 1/4</a>
+<a name="ln105">      TempoPattern(&quot;\uECA5\\s*\uECB7&quot;,           1.5/60.0,   TDuration::DurationType::V_QUARTER, 1), // dotted 1/4</a>
+<a name="ln106">      TempoPattern(&quot;\uECA5&quot;,                     1.0/60.0,   TDuration::DurationType::V_QUARTER),    // 1/4</a>
+<a name="ln107">      TempoPattern(&quot;\uECA3\\s*\uECB7\\s*\uECB7&quot;, 1.75/30.0,  TDuration::DurationType::V_HALF, 2),    // double dotted 1/2</a>
+<a name="ln108">      TempoPattern(&quot;\uECA3\\s*\uECB7&quot;,           1.5/30.0,   TDuration::DurationType::V_HALF, 1),    // dotted 1/2</a>
+<a name="ln109">      TempoPattern(&quot;\uECA3&quot;,                     1.0/30.0,   TDuration::DurationType::V_HALF),       // 1/2</a>
+<a name="ln110">      TempoPattern(&quot;\uECA7\\s*\uECB7\\s*\uECB7&quot;, 1.75/120.0, TDuration::DurationType::V_EIGHTH, 2),  // double dotted 1/8</a>
+<a name="ln111">      TempoPattern(&quot;\uECA7\\s*\uECB7&quot;,           1.5/120.0,  TDuration::DurationType::V_EIGHTH, 1),  // dotted 1/8</a>
+<a name="ln112">      TempoPattern(&quot;\uECA7&quot;,                     1.0/120.0,  TDuration::DurationType::V_EIGHTH),     // 1/8</a>
+<a name="ln113">      TempoPattern(&quot;\uECA2\\s*\uECB7&quot;,           1.5/15.0,   TDuration::DurationType::V_WHOLE, 1),   // dotted whole</a>
+<a name="ln114">      TempoPattern(&quot;\uECA2&quot;,                     1.0/15.0,   TDuration::DurationType::V_WHOLE),      // whole</a>
+<a name="ln115">      TempoPattern(&quot;\uECA9\\s*\uECB7&quot;,           1.5/240.0,  TDuration::DurationType::V_16TH, 1),    // dotted 1/16</a>
+<a name="ln116">      TempoPattern(&quot;\uECA9&quot;,                     1.0/240.0,  TDuration::DurationType::V_16TH),       // 1/16</a>
+<a name="ln117">      TempoPattern(&quot;\uECAB\\s*\uECB7&quot;,           1.5/480.0,  TDuration::DurationType::V_32ND, 1),    // dotted 1/32</a>
+<a name="ln118">      TempoPattern(&quot;\uECAB&quot;,                     1.0/480.0,  TDuration::DurationType::V_32ND),       // 1/32</a>
+<a name="ln119">      TempoPattern(&quot;\uECA1&quot;,                     1.0/7.5,    TDuration::DurationType::V_BREVE),      // longa</a>
+<a name="ln120">      TempoPattern(&quot;\uECA0&quot;,                     1.0/7.5,    TDuration::DurationType::V_BREVE),      // double whole</a>
+<a name="ln121">      TempoPattern(&quot;\uECAD&quot;,                     1.0/960.0,  TDuration::DurationType::V_64TH),       // 1/64</a>
+<a name="ln122">      TempoPattern(&quot;\uECAF&quot;,                     1.0/1920.0, TDuration::DurationType::V_128TH),      // 1/128</a>
+<a name="ln123">      };</a>
+<a name="ln124"> </a>
+<a name="ln125">//---------------------------------------------------------</a>
+<a name="ln126">//   findTempoDuration</a>
+<a name="ln127">//    find the duration part (note + dot) of a tempo text in string s</a>
+<a name="ln128">//    return the match position or -1 if not found</a>
+<a name="ln129">//    set len to the match length and dur to the duration value</a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131"> </a>
+<a name="ln132">int TempoText::findTempoDuration(const QString&amp; s, int&amp; len, TDuration&amp; dur)</a>
+<a name="ln133">      {</a>
+<a name="ln134">      len = 0;</a>
+<a name="ln135">      dur = TDuration();</a>
+<a name="ln136">      for (const auto&amp; i : tp) {</a>
+<a name="ln137">            QRegExp re(i.pattern);</a>
+<a name="ln138">            int pos = re.indexIn(s);</a>
+<a name="ln139">            if (pos != -1) {</a>
+<a name="ln140">                  len = re.matchedLength();</a>
+<a name="ln141">                  dur = i.d;</a>
+<a name="ln142">                  return pos;</a>
+<a name="ln143">                  }</a>
+<a name="ln144">            }</a>
+<a name="ln145">      return -1;</a>
+<a name="ln146">      }</a>
+<a name="ln147"> </a>
+<a name="ln148">static const TempoPattern tpSym[] = {</a>
+<a name="ln149">      TempoPattern(&quot;&lt;sym&gt;metNoteQuarterUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,                         1.75/60.0, TDuration::DurationType::V_QUARTER, 2), // double dotted 1/4</a>
+<a name="ln150">      TempoPattern(&quot;&lt;sym&gt;metNoteQuarterUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,          1.5/60.0,  TDuration::DurationType::V_QUARTER, 1), // dotted 1/4</a>
+<a name="ln151">      TempoPattern(&quot;&lt;sym&gt;metNoteQuarterUp&lt;/sym&gt;&quot;,                                           1.0/60.0,  TDuration::DurationType::V_QUARTER),  // 1/4</a>
+<a name="ln152">      TempoPattern(&quot;&lt;sym&gt;metNoteHalfUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,                         1.75/30.0, TDuration::DurationType::V_HALF, 2), // double dotted 1/2</a>
+<a name="ln153">      TempoPattern(&quot;&lt;sym&gt;metNoteHalfUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,             1.5/30.0,  TDuration::DurationType::V_HALF, 1),    // dotted 1/2</a>
+<a name="ln154">      TempoPattern(&quot;&lt;sym&gt;metNoteHalfUp&lt;/sym&gt;&quot;,                                              1.0/30.0,  TDuration::DurationType::V_HALF),     // 1/2</a>
+<a name="ln155">      TempoPattern(&quot;&lt;sym&gt;metNote8thUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,         1.75/120.0, TDuration::DurationType::V_EIGHTH, 2), // double dotted 1/8</a>
+<a name="ln156">      TempoPattern(&quot;&lt;sym&gt;metNote8thUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,              1.5/120.0, TDuration::DurationType::V_EIGHTH, 1),  // dotted 1/8</a>
+<a name="ln157">      TempoPattern(&quot;&lt;sym&gt;metNote8thUp&lt;/sym&gt;&quot;,                                               1.0/120.0, TDuration::DurationType::V_EIGHTH),   // 1/8</a>
+<a name="ln158">      TempoPattern(&quot;&lt;sym&gt;metNoteWhole&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,              1.5/15.0, TDuration::DurationType::V_WHOLE, 1),    // dotted whole</a>
+<a name="ln159">      TempoPattern(&quot;&lt;sym&gt;metNoteWhole&lt;/sym&gt;&quot;,                                               1.0/15.0,  TDuration::DurationType::V_WHOLE),    // whole</a>
+<a name="ln160">      TempoPattern(&quot;&lt;sym&gt;metNote16thUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,             1.5/240.0, TDuration::DurationType::V_16TH, 1),  // dotted 1/16</a>
+<a name="ln161">      TempoPattern(&quot;&lt;sym&gt;metNote16thUp&lt;/sym&gt;&quot;,                                              1.0/240.0, TDuration::DurationType::V_16TH),     // 1/16</a>
+<a name="ln162">      TempoPattern(&quot;&lt;sym&gt;metNote32ndUp&lt;/sym&gt;\\s*&lt;sym&gt;metAugmentationDot&lt;/sym&gt;&quot;,             1.5/480.0, TDuration::DurationType::V_32ND, 1),  // dotted 1/32</a>
+<a name="ln163">      TempoPattern(&quot;&lt;sym&gt;metNote32ndUp&lt;/sym&gt;&quot;,                                              1.0/480.0, TDuration::DurationType::V_32ND),     // 1/32</a>
+<a name="ln164">      TempoPattern(&quot;&lt;sym&gt;metNoteDoubleWholeSquare&lt;/sym&gt;&quot;,                                   1.0/7.5,   TDuration::DurationType::V_BREVE),    // longa</a>
+<a name="ln165">      TempoPattern(&quot;&lt;sym&gt;metNoteDoubleWhole&lt;/sym&gt;&quot;,                                         1.0/7.5,   TDuration::DurationType::V_BREVE),    // double whole</a>
+<a name="ln166">      TempoPattern(&quot;&lt;sym&gt;metNote64thUp&lt;/sym&gt;&quot;,                                              1.0/960.0, TDuration::DurationType::V_64TH),     // 1/64</a>
+<a name="ln167">      TempoPattern(&quot;&lt;sym&gt;metNote128thUp&lt;/sym&gt;&quot;,                                             1.0/1920.0,TDuration::DurationType::V_128TH),    // 1/128</a>
+<a name="ln168">      };</a>
+<a name="ln169"> </a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171">//   duration2tempoTextString</a>
+<a name="ln172">//    find the tempoText string representation for duration</a>
+<a name="ln173">//---------------------------------------------------------</a>
+<a name="ln174"> </a>
+<a name="ln175">QString TempoText::duration2tempoTextString(const TDuration dur)</a>
+<a name="ln176">      {</a>
+<a name="ln177">      for (const TempoPattern&amp; pa : tpSym) {</a>
+<a name="ln178">            if (pa.d == dur) {</a>
+<a name="ln179">                  QString res = pa.pattern;</a>
+<a name="ln180">                  res.replace(&quot;\\s*&quot;, &quot; &quot;);</a>
+<a name="ln181">                  return res;</a>
+<a name="ln182">                  }</a>
+<a name="ln183">            }</a>
+<a name="ln184">      return &quot;&quot;;</a>
+<a name="ln185">      }</a>
+<a name="ln186"> </a>
+<a name="ln187">//---------------------------------------------------------</a>
+<a name="ln188">// updateScore</a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190"> </a>
+<a name="ln191">void TempoText::updateScore()</a>
+<a name="ln192">      {</a>
+<a name="ln193">      if (segment())</a>
+<a name="ln194">            score()-&gt;setTempo(segment(), _tempo);</a>
+<a name="ln195">      score()-&gt;fixTicks();</a>
+<a name="ln196">      score()-&gt;setPlaylistDirty();</a>
+<a name="ln197">      }</a>
+<a name="ln198"> </a>
+<a name="ln199">//---------------------------------------------------------</a>
+<a name="ln200">// updateRelative</a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202"> </a>
+<a name="ln203">void TempoText::updateRelative()</a>
+<a name="ln204">      {</a>
+<a name="ln205">      qreal tempoBefore = score()-&gt;tempo(tick() - Fraction::fromTicks(1));</a>
+<a name="ln206">      setTempo(tempoBefore * _relative);</a>
+<a name="ln207">      }</a>
+<a name="ln208"> </a>
+<a name="ln209">//---------------------------------------------------------</a>
+<a name="ln210">//   endEdit</a>
+<a name="ln211">//    text may have changed</a>
+<a name="ln212">//---------------------------------------------------------</a>
+<a name="ln213"> </a>
+<a name="ln214">void TempoText::endEdit(EditData&amp; ed)</a>
+<a name="ln215">      {</a>
+<a name="ln216">      TextBase::endEdit(ed);</a>
+<a name="ln217">      if (_followText) {</a>
+<a name="ln218">            UndoStack* us = score()-&gt;undoStack();</a>
+<a name="ln219">            UndoCommand* ucmd = us-&gt;last();</a>
+<a name="ln220">            if (ucmd) {</a>
+<a name="ln221">                  us-&gt;reopen();</a>
+<a name="ln222">                  updateTempo();</a>
+<a name="ln223">                  score()-&gt;endCmd();</a>
+<a name="ln224">                  }</a>
+<a name="ln225">            else {</a>
+<a name="ln226">                  score()-&gt;startCmd();</a>
+<a name="ln227">                  updateTempo();</a>
+<a name="ln228">                  score()-&gt;endCmd();</a>
+<a name="ln229">                  }</a>
+<a name="ln230">            }</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   undoChangeProperty</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">void TempoText::undoChangeProperty(Pid id, const QVariant&amp; v, PropertyFlags ps)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      if (id == Pid::TEMPO_FOLLOW_TEXT) {</a>
+<a name="ln240">            ScoreElement::undoChangeProperty(id, v, ps);</a>
+<a name="ln241">            if (_followText) {</a>
+<a name="ln242">                  updateTempo();</a>
+<a name="ln243">                  // update inspector?</a>
+<a name="ln244">                  MuseScoreCore::mscoreCore-&gt;updateInspector();</a>
+<a name="ln245">                  }</a>
+<a name="ln246">            }</a>
+<a name="ln247">      else {</a>
+<a name="ln248">            ScoreElement::undoChangeProperty(id, v, ps);</a>
+<a name="ln249">            }</a>
+<a name="ln250">      }</a>
+<a name="ln251"> </a>
+<a name="ln252">//---------------------------------------------------------</a>
+<a name="ln253">//   updateTempo</a>
+<a name="ln254">//---------------------------------------------------------</a>
+<a name="ln255"> </a>
+<a name="ln256">void TempoText::updateTempo()</a>
+<a name="ln257">      {</a>
+<a name="ln258">      // cache regexp, they are costly to create</a>
+<a name="ln259">      static QHash&lt;QString, QRegExp&gt; regexps;</a>
+<a name="ln260">      static QHash&lt;QString, QRegExp&gt; regexps2;</a>
+<a name="ln261">      QString s = plainText();</a>
+<a name="ln262">      s.replace(&quot;,&quot;, &quot;.&quot;);</a>
+<a name="ln263">      s.replace(&quot;&lt;sym&gt;space&lt;/sym&gt;&quot;,&quot; &quot;);</a>
+<a name="ln264">      for (const TempoPattern&amp; pa : tp) {</a>
+<a name="ln265">            QRegExp re;</a>
+<a name="ln266">            if (!regexps.contains(pa.pattern)) {</a>
+<a name="ln267">                  re = QRegExp(QString(&quot;%1\\s*=\\s*(\\d+[.]{0,1}\\d*)\\s*&quot;).arg(pa.pattern));</a>
+<a name="ln268">                  regexps[pa.pattern] = re;</a>
+<a name="ln269">                  }</a>
+<a name="ln270">            re = regexps.value(pa.pattern);</a>
+<a name="ln271">            if (re.indexIn(s) != -1) {</a>
+<a name="ln272">                  QStringList sl = re.capturedTexts();</a>
+<a name="ln273">                  if (sl.size() == 2) {</a>
+<a name="ln274">                        qreal nt = qreal(sl[1].toDouble()) * pa.f;</a>
+<a name="ln275">                        if (nt != _tempo) {</a>
+<a name="ln276">                              undoChangeProperty(Pid::TEMPO, QVariant(qreal(sl[1].toDouble()) * pa.f), propertyFlags(Pid::TEMPO));</a>
+<a name="ln277">                              _relative = 1.0;</a>
+<a name="ln278">                              _isRelative = false;</a>
+<a name="ln279">                              updateScore();</a>
+<a name="ln280">                              }</a>
+<a name="ln281">                        break;</a>
+<a name="ln282">                        }</a>
+<a name="ln283">                  }</a>
+<a name="ln284">            else {</a>
+<a name="ln285">                 for (const TempoPattern&amp; pa2 : tp) {</a>
+<a name="ln286">                       QString key = QString(&quot;%1_%2&quot;).arg(pa.pattern).arg(pa2.pattern);</a>
+<a name="ln287">                       QRegExp re2;</a>
+<a name="ln288">                       if (!regexps2.contains(key)) {</a>
+<a name="ln289">                             re2 = QRegExp(QString(&quot;%1\\s*=\\s*%2\\s*&quot;).arg(pa.pattern).arg(pa2.pattern));</a>
+<a name="ln290">                             regexps2[key] = re2;</a>
+<a name="ln291">                             }</a>
+<a name="ln292">                       re2 = regexps2.value(key);</a>
+<a name="ln293">                       if (re2.indexIn(s) != -1) {</a>
+<a name="ln294">                             _relative = pa2.f / pa.f;</a>
+<a name="ln295">                             _isRelative = true;</a>
+<a name="ln296">                             updateRelative();</a>
+<a name="ln297">                             updateScore();</a>
+<a name="ln298">                             return;</a>
+<a name="ln299">                             }</a>
+<a name="ln300">                       }</a>
+<a name="ln301">                  }</a>
+<a name="ln302">            }</a>
+<a name="ln303">      }</a>
+<a name="ln304"> </a>
+<a name="ln305">//---------------------------------------------------------</a>
+<a name="ln306">//   setTempo</a>
+<a name="ln307">//---------------------------------------------------------</a>
+<a name="ln308"> </a>
+<a name="ln309">void TempoText::setTempo(qreal v)</a>
+<a name="ln310">      {</a>
+<a name="ln311">      if (v &lt; MIN_TEMPO)</a>
+<a name="ln312">            v = MIN_TEMPO;</a>
+<a name="ln313">      else if (v &gt; MAX_TEMPO)</a>
+<a name="ln314">            v = MAX_TEMPO;</a>
+<a name="ln315">      _tempo = v;</a>
+<a name="ln316">      }</a>
+<a name="ln317"> </a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319">//   undoSetTempo</a>
+<a name="ln320">//---------------------------------------------------------</a>
+<a name="ln321"> </a>
+<a name="ln322">void TempoText::undoSetTempo(qreal v)</a>
+<a name="ln323">      {</a>
+<a name="ln324">      undoChangeProperty(Pid::TEMPO, v, propertyFlags(Pid::TEMPO));</a>
+<a name="ln325">      }</a>
+<a name="ln326"> </a>
+<a name="ln327">//---------------------------------------------------------</a>
+<a name="ln328">//   undoSetFollowText</a>
+<a name="ln329">//---------------------------------------------------------</a>
+<a name="ln330"> </a>
+<a name="ln331">void TempoText::undoSetFollowText(bool v)</a>
+<a name="ln332">      {</a>
+<a name="ln333">      undoChangeProperty(Pid::TEMPO_FOLLOW_TEXT, v, propertyFlags(Pid::TEMPO));</a>
+<a name="ln334">      }</a>
+<a name="ln335"> </a>
+<a name="ln336">//---------------------------------------------------------</a>
+<a name="ln337">//   getProperty</a>
+<a name="ln338">//---------------------------------------------------------</a>
+<a name="ln339"> </a>
+<a name="ln340">QVariant TempoText::getProperty(Pid propertyId) const</a>
+<a name="ln341">      {</a>
+<a name="ln342">      switch (propertyId) {</a>
+<a name="ln343">            case Pid::TEMPO:</a>
+<a name="ln344">                  return _tempo;</a>
+<a name="ln345">            case Pid::TEMPO_FOLLOW_TEXT:</a>
+<a name="ln346">                  return _followText;</a>
+<a name="ln347">            default:</a>
+<a name="ln348">                  return TextBase::getProperty(propertyId);</a>
+<a name="ln349">            }</a>
+<a name="ln350">      }</a>
+<a name="ln351"> </a>
+<a name="ln352">//---------------------------------------------------------</a>
+<a name="ln353">//   setProperty</a>
+<a name="ln354">//---------------------------------------------------------</a>
+<a name="ln355"> </a>
+<a name="ln356">bool TempoText::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln357">      {</a>
+<a name="ln358">      switch (propertyId) {</a>
+<a name="ln359">            case Pid::TEMPO:</a>
+<a name="ln360">                  setTempo(v.toDouble());</a>
+<a name="ln361">                  score()-&gt;setTempo(segment(), _tempo);</a>
+<a name="ln362">                  score()-&gt;fixTicks();</a>
+<a name="ln363">                  break;</a>
+<a name="ln364">            case Pid::TEMPO_FOLLOW_TEXT:</a>
+<a name="ln365">                  _followText = v.toBool();</a>
+<a name="ln366">                  break;</a>
+<a name="ln367">            default:</a>
+<a name="ln368">                  if (!TextBase::setProperty(propertyId, v))</a>
+<a name="ln369">                        return false;</a>
+<a name="ln370">                  break;</a>
+<a name="ln371">            }</a>
+<a name="ln372">      triggerLayout();</a>
+<a name="ln373">      return true;</a>
+<a name="ln374">      }</a>
+<a name="ln375"> </a>
+<a name="ln376">//---------------------------------------------------------</a>
+<a name="ln377">//   propertyDefault</a>
+<a name="ln378">//---------------------------------------------------------</a>
+<a name="ln379"> </a>
+<a name="ln380">QVariant TempoText::propertyDefault(Pid id) const</a>
+<a name="ln381">      {</a>
+<a name="ln382">      switch(id) {</a>
+<a name="ln383">            case Pid::SUB_STYLE:</a>
+<a name="ln384">                  return int(Tid::TEMPO);</a>
+<a name="ln385">            case Pid::TEMPO:</a>
+<a name="ln386">                  return 2.0;</a>
+<a name="ln387">            case Pid::TEMPO_FOLLOW_TEXT:</a>
+<a name="ln388">                  return false;</a>
+<a name="ln389">            default:</a>
+<a name="ln390">                  return TextBase::propertyDefault(id);</a>
+<a name="ln391">            }</a>
+<a name="ln392">      }</a>
+<a name="ln393"> </a>
+<a name="ln394">//---------------------------------------------------------</a>
+<a name="ln395">//   layout</a>
+<a name="ln396">//    called after Measure-&gt;stretchMeasure()</a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398"> </a>
+<a name="ln399">void TempoText::layout()</a>
+<a name="ln400">      {</a>
+<a name="ln401">      TextBase::layout();</a>
+<a name="ln402"> </a>
+<a name="ln403">      Segment* s = segment();</a>
+<a name="ln404">      if (!s)                       // for use in palette</a>
+<a name="ln405">            return;</a>
+<a name="ln406"> </a>
+<a name="ln407">      // tempo text on first chordrest of measure should align over time sig if present</a>
+<a name="ln408">      //</a>
+<a name="ln409">      if (autoplace() &amp;&amp; s-&gt;rtick().isZero()) {</a>
+<a name="ln410">            Segment* p = segment()-&gt;prev(SegmentType::TimeSig);</a>
+<a name="ln411">            if (p) {</a>
+<a name="ln412">                  rxpos() -= s-&gt;x() - p-&gt;x();</a>
+<a name="ln413">                  Element* e = p-&gt;element(staffIdx() * VOICES);</a>
+<a name="ln414">                  if (e)</a>
+<a name="ln415">                        rxpos() += e-&gt;x();</a>
+<a name="ln416">                  }</a>
+<a name="ln417">            }</a>
+<a name="ln418">      autoplaceSegmentElement();</a>
+<a name="ln419">      }</a>
+<a name="ln420"> </a>
+<a name="ln421">//---------------------------------------------------------</a>
+<a name="ln422">//   duration2userName</a>
+<a name="ln423">//---------------------------------------------------------</a>
+<a name="ln424"> </a>
+<a name="ln425">QString TempoText::duration2userName(const TDuration t)</a>
+<a name="ln426">      {</a>
+<a name="ln427">      QString dots;</a>
+<a name="ln428">      switch (t.dots()) {</a>
+<a name="ln429">            case 1: dots = QObject::tr(&quot;Dotted %1&quot;).arg(t.durationTypeUserName());</a>
+<a name="ln430">                  break;</a>
+<a name="ln431">            case 2: dots = QObject::tr(&quot;Double dotted %1&quot;).arg(t.durationTypeUserName());</a>
+<a name="ln432">                  break;</a>
+<a name="ln433">            case 3: dots = QObject::tr(&quot;Triple dotted %1&quot;).arg(t.durationTypeUserName());</a>
+<a name="ln434">                  break;</a>
+<a name="ln435">            case 4: dots = QObject::tr(&quot;Quadruple dotted %1&quot;).arg(t.durationTypeUserName());</a>
+<a name="ln436">                  break;</a>
+<a name="ln437">            default:</a>
+<a name="ln438">                  dots = t.durationTypeUserName();</a>
+<a name="ln439">                  break;</a>
+<a name="ln440">            }</a>
+<a name="ln441">      return dots;</a>
+<a name="ln442">      }</a>
+<a name="ln443"> </a>
+<a name="ln444">//---------------------------------------------------------</a>
+<a name="ln445">//   accessibleInfo</a>
+<a name="ln446">//---------------------------------------------------------</a>
+<a name="ln447"> </a>
+<a name="ln448">QString TempoText::accessibleInfo() const</a>
+<a name="ln449">      {</a>
+<a name="ln450">      TDuration t1;</a>
+<a name="ln451">      TDuration t2;</a>
+<a name="ln452">      int len1;</a>
+<a name="ln453">      int len2;</a>
+<a name="ln454">      QString text = plainText();</a>
+<a name="ln455">      QString firstPart = text.split(&quot; = &quot;).first();</a>
+<a name="ln456">      QString secondPart = text.split(&quot; = &quot;).back();</a>
+<a name="ln457">      int x1 = findTempoDuration(firstPart, len1, t1);</a>
+<a name="ln458">      int x2 = -1;</a>
+<a name="ln459">      if (_relative)</a>
+<a name="ln460">            x2 = findTempoDuration(secondPart, len2, t2);</a>
+<a name="ln461"> </a>
+<a name="ln462">      if (x1 != -1) {</a>
+<a name="ln463">            QString dots1;</a>
+<a name="ln464">            QString dots2;</a>
+<a name="ln465">            dots1 = duration2userName(t1);</a>
+<a name="ln466">            if (x2 != -1) {</a>
+<a name="ln467">                  dots2 = duration2userName(t2);</a>
+<a name="ln468">                  return QString(&quot;%1: %2 %3 = %4 %5&quot;).arg(Element::accessibleInfo()).arg(dots1).arg(QObject::tr(&quot;note&quot;)).arg(dots2).arg(QObject::tr(&quot;note&quot;));</a>
+<a name="ln469">                  }</a>
+<a name="ln470">            else</a>
+<a name="ln471">                  return QString(&quot;%1: %2 %3 = %4&quot;).arg(Element::accessibleInfo()).arg(dots1).arg(QObject::tr(&quot;note&quot;)).arg(secondPart);</a>
+<a name="ln472">            }</a>
+<a name="ln473">      else</a>
+<a name="ln474">            return TextBase::accessibleInfo();</a>
+<a name="ln475">      }</a>
+<a name="ln476"> </a>
+<a name="ln477">//---------------------------------------------------------</a>
+<a name="ln478">//   getPropertyStyle</a>
+<a name="ln479">//---------------------------------------------------------</a>
+<a name="ln480"> </a>
+<a name="ln481">Sid TempoText::getPropertyStyle(Pid pid) const</a>
+<a name="ln482">      {</a>
+<a name="ln483">      if (pid == Pid::OFFSET)</a>
+<a name="ln484">            return placeAbove() ? Sid::tempoPosAbove : Sid::tempoPosBelow;</a>
+<a name="ln485">      return TextBase::getPropertyStyle(pid);</a>
+<a name="ln486">      }</a>
+<a name="ln487"> </a>
+<a name="ln488">}</a>
+<a name="ln489"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

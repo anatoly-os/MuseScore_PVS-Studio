@@ -1,0 +1,2163 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>ftgrays.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ftgrays.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    A new `perfect' anti-aliasing renderer (body).                       */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2000-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18">  /*************************************************************************/</a>
+<a name="ln19">  /*                                                                       */</a>
+<a name="ln20">  /* This file can be compiled without the rest of the FreeType engine, by */</a>
+<a name="ln21">  /* defining the _STANDALONE_ macro when compiling it.  You also need to  */</a>
+<a name="ln22">  /* put the files `ftgrays.h' and `ftimage.h' into the current            */</a>
+<a name="ln23">  /* compilation directory.  Typically, you could do something like        */</a>
+<a name="ln24">  /*                                                                       */</a>
+<a name="ln25">  /* - copy `src/smooth/ftgrays.c' (this file) to your current directory   */</a>
+<a name="ln26">  /*                                                                       */</a>
+<a name="ln27">  /* - copy `include/freetype/ftimage.h' and `src/smooth/ftgrays.h' to the */</a>
+<a name="ln28">  /*   same directory                                                      */</a>
+<a name="ln29">  /*                                                                       */</a>
+<a name="ln30">  /* - compile `ftgrays' with the _STANDALONE_ macro defined, as in        */</a>
+<a name="ln31">  /*                                                                       */</a>
+<a name="ln32">  /*     cc -c -D_STANDALONE_ ftgrays.c                                    */</a>
+<a name="ln33">  /*                                                                       */</a>
+<a name="ln34">  /* The renderer can be initialized with a call to                        */</a>
+<a name="ln35">  /* `ft_gray_raster.raster_new'; an anti-aliased bitmap can be generated  */</a>
+<a name="ln36">  /* with a call to `ft_gray_raster.raster_render'.                        */</a>
+<a name="ln37">  /*                                                                       */</a>
+<a name="ln38">  /* See the comments and documentation in the file `ftimage.h' for more   */</a>
+<a name="ln39">  /* details on how the raster works.                                      */</a>
+<a name="ln40">  /*                                                                       */</a>
+<a name="ln41">  /*************************************************************************/</a>
+<a name="ln42"> </a>
+<a name="ln43">  /*************************************************************************/</a>
+<a name="ln44">  /*                                                                       */</a>
+<a name="ln45">  /* This is a new anti-aliasing scan-converter for FreeType 2.  The       */</a>
+<a name="ln46">  /* algorithm used here is _very_ different from the one in the standard  */</a>
+<a name="ln47">  /* `ftraster' module.  Actually, `ftgrays' computes the _exact_          */</a>
+<a name="ln48">  /* coverage of the outline on each pixel cell.                           */</a>
+<a name="ln49">  /*                                                                       */</a>
+<a name="ln50">  /* It is based on ideas that I initially found in Raph Levien's          */</a>
+<a name="ln51">  /* excellent LibArt graphics library (see http://www.levien.com/libart   */</a>
+<a name="ln52">  /* for more information, though the web pages do not tell anything       */</a>
+<a name="ln53">  /* about the renderer; you'll have to dive into the source code to       */</a>
+<a name="ln54">  /* understand how it works).                                             */</a>
+<a name="ln55">  /*                                                                       */</a>
+<a name="ln56">  /* Note, however, that this is a _very_ different implementation         */</a>
+<a name="ln57">  /* compared to Raph's.  Coverage information is stored in a very         */</a>
+<a name="ln58">  /* different way, and I don't use sorted vector paths.  Also, it doesn't */</a>
+<a name="ln59">  /* use floating point values.                                            */</a>
+<a name="ln60">  /*                                                                       */</a>
+<a name="ln61">  /* This renderer has the following advantages:                           */</a>
+<a name="ln62">  /*                                                                       */</a>
+<a name="ln63">  /* - It doesn't need an intermediate bitmap.  Instead, one can supply a  */</a>
+<a name="ln64">  /*   callback function that will be called by the renderer to draw gray  */</a>
+<a name="ln65">  /*   spans on any target surface.  You can thus do direct composition on */</a>
+<a name="ln66">  /*   any kind of bitmap, provided that you give the renderer the right   */</a>
+<a name="ln67">  /*   callback.                                                           */</a>
+<a name="ln68">  /*                                                                       */</a>
+<a name="ln69">  /* - A perfect anti-aliaser, i.e., it computes the _exact_ coverage on   */</a>
+<a name="ln70">  /*   each pixel cell.                                                    */</a>
+<a name="ln71">  /*                                                                       */</a>
+<a name="ln72">  /* - It performs a single pass on the outline (the `standard' FT2        */</a>
+<a name="ln73">  /*   renderer makes two passes).                                         */</a>
+<a name="ln74">  /*                                                                       */</a>
+<a name="ln75">  /* - It can easily be modified to render to _any_ number of gray levels  */</a>
+<a name="ln76">  /*   cheaply.                                                            */</a>
+<a name="ln77">  /*                                                                       */</a>
+<a name="ln78">  /* - For small (&lt; 20) pixel sizes, it is faster than the standard        */</a>
+<a name="ln79">  /*   renderer.                                                           */</a>
+<a name="ln80">  /*                                                                       */</a>
+<a name="ln81">  /*************************************************************************/</a>
+<a name="ln82"> </a>
+<a name="ln83"> </a>
+<a name="ln84">  /*************************************************************************/</a>
+<a name="ln85">  /*                                                                       */</a>
+<a name="ln86">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln87">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln88">  /* messages during execution.                                            */</a>
+<a name="ln89">  /*                                                                       */</a>
+<a name="ln90">#undef  FT_COMPONENT</a>
+<a name="ln91">#define FT_COMPONENT  trace_smooth</a>
+<a name="ln92"> </a>
+<a name="ln93"> </a>
+<a name="ln94">#ifdef _STANDALONE_</a>
+<a name="ln95"> </a>
+<a name="ln96"> </a>
+<a name="ln97">  /* The size in bytes of the render pool used by the scan-line converter  */</a>
+<a name="ln98">  /* to do all of its work.                                                */</a>
+<a name="ln99">#define FT_RENDER_POOL_SIZE  16384L</a>
+<a name="ln100"> </a>
+<a name="ln101"> </a>
+<a name="ln102">  /* Auxiliary macros for token concatenation. */</a>
+<a name="ln103">#define FT_ERR_XCAT( x, y )  x ## y</a>
+<a name="ln104">#define FT_ERR_CAT( x, y )   FT_ERR_XCAT( x, y )</a>
+<a name="ln105"> </a>
+<a name="ln106">#define FT_BEGIN_STMNT  do {</a>
+<a name="ln107">#define FT_END_STMNT    } while ( 0 )</a>
+<a name="ln108"> </a>
+<a name="ln109">#define FT_MAX( a, b )  ( (a) &gt; (b) ? (a) : (b) )</a>
+<a name="ln110">#define FT_ABS( a )     ( (a) &lt; 0 ? -(a) : (a) )</a>
+<a name="ln111"> </a>
+<a name="ln112"> </a>
+<a name="ln113">  /*</a>
+<a name="ln114">   *  Approximate sqrt(x*x+y*y) using the `alpha max plus beta min'</a>
+<a name="ln115">   *  algorithm.  We use alpha = 1, beta = 3/8, giving us results with a</a>
+<a name="ln116">   *  largest error less than 7% compared to the exact value.</a>
+<a name="ln117">   */</a>
+<a name="ln118">#define FT_HYPOT( x, y )                 \</a>
+<a name="ln119">          ( x = FT_ABS( x ),             \</a>
+<a name="ln120">            y = FT_ABS( y ),             \</a>
+<a name="ln121">            x &gt; y ? x + ( 3 * y &gt;&gt; 3 )   \</a>
+<a name="ln122">                  : y + ( 3 * x &gt;&gt; 3 ) )</a>
+<a name="ln123"> </a>
+<a name="ln124"> </a>
+<a name="ln125">  /* define this to dump debugging information */</a>
+<a name="ln126">/* #define FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln127"> </a>
+<a name="ln128"> </a>
+<a name="ln129">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln130">#include &lt;stdio.h&gt;</a>
+<a name="ln131">#include &lt;stdarg.h&gt;</a>
+<a name="ln132">#endif</a>
+<a name="ln133"> </a>
+<a name="ln134">#include &lt;stddef.h&gt;</a>
+<a name="ln135">#include &lt;string.h&gt;</a>
+<a name="ln136">#include &lt;setjmp.h&gt;</a>
+<a name="ln137">#include &lt;limits.h&gt;</a>
+<a name="ln138">#define FT_UINT_MAX  UINT_MAX</a>
+<a name="ln139">#define FT_INT_MAX   INT_MAX</a>
+<a name="ln140"> </a>
+<a name="ln141">#define ft_memset   memset</a>
+<a name="ln142"> </a>
+<a name="ln143">#define ft_setjmp   setjmp</a>
+<a name="ln144">#define ft_longjmp  longjmp</a>
+<a name="ln145">#define ft_jmp_buf  jmp_buf</a>
+<a name="ln146"> </a>
+<a name="ln147">typedef ptrdiff_t  FT_PtrDist;</a>
+<a name="ln148"> </a>
+<a name="ln149"> </a>
+<a name="ln150">#define ErrRaster_Invalid_Mode      -2</a>
+<a name="ln151">#define ErrRaster_Invalid_Outline   -1</a>
+<a name="ln152">#define ErrRaster_Invalid_Argument  -3</a>
+<a name="ln153">#define ErrRaster_Memory_Overflow   -4</a>
+<a name="ln154"> </a>
+<a name="ln155">#define FT_BEGIN_HEADER</a>
+<a name="ln156">#define FT_END_HEADER</a>
+<a name="ln157"> </a>
+<a name="ln158">#include &quot;ftimage.h&quot;</a>
+<a name="ln159">#include &quot;ftgrays.h&quot;</a>
+<a name="ln160"> </a>
+<a name="ln161"> </a>
+<a name="ln162">  /* This macro is used to indicate that a function parameter is unused. */</a>
+<a name="ln163">  /* Its purpose is simply to reduce compiler warnings.  Note also that  */</a>
+<a name="ln164">  /* simply defining it as `(void)x' doesn't avoid warnings with certain */</a>
+<a name="ln165">  /* ANSI compilers (e.g. LCC).                                          */</a>
+<a name="ln166">#define FT_UNUSED( x )  (x) = (x)</a>
+<a name="ln167"> </a>
+<a name="ln168"> </a>
+<a name="ln169">  /* we only use level 5 &amp; 7 tracing messages; cf. ftdebug.h */</a>
+<a name="ln170"> </a>
+<a name="ln171">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln172"> </a>
+<a name="ln173">  void</a>
+<a name="ln174">  FT_Message( const char*  fmt,</a>
+<a name="ln175">              ... )</a>
+<a name="ln176">  {</a>
+<a name="ln177">    va_list  ap;</a>
+<a name="ln178"> </a>
+<a name="ln179"> </a>
+<a name="ln180">    va_start( ap, fmt );</a>
+<a name="ln181">    vfprintf( stderr, fmt, ap );</a>
+<a name="ln182">    va_end( ap );</a>
+<a name="ln183">  }</a>
+<a name="ln184"> </a>
+<a name="ln185"> </a>
+<a name="ln186">  /* empty function useful for setting a breakpoint to catch errors */</a>
+<a name="ln187">  int</a>
+<a name="ln188">  FT_Throw( int          error,</a>
+<a name="ln189">            int          line,</a>
+<a name="ln190">            const char*  file )</a>
+<a name="ln191">  {</a>
+<a name="ln192">    FT_UNUSED( error );</a>
+<a name="ln193">    FT_UNUSED( line );</a>
+<a name="ln194">    FT_UNUSED( file );</a>
+<a name="ln195"> </a>
+<a name="ln196">    return 0;</a>
+<a name="ln197">  }</a>
+<a name="ln198"> </a>
+<a name="ln199"> </a>
+<a name="ln200">  /* we don't handle tracing levels in stand-alone mode; */</a>
+<a name="ln201">#ifndef FT_TRACE5</a>
+<a name="ln202">#define FT_TRACE5( varformat )  FT_Message varformat</a>
+<a name="ln203">#endif</a>
+<a name="ln204">#ifndef FT_TRACE7</a>
+<a name="ln205">#define FT_TRACE7( varformat )  FT_Message varformat</a>
+<a name="ln206">#endif</a>
+<a name="ln207">#ifndef FT_ERROR</a>
+<a name="ln208">#define FT_ERROR( varformat )   FT_Message varformat</a>
+<a name="ln209">#endif</a>
+<a name="ln210"> </a>
+<a name="ln211">#define FT_THROW( e )                               \</a>
+<a name="ln212">          ( FT_Throw( FT_ERR_CAT( ErrRaster, e ),   \</a>
+<a name="ln213">                      __LINE__,                     \</a>
+<a name="ln214">                      __FILE__ )                  | \</a>
+<a name="ln215">            FT_ERR_CAT( ErrRaster, e )            )</a>
+<a name="ln216"> </a>
+<a name="ln217">#else /* !FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln218"> </a>
+<a name="ln219">#define FT_TRACE5( x )  do { } while ( 0 )     /* nothing */</a>
+<a name="ln220">#define FT_TRACE7( x )  do { } while ( 0 )     /* nothing */</a>
+<a name="ln221">#define FT_ERROR( x )   do { } while ( 0 )     /* nothing */</a>
+<a name="ln222">#define FT_THROW( e )   FT_ERR_CAT( ErrRaster_, e )</a>
+<a name="ln223"> </a>
+<a name="ln224"> </a>
+<a name="ln225">#endif /* !FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln226"> </a>
+<a name="ln227"> </a>
+<a name="ln228">#define FT_DEFINE_OUTLINE_FUNCS( class_,               \</a>
+<a name="ln229">                                 move_to_, line_to_,   \</a>
+<a name="ln230">                                 conic_to_, cubic_to_, \</a>
+<a name="ln231">                                 shift_, delta_ )      \</a>
+<a name="ln232">          static const FT_Outline_Funcs class_ =       \</a>
+<a name="ln233">          {                                            \</a>
+<a name="ln234">            move_to_,                                  \</a>
+<a name="ln235">            line_to_,                                  \</a>
+<a name="ln236">            conic_to_,                                 \</a>
+<a name="ln237">            cubic_to_,                                 \</a>
+<a name="ln238">            shift_,                                    \</a>
+<a name="ln239">            delta_                                     \</a>
+<a name="ln240">         };</a>
+<a name="ln241"> </a>
+<a name="ln242">#define FT_DEFINE_RASTER_FUNCS( class_, glyph_format_,            \</a>
+<a name="ln243">                                raster_new_, raster_reset_,       \</a>
+<a name="ln244">                                raster_set_mode_, raster_render_, \</a>
+<a name="ln245">                                raster_done_ )                    \</a>
+<a name="ln246">          const FT_Raster_Funcs class_ =                          \</a>
+<a name="ln247">          {                                                       \</a>
+<a name="ln248">            glyph_format_,                                        \</a>
+<a name="ln249">            raster_new_,                                          \</a>
+<a name="ln250">            raster_reset_,                                        \</a>
+<a name="ln251">            raster_set_mode_,                                     \</a>
+<a name="ln252">            raster_render_,                                       \</a>
+<a name="ln253">            raster_done_                                          \</a>
+<a name="ln254">         };</a>
+<a name="ln255"> </a>
+<a name="ln256"> </a>
+<a name="ln257">#else /* !_STANDALONE_ */</a>
+<a name="ln258"> </a>
+<a name="ln259"> </a>
+<a name="ln260">#include &lt;ft2build.h&gt;</a>
+<a name="ln261">#include &quot;ftgrays.h&quot;</a>
+<a name="ln262">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln263">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln264">#include FT_OUTLINE_H</a>
+<a name="ln265"> </a>
+<a name="ln266">#include &quot;ftsmerrs.h&quot;</a>
+<a name="ln267"> </a>
+<a name="ln268">#include &quot;ftspic.h&quot;</a>
+<a name="ln269"> </a>
+<a name="ln270">#define Smooth_Err_Invalid_Mode     Smooth_Err_Cannot_Render_Glyph</a>
+<a name="ln271">#define Smooth_Err_Memory_Overflow  Smooth_Err_Out_Of_Memory</a>
+<a name="ln272">#define ErrRaster_Memory_Overflow   Smooth_Err_Out_Of_Memory</a>
+<a name="ln273"> </a>
+<a name="ln274"> </a>
+<a name="ln275">#endif /* !_STANDALONE_ */</a>
+<a name="ln276"> </a>
+<a name="ln277"> </a>
+<a name="ln278">#ifndef FT_MEM_SET</a>
+<a name="ln279">#define FT_MEM_SET( d, s, c )  ft_memset( d, s, c )</a>
+<a name="ln280">#endif</a>
+<a name="ln281"> </a>
+<a name="ln282">#ifndef FT_MEM_ZERO</a>
+<a name="ln283">#define FT_MEM_ZERO( dest, count )  FT_MEM_SET( dest, 0, count )</a>
+<a name="ln284">#endif</a>
+<a name="ln285"> </a>
+<a name="ln286">  /* as usual, for the speed hungry :-) */</a>
+<a name="ln287"> </a>
+<a name="ln288">#undef RAS_ARG</a>
+<a name="ln289">#undef RAS_ARG_</a>
+<a name="ln290">#undef RAS_VAR</a>
+<a name="ln291">#undef RAS_VAR_</a>
+<a name="ln292"> </a>
+<a name="ln293">#ifndef FT_STATIC_RASTER</a>
+<a name="ln294"> </a>
+<a name="ln295">#define RAS_ARG   gray_PWorker  worker</a>
+<a name="ln296">#define RAS_ARG_  gray_PWorker  worker,</a>
+<a name="ln297"> </a>
+<a name="ln298">#define RAS_VAR   worker</a>
+<a name="ln299">#define RAS_VAR_  worker,</a>
+<a name="ln300"> </a>
+<a name="ln301">#else /* FT_STATIC_RASTER */</a>
+<a name="ln302"> </a>
+<a name="ln303">#define RAS_ARG   /* empty */</a>
+<a name="ln304">#define RAS_ARG_  /* empty */</a>
+<a name="ln305">#define RAS_VAR   /* empty */</a>
+<a name="ln306">#define RAS_VAR_  /* empty */</a>
+<a name="ln307"> </a>
+<a name="ln308">#endif /* FT_STATIC_RASTER */</a>
+<a name="ln309"> </a>
+<a name="ln310"> </a>
+<a name="ln311">  /* must be at least 6 bits! */</a>
+<a name="ln312">#define PIXEL_BITS  8</a>
+<a name="ln313"> </a>
+<a name="ln314">#undef FLOOR</a>
+<a name="ln315">#undef CEILING</a>
+<a name="ln316">#undef TRUNC</a>
+<a name="ln317">#undef SCALED</a>
+<a name="ln318"> </a>
+<a name="ln319">#define ONE_PIXEL       ( 1L &lt;&lt; PIXEL_BITS )</a>
+<a name="ln320">#define TRUNC( x )      ( (TCoord)( (x) &gt;&gt; PIXEL_BITS ) )</a>
+<a name="ln321">#define SUBPIXELS( x )  ( (TPos)(x) &lt;&lt; PIXEL_BITS )</a>
+<a name="ln322">#define FLOOR( x )      ( (x) &amp; -ONE_PIXEL )</a>
+<a name="ln323">#define CEILING( x )    ( ( (x) + ONE_PIXEL - 1 ) &amp; -ONE_PIXEL )</a>
+<a name="ln324">#define ROUND( x )      ( ( (x) + ONE_PIXEL / 2 ) &amp; -ONE_PIXEL )</a>
+<a name="ln325"> </a>
+<a name="ln326">#if PIXEL_BITS &gt;= 6</a>
+<a name="ln327">#define UPSCALE( x )    ( (x) &lt;&lt; ( PIXEL_BITS - 6 ) )</a>
+<a name="ln328">#define DOWNSCALE( x )  ( (x) &gt;&gt; ( PIXEL_BITS - 6 ) )</a>
+<a name="ln329">#else</a>
+<a name="ln330">#define UPSCALE( x )    ( (x) &gt;&gt; ( 6 - PIXEL_BITS ) )</a>
+<a name="ln331">#define DOWNSCALE( x )  ( (x) &lt;&lt; ( 6 - PIXEL_BITS ) )</a>
+<a name="ln332">#endif</a>
+<a name="ln333"> </a>
+<a name="ln334"> </a>
+<a name="ln335">  /* Compute `dividend / divisor' and return both its quotient and     */</a>
+<a name="ln336">  /* remainder, cast to a specific type.  This macro also ensures that */</a>
+<a name="ln337">  /* the remainder is always positive.                                 */</a>
+<a name="ln338">#define FT_DIV_MOD( type, dividend, divisor, quotient, remainder ) \</a>
+<a name="ln339">  FT_BEGIN_STMNT                                                   \</a>
+<a name="ln340">    (quotient)  = (type)( (dividend) / (divisor) );                \</a>
+<a name="ln341">    (remainder) = (type)( (dividend) % (divisor) );                \</a>
+<a name="ln342">    if ( (remainder) &lt; 0 )                                         \</a>
+<a name="ln343">    {                                                              \</a>
+<a name="ln344">      (quotient)--;                                                \</a>
+<a name="ln345">      (remainder) += (type)(divisor);                              \</a>
+<a name="ln346">    }                                                              \</a>
+<a name="ln347">  FT_END_STMNT</a>
+<a name="ln348"> </a>
+<a name="ln349">#ifdef  __arm__</a>
+<a name="ln350">  /* Work around a bug specific to GCC which make the compiler fail to */</a>
+<a name="ln351">  /* optimize a division and modulo operation on the same parameters   */</a>
+<a name="ln352">  /* into a single call to `__aeabi_idivmod'.  See                     */</a>
+<a name="ln353">  /*                                                                   */</a>
+<a name="ln354">  /*  http://gcc.gnu.org/bugzilla/show_bug.cgi?id=43721                */</a>
+<a name="ln355">#undef FT_DIV_MOD</a>
+<a name="ln356">#define FT_DIV_MOD( type, dividend, divisor, quotient, remainder ) \</a>
+<a name="ln357">  FT_BEGIN_STMNT                                                   \</a>
+<a name="ln358">    (quotient)  = (type)( (dividend) / (divisor) );                \</a>
+<a name="ln359">    (remainder) = (type)( (dividend) - (quotient) * (divisor) );   \</a>
+<a name="ln360">    if ( (remainder) &lt; 0 )                                         \</a>
+<a name="ln361">    {                                                              \</a>
+<a name="ln362">      (quotient)--;                                                \</a>
+<a name="ln363">      (remainder) += (type)(divisor);                              \</a>
+<a name="ln364">    }                                                              \</a>
+<a name="ln365">  FT_END_STMNT</a>
+<a name="ln366">#endif /* __arm__ */</a>
+<a name="ln367"> </a>
+<a name="ln368"> </a>
+<a name="ln369">  /*************************************************************************/</a>
+<a name="ln370">  /*                                                                       */</a>
+<a name="ln371">  /*   TYPE DEFINITIONS                                                    */</a>
+<a name="ln372">  /*                                                                       */</a>
+<a name="ln373"> </a>
+<a name="ln374">  /* don't change the following types to FT_Int or FT_Pos, since we might */</a>
+<a name="ln375">  /* need to define them to &quot;float&quot; or &quot;double&quot; when experimenting with   */</a>
+<a name="ln376">  /* new algorithms                                                       */</a>
+<a name="ln377"> </a>
+<a name="ln378">  typedef long  TCoord;   /* integer scanline/pixel coordinate */</a>
+<a name="ln379">  typedef long  TPos;     /* sub-pixel coordinate              */</a>
+<a name="ln380"> </a>
+<a name="ln381">  /* determine the type used to store cell areas.  This normally takes at */</a>
+<a name="ln382">  /* least PIXEL_BITS*2 + 1 bits.  On 16-bit systems, we need to use      */</a>
+<a name="ln383">  /* `long' instead of `int', otherwise bad things happen                 */</a>
+<a name="ln384"> </a>
+<a name="ln385">#if PIXEL_BITS &lt;= 7</a>
+<a name="ln386"> </a>
+<a name="ln387">  typedef int  TArea;</a>
+<a name="ln388"> </a>
+<a name="ln389">#else /* PIXEL_BITS &gt;= 8 */</a>
+<a name="ln390"> </a>
+<a name="ln391">  /* approximately determine the size of integers using an ANSI-C header */</a>
+<a name="ln392">#if FT_UINT_MAX == 0xFFFFU</a>
+<a name="ln393">  typedef long  TArea;</a>
+<a name="ln394">#else</a>
+<a name="ln395">  typedef int   TArea;</a>
+<a name="ln396">#endif</a>
+<a name="ln397"> </a>
+<a name="ln398">#endif /* PIXEL_BITS &gt;= 8 */</a>
+<a name="ln399"> </a>
+<a name="ln400"> </a>
+<a name="ln401">  /* maximum number of gray spans in a call to the span callback */</a>
+<a name="ln402">#define FT_MAX_GRAY_SPANS  32</a>
+<a name="ln403"> </a>
+<a name="ln404"> </a>
+<a name="ln405">  typedef struct TCell_*  PCell;</a>
+<a name="ln406"> </a>
+<a name="ln407">  typedef struct  TCell_</a>
+<a name="ln408">  {</a>
+<a name="ln409">    TPos    x;     /* same with gray_TWorker.ex    */</a>
+<a name="ln410">    TCoord  cover; /* same with gray_TWorker.cover */</a>
+<a name="ln411">    TArea   area;</a>
+<a name="ln412">    PCell   next;</a>
+<a name="ln413"> </a>
+<a name="ln414">  } TCell;</a>
+<a name="ln415"> </a>
+<a name="ln416"> </a>
+<a name="ln417">#if defined( _MSC_VER )      /* Visual C++ (and Intel C++) */</a>
+<a name="ln418">  /* We disable the warning `structure was padded due to   */</a>
+<a name="ln419">  /* __declspec(align())' in order to compile cleanly with */</a>
+<a name="ln420">  /* the maximum level of warnings.                        */</a>
+<a name="ln421">#pragma warning( push )</a>
+<a name="ln422">#pragma warning( disable : 4324 )</a>
+<a name="ln423">#endif /* _MSC_VER */</a>
+<a name="ln424"> </a>
+<a name="ln425">  typedef struct  gray_TWorker_</a>
+<a name="ln426">  {</a>
+<a name="ln427">    ft_jmp_buf  jump_buffer;</a>
+<a name="ln428"> </a>
+<a name="ln429">    TCoord  ex, ey;</a>
+<a name="ln430">    TPos    min_ex, max_ex;</a>
+<a name="ln431">    TPos    min_ey, max_ey;</a>
+<a name="ln432">    TPos    count_ex, count_ey;</a>
+<a name="ln433"> </a>
+<a name="ln434">    TArea   area;</a>
+<a name="ln435">    TCoord  cover;</a>
+<a name="ln436">    int     invalid;</a>
+<a name="ln437"> </a>
+<a name="ln438">    PCell       cells;</a>
+<a name="ln439">    FT_PtrDist  max_cells;</a>
+<a name="ln440">    FT_PtrDist  num_cells;</a>
+<a name="ln441"> </a>
+<a name="ln442">    TPos    x,  y;</a>
+<a name="ln443"> </a>
+<a name="ln444">    FT_Vector   bez_stack[32 * 3 + 1];</a>
+<a name="ln445">    int         lev_stack[32];</a>
+<a name="ln446"> </a>
+<a name="ln447">    FT_Outline  outline;</a>
+<a name="ln448">    FT_Bitmap   target;</a>
+<a name="ln449">    FT_BBox     clip_box;</a>
+<a name="ln450"> </a>
+<a name="ln451">    FT_Span     gray_spans[FT_MAX_GRAY_SPANS];</a>
+<a name="ln452">    int         num_gray_spans;</a>
+<a name="ln453"> </a>
+<a name="ln454">    FT_Raster_Span_Func  render_span;</a>
+<a name="ln455">    void*                render_span_data;</a>
+<a name="ln456">    int                  span_y;</a>
+<a name="ln457"> </a>
+<a name="ln458">    int  band_size;</a>
+<a name="ln459">    int  band_shoot;</a>
+<a name="ln460"> </a>
+<a name="ln461">    void*       buffer;</a>
+<a name="ln462">    long        buffer_size;</a>
+<a name="ln463"> </a>
+<a name="ln464">    PCell*     ycells;</a>
+<a name="ln465">    TPos       ycount;</a>
+<a name="ln466"> </a>
+<a name="ln467">  } gray_TWorker, *gray_PWorker;</a>
+<a name="ln468"> </a>
+<a name="ln469">#if defined( _MSC_VER )</a>
+<a name="ln470">#pragma warning( pop )</a>
+<a name="ln471">#endif</a>
+<a name="ln472"> </a>
+<a name="ln473"> </a>
+<a name="ln474">#ifndef FT_STATIC_RASTER</a>
+<a name="ln475">#define ras  (*worker)</a>
+<a name="ln476">#else</a>
+<a name="ln477">  static gray_TWorker  ras;</a>
+<a name="ln478">#endif</a>
+<a name="ln479"> </a>
+<a name="ln480"> </a>
+<a name="ln481">  typedef struct gray_TRaster_</a>
+<a name="ln482">  {</a>
+<a name="ln483">    void*         memory;</a>
+<a name="ln484"> </a>
+<a name="ln485">  } gray_TRaster, *gray_PRaster;</a>
+<a name="ln486"> </a>
+<a name="ln487"> </a>
+<a name="ln488"> </a>
+<a name="ln489">  /*************************************************************************/</a>
+<a name="ln490">  /*                                                                       */</a>
+<a name="ln491">  /* Initialize the cells table.                                           */</a>
+<a name="ln492">  /*                                                                       */</a>
+<a name="ln493">  static void</a>
+<a name="ln494">  gray_init_cells( RAS_ARG_ void*  buffer,</a>
+<a name="ln495">                            long   byte_size )</a>
+<a name="ln496">  {</a>
+<a name="ln497">    ras.buffer      = buffer;</a>
+<a name="ln498">    ras.buffer_size = byte_size;</a>
+<a name="ln499"> </a>
+<a name="ln500">    ras.ycells      = (PCell*) buffer;</a>
+<a name="ln501">    ras.cells       = NULL;</a>
+<a name="ln502">    ras.max_cells   = 0;</a>
+<a name="ln503">    ras.num_cells   = 0;</a>
+<a name="ln504">    ras.area        = 0;</a>
+<a name="ln505">    ras.cover       = 0;</a>
+<a name="ln506">    ras.invalid     = 1;</a>
+<a name="ln507">  }</a>
+<a name="ln508"> </a>
+<a name="ln509"> </a>
+<a name="ln510">  /*************************************************************************/</a>
+<a name="ln511">  /*                                                                       */</a>
+<a name="ln512">  /* Compute the outline bounding box.                                     */</a>
+<a name="ln513">  /*                                                                       */</a>
+<a name="ln514">  static void</a>
+<a name="ln515">  gray_compute_cbox( RAS_ARG )</a>
+<a name="ln516">  {</a>
+<a name="ln517">    FT_Outline*  outline = &amp;ras.outline;</a>
+<a name="ln518">    FT_Vector*   vec     = outline-&gt;points;</a>
+<a name="ln519">    FT_Vector*   limit   = vec + outline-&gt;n_points;</a>
+<a name="ln520"> </a>
+<a name="ln521"> </a>
+<a name="ln522">    if ( outline-&gt;n_points &lt;= 0 )</a>
+<a name="ln523">    {</a>
+<a name="ln524">      ras.min_ex = ras.max_ex = 0;</a>
+<a name="ln525">      ras.min_ey = ras.max_ey = 0;</a>
+<a name="ln526">      return;</a>
+<a name="ln527">    }</a>
+<a name="ln528"> </a>
+<a name="ln529">    ras.min_ex = ras.max_ex = vec-&gt;x;</a>
+<a name="ln530">    ras.min_ey = ras.max_ey = vec-&gt;y;</a>
+<a name="ln531"> </a>
+<a name="ln532">    vec++;</a>
+<a name="ln533"> </a>
+<a name="ln534">    for ( ; vec &lt; limit; vec++ )</a>
+<a name="ln535">    {</a>
+<a name="ln536">      TPos  x = vec-&gt;x;</a>
+<a name="ln537">      TPos  y = vec-&gt;y;</a>
+<a name="ln538"> </a>
+<a name="ln539"> </a>
+<a name="ln540">      if ( x &lt; ras.min_ex ) ras.min_ex = x;</a>
+<a name="ln541">      if ( x &gt; ras.max_ex ) ras.max_ex = x;</a>
+<a name="ln542">      if ( y &lt; ras.min_ey ) ras.min_ey = y;</a>
+<a name="ln543">      if ( y &gt; ras.max_ey ) ras.max_ey = y;</a>
+<a name="ln544">    }</a>
+<a name="ln545"> </a>
+<a name="ln546">    /* truncate the bounding box to integer pixels */</a>
+<a name="ln547">    ras.min_ex = ras.min_ex &gt;&gt; 6;</a>
+<a name="ln548">    ras.min_ey = ras.min_ey &gt;&gt; 6;</a>
+<a name="ln549">    ras.max_ex = ( ras.max_ex + 63 ) &gt;&gt; 6;</a>
+<a name="ln550">    ras.max_ey = ( ras.max_ey + 63 ) &gt;&gt; 6;</a>
+<a name="ln551">  }</a>
+<a name="ln552"> </a>
+<a name="ln553"> </a>
+<a name="ln554">  /*************************************************************************/</a>
+<a name="ln555">  /*                                                                       */</a>
+<a name="ln556">  /* Record the current cell in the table.                                 */</a>
+<a name="ln557">  /*                                                                       */</a>
+<a name="ln558">  static PCell</a>
+<a name="ln559">  gray_find_cell( RAS_ARG )</a>
+<a name="ln560">  {</a>
+<a name="ln561">    PCell  *pcell, cell;</a>
+<a name="ln562">    TPos    x = ras.ex;</a>
+<a name="ln563"> </a>
+<a name="ln564"> </a>
+<a name="ln565">    if ( x &gt; ras.count_ex )</a>
+<a name="ln566">      x = ras.count_ex;</a>
+<a name="ln567"> </a>
+<a name="ln568">    pcell = &amp;ras.ycells[ras.ey];</a>
+<a name="ln569">    for (;;)</a>
+<a name="ln570">    {</a>
+<a name="ln571">      cell = *pcell;</a>
+<a name="ln572">      if ( cell == NULL || cell-&gt;x &gt; x )</a>
+<a name="ln573">        break;</a>
+<a name="ln574"> </a>
+<a name="ln575">      if ( cell-&gt;x == x )</a>
+<a name="ln576">        goto Exit;</a>
+<a name="ln577"> </a>
+<a name="ln578">      pcell = &amp;cell-&gt;next;</a>
+<a name="ln579">    }</a>
+<a name="ln580"> </a>
+<a name="ln581">    if ( ras.num_cells &gt;= ras.max_cells )</a>
+<a name="ln582">      ft_longjmp( ras.jump_buffer, 1 );</a>
+<a name="ln583"> </a>
+<a name="ln584">    cell        = ras.cells + ras.num_cells++;</a>
+<a name="ln585">    cell-&gt;x     = x;</a>
+<a name="ln586">    cell-&gt;area  = 0;</a>
+<a name="ln587">    cell-&gt;cover = 0;</a>
+<a name="ln588"> </a>
+<a name="ln589">    cell-&gt;next  = *pcell;</a>
+<a name="ln590">    *pcell      = cell;</a>
+<a name="ln591"> </a>
+<a name="ln592">  Exit:</a>
+<a name="ln593">    return cell;</a>
+<a name="ln594">  }</a>
+<a name="ln595"> </a>
+<a name="ln596"> </a>
+<a name="ln597">  static void</a>
+<a name="ln598">  gray_record_cell( RAS_ARG )</a>
+<a name="ln599">  {</a>
+<a name="ln600">    if ( ras.area | ras.cover )</a>
+<a name="ln601">    {</a>
+<a name="ln602">      PCell  cell = gray_find_cell( RAS_VAR );</a>
+<a name="ln603"> </a>
+<a name="ln604"> </a>
+<a name="ln605">      cell-&gt;area  += ras.area;</a>
+<a name="ln606">      cell-&gt;cover += ras.cover;</a>
+<a name="ln607">    }</a>
+<a name="ln608">  }</a>
+<a name="ln609"> </a>
+<a name="ln610"> </a>
+<a name="ln611">  /*************************************************************************/</a>
+<a name="ln612">  /*                                                                       */</a>
+<a name="ln613">  /* Set the current cell to a new position.                               */</a>
+<a name="ln614">  /*                                                                       */</a>
+<a name="ln615">  static void</a>
+<a name="ln616">  gray_set_cell( RAS_ARG_ TCoord  ex,</a>
+<a name="ln617">                          TCoord  ey )</a>
+<a name="ln618">  {</a>
+<a name="ln619">    /* Move the cell pointer to a new position.  We set the `invalid'      */</a>
+<a name="ln620">    /* flag to indicate that the cell isn't part of those we're interested */</a>
+<a name="ln621">    /* in during the render phase.  This means that:                       */</a>
+<a name="ln622">    /*                                                                     */</a>
+<a name="ln623">    /* . the new vertical position must be within min_ey..max_ey-1.        */</a>
+<a name="ln624">    /* . the new horizontal position must be strictly less than max_ex     */</a>
+<a name="ln625">    /*                                                                     */</a>
+<a name="ln626">    /* Note that if a cell is to the left of the clipping region, it is    */</a>
+<a name="ln627">    /* actually set to the (min_ex-1) horizontal position.                 */</a>
+<a name="ln628"> </a>
+<a name="ln629">    /* All cells that are on the left of the clipping region go to the */</a>
+<a name="ln630">    /* min_ex - 1 horizontal position.                                 */</a>
+<a name="ln631">    ey -= ras.min_ey;</a>
+<a name="ln632"> </a>
+<a name="ln633">    if ( ex &gt; ras.max_ex )</a>
+<a name="ln634">      ex = ras.max_ex;</a>
+<a name="ln635"> </a>
+<a name="ln636">    ex -= ras.min_ex;</a>
+<a name="ln637">    if ( ex &lt; 0 )</a>
+<a name="ln638">      ex = -1;</a>
+<a name="ln639"> </a>
+<a name="ln640">    /* are we moving to a different cell ? */</a>
+<a name="ln641">    if ( ex != ras.ex || ey != ras.ey )</a>
+<a name="ln642">    {</a>
+<a name="ln643">      /* record the current one if it is valid */</a>
+<a name="ln644">      if ( !ras.invalid )</a>
+<a name="ln645">        gray_record_cell( RAS_VAR );</a>
+<a name="ln646"> </a>
+<a name="ln647">      ras.area  = 0;</a>
+<a name="ln648">      ras.cover = 0;</a>
+<a name="ln649">      ras.ex    = ex;</a>
+<a name="ln650">      ras.ey    = ey;</a>
+<a name="ln651">    }</a>
+<a name="ln652"> </a>
+<a name="ln653">    ras.invalid = ( (unsigned int)ey &gt;= (unsigned int)ras.count_ey ||</a>
+<a name="ln654">                                  ex &gt;= ras.count_ex               );</a>
+<a name="ln655">  }</a>
+<a name="ln656"> </a>
+<a name="ln657"> </a>
+<a name="ln658">  /*************************************************************************/</a>
+<a name="ln659">  /*                                                                       */</a>
+<a name="ln660">  /* Start a new contour at a given cell.                                  */</a>
+<a name="ln661">  /*                                                                       */</a>
+<a name="ln662">  static void</a>
+<a name="ln663">  gray_start_cell( RAS_ARG_ TCoord  ex,</a>
+<a name="ln664">                            TCoord  ey )</a>
+<a name="ln665">  {</a>
+<a name="ln666">    if ( ex &gt; ras.max_ex )</a>
+<a name="ln667">      ex = (TCoord)( ras.max_ex );</a>
+<a name="ln668"> </a>
+<a name="ln669">    if ( ex &lt; ras.min_ex )</a>
+<a name="ln670">      ex = (TCoord)( ras.min_ex - 1 );</a>
+<a name="ln671"> </a>
+<a name="ln672">    ras.area    = 0;</a>
+<a name="ln673">    ras.cover   = 0;</a>
+<a name="ln674">    ras.ex      = ex - ras.min_ex;</a>
+<a name="ln675">    ras.ey      = ey - ras.min_ey;</a>
+<a name="ln676">    ras.invalid = 0;</a>
+<a name="ln677"> </a>
+<a name="ln678">    gray_set_cell( RAS_VAR_ ex, ey );</a>
+<a name="ln679">  }</a>
+<a name="ln680"> </a>
+<a name="ln681"> </a>
+<a name="ln682">  /*************************************************************************/</a>
+<a name="ln683">  /*                                                                       */</a>
+<a name="ln684">  /* Render a scanline as one or more cells.                               */</a>
+<a name="ln685">  /*                                                                       */</a>
+<a name="ln686">  static void</a>
+<a name="ln687">  gray_render_scanline( RAS_ARG_ TCoord  ey,</a>
+<a name="ln688">                                 TPos    x1,</a>
+<a name="ln689">                                 TCoord  y1,</a>
+<a name="ln690">                                 TPos    x2,</a>
+<a name="ln691">                                 TCoord  y2 )</a>
+<a name="ln692">  {</a>
+<a name="ln693">    TCoord  ex1, ex2, fx1, fx2, delta, mod;</a>
+<a name="ln694">    long    p, first, dx;</a>
+<a name="ln695">    int     incr;</a>
+<a name="ln696"> </a>
+<a name="ln697"> </a>
+<a name="ln698">    dx = x2 - x1;</a>
+<a name="ln699"> </a>
+<a name="ln700">    ex1 = TRUNC( x1 );</a>
+<a name="ln701">    ex2 = TRUNC( x2 );</a>
+<a name="ln702">    fx1 = (TCoord)( x1 - SUBPIXELS( ex1 ) );</a>
+<a name="ln703">    fx2 = (TCoord)( x2 - SUBPIXELS( ex2 ) );</a>
+<a name="ln704"> </a>
+<a name="ln705">    /* trivial case.  Happens often */</a>
+<a name="ln706">    if ( y1 == y2 )</a>
+<a name="ln707">    {</a>
+<a name="ln708">      gray_set_cell( RAS_VAR_ ex2, ey );</a>
+<a name="ln709">      return;</a>
+<a name="ln710">    }</a>
+<a name="ln711"> </a>
+<a name="ln712">    /* everything is located in a single cell.  That is easy! */</a>
+<a name="ln713">    /*                                                        */</a>
+<a name="ln714">    if ( ex1 == ex2 )</a>
+<a name="ln715">    {</a>
+<a name="ln716">      delta      = y2 - y1;</a>
+<a name="ln717">      ras.area  += (TArea)(( fx1 + fx2 ) * delta);</a>
+<a name="ln718">      ras.cover += delta;</a>
+<a name="ln719">      return;</a>
+<a name="ln720">    }</a>
+<a name="ln721"> </a>
+<a name="ln722">    /* ok, we'll have to render a run of adjacent cells on the same */</a>
+<a name="ln723">    /* scanline...                                                  */</a>
+<a name="ln724">    /*                                                              */</a>
+<a name="ln725">    p     = ( ONE_PIXEL - fx1 ) * ( y2 - y1 );</a>
+<a name="ln726">    first = ONE_PIXEL;</a>
+<a name="ln727">    incr  = 1;</a>
+<a name="ln728"> </a>
+<a name="ln729">    if ( dx &lt; 0 )</a>
+<a name="ln730">    {</a>
+<a name="ln731">      p     = fx1 * ( y2 - y1 );</a>
+<a name="ln732">      first = 0;</a>
+<a name="ln733">      incr  = -1;</a>
+<a name="ln734">      dx    = -dx;</a>
+<a name="ln735">    }</a>
+<a name="ln736"> </a>
+<a name="ln737">    FT_DIV_MOD( TCoord, p, dx, delta, mod );</a>
+<a name="ln738"> </a>
+<a name="ln739">    ras.area  += (TArea)(( fx1 + first ) * delta);</a>
+<a name="ln740">    ras.cover += delta;</a>
+<a name="ln741"> </a>
+<a name="ln742">    ex1 += incr;</a>
+<a name="ln743">    gray_set_cell( RAS_VAR_ ex1, ey );</a>
+<a name="ln744">    y1  += delta;</a>
+<a name="ln745"> </a>
+<a name="ln746">    if ( ex1 != ex2 )</a>
+<a name="ln747">    {</a>
+<a name="ln748">      TCoord  lift, rem;</a>
+<a name="ln749"> </a>
+<a name="ln750"> </a>
+<a name="ln751">      p = ONE_PIXEL * ( y2 - y1 + delta );</a>
+<a name="ln752">      FT_DIV_MOD( TCoord, p, dx, lift, rem );</a>
+<a name="ln753"> </a>
+<a name="ln754">      mod -= (int)dx;</a>
+<a name="ln755"> </a>
+<a name="ln756">      do</a>
+<a name="ln757">      {</a>
+<a name="ln758">        delta = lift;</a>
+<a name="ln759">        mod  += rem;</a>
+<a name="ln760">        if ( mod &gt;= 0 )</a>
+<a name="ln761">        {</a>
+<a name="ln762">          mod -= (TCoord)dx;</a>
+<a name="ln763">          delta++;</a>
+<a name="ln764">        }</a>
+<a name="ln765"> </a>
+<a name="ln766">        ras.area  += (TArea)(ONE_PIXEL * delta);</a>
+<a name="ln767">        ras.cover += delta;</a>
+<a name="ln768">        y1        += delta;</a>
+<a name="ln769">        ex1       += incr;</a>
+<a name="ln770">        gray_set_cell( RAS_VAR_ ex1, ey );</a>
+<a name="ln771">      } while ( ex1 != ex2 );</a>
+<a name="ln772">    }</a>
+<a name="ln773"> </a>
+<a name="ln774">    delta      = y2 - y1;</a>
+<a name="ln775">    ras.area  += (TArea)(( fx2 + ONE_PIXEL - first ) * delta);</a>
+<a name="ln776">    ras.cover += delta;</a>
+<a name="ln777">  }</a>
+<a name="ln778"> </a>
+<a name="ln779"> </a>
+<a name="ln780">  /*************************************************************************/</a>
+<a name="ln781">  /*                                                                       */</a>
+<a name="ln782">  /* Render a given line as a series of scanlines.                         */</a>
+<a name="ln783">  /*                                                                       */</a>
+<a name="ln784">  static void</a>
+<a name="ln785">  gray_render_line( RAS_ARG_ TPos  to_x,</a>
+<a name="ln786">                             TPos  to_y )</a>
+<a name="ln787">  {</a>
+<a name="ln788">    TCoord  ey1, ey2, fy1, fy2, mod;</a>
+<a name="ln789">    TPos    dx, dy, x, x2;</a>
+<a name="ln790">    long    p, first;</a>
+<a name="ln791">    int     delta, rem, lift, incr;</a>
+<a name="ln792"> </a>
+<a name="ln793"> </a>
+<a name="ln794">    ey1 = TRUNC( ras.y );</a>
+<a name="ln795">    ey2 = TRUNC( to_y );     /* if (ey2 &gt;= ras.max_ey) ey2 = ras.max_ey-1; */</a>
+<a name="ln796">    fy1 = (TCoord)( ras.y - SUBPIXELS( ey1 ) );</a>
+<a name="ln797">    fy2 = (TCoord)( to_y - SUBPIXELS( ey2 ) );</a>
+<a name="ln798"> </a>
+<a name="ln799">    dx = to_x - ras.x;</a>
+<a name="ln800">    dy = to_y - ras.y;</a>
+<a name="ln801"> </a>
+<a name="ln802">    /* perform vertical clipping */</a>
+<a name="ln803">    if ( ( ey1 &gt;= ras.max_ey &amp;&amp; ey2 &gt;= ras.max_ey ) ||</a>
+<a name="ln804">         ( ey1 &lt;  ras.min_ey &amp;&amp; ey2 &lt;  ras.min_ey ) )</a>
+<a name="ln805">      goto End;</a>
+<a name="ln806"> </a>
+<a name="ln807">    /* everything is on a single scanline */</a>
+<a name="ln808">    if ( ey1 == ey2 )</a>
+<a name="ln809">    {</a>
+<a name="ln810">      gray_render_scanline( RAS_VAR_ ey1, ras.x, fy1, to_x, fy2 );</a>
+<a name="ln811">      goto End;</a>
+<a name="ln812">    }</a>
+<a name="ln813"> </a>
+<a name="ln814">    /* vertical line - avoid calling gray_render_scanline */</a>
+<a name="ln815">    incr = 1;</a>
+<a name="ln816"> </a>
+<a name="ln817">    if ( dx == 0 )</a>
+<a name="ln818">    {</a>
+<a name="ln819">      TCoord  ex     = TRUNC( ras.x );</a>
+<a name="ln820">      TCoord  two_fx = (TCoord)( ( ras.x - SUBPIXELS( ex ) ) &lt;&lt; 1 );</a>
+<a name="ln821">      TArea   area;</a>
+<a name="ln822"> </a>
+<a name="ln823"> </a>
+<a name="ln824">      first = ONE_PIXEL;</a>
+<a name="ln825">      if ( dy &lt; 0 )</a>
+<a name="ln826">      {</a>
+<a name="ln827">        first = 0;</a>
+<a name="ln828">        incr  = -1;</a>
+<a name="ln829">      }</a>
+<a name="ln830"> </a>
+<a name="ln831">      delta      = (int)( first - fy1 );</a>
+<a name="ln832">      ras.area  += (TArea)two_fx * delta;</a>
+<a name="ln833">      ras.cover += delta;</a>
+<a name="ln834">      ey1       += incr;</a>
+<a name="ln835"> </a>
+<a name="ln836">      gray_set_cell( RAS_VAR_ ex, ey1 );</a>
+<a name="ln837"> </a>
+<a name="ln838">      delta = (int)( first + first - ONE_PIXEL );</a>
+<a name="ln839">      area  = (TArea)two_fx * delta;</a>
+<a name="ln840">      while ( ey1 != ey2 )</a>
+<a name="ln841">      {</a>
+<a name="ln842">        ras.area  += area;</a>
+<a name="ln843">        ras.cover += delta;</a>
+<a name="ln844">        ey1       += incr;</a>
+<a name="ln845"> </a>
+<a name="ln846">        gray_set_cell( RAS_VAR_ ex, ey1 );</a>
+<a name="ln847">      }</a>
+<a name="ln848"> </a>
+<a name="ln849">      delta      = (int)( fy2 - ONE_PIXEL + first );</a>
+<a name="ln850">      ras.area  += (TArea)two_fx * delta;</a>
+<a name="ln851">      ras.cover += delta;</a>
+<a name="ln852"> </a>
+<a name="ln853">      goto End;</a>
+<a name="ln854">    }</a>
+<a name="ln855"> </a>
+<a name="ln856">    /* ok, we have to render several scanlines */</a>
+<a name="ln857">    p     = ( ONE_PIXEL - fy1 ) * dx;</a>
+<a name="ln858">    first = ONE_PIXEL;</a>
+<a name="ln859">    incr  = 1;</a>
+<a name="ln860"> </a>
+<a name="ln861">    if ( dy &lt; 0 )</a>
+<a name="ln862">    {</a>
+<a name="ln863">      p     = fy1 * dx;</a>
+<a name="ln864">      first = 0;</a>
+<a name="ln865">      incr  = -1;</a>
+<a name="ln866">      dy    = -dy;</a>
+<a name="ln867">    }</a>
+<a name="ln868"> </a>
+<a name="ln869">    FT_DIV_MOD( int, p, dy, delta, mod );</a>
+<a name="ln870"> </a>
+<a name="ln871">    x = ras.x + delta;</a>
+<a name="ln872">    gray_render_scanline( RAS_VAR_ ey1, ras.x, fy1, x, (TCoord)first );</a>
+<a name="ln873"> </a>
+<a name="ln874">    ey1 += incr;</a>
+<a name="ln875">    gray_set_cell( RAS_VAR_ TRUNC( x ), ey1 );</a>
+<a name="ln876"> </a>
+<a name="ln877">    if ( ey1 != ey2 )</a>
+<a name="ln878">    {</a>
+<a name="ln879">      p     = ONE_PIXEL * dx;</a>
+<a name="ln880">      FT_DIV_MOD( int, p, dy, lift, rem );</a>
+<a name="ln881">      mod -= (int)dy;</a>
+<a name="ln882"> </a>
+<a name="ln883">      do</a>
+<a name="ln884">      {</a>
+<a name="ln885">        delta = lift;</a>
+<a name="ln886">        mod  += rem;</a>
+<a name="ln887">        if ( mod &gt;= 0 )</a>
+<a name="ln888">        {</a>
+<a name="ln889">          mod -= (int)dy;</a>
+<a name="ln890">          delta++;</a>
+<a name="ln891">        }</a>
+<a name="ln892"> </a>
+<a name="ln893">        x2 = x + delta;</a>
+<a name="ln894">        gray_render_scanline( RAS_VAR_ ey1, x,</a>
+<a name="ln895">                                       (TCoord)( ONE_PIXEL - first ), x2,</a>
+<a name="ln896">                                       (TCoord)first );</a>
+<a name="ln897">        x = x2;</a>
+<a name="ln898"> </a>
+<a name="ln899">        ey1 += incr;</a>
+<a name="ln900">        gray_set_cell( RAS_VAR_ TRUNC( x ), ey1 );</a>
+<a name="ln901">      } while ( ey1 != ey2 );</a>
+<a name="ln902">    }</a>
+<a name="ln903"> </a>
+<a name="ln904">    gray_render_scanline( RAS_VAR_ ey1, x,</a>
+<a name="ln905">                                   (TCoord)( ONE_PIXEL - first ), to_x,</a>
+<a name="ln906">                                   fy2 );</a>
+<a name="ln907"> </a>
+<a name="ln908">  End:</a>
+<a name="ln909">    ras.x       = to_x;</a>
+<a name="ln910">    ras.y       = to_y;</a>
+<a name="ln911">  }</a>
+<a name="ln912"> </a>
+<a name="ln913"> </a>
+<a name="ln914">  static void</a>
+<a name="ln915">  gray_split_conic( FT_Vector*  base )</a>
+<a name="ln916">  {</a>
+<a name="ln917">    TPos  a, b;</a>
+<a name="ln918"> </a>
+<a name="ln919"> </a>
+<a name="ln920">    base[4].x = base[2].x;</a>
+<a name="ln921">    b = base[1].x;</a>
+<a name="ln922">    a = base[3].x = ( base[2].x + b ) / 2;</a>
+<a name="ln923">    b = base[1].x = ( base[0].x + b ) / 2;</a>
+<a name="ln924">    base[2].x = ( a + b ) / 2;</a>
+<a name="ln925"> </a>
+<a name="ln926">    base[4].y = base[2].y;</a>
+<a name="ln927">    b = base[1].y;</a>
+<a name="ln928">    a = base[3].y = ( base[2].y + b ) / 2;</a>
+<a name="ln929">    b = base[1].y = ( base[0].y + b ) / 2;</a>
+<a name="ln930">    base[2].y = ( a + b ) / 2;</a>
+<a name="ln931">  }</a>
+<a name="ln932"> </a>
+<a name="ln933"> </a>
+<a name="ln934">  static void</a>
+<a name="ln935">  gray_render_conic( RAS_ARG_ const FT_Vector*  control,</a>
+<a name="ln936">                              const FT_Vector*  to )</a>
+<a name="ln937">  {</a>
+<a name="ln938">    TPos        dx, dy;</a>
+<a name="ln939">    TPos        min, max, y;</a>
+<a name="ln940">    int         top, level;</a>
+<a name="ln941">    int*        levels;</a>
+<a name="ln942">    FT_Vector*  arc;</a>
+<a name="ln943"> </a>
+<a name="ln944"> </a>
+<a name="ln945">    levels = ras.lev_stack;</a>
+<a name="ln946"> </a>
+<a name="ln947">    arc      = ras.bez_stack;</a>
+<a name="ln948">    arc[0].x = UPSCALE( to-&gt;x );</a>
+<a name="ln949">    arc[0].y = UPSCALE( to-&gt;y );</a>
+<a name="ln950">    arc[1].x = UPSCALE( control-&gt;x );</a>
+<a name="ln951">    arc[1].y = UPSCALE( control-&gt;y );</a>
+<a name="ln952">    arc[2].x = ras.x;</a>
+<a name="ln953">    arc[2].y = ras.y;</a>
+<a name="ln954">    top      = 0;</a>
+<a name="ln955"> </a>
+<a name="ln956">    dx = FT_ABS( arc[2].x + arc[0].x - 2 * arc[1].x );</a>
+<a name="ln957">    dy = FT_ABS( arc[2].y + arc[0].y - 2 * arc[1].y );</a>
+<a name="ln958">    if ( dx &lt; dy )</a>
+<a name="ln959">      dx = dy;</a>
+<a name="ln960"> </a>
+<a name="ln961">    if ( dx &lt; ONE_PIXEL / 4 )</a>
+<a name="ln962">      goto Draw;</a>
+<a name="ln963"> </a>
+<a name="ln964">    /* short-cut the arc that crosses the current band */</a>
+<a name="ln965">    min = max = arc[0].y;</a>
+<a name="ln966"> </a>
+<a name="ln967">    y = arc[1].y;</a>
+<a name="ln968">    if ( y &lt; min ) min = y;</a>
+<a name="ln969">    if ( y &gt; max ) max = y;</a>
+<a name="ln970"> </a>
+<a name="ln971">    y = arc[2].y;</a>
+<a name="ln972">    if ( y &lt; min ) min = y;</a>
+<a name="ln973">    if ( y &gt; max ) max = y;</a>
+<a name="ln974"> </a>
+<a name="ln975">    if ( TRUNC( min ) &gt;= ras.max_ey || TRUNC( max ) &lt; ras.min_ey )</a>
+<a name="ln976">      goto Draw;</a>
+<a name="ln977"> </a>
+<a name="ln978">    level = 0;</a>
+<a name="ln979">    do</a>
+<a name="ln980">    {</a>
+<a name="ln981">      dx &gt;&gt;= 2;</a>
+<a name="ln982">      level++;</a>
+<a name="ln983">    } while ( dx &gt; ONE_PIXEL / 4 );</a>
+<a name="ln984"> </a>
+<a name="ln985">    levels[0] = level;</a>
+<a name="ln986"> </a>
+<a name="ln987">    do</a>
+<a name="ln988">    {</a>
+<a name="ln989">      level = levels[top];</a>
+<a name="ln990">      if ( level &gt; 0 )</a>
+<a name="ln991">      {</a>
+<a name="ln992">        gray_split_conic( arc );</a>
+<a name="ln993">        arc += 2;</a>
+<a name="ln994">        top++;</a>
+<a name="ln995">        levels[top] = levels[top - 1] = level - 1;</a>
+<a name="ln996">        continue;</a>
+<a name="ln997">      }</a>
+<a name="ln998"> </a>
+<a name="ln999">    Draw:</a>
+<a name="ln1000">      gray_render_line( RAS_VAR_ arc[0].x, arc[0].y );</a>
+<a name="ln1001">      top--;</a>
+<a name="ln1002">      arc -= 2;</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    } while ( top &gt;= 0 );</a>
+<a name="ln1005">  }</a>
+<a name="ln1006"> </a>
+<a name="ln1007"> </a>
+<a name="ln1008">  static void</a>
+<a name="ln1009">  gray_split_cubic( FT_Vector*  base )</a>
+<a name="ln1010">  {</a>
+<a name="ln1011">    TPos  a, b, c, d;</a>
+<a name="ln1012"> </a>
+<a name="ln1013"> </a>
+<a name="ln1014">    base[6].x = base[3].x;</a>
+<a name="ln1015">    c = base[1].x;</a>
+<a name="ln1016">    d = base[2].x;</a>
+<a name="ln1017">    base[1].x = a = ( base[0].x + c ) / 2;</a>
+<a name="ln1018">    base[5].x = b = ( base[3].x + d ) / 2;</a>
+<a name="ln1019">    c = ( c + d ) / 2;</a>
+<a name="ln1020">    base[2].x = a = ( a + c ) / 2;</a>
+<a name="ln1021">    base[4].x = b = ( b + c ) / 2;</a>
+<a name="ln1022">    base[3].x = ( a + b ) / 2;</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    base[6].y = base[3].y;</a>
+<a name="ln1025">    c = base[1].y;</a>
+<a name="ln1026">    d = base[2].y;</a>
+<a name="ln1027">    base[1].y = a = ( base[0].y + c ) / 2;</a>
+<a name="ln1028">    base[5].y = b = ( base[3].y + d ) / 2;</a>
+<a name="ln1029">    c = ( c + d ) / 2;</a>
+<a name="ln1030">    base[2].y = a = ( a + c ) / 2;</a>
+<a name="ln1031">    base[4].y = b = ( b + c ) / 2;</a>
+<a name="ln1032">    base[3].y = ( a + b ) / 2;</a>
+<a name="ln1033">  }</a>
+<a name="ln1034"> </a>
+<a name="ln1035"> </a>
+<a name="ln1036">  static void</a>
+<a name="ln1037">  gray_render_cubic( RAS_ARG_ const FT_Vector*  control1,</a>
+<a name="ln1038">                              const FT_Vector*  control2,</a>
+<a name="ln1039">                              const FT_Vector*  to )</a>
+<a name="ln1040">  {</a>
+<a name="ln1041">    FT_Vector*  arc;</a>
+<a name="ln1042">    TPos        min, max, y;</a>
+<a name="ln1043"> </a>
+<a name="ln1044"> </a>
+<a name="ln1045">    arc      = ras.bez_stack;</a>
+<a name="ln1046">    arc[0].x = UPSCALE( to-&gt;x );</a>
+<a name="ln1047">    arc[0].y = UPSCALE( to-&gt;y );</a>
+<a name="ln1048">    arc[1].x = UPSCALE( control2-&gt;x );</a>
+<a name="ln1049">    arc[1].y = UPSCALE( control2-&gt;y );</a>
+<a name="ln1050">    arc[2].x = UPSCALE( control1-&gt;x );</a>
+<a name="ln1051">    arc[2].y = UPSCALE( control1-&gt;y );</a>
+<a name="ln1052">    arc[3].x = ras.x;</a>
+<a name="ln1053">    arc[3].y = ras.y;</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    /* Short-cut the arc that crosses the current band. */</a>
+<a name="ln1056">    min = max = arc[0].y;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    y = arc[1].y;</a>
+<a name="ln1059">    if ( y &lt; min )</a>
+<a name="ln1060">      min = y;</a>
+<a name="ln1061">    if ( y &gt; max )</a>
+<a name="ln1062">      max = y;</a>
+<a name="ln1063"> </a>
+<a name="ln1064">    y = arc[2].y;</a>
+<a name="ln1065">    if ( y &lt; min )</a>
+<a name="ln1066">      min = y;</a>
+<a name="ln1067">    if ( y &gt; max )</a>
+<a name="ln1068">      max = y;</a>
+<a name="ln1069"> </a>
+<a name="ln1070">    y = arc[3].y;</a>
+<a name="ln1071">    if ( y &lt; min )</a>
+<a name="ln1072">      min = y;</a>
+<a name="ln1073">    if ( y &gt; max )</a>
+<a name="ln1074">      max = y;</a>
+<a name="ln1075"> </a>
+<a name="ln1076">    if ( TRUNC( min ) &gt;= ras.max_ey || TRUNC( max ) &lt; ras.min_ey )</a>
+<a name="ln1077">      goto Draw;</a>
+<a name="ln1078"> </a>
+<a name="ln1079">    for (;;)</a>
+<a name="ln1080">    {</a>
+<a name="ln1081">      /* Decide whether to split or draw. See `Rapid Termination          */</a>
+<a name="ln1082">      /* Evaluation for Recursive Subdivision of Bezier Curves' by Thomas */</a>
+<a name="ln1083">      /* F. Hain, at                                                      */</a>
+<a name="ln1084">      /* http://www.cis.southalabama.edu/~hain/general/Publications/Bezier/Camera-ready%20CISST02%202.pdf */</a>
+<a name="ln1085"> </a>
+<a name="ln1086">      {</a>
+<a name="ln1087">        TPos  dx, dy, dx_, dy_;</a>
+<a name="ln1088">        TPos  dx1, dy1, dx2, dy2;</a>
+<a name="ln1089">        TPos  L, s, s_limit;</a>
+<a name="ln1090"> </a>
+<a name="ln1091"> </a>
+<a name="ln1092">        /* dx and dy are x and y components of the P0-P3 chord vector. */</a>
+<a name="ln1093">        dx = dx_ = arc[3].x - arc[0].x;</a>
+<a name="ln1094">        dy = dy_ = arc[3].y - arc[0].y;</a>
+<a name="ln1095"> </a>
+<a name="ln1096">        L = FT_HYPOT( dx_, dy_ );</a>
+<a name="ln1097"> </a>
+<a name="ln1098">        /* Avoid possible arithmetic overflow below by splitting. */</a>
+<a name="ln1099">        if ( L &gt; 32767 )</a>
+<a name="ln1100">          goto Split;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">        /* Max deviation may be as much as (s/L) * 3/4 (if Hain's v = 1). */</a>
+<a name="ln1103">        s_limit = L * (TPos)( ONE_PIXEL / 6 );</a>
+<a name="ln1104"> </a>
+<a name="ln1105">        /* s is L * the perpendicular distance from P1 to the line P0-P3. */</a>
+<a name="ln1106">        dx1 = arc[1].x - arc[0].x;</a>
+<a name="ln1107">        dy1 = arc[1].y - arc[0].y;</a>
+<a name="ln1108">        s = FT_ABS( dy * dx1 - dx * dy1 );</a>
+<a name="ln1109"> </a>
+<a name="ln1110">        if ( s &gt; s_limit )</a>
+<a name="ln1111">          goto Split;</a>
+<a name="ln1112"> </a>
+<a name="ln1113">        /* s is L * the perpendicular distance from P2 to the line P0-P3. */</a>
+<a name="ln1114">        dx2 = arc[2].x - arc[0].x;</a>
+<a name="ln1115">        dy2 = arc[2].y - arc[0].y;</a>
+<a name="ln1116">        s = FT_ABS( dy * dx2 - dx * dy2 );</a>
+<a name="ln1117"> </a>
+<a name="ln1118">        if ( s &gt; s_limit )</a>
+<a name="ln1119">          goto Split;</a>
+<a name="ln1120"> </a>
+<a name="ln1121">        /* Split super curvy segments where the off points are so far</a>
+<a name="ln1122">           from the chord that the angles P0-P1-P3 or P0-P2-P3 become</a>
+<a name="ln1123">           acute as detected by appropriate dot products. */</a>
+<a name="ln1124">        if ( dx1 * ( dx1 - dx ) + dy1 * ( dy1 - dy ) &gt; 0 ||</a>
+<a name="ln1125">             dx2 * ( dx2 - dx ) + dy2 * ( dy2 - dy ) &gt; 0 )</a>
+<a name="ln1126">          goto Split;</a>
+<a name="ln1127"> </a>
+<a name="ln1128">        /* No reason to split. */</a>
+<a name="ln1129">        goto Draw;</a>
+<a name="ln1130">      }</a>
+<a name="ln1131"> </a>
+<a name="ln1132">    Split:</a>
+<a name="ln1133">      gray_split_cubic( arc );</a>
+<a name="ln1134">      arc += 3;</a>
+<a name="ln1135">      continue;</a>
+<a name="ln1136"> </a>
+<a name="ln1137">    Draw:</a>
+<a name="ln1138">      gray_render_line( RAS_VAR_ arc[0].x, arc[0].y );</a>
+<a name="ln1139"> </a>
+<a name="ln1140">      if ( arc == ras.bez_stack )</a>
+<a name="ln1141">        return;</a>
+<a name="ln1142"> </a>
+<a name="ln1143">      arc -= 3;</a>
+<a name="ln1144">    }</a>
+<a name="ln1145">  }</a>
+<a name="ln1146"> </a>
+<a name="ln1147"> </a>
+<a name="ln1148">  static int</a>
+<a name="ln1149">  gray_move_to( const FT_Vector*  to,</a>
+<a name="ln1150">                gray_PWorker      worker )</a>
+<a name="ln1151">  {</a>
+<a name="ln1152">    TPos  x, y;</a>
+<a name="ln1153"> </a>
+<a name="ln1154"> </a>
+<a name="ln1155">    /* record current cell, if any */</a>
+<a name="ln1156">    if ( !ras.invalid )</a>
+<a name="ln1157">      gray_record_cell( RAS_VAR );</a>
+<a name="ln1158"> </a>
+<a name="ln1159">    /* start to a new position */</a>
+<a name="ln1160">    x = UPSCALE( to-&gt;x );</a>
+<a name="ln1161">    y = UPSCALE( to-&gt;y );</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    gray_start_cell( RAS_VAR_ TRUNC( x ), TRUNC( y ) );</a>
+<a name="ln1164"> </a>
+<a name="ln1165">    worker-&gt;x = x;</a>
+<a name="ln1166">    worker-&gt;y = y;</a>
+<a name="ln1167">    return 0;</a>
+<a name="ln1168">  }</a>
+<a name="ln1169"> </a>
+<a name="ln1170"> </a>
+<a name="ln1171">  static int</a>
+<a name="ln1172">  gray_line_to( const FT_Vector*  to,</a>
+<a name="ln1173">                gray_PWorker      worker )</a>
+<a name="ln1174">  {</a>
+<a name="ln1175">    gray_render_line( RAS_VAR_ UPSCALE( to-&gt;x ), UPSCALE( to-&gt;y ) );</a>
+<a name="ln1176">    return 0;</a>
+<a name="ln1177">  }</a>
+<a name="ln1178"> </a>
+<a name="ln1179"> </a>
+<a name="ln1180">  static int</a>
+<a name="ln1181">  gray_conic_to( const FT_Vector*  control,</a>
+<a name="ln1182">                 const FT_Vector*  to,</a>
+<a name="ln1183">                 gray_PWorker      worker )</a>
+<a name="ln1184">  {</a>
+<a name="ln1185">    gray_render_conic( RAS_VAR_ control, to );</a>
+<a name="ln1186">    return 0;</a>
+<a name="ln1187">  }</a>
+<a name="ln1188"> </a>
+<a name="ln1189"> </a>
+<a name="ln1190">  static int</a>
+<a name="ln1191">  gray_cubic_to( const FT_Vector*  control1,</a>
+<a name="ln1192">                 const FT_Vector*  control2,</a>
+<a name="ln1193">                 const FT_Vector*  to,</a>
+<a name="ln1194">                 gray_PWorker      worker )</a>
+<a name="ln1195">  {</a>
+<a name="ln1196">    gray_render_cubic( RAS_VAR_ control1, control2, to );</a>
+<a name="ln1197">    return 0;</a>
+<a name="ln1198">  }</a>
+<a name="ln1199"> </a>
+<a name="ln1200"> </a>
+<a name="ln1201">  static void</a>
+<a name="ln1202">  gray_render_span( int             y,</a>
+<a name="ln1203">                    int             count,</a>
+<a name="ln1204">                    const FT_Span*  spans,</a>
+<a name="ln1205">                    gray_PWorker    worker )</a>
+<a name="ln1206">  {</a>
+<a name="ln1207">    unsigned char*  p;</a>
+<a name="ln1208">    FT_Bitmap*      map = &amp;worker-&gt;target;</a>
+<a name="ln1209"> </a>
+<a name="ln1210"> </a>
+<a name="ln1211">    /* first of all, compute the scanline offset */</a>
+<a name="ln1212">    p = (unsigned char*)map-&gt;buffer - y * map-&gt;pitch;</a>
+<a name="ln1213">    if ( map-&gt;pitch &gt;= 0 )</a>
+<a name="ln1214">      p += ( map-&gt;rows - 1 ) * (unsigned int)map-&gt;pitch;</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    for ( ; count &gt; 0; count--, spans++ )</a>
+<a name="ln1217">    {</a>
+<a name="ln1218">      unsigned char  coverage = spans-&gt;coverage;</a>
+<a name="ln1219"> </a>
+<a name="ln1220"> </a>
+<a name="ln1221">      if ( coverage )</a>
+<a name="ln1222">      {</a>
+<a name="ln1223">        /* For small-spans it is faster to do it by ourselves than</a>
+<a name="ln1224">         * calling `memset'.  This is mainly due to the cost of the</a>
+<a name="ln1225">         * function call.</a>
+<a name="ln1226">         */</a>
+<a name="ln1227">        if ( spans-&gt;len &gt;= 8 )</a>
+<a name="ln1228">          FT_MEM_SET( p + spans-&gt;x, (unsigned char)coverage, spans-&gt;len );</a>
+<a name="ln1229">        else</a>
+<a name="ln1230">        {</a>
+<a name="ln1231">          unsigned char*  q = p + spans-&gt;x;</a>
+<a name="ln1232"> </a>
+<a name="ln1233"> </a>
+<a name="ln1234">          switch ( spans-&gt;len )</a>
+<a name="ln1235">          {</a>
+<a name="ln1236">          case 7: *q++ = (unsigned char)coverage;</a>
+<a name="ln1237">          case 6: *q++ = (unsigned char)coverage;</a>
+<a name="ln1238">          case 5: *q++ = (unsigned char)coverage;</a>
+<a name="ln1239">          case 4: *q++ = (unsigned char)coverage;</a>
+<a name="ln1240">          case 3: *q++ = (unsigned char)coverage;</a>
+<a name="ln1241">          case 2: *q++ = (unsigned char)coverage;</a>
+<a name="ln1242">          case 1: *q   = (unsigned char)coverage;</a>
+<a name="ln1243">          default:</a>
+<a name="ln1244">            ;</a>
+<a name="ln1245">          }</a>
+<a name="ln1246">        }</a>
+<a name="ln1247">      }</a>
+<a name="ln1248">    }</a>
+<a name="ln1249">  }</a>
+<a name="ln1250"> </a>
+<a name="ln1251"> </a>
+<a name="ln1252">  static void</a>
+<a name="ln1253">  gray_hline( RAS_ARG_ TCoord  x,</a>
+<a name="ln1254">                       TCoord  y,</a>
+<a name="ln1255">                       TPos    area,</a>
+<a name="ln1256">                       TCoord  acount )</a>
+<a name="ln1257">  {</a>
+<a name="ln1258">    int  coverage;</a>
+<a name="ln1259"> </a>
+<a name="ln1260"> </a>
+<a name="ln1261">    /* compute the coverage line's coverage, depending on the    */</a>
+<a name="ln1262">    /* outline fill rule                                         */</a>
+<a name="ln1263">    /*                                                           */</a>
+<a name="ln1264">    /* the coverage percentage is area/(PIXEL_BITS*PIXEL_BITS*2) */</a>
+<a name="ln1265">    /*                                                           */</a>
+<a name="ln1266">    coverage = (int)( area &gt;&gt; ( PIXEL_BITS * 2 + 1 - 8 ) );</a>
+<a name="ln1267">                                                    /* use range 0..256 */</a>
+<a name="ln1268">    if ( coverage &lt; 0 )</a>
+<a name="ln1269">      coverage = -coverage;</a>
+<a name="ln1270"> </a>
+<a name="ln1271">    if ( ras.outline.flags &amp; FT_OUTLINE_EVEN_ODD_FILL )</a>
+<a name="ln1272">    {</a>
+<a name="ln1273">      coverage &amp;= 511;</a>
+<a name="ln1274"> </a>
+<a name="ln1275">      if ( coverage &gt; 256 )</a>
+<a name="ln1276">        coverage = 512 - coverage;</a>
+<a name="ln1277">      else if ( coverage == 256 )</a>
+<a name="ln1278">        coverage = 255;</a>
+<a name="ln1279">    }</a>
+<a name="ln1280">    else</a>
+<a name="ln1281">    {</a>
+<a name="ln1282">      /* normal non-zero winding rule */</a>
+<a name="ln1283">      if ( coverage &gt;= 256 )</a>
+<a name="ln1284">        coverage = 255;</a>
+<a name="ln1285">    }</a>
+<a name="ln1286"> </a>
+<a name="ln1287">    y += (TCoord)ras.min_ey;</a>
+<a name="ln1288">    x += (TCoord)ras.min_ex;</a>
+<a name="ln1289"> </a>
+<a name="ln1290">    /* FT_Span.x is a 16-bit short, so limit our coordinates appropriately */</a>
+<a name="ln1291">    if ( x &gt;= 32767 )</a>
+<a name="ln1292">      x = 32767;</a>
+<a name="ln1293"> </a>
+<a name="ln1294">    /* FT_Span.y is an integer, so limit our coordinates appropriately */</a>
+<a name="ln1295">    if ( y &gt;= FT_INT_MAX )</a>
+<a name="ln1296">      y = FT_INT_MAX;</a>
+<a name="ln1297"> </a>
+<a name="ln1298">    if ( coverage )</a>
+<a name="ln1299">    {</a>
+<a name="ln1300">      FT_Span*  span;</a>
+<a name="ln1301">      int       count;</a>
+<a name="ln1302"> </a>
+<a name="ln1303"> </a>
+<a name="ln1304">      /* see whether we can add this span to the current list */</a>
+<a name="ln1305">      count = ras.num_gray_spans;</a>
+<a name="ln1306">      span  = ras.gray_spans + count - 1;</a>
+<a name="ln1307">      if ( count &gt; 0                          &amp;&amp;</a>
+<a name="ln1308">           ras.span_y == y                    &amp;&amp;</a>
+<a name="ln1309">           (int)span-&gt;x + span-&gt;len == (int)x &amp;&amp;</a>
+<a name="ln1310">           span-&gt;coverage == coverage         )</a>
+<a name="ln1311">      {</a>
+<a name="ln1312">        span-&gt;len = (unsigned short)( span-&gt;len + acount );</a>
+<a name="ln1313">        return;</a>
+<a name="ln1314">      }</a>
+<a name="ln1315"> </a>
+<a name="ln1316">      if ( ras.span_y != y || count &gt;= FT_MAX_GRAY_SPANS )</a>
+<a name="ln1317">      {</a>
+<a name="ln1318">        if ( ras.render_span &amp;&amp; count &gt; 0 )</a>
+<a name="ln1319">          ras.render_span( ras.span_y, count, ras.gray_spans,</a>
+<a name="ln1320">                           ras.render_span_data );</a>
+<a name="ln1321"> </a>
+<a name="ln1322">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1323"> </a>
+<a name="ln1324">        if ( count &gt; 0 )</a>
+<a name="ln1325">        {</a>
+<a name="ln1326">          int  n;</a>
+<a name="ln1327"> </a>
+<a name="ln1328"> </a>
+<a name="ln1329">          FT_TRACE7(( &quot;y = %3d &quot;, ras.span_y ));</a>
+<a name="ln1330">          span = ras.gray_spans;</a>
+<a name="ln1331">          for ( n = 0; n &lt; count; n++, span++ )</a>
+<a name="ln1332">            FT_TRACE7(( &quot;[%d..%d]:%02x &quot;,</a>
+<a name="ln1333">                        span-&gt;x, span-&gt;x + span-&gt;len - 1, span-&gt;coverage ));</a>
+<a name="ln1334">          FT_TRACE7(( &quot;\n&quot; ));</a>
+<a name="ln1335">        }</a>
+<a name="ln1336"> </a>
+<a name="ln1337">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln1338"> </a>
+<a name="ln1339">        ras.num_gray_spans = 0;</a>
+<a name="ln1340">        ras.span_y         = (int)y;</a>
+<a name="ln1341"> </a>
+<a name="ln1342">        span  = ras.gray_spans;</a>
+<a name="ln1343">      }</a>
+<a name="ln1344">      else</a>
+<a name="ln1345">        span++;</a>
+<a name="ln1346"> </a>
+<a name="ln1347">      /* add a gray span to the current list */</a>
+<a name="ln1348">      span-&gt;x        = (short)x;</a>
+<a name="ln1349">      span-&gt;len      = (unsigned short)acount;</a>
+<a name="ln1350">      span-&gt;coverage = (unsigned char)coverage;</a>
+<a name="ln1351"> </a>
+<a name="ln1352">      ras.num_gray_spans++;</a>
+<a name="ln1353">    }</a>
+<a name="ln1354">  }</a>
+<a name="ln1355"> </a>
+<a name="ln1356"> </a>
+<a name="ln1357">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1358"> </a>
+<a name="ln1359">  /* to be called while in the debugger --                                */</a>
+<a name="ln1360">  /* this function causes a compiler warning since it is unused otherwise */</a>
+<a name="ln1361">  static void</a>
+<a name="ln1362">  gray_dump_cells( RAS_ARG )</a>
+<a name="ln1363">  {</a>
+<a name="ln1364">    int  yindex;</a>
+<a name="ln1365"> </a>
+<a name="ln1366"> </a>
+<a name="ln1367">    for ( yindex = 0; yindex &lt; ras.ycount; yindex++ )</a>
+<a name="ln1368">    {</a>
+<a name="ln1369">      PCell  cell;</a>
+<a name="ln1370"> </a>
+<a name="ln1371"> </a>
+<a name="ln1372">      printf( &quot;%3d:&quot;, yindex );</a>
+<a name="ln1373"> </a>
+<a name="ln1374">      for ( cell = ras.ycells[yindex]; cell != NULL; cell = cell-&gt;next )</a>
+<a name="ln1375">        printf( &quot; (%3ld, c:%4ld, a:%6d)&quot;, cell-&gt;x, cell-&gt;cover, cell-&gt;area );</a>
+<a name="ln1376">      printf( &quot;\n&quot; );</a>
+<a name="ln1377">    }</a>
+<a name="ln1378">  }</a>
+<a name="ln1379"> </a>
+<a name="ln1380">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln1381"> </a>
+<a name="ln1382"> </a>
+<a name="ln1383">  static void</a>
+<a name="ln1384">  gray_sweep( RAS_ARG_ const FT_Bitmap*  target )</a>
+<a name="ln1385">  {</a>
+<a name="ln1386">    int  yindex;</a>
+<a name="ln1387"> </a>
+<a name="ln1388">    FT_UNUSED( target );</a>
+<a name="ln1389"> </a>
+<a name="ln1390"> </a>
+<a name="ln1391">    if ( ras.num_cells == 0 )</a>
+<a name="ln1392">      return;</a>
+<a name="ln1393"> </a>
+<a name="ln1394">    ras.num_gray_spans = 0;</a>
+<a name="ln1395"> </a>
+<a name="ln1396">    FT_TRACE7(( &quot;gray_sweep: start\n&quot; ));</a>
+<a name="ln1397"> </a>
+<a name="ln1398">    for ( yindex = 0; yindex &lt; ras.ycount; yindex++ )</a>
+<a name="ln1399">    {</a>
+<a name="ln1400">      PCell   cell  = ras.ycells[yindex];</a>
+<a name="ln1401">      TCoord  cover = 0;</a>
+<a name="ln1402">      TCoord  x     = 0;</a>
+<a name="ln1403"> </a>
+<a name="ln1404"> </a>
+<a name="ln1405">      for ( ; cell != NULL; cell = cell-&gt;next )</a>
+<a name="ln1406">      {</a>
+<a name="ln1407">        TPos  area;</a>
+<a name="ln1408"> </a>
+<a name="ln1409"> </a>
+<a name="ln1410">        if ( cell-&gt;x &gt; x &amp;&amp; cover != 0 )</a>
+<a name="ln1411">          gray_hline( RAS_VAR_ x, yindex, cover * ( ONE_PIXEL * 2 ),</a>
+<a name="ln1412">                      cell-&gt;x - x );</a>
+<a name="ln1413"> </a>
+<a name="ln1414">        cover += cell-&gt;cover;</a>
+<a name="ln1415">        area   = cover * ( ONE_PIXEL * 2 ) - cell-&gt;area;</a>
+<a name="ln1416"> </a>
+<a name="ln1417">        if ( area != 0 &amp;&amp; cell-&gt;x &gt;= 0 )</a>
+<a name="ln1418">          gray_hline( RAS_VAR_ cell-&gt;x, yindex, area, 1 );</a>
+<a name="ln1419"> </a>
+<a name="ln1420">        x = cell-&gt;x + 1;</a>
+<a name="ln1421">      }</a>
+<a name="ln1422"> </a>
+<a name="ln1423">      if ( cover != 0 )</a>
+<a name="ln1424">        gray_hline( RAS_VAR_ x, yindex, cover * ( ONE_PIXEL * 2 ),</a>
+<a name="ln1425">                    ras.count_ex - x );</a>
+<a name="ln1426">    }</a>
+<a name="ln1427"> </a>
+<a name="ln1428">    if ( ras.render_span &amp;&amp; ras.num_gray_spans &gt; 0 )</a>
+<a name="ln1429">      ras.render_span( ras.span_y, ras.num_gray_spans,</a>
+<a name="ln1430">                       ras.gray_spans, ras.render_span_data );</a>
+<a name="ln1431"> </a>
+<a name="ln1432">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1433"> </a>
+<a name="ln1434">    if ( ras.num_gray_spans &gt; 0 )</a>
+<a name="ln1435">    {</a>
+<a name="ln1436">      FT_Span*  span;</a>
+<a name="ln1437">      int       n;</a>
+<a name="ln1438"> </a>
+<a name="ln1439"> </a>
+<a name="ln1440">      FT_TRACE7(( &quot;y = %3d &quot;, ras.span_y ));</a>
+<a name="ln1441">      span = ras.gray_spans;</a>
+<a name="ln1442">      for ( n = 0; n &lt; ras.num_gray_spans; n++, span++ )</a>
+<a name="ln1443">        FT_TRACE7(( &quot;[%d..%d]:%02x &quot;,</a>
+<a name="ln1444">                    span-&gt;x, span-&gt;x + span-&gt;len - 1, span-&gt;coverage ));</a>
+<a name="ln1445">      FT_TRACE7(( &quot;\n&quot; ));</a>
+<a name="ln1446">    }</a>
+<a name="ln1447"> </a>
+<a name="ln1448">    FT_TRACE7(( &quot;gray_sweep: end\n&quot; ));</a>
+<a name="ln1449"> </a>
+<a name="ln1450">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln1451"> </a>
+<a name="ln1452">  }</a>
+<a name="ln1453"> </a>
+<a name="ln1454"> </a>
+<a name="ln1455">#ifdef _STANDALONE_</a>
+<a name="ln1456"> </a>
+<a name="ln1457">  /*************************************************************************/</a>
+<a name="ln1458">  /*                                                                       */</a>
+<a name="ln1459">  /*  The following function should only compile in stand-alone mode,      */</a>
+<a name="ln1460">  /*  i.e., when building this component without the rest of FreeType.     */</a>
+<a name="ln1461">  /*                                                                       */</a>
+<a name="ln1462">  /*************************************************************************/</a>
+<a name="ln1463"> </a>
+<a name="ln1464">  /*************************************************************************/</a>
+<a name="ln1465">  /*                                                                       */</a>
+<a name="ln1466">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln1467">  /*    FT_Outline_Decompose                                               */</a>
+<a name="ln1468">  /*                                                                       */</a>
+<a name="ln1469">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln1470">  /*    Walk over an outline's structure to decompose it into individual   */</a>
+<a name="ln1471">  /*    segments and Bézier arcs.  This function is also able to emit      */</a>
+<a name="ln1472">  /*    `move to' and `close to' operations to indicate the start and end  */</a>
+<a name="ln1473">  /*    of new contours in the outline.                                    */</a>
+<a name="ln1474">  /*                                                                       */</a>
+<a name="ln1475">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln1476">  /*    outline        :: A pointer to the source target.                  */</a>
+<a name="ln1477">  /*                                                                       */</a>
+<a name="ln1478">  /*    func_interface :: A table of `emitters', i.e., function pointers   */</a>
+<a name="ln1479">  /*                      called during decomposition to indicate path     */</a>
+<a name="ln1480">  /*                      operations.                                      */</a>
+<a name="ln1481">  /*                                                                       */</a>
+<a name="ln1482">  /* &lt;InOut&gt;                                                               */</a>
+<a name="ln1483">  /*    user           :: A typeless pointer which is passed to each       */</a>
+<a name="ln1484">  /*                      emitter during the decomposition.  It can be     */</a>
+<a name="ln1485">  /*                      used to store the state during the               */</a>
+<a name="ln1486">  /*                      decomposition.                                   */</a>
+<a name="ln1487">  /*                                                                       */</a>
+<a name="ln1488">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln1489">  /*    Error code.  0 means success.                                      */</a>
+<a name="ln1490">  /*                                                                       */</a>
+<a name="ln1491">  static int</a>
+<a name="ln1492">  FT_Outline_Decompose( const FT_Outline*        outline,</a>
+<a name="ln1493">                        const FT_Outline_Funcs*  func_interface,</a>
+<a name="ln1494">                        void*                    user )</a>
+<a name="ln1495">  {</a>
+<a name="ln1496">#undef SCALED</a>
+<a name="ln1497">#define SCALED( x )  ( ( (x) &lt;&lt; shift ) - delta )</a>
+<a name="ln1498"> </a>
+<a name="ln1499">    FT_Vector   v_last;</a>
+<a name="ln1500">    FT_Vector   v_control;</a>
+<a name="ln1501">    FT_Vector   v_start;</a>
+<a name="ln1502"> </a>
+<a name="ln1503">    FT_Vector*  point;</a>
+<a name="ln1504">    FT_Vector*  limit;</a>
+<a name="ln1505">    char*       tags;</a>
+<a name="ln1506"> </a>
+<a name="ln1507">    int         error;</a>
+<a name="ln1508"> </a>
+<a name="ln1509">    int   n;         /* index of contour in outline     */</a>
+<a name="ln1510">    int   first;     /* index of first point in contour */</a>
+<a name="ln1511">    char  tag;       /* current point's state           */</a>
+<a name="ln1512"> </a>
+<a name="ln1513">    int   shift;</a>
+<a name="ln1514">    TPos  delta;</a>
+<a name="ln1515"> </a>
+<a name="ln1516"> </a>
+<a name="ln1517">    if ( !outline )</a>
+<a name="ln1518">      return FT_THROW( Invalid_Outline );</a>
+<a name="ln1519"> </a>
+<a name="ln1520">    if ( !func_interface )</a>
+<a name="ln1521">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1522"> </a>
+<a name="ln1523">    shift = func_interface-&gt;shift;</a>
+<a name="ln1524">    delta = func_interface-&gt;delta;</a>
+<a name="ln1525">    first = 0;</a>
+<a name="ln1526"> </a>
+<a name="ln1527">    for ( n = 0; n &lt; outline-&gt;n_contours; n++ )</a>
+<a name="ln1528">    {</a>
+<a name="ln1529">      int  last;  /* index of last point in contour */</a>
+<a name="ln1530"> </a>
+<a name="ln1531"> </a>
+<a name="ln1532">      FT_TRACE5(( &quot;FT_Outline_Decompose: Outline %d\n&quot;, n ));</a>
+<a name="ln1533"> </a>
+<a name="ln1534">      last  = outline-&gt;contours[n];</a>
+<a name="ln1535">      if ( last &lt; 0 )</a>
+<a name="ln1536">        goto Invalid_Outline;</a>
+<a name="ln1537">      limit = outline-&gt;points + last;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">      v_start   = outline-&gt;points[first];</a>
+<a name="ln1540">      v_start.x = SCALED( v_start.x );</a>
+<a name="ln1541">      v_start.y = SCALED( v_start.y );</a>
+<a name="ln1542"> </a>
+<a name="ln1543">      v_last   = outline-&gt;points[last];</a>
+<a name="ln1544">      v_last.x = SCALED( v_last.x );</a>
+<a name="ln1545">      v_last.y = SCALED( v_last.y );</a>
+<a name="ln1546"> </a>
+<a name="ln1547">      v_control = v_start;</a>
+<a name="ln1548"> </a>
+<a name="ln1549">      point = outline-&gt;points + first;</a>
+<a name="ln1550">      tags  = outline-&gt;tags   + first;</a>
+<a name="ln1551">      tag   = FT_CURVE_TAG( tags[0] );</a>
+<a name="ln1552"> </a>
+<a name="ln1553">      /* A contour cannot start with a cubic control point! */</a>
+<a name="ln1554">      if ( tag == FT_CURVE_TAG_CUBIC )</a>
+<a name="ln1555">        goto Invalid_Outline;</a>
+<a name="ln1556"> </a>
+<a name="ln1557">      /* check first point to determine origin */</a>
+<a name="ln1558">      if ( tag == FT_CURVE_TAG_CONIC )</a>
+<a name="ln1559">      {</a>
+<a name="ln1560">        /* first point is conic control.  Yes, this happens. */</a>
+<a name="ln1561">        if ( FT_CURVE_TAG( outline-&gt;tags[last] ) == FT_CURVE_TAG_ON )</a>
+<a name="ln1562">        {</a>
+<a name="ln1563">          /* start at last point if it is on the curve */</a>
+<a name="ln1564">          v_start = v_last;</a>
+<a name="ln1565">          limit--;</a>
+<a name="ln1566">        }</a>
+<a name="ln1567">        else</a>
+<a name="ln1568">        {</a>
+<a name="ln1569">          /* if both first and last points are conic,         */</a>
+<a name="ln1570">          /* start at their middle and record its position    */</a>
+<a name="ln1571">          /* for closure                                      */</a>
+<a name="ln1572">          v_start.x = ( v_start.x + v_last.x ) / 2;</a>
+<a name="ln1573">          v_start.y = ( v_start.y + v_last.y ) / 2;</a>
+<a name="ln1574"> </a>
+<a name="ln1575">          v_last = v_start;</a>
+<a name="ln1576">        }</a>
+<a name="ln1577">        point--;</a>
+<a name="ln1578">        tags--;</a>
+<a name="ln1579">      }</a>
+<a name="ln1580"> </a>
+<a name="ln1581">      FT_TRACE5(( &quot;  move to (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1582">                  v_start.x / 64.0, v_start.y / 64.0 ));</a>
+<a name="ln1583">      error = func_interface-&gt;move_to( &amp;v_start, user );</a>
+<a name="ln1584">      if ( error )</a>
+<a name="ln1585">        goto Exit;</a>
+<a name="ln1586"> </a>
+<a name="ln1587">      while ( point &lt; limit )</a>
+<a name="ln1588">      {</a>
+<a name="ln1589">        point++;</a>
+<a name="ln1590">        tags++;</a>
+<a name="ln1591"> </a>
+<a name="ln1592">        tag = FT_CURVE_TAG( tags[0] );</a>
+<a name="ln1593">        switch ( tag )</a>
+<a name="ln1594">        {</a>
+<a name="ln1595">        case FT_CURVE_TAG_ON:  /* emit a single line_to */</a>
+<a name="ln1596">          {</a>
+<a name="ln1597">            FT_Vector  vec;</a>
+<a name="ln1598"> </a>
+<a name="ln1599"> </a>
+<a name="ln1600">            vec.x = SCALED( point-&gt;x );</a>
+<a name="ln1601">            vec.y = SCALED( point-&gt;y );</a>
+<a name="ln1602"> </a>
+<a name="ln1603">            FT_TRACE5(( &quot;  line to (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1604">                        vec.x / 64.0, vec.y / 64.0 ));</a>
+<a name="ln1605">            error = func_interface-&gt;line_to( &amp;vec, user );</a>
+<a name="ln1606">            if ( error )</a>
+<a name="ln1607">              goto Exit;</a>
+<a name="ln1608">            continue;</a>
+<a name="ln1609">          }</a>
+<a name="ln1610"> </a>
+<a name="ln1611">        case FT_CURVE_TAG_CONIC:  /* consume conic arcs */</a>
+<a name="ln1612">          v_control.x = SCALED( point-&gt;x );</a>
+<a name="ln1613">          v_control.y = SCALED( point-&gt;y );</a>
+<a name="ln1614"> </a>
+<a name="ln1615">        Do_Conic:</a>
+<a name="ln1616">          if ( point &lt; limit )</a>
+<a name="ln1617">          {</a>
+<a name="ln1618">            FT_Vector  vec;</a>
+<a name="ln1619">            FT_Vector  v_middle;</a>
+<a name="ln1620"> </a>
+<a name="ln1621"> </a>
+<a name="ln1622">            point++;</a>
+<a name="ln1623">            tags++;</a>
+<a name="ln1624">            tag = FT_CURVE_TAG( tags[0] );</a>
+<a name="ln1625"> </a>
+<a name="ln1626">            vec.x = SCALED( point-&gt;x );</a>
+<a name="ln1627">            vec.y = SCALED( point-&gt;y );</a>
+<a name="ln1628"> </a>
+<a name="ln1629">            if ( tag == FT_CURVE_TAG_ON )</a>
+<a name="ln1630">            {</a>
+<a name="ln1631">              FT_TRACE5(( &quot;  conic to (%.2f, %.2f)&quot;</a>
+<a name="ln1632">                          &quot; with control (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1633">                          vec.x / 64.0, vec.y / 64.0,</a>
+<a name="ln1634">                          v_control.x / 64.0, v_control.y / 64.0 ));</a>
+<a name="ln1635">              error = func_interface-&gt;conic_to( &amp;v_control, &amp;vec, user );</a>
+<a name="ln1636">              if ( error )</a>
+<a name="ln1637">                goto Exit;</a>
+<a name="ln1638">              continue;</a>
+<a name="ln1639">            }</a>
+<a name="ln1640"> </a>
+<a name="ln1641">            if ( tag != FT_CURVE_TAG_CONIC )</a>
+<a name="ln1642">              goto Invalid_Outline;</a>
+<a name="ln1643"> </a>
+<a name="ln1644">            v_middle.x = ( v_control.x + vec.x ) / 2;</a>
+<a name="ln1645">            v_middle.y = ( v_control.y + vec.y ) / 2;</a>
+<a name="ln1646"> </a>
+<a name="ln1647">            FT_TRACE5(( &quot;  conic to (%.2f, %.2f)&quot;</a>
+<a name="ln1648">                        &quot; with control (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1649">                        v_middle.x / 64.0, v_middle.y / 64.0,</a>
+<a name="ln1650">                        v_control.x / 64.0, v_control.y / 64.0 ));</a>
+<a name="ln1651">            error = func_interface-&gt;conic_to( &amp;v_control, &amp;v_middle, user );</a>
+<a name="ln1652">            if ( error )</a>
+<a name="ln1653">              goto Exit;</a>
+<a name="ln1654"> </a>
+<a name="ln1655">            v_control = vec;</a>
+<a name="ln1656">            goto Do_Conic;</a>
+<a name="ln1657">          }</a>
+<a name="ln1658"> </a>
+<a name="ln1659">          FT_TRACE5(( &quot;  conic to (%.2f, %.2f)&quot;</a>
+<a name="ln1660">                      &quot; with control (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1661">                      v_start.x / 64.0, v_start.y / 64.0,</a>
+<a name="ln1662">                      v_control.x / 64.0, v_control.y / 64.0 ));</a>
+<a name="ln1663">          error = func_interface-&gt;conic_to( &amp;v_control, &amp;v_start, user );</a>
+<a name="ln1664">          goto Close;</a>
+<a name="ln1665"> </a>
+<a name="ln1666">        default:  /* FT_CURVE_TAG_CUBIC */</a>
+<a name="ln1667">          {</a>
+<a name="ln1668">            FT_Vector  vec1, vec2;</a>
+<a name="ln1669"> </a>
+<a name="ln1670"> </a>
+<a name="ln1671">            if ( point + 1 &gt; limit                             ||</a>
+<a name="ln1672">                 FT_CURVE_TAG( tags[1] ) != FT_CURVE_TAG_CUBIC )</a>
+<a name="ln1673">              goto Invalid_Outline;</a>
+<a name="ln1674"> </a>
+<a name="ln1675">            point += 2;</a>
+<a name="ln1676">            tags  += 2;</a>
+<a name="ln1677"> </a>
+<a name="ln1678">            vec1.x = SCALED( point[-2].x );</a>
+<a name="ln1679">            vec1.y = SCALED( point[-2].y );</a>
+<a name="ln1680"> </a>
+<a name="ln1681">            vec2.x = SCALED( point[-1].x );</a>
+<a name="ln1682">            vec2.y = SCALED( point[-1].y );</a>
+<a name="ln1683"> </a>
+<a name="ln1684">            if ( point &lt;= limit )</a>
+<a name="ln1685">            {</a>
+<a name="ln1686">              FT_Vector  vec;</a>
+<a name="ln1687"> </a>
+<a name="ln1688"> </a>
+<a name="ln1689">              vec.x = SCALED( point-&gt;x );</a>
+<a name="ln1690">              vec.y = SCALED( point-&gt;y );</a>
+<a name="ln1691"> </a>
+<a name="ln1692">              FT_TRACE5(( &quot;  cubic to (%.2f, %.2f)&quot;</a>
+<a name="ln1693">                          &quot; with controls (%.2f, %.2f) and (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1694">                          vec.x / 64.0, vec.y / 64.0,</a>
+<a name="ln1695">                          vec1.x / 64.0, vec1.y / 64.0,</a>
+<a name="ln1696">                          vec2.x / 64.0, vec2.y / 64.0 ));</a>
+<a name="ln1697">              error = func_interface-&gt;cubic_to( &amp;vec1, &amp;vec2, &amp;vec, user );</a>
+<a name="ln1698">              if ( error )</a>
+<a name="ln1699">                goto Exit;</a>
+<a name="ln1700">              continue;</a>
+<a name="ln1701">            }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">            FT_TRACE5(( &quot;  cubic to (%.2f, %.2f)&quot;</a>
+<a name="ln1704">                        &quot; with controls (%.2f, %.2f) and (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1705">                        v_start.x / 64.0, v_start.y / 64.0,</a>
+<a name="ln1706">                        vec1.x / 64.0, vec1.y / 64.0,</a>
+<a name="ln1707">                        vec2.x / 64.0, vec2.y / 64.0 ));</a>
+<a name="ln1708">            error = func_interface-&gt;cubic_to( &amp;vec1, &amp;vec2, &amp;v_start, user );</a>
+<a name="ln1709">            goto Close;</a>
+<a name="ln1710">          }</a>
+<a name="ln1711">        }</a>
+<a name="ln1712">      }</a>
+<a name="ln1713"> </a>
+<a name="ln1714">      /* close the contour with a line segment */</a>
+<a name="ln1715">      FT_TRACE5(( &quot;  line to (%.2f, %.2f)\n&quot;,</a>
+<a name="ln1716">                  v_start.x / 64.0, v_start.y / 64.0 ));</a>
+<a name="ln1717">      error = func_interface-&gt;line_to( &amp;v_start, user );</a>
+<a name="ln1718"> </a>
+<a name="ln1719">   Close:</a>
+<a name="ln1720">      if ( error )</a>
+<a name="ln1721">        goto Exit;</a>
+<a name="ln1722"> </a>
+<a name="ln1723">      first = last + 1;</a>
+<a name="ln1724">    }</a>
+<a name="ln1725"> </a>
+<a name="ln1726">    FT_TRACE5(( &quot;FT_Outline_Decompose: Done\n&quot;, n ));</a>
+<a name="ln1727">    return 0;</a>
+<a name="ln1728"> </a>
+<a name="ln1729">  Exit:</a>
+<a name="ln1730">    FT_TRACE5(( &quot;FT_Outline_Decompose: Error %d\n&quot;, error ));</a>
+<a name="ln1731">    return error;</a>
+<a name="ln1732"> </a>
+<a name="ln1733">  Invalid_Outline:</a>
+<a name="ln1734">    return FT_THROW( Invalid_Outline );</a>
+<a name="ln1735">  }</a>
+<a name="ln1736"> </a>
+<a name="ln1737">#endif /* _STANDALONE_ */</a>
+<a name="ln1738"> </a>
+<a name="ln1739"> </a>
+<a name="ln1740">  typedef struct  gray_TBand_</a>
+<a name="ln1741">  {</a>
+<a name="ln1742">    TPos  min, max;</a>
+<a name="ln1743"> </a>
+<a name="ln1744">  } gray_TBand;</a>
+<a name="ln1745"> </a>
+<a name="ln1746"> </a>
+<a name="ln1747">  FT_DEFINE_OUTLINE_FUNCS(</a>
+<a name="ln1748">    func_interface,</a>
+<a name="ln1749"> </a>
+<a name="ln1750">    (FT_Outline_MoveTo_Func) gray_move_to,</a>
+<a name="ln1751">    (FT_Outline_LineTo_Func) gray_line_to,</a>
+<a name="ln1752">    (FT_Outline_ConicTo_Func)gray_conic_to,</a>
+<a name="ln1753">    (FT_Outline_CubicTo_Func)gray_cubic_to,</a>
+<a name="ln1754">    0,</a>
+<a name="ln1755">    0 )</a>
+<a name="ln1756"> </a>
+<a name="ln1757"> </a>
+<a name="ln1758">  static int</a>
+<a name="ln1759">  gray_convert_glyph_inner( RAS_ARG )</a>
+<a name="ln1760">  {</a>
+<a name="ln1761"> </a>
+<a name="ln1762">    volatile int  error = 0;</a>
+<a name="ln1763"> </a>
+<a name="ln1764">#ifdef FT_CONFIG_OPTION_PIC</a>
+<a name="ln1765">      FT_Outline_Funcs func_interface;</a>
+<a name="ln1766">      Init_Class_func_interface(&amp;func_interface);</a>
+<a name="ln1767">#endif</a>
+<a name="ln1768"> </a>
+<a name="ln1769">    if ( ft_setjmp( ras.jump_buffer ) == 0 )</a>
+<a name="ln1770">    {</a>
+<a name="ln1771">      error = FT_Outline_Decompose( &amp;ras.outline, &amp;func_interface, &amp;ras );</a>
+<a name="ln1772">      if ( !ras.invalid )</a>
+<a name="ln1773">        gray_record_cell( RAS_VAR );</a>
+<a name="ln1774">    }</a>
+<a name="ln1775">    else</a>
+<a name="ln1776">      error = FT_THROW( Memory_Overflow );</a>
+<a name="ln1777"> </a>
+<a name="ln1778">    return error;</a>
+<a name="ln1779">  }</a>
+<a name="ln1780"> </a>
+<a name="ln1781"> </a>
+<a name="ln1782">  static int</a>
+<a name="ln1783">  gray_convert_glyph( RAS_ARG )</a>
+<a name="ln1784">  {</a>
+<a name="ln1785">    gray_TBand            bands[40];</a>
+<a name="ln1786">    gray_TBand* volatile  band;</a>
+<a name="ln1787">    int volatile          n, num_bands;</a>
+<a name="ln1788">    TPos volatile         min, max, max_y;</a>
+<a name="ln1789">    FT_BBox*              clip;</a>
+<a name="ln1790"> </a>
+<a name="ln1791"> </a>
+<a name="ln1792">    /* Set up state in the raster object */</a>
+<a name="ln1793">    gray_compute_cbox( RAS_VAR );</a>
+<a name="ln1794"> </a>
+<a name="ln1795">    /* clip to target bitmap, exit if nothing to do */</a>
+<a name="ln1796">    clip = &amp;ras.clip_box;</a>
+<a name="ln1797"> </a>
+<a name="ln1798">    if ( ras.max_ex &lt;= clip-&gt;xMin || ras.min_ex &gt;= clip-&gt;xMax ||</a>
+<a name="ln1799">         ras.max_ey &lt;= clip-&gt;yMin || ras.min_ey &gt;= clip-&gt;yMax )</a>
+<a name="ln1800">      return 0;</a>
+<a name="ln1801"> </a>
+<a name="ln1802">    if ( ras.min_ex &lt; clip-&gt;xMin ) ras.min_ex = clip-&gt;xMin;</a>
+<a name="ln1803">    if ( ras.min_ey &lt; clip-&gt;yMin ) ras.min_ey = clip-&gt;yMin;</a>
+<a name="ln1804"> </a>
+<a name="ln1805">    if ( ras.max_ex &gt; clip-&gt;xMax ) ras.max_ex = clip-&gt;xMax;</a>
+<a name="ln1806">    if ( ras.max_ey &gt; clip-&gt;yMax ) ras.max_ey = clip-&gt;yMax;</a>
+<a name="ln1807"> </a>
+<a name="ln1808">    ras.count_ex = ras.max_ex - ras.min_ex;</a>
+<a name="ln1809">    ras.count_ey = ras.max_ey - ras.min_ey;</a>
+<a name="ln1810"> </a>
+<a name="ln1811">    /* set up vertical bands */</a>
+<a name="ln1812">    num_bands = (int)( ( ras.max_ey - ras.min_ey ) / ras.band_size );</a>
+<a name="ln1813">    if ( num_bands == 0 )</a>
+<a name="ln1814">      num_bands = 1;</a>
+<a name="ln1815">    if ( num_bands &gt;= 39 )</a>
+<a name="ln1816">      num_bands = 39;</a>
+<a name="ln1817"> </a>
+<a name="ln1818">    ras.band_shoot = 0;</a>
+<a name="ln1819"> </a>
+<a name="ln1820">    min   = ras.min_ey;</a>
+<a name="ln1821">    max_y = ras.max_ey;</a>
+<a name="ln1822"> </a>
+<a name="ln1823">    for ( n = 0; n &lt; num_bands; n++, min = max )</a>
+<a name="ln1824">    {</a>
+<a name="ln1825">      max = min + ras.band_size;</a>
+<a name="ln1826">      if ( n == num_bands - 1 || max &gt; max_y )</a>
+<a name="ln1827">        max = max_y;</a>
+<a name="ln1828"> </a>
+<a name="ln1829">      bands[0].min = min;</a>
+<a name="ln1830">      bands[0].max = max;</a>
+<a name="ln1831">      band         = bands;</a>
+<a name="ln1832"> </a>
+<a name="ln1833">      do</a>
+<a name="ln1834">      {</a>
+<a name="ln1835">        TPos  bottom, top, middle;</a>
+<a name="ln1836">        int   error;</a>
+<a name="ln1837"> </a>
+<a name="ln1838">        {</a>
+<a name="ln1839">          PCell  cells_max;</a>
+<a name="ln1840">          int    yindex;</a>
+<a name="ln1841">          long   cell_start, cell_end, cell_mod;</a>
+<a name="ln1842"> </a>
+<a name="ln1843"> </a>
+<a name="ln1844">          ras.ycells = (PCell*)ras.buffer;</a>
+<a name="ln1845">          ras.ycount = band-&gt;max - band-&gt;min;</a>
+<a name="ln1846"> </a>
+<a name="ln1847">          cell_start = (long)sizeof ( PCell ) * ras.ycount;</a>
+<a name="ln1848">          cell_mod   = cell_start % (long)sizeof ( TCell );</a>
+<a name="ln1849">          if ( cell_mod &gt; 0 )</a>
+<a name="ln1850">            cell_start += (long)sizeof ( TCell ) - cell_mod;</a>
+<a name="ln1851"> </a>
+<a name="ln1852">          cell_end  = ras.buffer_size;</a>
+<a name="ln1853">          cell_end -= cell_end % (long)sizeof ( TCell );</a>
+<a name="ln1854"> </a>
+<a name="ln1855">          cells_max = (PCell)( (char*)ras.buffer + cell_end );</a>
+<a name="ln1856">          ras.cells = (PCell)( (char*)ras.buffer + cell_start );</a>
+<a name="ln1857">          if ( ras.cells &gt;= cells_max )</a>
+<a name="ln1858">            goto ReduceBands;</a>
+<a name="ln1859"> </a>
+<a name="ln1860">          ras.max_cells = cells_max - ras.cells;</a>
+<a name="ln1861">          if ( ras.max_cells &lt; 2 )</a>
+<a name="ln1862">            goto ReduceBands;</a>
+<a name="ln1863"> </a>
+<a name="ln1864">          for ( yindex = 0; yindex &lt; ras.ycount; yindex++ )</a>
+<a name="ln1865">            ras.ycells[yindex] = NULL;</a>
+<a name="ln1866">        }</a>
+<a name="ln1867"> </a>
+<a name="ln1868">        ras.num_cells = 0;</a>
+<a name="ln1869">        ras.invalid   = 1;</a>
+<a name="ln1870">        ras.min_ey    = band-&gt;min;</a>
+<a name="ln1871">        ras.max_ey    = band-&gt;max;</a>
+<a name="ln1872">        ras.count_ey  = band-&gt;max - band-&gt;min;</a>
+<a name="ln1873"> </a>
+<a name="ln1874">        error = gray_convert_glyph_inner( RAS_VAR );</a>
+<a name="ln1875"> </a>
+<a name="ln1876">        if ( !error )</a>
+<a name="ln1877">        {</a>
+<a name="ln1878">          gray_sweep( RAS_VAR_ &amp;ras.target );</a>
+<a name="ln1879">          band--;</a>
+<a name="ln1880">          continue;</a>
+<a name="ln1881">        }</a>
+<a name="ln1882">        else if ( error != ErrRaster_Memory_Overflow )</a>
+<a name="ln1883">          return 1;</a>
+<a name="ln1884"> </a>
+<a name="ln1885">      ReduceBands:</a>
+<a name="ln1886">        /* render pool overflow; we will reduce the render band by half */</a>
+<a name="ln1887">        bottom = band-&gt;min;</a>
+<a name="ln1888">        top    = band-&gt;max;</a>
+<a name="ln1889">        middle = bottom + ( ( top - bottom ) &gt;&gt; 1 );</a>
+<a name="ln1890"> </a>
+<a name="ln1891">        /* This is too complex for a single scanline; there must */</a>
+<a name="ln1892">        /* be some problems.                                     */</a>
+<a name="ln1893">        if ( middle == bottom )</a>
+<a name="ln1894">        {</a>
+<a name="ln1895">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1896">          FT_TRACE7(( &quot;gray_convert_glyph: rotten glyph\n&quot; ));</a>
+<a name="ln1897">#endif</a>
+<a name="ln1898">          return 1;</a>
+<a name="ln1899">        }</a>
+<a name="ln1900"> </a>
+<a name="ln1901">        if ( bottom-top &gt;= ras.band_size )</a>
+<a name="ln1902">          ras.band_shoot++;</a>
+<a name="ln1903"> </a>
+<a name="ln1904">        band[1].min = bottom;</a>
+<a name="ln1905">        band[1].max = middle;</a>
+<a name="ln1906">        band[0].min = middle;</a>
+<a name="ln1907">        band[0].max = top;</a>
+<a name="ln1908">        band++;</a>
+<a name="ln1909">      } while ( band &gt;= bands );</a>
+<a name="ln1910">    }</a>
+<a name="ln1911"> </a>
+<a name="ln1912">    if ( ras.band_shoot &gt; 8 &amp;&amp; ras.band_size &gt; 16 )</a>
+<a name="ln1913">      ras.band_size = ras.band_size / 2;</a>
+<a name="ln1914"> </a>
+<a name="ln1915">    return 0;</a>
+<a name="ln1916">  }</a>
+<a name="ln1917"> </a>
+<a name="ln1918"> </a>
+<a name="ln1919">  static int</a>
+<a name="ln1920">  gray_raster_render( gray_PRaster             raster,</a>
+<a name="ln1921">                      const FT_Raster_Params*  params )</a>
+<a name="ln1922">  {</a>
+<a name="ln1923">    const FT_Outline*  outline     = (const FT_Outline*)params-&gt;source;</a>
+<a name="ln1924">    const FT_Bitmap*   target_map  = params-&gt;target;</a>
+<a name="ln1925"> </a>
+<a name="ln1926">    gray_TWorker  worker[1];</a>
+<a name="ln1927"> </a>
+<a name="ln1928">    TCell  buffer[FT_MAX( FT_RENDER_POOL_SIZE, 2048 ) / sizeof ( TCell )];</a>
+<a name="ln1929">    long   buffer_size = sizeof ( buffer );</a>
+<a name="ln1930">    int    band_size   = (int)( buffer_size /</a>
+<a name="ln1931">                                (long)( sizeof ( TCell ) * 8 ) );</a>
+<a name="ln1932"> </a>
+<a name="ln1933"> </a>
+<a name="ln1934">    if ( !raster )</a>
+<a name="ln1935">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1936"> </a>
+<a name="ln1937">    if ( !outline )</a>
+<a name="ln1938">      return FT_THROW( Invalid_Outline );</a>
+<a name="ln1939"> </a>
+<a name="ln1940">    /* return immediately if the outline is empty */</a>
+<a name="ln1941">    if ( outline-&gt;n_points == 0 || outline-&gt;n_contours &lt;= 0 )</a>
+<a name="ln1942">      return 0;</a>
+<a name="ln1943"> </a>
+<a name="ln1944">    if ( !outline-&gt;contours || !outline-&gt;points )</a>
+<a name="ln1945">      return FT_THROW( Invalid_Outline );</a>
+<a name="ln1946"> </a>
+<a name="ln1947">    if ( outline-&gt;n_points !=</a>
+<a name="ln1948">           outline-&gt;contours[outline-&gt;n_contours - 1] + 1 )</a>
+<a name="ln1949">      return FT_THROW( Invalid_Outline );</a>
+<a name="ln1950"> </a>
+<a name="ln1951">    /* if direct mode is not set, we must have a target bitmap */</a>
+<a name="ln1952">    if ( !( params-&gt;flags &amp; FT_RASTER_FLAG_DIRECT ) )</a>
+<a name="ln1953">    {</a>
+<a name="ln1954">      if ( !target_map )</a>
+<a name="ln1955">        return FT_THROW( Invalid_Argument );</a>
+<a name="ln1956"> </a>
+<a name="ln1957">      /* nothing to do */</a>
+<a name="ln1958">      if ( !target_map-&gt;width || !target_map-&gt;rows )</a>
+<a name="ln1959">        return 0;</a>
+<a name="ln1960"> </a>
+<a name="ln1961">      if ( !target_map-&gt;buffer )</a>
+<a name="ln1962">        return FT_THROW( Invalid_Argument );</a>
+<a name="ln1963">    }</a>
+<a name="ln1964"> </a>
+<a name="ln1965">    /* this version does not support monochrome rendering */</a>
+<a name="ln1966">    if ( !( params-&gt;flags &amp; FT_RASTER_FLAG_AA ) )</a>
+<a name="ln1967">      return FT_THROW( Invalid_Mode );</a>
+<a name="ln1968"> </a>
+<a name="ln1969">    /* compute clipping box */</a>
+<a name="ln1970">    if ( !( params-&gt;flags &amp; FT_RASTER_FLAG_DIRECT ) )</a>
+<a name="ln1971">    {</a>
+<a name="ln1972">      /* compute clip box from target pixmap */</a>
+<a name="ln1973">      ras.clip_box.xMin = 0;</a>
+<a name="ln1974">      ras.clip_box.yMin = 0;</a>
+<a name="ln1975">      ras.clip_box.xMax = (FT_Pos)target_map-&gt;width;</a>
+<a name="ln1976">      ras.clip_box.yMax = (FT_Pos)target_map-&gt;rows;</a>
+<a name="ln1977">    }</a>
+<a name="ln1978">    else if ( params-&gt;flags &amp; FT_RASTER_FLAG_CLIP )</a>
+<a name="ln1979">      ras.clip_box = params-&gt;clip_box;</a>
+<a name="ln1980">    else</a>
+<a name="ln1981">    {</a>
+<a name="ln1982">      ras.clip_box.xMin = -32768L;</a>
+<a name="ln1983">      ras.clip_box.yMin = -32768L;</a>
+<a name="ln1984">      ras.clip_box.xMax =  32767L;</a>
+<a name="ln1985">      ras.clip_box.yMax =  32767L;</a>
+<a name="ln1986">    }</a>
+<a name="ln1987"> </a>
+<a name="ln1988">    gray_init_cells( RAS_VAR_ buffer, buffer_size );</a>
+<a name="ln1989"> </a>
+<a name="ln1990">    ras.outline        = *outline;</a>
+<a name="ln1991">    ras.num_cells      = 0;</a>
+<a name="ln1992">    ras.invalid        = 1;</a>
+<a name="ln1993">    ras.band_size      = band_size;</a>
+<a name="ln1994">    ras.num_gray_spans = 0;</a>
+<a name="ln1995">    ras.span_y         = 0;</a>
+<a name="ln1996"> </a>
+<a name="ln1997">    if ( params-&gt;flags &amp; FT_RASTER_FLAG_DIRECT )</a>
+<a name="ln1998">    {</a>
+<a name="ln1999">      ras.render_span      = (FT_Raster_Span_Func)params-&gt;gray_spans;</a>
+<a name="ln2000">      ras.render_span_data = params-&gt;user;</a>
+<a name="ln2001">    }</a>
+<a name="ln2002">    else</a>
+<a name="ln2003">    {</a>
+<a name="ln2004">      ras.target           = *target_map;</a>
+<a name="ln2005">      ras.render_span      = (FT_Raster_Span_Func)gray_render_span;</a>
+<a name="ln2006">      ras.render_span_data = &amp;ras;</a>
+<a name="ln2007">    }</a>
+<a name="ln2008"> </a>
+<a name="ln2009">    return gray_convert_glyph( RAS_VAR );</a>
+<a name="ln2010">  }</a>
+<a name="ln2011"> </a>
+<a name="ln2012"> </a>
+<a name="ln2013">  /**** RASTER OBJECT CREATION: In stand-alone mode, we simply use *****/</a>
+<a name="ln2014">  /****                         a static object.                   *****/</a>
+<a name="ln2015"> </a>
+<a name="ln2016">#ifdef _STANDALONE_</a>
+<a name="ln2017"> </a>
+<a name="ln2018">  static int</a>
+<a name="ln2019">  gray_raster_new( void*       memory,</a>
+<a name="ln2020">                   FT_Raster*  araster )</a>
+<a name="ln2021">  {</a>
+<a name="ln2022">    static gray_TRaster  the_raster;</a>
+<a name="ln2023"> </a>
+<a name="ln2024">    FT_UNUSED( memory );</a>
+<a name="ln2025"> </a>
+<a name="ln2026"> </a>
+<a name="ln2027">    *araster = (FT_Raster)&amp;the_raster;</a>
+<a name="ln2028">    FT_MEM_ZERO( &amp;the_raster, sizeof ( the_raster ) );</a>
+<a name="ln2029"> </a>
+<a name="ln2030">    return 0;</a>
+<a name="ln2031">  }</a>
+<a name="ln2032"> </a>
+<a name="ln2033"> </a>
+<a name="ln2034">  static void</a>
+<a name="ln2035">  gray_raster_done( FT_Raster  raster )</a>
+<a name="ln2036">  {</a>
+<a name="ln2037">    /* nothing */</a>
+<a name="ln2038">    FT_UNUSED( raster );</a>
+<a name="ln2039">  }</a>
+<a name="ln2040"> </a>
+<a name="ln2041">#else /* !_STANDALONE_ */</a>
+<a name="ln2042"> </a>
+<a name="ln2043">  static int</a>
+<a name="ln2044">  gray_raster_new( FT_Memory   memory,</a>
+<a name="ln2045">                   FT_Raster*  araster )</a>
+<a name="ln2046">  {</a>
+<a name="ln2047">    FT_Error      error;</a>
+<a name="ln2048">    gray_PRaster  raster = NULL;</a>
+<a name="ln2049"> </a>
+<a name="ln2050"> </a>
+<a name="ln2051">    *araster = 0;</a>
+<a name="ln2052">    if ( !FT_ALLOC( raster, sizeof ( gray_TRaster ) ) )</a>
+<a name="ln2053">    {</a>
+<a name="ln2054">      raster-&gt;memory = memory;</a>
+<a name="ln2055">      *araster       = (FT_Raster)raster;</a>
+<a name="ln2056">    }</a>
+<a name="ln2057"> </a>
+<a name="ln2058">    return error;</a>
+<a name="ln2059">  }</a>
+<a name="ln2060"> </a>
+<a name="ln2061"> </a>
+<a name="ln2062">  static void</a>
+<a name="ln2063">  gray_raster_done( FT_Raster  raster )</a>
+<a name="ln2064">  {</a>
+<a name="ln2065">    FT_Memory  memory = (FT_Memory)((gray_PRaster)raster)-&gt;memory;</a>
+<a name="ln2066"> </a>
+<a name="ln2067"> </a>
+<a name="ln2068">    FT_FREE( raster );</a>
+<a name="ln2069">  }</a>
+<a name="ln2070"> </a>
+<a name="ln2071">#endif /* !_STANDALONE_ */</a>
+<a name="ln2072"> </a>
+<a name="ln2073"> </a>
+<a name="ln2074">  static void</a>
+<a name="ln2075">  gray_raster_reset( FT_Raster  raster,</a>
+<a name="ln2076">                     char*      pool_base,</a>
+<a name="ln2077">                     long       pool_size )</a>
+<a name="ln2078">  {</a>
+<a name="ln2079">    FT_UNUSED( raster );</a>
+<a name="ln2080">    FT_UNUSED( pool_base );</a>
+<a name="ln2081">    FT_UNUSED( pool_size );</a>
+<a name="ln2082">  }</a>
+<a name="ln2083"> </a>
+<a name="ln2084"> </a>
+<a name="ln2085">  static int</a>
+<a name="ln2086">  gray_raster_set_mode( FT_Raster      raster,</a>
+<a name="ln2087">                        unsigned long  mode,</a>
+<a name="ln2088">                        void*          args )</a>
+<a name="ln2089">  {</a>
+<a name="ln2090">    FT_UNUSED( raster );</a>
+<a name="ln2091">    FT_UNUSED( mode );</a>
+<a name="ln2092">    FT_UNUSED( args );</a>
+<a name="ln2093"> </a>
+<a name="ln2094"> </a>
+<a name="ln2095">    return 0; /* nothing to do */</a>
+<a name="ln2096">  }</a>
+<a name="ln2097"> </a>
+<a name="ln2098"> </a>
+<a name="ln2099">  FT_DEFINE_RASTER_FUNCS(</a>
+<a name="ln2100">    ft_grays_raster,</a>
+<a name="ln2101"> </a>
+<a name="ln2102">    FT_GLYPH_FORMAT_OUTLINE,</a>
+<a name="ln2103"> </a>
+<a name="ln2104">    (FT_Raster_New_Func)     gray_raster_new,</a>
+<a name="ln2105">    (FT_Raster_Reset_Func)   gray_raster_reset,</a>
+<a name="ln2106">    (FT_Raster_Set_Mode_Func)gray_raster_set_mode,</a>
+<a name="ln2107">    (FT_Raster_Render_Func)  gray_raster_render,</a>
+<a name="ln2108">    (FT_Raster_Done_Func)    gray_raster_done )</a>
+<a name="ln2109"> </a>
+<a name="ln2110"> </a>
+<a name="ln2111">/* END */</a>
+<a name="ln2112"> </a>
+<a name="ln2113"> </a>
+<a name="ln2114">/* Local Variables: */</a>
+<a name="ln2115">/* coding: utf-8    */</a>
+<a name="ln2116">/* End:             */</a>
+
+</code></pre>
+<div class="balloon" rel="859"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'incr' variable was assigned the same value.</p></div>
+<div class="balloon" rel="1907"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'band[0].max' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

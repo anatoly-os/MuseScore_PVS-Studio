@@ -1,0 +1,820 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ambitus.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2013 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;ambitus.h&quot;</a>
+<a name="ln14">#include &quot;chord.h&quot;</a>
+<a name="ln15">#include &quot;measure.h&quot;</a>
+<a name="ln16">#include &quot;read206.h&quot;</a>
+<a name="ln17">#include &quot;score.h&quot;</a>
+<a name="ln18">#include &quot;segment.h&quot;</a>
+<a name="ln19">#include &quot;staff.h&quot;</a>
+<a name="ln20">#include &quot;stafftype.h&quot;</a>
+<a name="ln21">#include &quot;sym.h&quot;</a>
+<a name="ln22">#include &quot;system.h&quot;</a>
+<a name="ln23">#include &quot;utils.h&quot;</a>
+<a name="ln24">#include &quot;xml.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">namespace Ms {</a>
+<a name="ln27"> </a>
+<a name="ln28">static const NoteHead::Group  NOTEHEADGROUP_DEFAULT = NoteHead::Group::HEAD_NORMAL;</a>
+<a name="ln29">static const NoteHead::Type   NOTEHEADTYPE_DEFAULT  = NoteHead::Type::HEAD_AUTO;</a>
+<a name="ln30">static const MScore::DirectionH     DIR_DEFAULT     = MScore::DirectionH::AUTO;</a>
+<a name="ln31">static const bool           HASLINE_DEFAULT         = true;</a>
+<a name="ln32">static const Spatium          LINEWIDTH_DEFAULT(0.12);</a>
+<a name="ln33">#if 0 // yet(?) unused</a>
+<a name="ln34">static const qreal          LEDGEROFFSET_DEFAULT    = 0.25;</a>
+<a name="ln35">#endif</a>
+<a name="ln36">static const qreal          LINEOFFSET_DEFAULT      = 0.8;      // the distance between notehead and line</a>
+<a name="ln37"> </a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39">//   Ambitus</a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41"> </a>
+<a name="ln42">Ambitus::Ambitus(Score* s)</a>
+<a name="ln43">   : Element(s, ElementFlag::MOVABLE), _topAccid(s), _bottomAccid(s)</a>
+<a name="ln44">      {</a>
+<a name="ln45">      _noteHeadGroup    = NOTEHEADGROUP_DEFAULT;</a>
+<a name="ln46">      _noteHeadType     = NOTEHEADTYPE_DEFAULT;</a>
+<a name="ln47">      _dir              = DIR_DEFAULT;</a>
+<a name="ln48">      _hasLine          = HASLINE_DEFAULT;</a>
+<a name="ln49">      _lineWidth        = LINEWIDTH_DEFAULT;</a>
+<a name="ln50">      _topPitch         = INVALID_PITCH;</a>
+<a name="ln51">      _bottomPitch      = INVALID_PITCH;</a>
+<a name="ln52">      _topTpc           = Tpc::TPC_INVALID;</a>
+<a name="ln53">      _bottomTpc        = Tpc::TPC_INVALID;</a>
+<a name="ln54">      _topAccid.setParent(this);</a>
+<a name="ln55">      _bottomAccid.setParent(this);</a>
+<a name="ln56">      }</a>
+<a name="ln57"> </a>
+<a name="ln58">//---------------------------------------------------------</a>
+<a name="ln59">//   mag</a>
+<a name="ln60">//---------------------------------------------------------</a>
+<a name="ln61"> </a>
+<a name="ln62">qreal Ambitus::mag() const</a>
+<a name="ln63">      {</a>
+<a name="ln64">      return staff() ? staff()-&gt;mag(tick()) : 1.0;</a>
+<a name="ln65">      }</a>
+<a name="ln66"> </a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68">//   initFrom</a>
+<a name="ln69">//---------------------------------------------------------</a>
+<a name="ln70"> </a>
+<a name="ln71">void Ambitus::initFrom(Ambitus* a)</a>
+<a name="ln72">      {</a>
+<a name="ln73">      _noteHeadGroup   = a-&gt;_noteHeadGroup;</a>
+<a name="ln74">      _noteHeadType    = a-&gt;_noteHeadType;</a>
+<a name="ln75">      _dir             = a-&gt;_dir;</a>
+<a name="ln76">      _hasLine         = a-&gt;_hasLine;</a>
+<a name="ln77">      _lineWidth       = a-&gt;_lineWidth;</a>
+<a name="ln78">      _topPitch        = a-&gt;_topPitch;</a>
+<a name="ln79">      _bottomPitch     = a-&gt;_bottomPitch;</a>
+<a name="ln80">      _topTpc          = a-&gt;_topTpc;</a>
+<a name="ln81">      _bottomTpc       = a-&gt;_bottomTpc;</a>
+<a name="ln82">      }</a>
+<a name="ln83"> </a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85">//   setTrack</a>
+<a name="ln86">//</a>
+<a name="ln87">//    when the Ambitus element is assigned a track,</a>
+<a name="ln88">//    initialize top and bottom 'notes' to top and bottom staff lines</a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90"> </a>
+<a name="ln91">void Ambitus::setTrack(int t)</a>
+<a name="ln92">      {</a>
+<a name="ln93">      Segment*    segm  = segment();</a>
+<a name="ln94">      Staff*      stf   = score()-&gt;staff(track2staff(t));</a>
+<a name="ln95"> </a>
+<a name="ln96">      Element::setTrack(t);</a>
+<a name="ln97">      // if not initialized and there is a segment and a staff,</a>
+<a name="ln98">      // initialize pitches and tpc's to first and last staff line</a>
+<a name="ln99">      // (for use in palettes)</a>
+<a name="ln100">      if (_topPitch == INVALID_PITCH || _topTpc == Tpc::TPC_INVALID</a>
+<a name="ln101">            || _bottomPitch == INVALID_PITCH ||_bottomTpc == Tpc::TPC_INVALID) {</a>
+<a name="ln102">            if (segm &amp;&amp; stf) {</a>
+<a name="ln103">                  updateRange();</a>
+<a name="ln104">                  _topAccid.setTrack(t);</a>
+<a name="ln105">                  _bottomAccid.setTrack(t);</a>
+<a name="ln106">                  }</a>
+<a name="ln107">//            else {</a>
+<a name="ln108">//                  _topPitch = _bottomPitch = INVALID_PITCH;</a>
+<a name="ln109">//                  _topTpc   = _bottomTpc   = Tpc::TPC_INVALID;</a>
+<a name="ln110">            }</a>
+<a name="ln111">      }</a>
+<a name="ln112"> </a>
+<a name="ln113">//---------------------------------------------------------</a>
+<a name="ln114">//   setTop/BottomPitch</a>
+<a name="ln115">//</a>
+<a name="ln116">//    setting either pitch requires to adjust the corresponding tpc</a>
+<a name="ln117">//---------------------------------------------------------</a>
+<a name="ln118"> </a>
+<a name="ln119">void Ambitus::setTopPitch(int val)</a>
+<a name="ln120">      {</a>
+<a name="ln121">      int deltaPitch    = val - topPitch();</a>
+<a name="ln122">      // if deltaPitch is not an integer number of octaves, adjust tpc</a>
+<a name="ln123">      // (to avoid 'wild' tpc changes with octave changes)</a>
+<a name="ln124">      if (deltaPitch % PITCH_DELTA_OCTAVE != 0) {</a>
+<a name="ln125">            int newTpc        = topTpc() + deltaPitch * TPC_DELTA_SEMITONE;</a>
+<a name="ln126">            // reduce newTpc into acceptable range via enharmonic</a>
+<a name="ln127">            while (newTpc &lt; Tpc::TPC_MIN)</a>
+<a name="ln128">                  newTpc += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln129">            while (newTpc &gt; Tpc::TPC_MAX)</a>
+<a name="ln130">                  newTpc -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln131">            _topTpc     = newTpc;</a>
+<a name="ln132">            }</a>
+<a name="ln133">      _topPitch   = val;</a>
+<a name="ln134">      normalize();</a>
+<a name="ln135">      }</a>
+<a name="ln136"> </a>
+<a name="ln137">void Ambitus::setBottomPitch(int val)</a>
+<a name="ln138">      {</a>
+<a name="ln139">      int deltaPitch    = val - bottomPitch();</a>
+<a name="ln140">      // if deltaPitch is not an integer number of octaves, adjust tpc</a>
+<a name="ln141">      // (to avoid 'wild' tpc changes with octave changes)</a>
+<a name="ln142">      if (deltaPitch % PITCH_DELTA_OCTAVE != 0) {</a>
+<a name="ln143">            int newTpc        = bottomTpc() + deltaPitch * TPC_DELTA_SEMITONE;</a>
+<a name="ln144">            // reduce newTpc into acceptable range via enharmonic</a>
+<a name="ln145">            while (newTpc &lt; Tpc::TPC_MIN)</a>
+<a name="ln146">                  newTpc += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln147">            while (newTpc &gt; Tpc::TPC_MAX)</a>
+<a name="ln148">                  newTpc -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln149">            _bottomTpc  = newTpc;</a>
+<a name="ln150">            }</a>
+<a name="ln151">      _bottomPitch= val;</a>
+<a name="ln152">      normalize();</a>
+<a name="ln153">      }</a>
+<a name="ln154"> </a>
+<a name="ln155">//---------------------------------------------------------</a>
+<a name="ln156">//   setTop/BottomTpc</a>
+<a name="ln157">//</a>
+<a name="ln158">//    setting either tpc requires to adjust the corresponding pitch</a>
+<a name="ln159">//    (but remaining in the same octave)</a>
+<a name="ln160">//---------------------------------------------------------</a>
+<a name="ln161"> </a>
+<a name="ln162">void Ambitus::setTopTpc(int val)</a>
+<a name="ln163">      {</a>
+<a name="ln164">      int octave        = topPitch() / PITCH_DELTA_OCTAVE;</a>
+<a name="ln165">      int deltaTpc      = val - topTpc();</a>
+<a name="ln166">      // get new pitch according to tpc change</a>
+<a name="ln167">      int newPitch      = topPitch() + deltaTpc * TPC_DELTA_SEMITONE;</a>
+<a name="ln168">      // reduce pitch to the same octave as original pitch</a>
+<a name="ln169">      newPitch          = (octave * PITCH_DELTA_OCTAVE) + (newPitch % PITCH_DELTA_OCTAVE);</a>
+<a name="ln170">      _topPitch   = newPitch;</a>
+<a name="ln171">      _topTpc     = val;</a>
+<a name="ln172">      normalize();</a>
+<a name="ln173">      }</a>
+<a name="ln174"> </a>
+<a name="ln175">void Ambitus::setBottomTpc(int val)</a>
+<a name="ln176">      {</a>
+<a name="ln177">      int octave        = bottomPitch() / PITCH_DELTA_OCTAVE;</a>
+<a name="ln178">      int deltaTpc      = val - bottomTpc();</a>
+<a name="ln179">      // get new pitch according to tpc change</a>
+<a name="ln180">      int newPitch      = bottomPitch() + deltaTpc * TPC_DELTA_SEMITONE;</a>
+<a name="ln181">      // reduce pitch to the same octave as original pitch</a>
+<a name="ln182">      newPitch          = (octave * PITCH_DELTA_OCTAVE) + (newPitch % PITCH_DELTA_OCTAVE);</a>
+<a name="ln183">      _bottomPitch= newPitch;</a>
+<a name="ln184">      _bottomTpc  = val;</a>
+<a name="ln185">      normalize();</a>
+<a name="ln186">      }</a>
+<a name="ln187"> </a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189">//   write</a>
+<a name="ln190">//---------------------------------------------------------</a>
+<a name="ln191"> </a>
+<a name="ln192">void Ambitus::write(XmlWriter&amp; xml) const</a>
+<a name="ln193">      {</a>
+<a name="ln194">      xml.stag(this);</a>
+<a name="ln195">      xml.tag(Pid::HEAD_GROUP, int(_noteHeadGroup), int(NOTEHEADGROUP_DEFAULT));</a>
+<a name="ln196">      xml.tag(Pid::HEAD_TYPE,  int(_noteHeadType),  int(NOTEHEADTYPE_DEFAULT));</a>
+<a name="ln197">      xml.tag(Pid::MIRROR_HEAD,int(_dir),           int(DIR_DEFAULT));</a>
+<a name="ln198">      xml.tag(&quot;hasLine&quot;,    _hasLine,       true);</a>
+<a name="ln199">      xml.tag(Pid::LINE_WIDTH, _lineWidth,     LINEWIDTH_DEFAULT);</a>
+<a name="ln200">      xml.tag(&quot;topPitch&quot;,   _topPitch);</a>
+<a name="ln201">      xml.tag(&quot;topTpc&quot;,     _topTpc);</a>
+<a name="ln202">      xml.tag(&quot;bottomPitch&quot;,_bottomPitch);</a>
+<a name="ln203">      xml.tag(&quot;bottomTpc&quot;,  _bottomTpc);</a>
+<a name="ln204">      if (_topAccid.accidentalType() != AccidentalType::NONE) {</a>
+<a name="ln205">            xml.stag(&quot;topAccidental&quot;);</a>
+<a name="ln206">            _topAccid.write(xml);</a>
+<a name="ln207">            xml.etag();</a>
+<a name="ln208">            }</a>
+<a name="ln209">      if (_bottomAccid.accidentalType() != AccidentalType::NONE) {</a>
+<a name="ln210">            xml.stag(&quot;bottomAccidental&quot;);</a>
+<a name="ln211">            _bottomAccid.write(xml);</a>
+<a name="ln212">            xml.etag();</a>
+<a name="ln213">            }</a>
+<a name="ln214">      Element::writeProperties(xml);</a>
+<a name="ln215">      xml.etag();</a>
+<a name="ln216">      }</a>
+<a name="ln217"> </a>
+<a name="ln218">//---------------------------------------------------------</a>
+<a name="ln219">//   read</a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221"> </a>
+<a name="ln222">void Ambitus::read(XmlReader&amp; e)</a>
+<a name="ln223">      {</a>
+<a name="ln224">      while (e.readNextStartElement()) {</a>
+<a name="ln225">            if (!readProperties(e))</a>
+<a name="ln226">                  e.unknown();</a>
+<a name="ln227">            }</a>
+<a name="ln228">      }</a>
+<a name="ln229"> </a>
+<a name="ln230">//---------------------------------------------------------</a>
+<a name="ln231">//   readProperties</a>
+<a name="ln232">//---------------------------------------------------------</a>
+<a name="ln233"> </a>
+<a name="ln234">bool Ambitus::readProperties(XmlReader&amp; e)</a>
+<a name="ln235">      {</a>
+<a name="ln236">      const QStringRef&amp; tag(e.name());</a>
+<a name="ln237">      if (tag == &quot;head&quot;)</a>
+<a name="ln238">            readProperty(e, Pid::HEAD_GROUP);</a>
+<a name="ln239">      else if (tag == &quot;headType&quot;)</a>
+<a name="ln240">            readProperty(e, Pid::HEAD_TYPE);</a>
+<a name="ln241">      else if (tag == &quot;mirror&quot;)</a>
+<a name="ln242">            readProperty(e, Pid::MIRROR_HEAD);</a>
+<a name="ln243">      else if (tag == &quot;hasLine&quot;)</a>
+<a name="ln244">            setHasLine(e.readInt());</a>
+<a name="ln245">      else if (tag == &quot;lineWidth&quot;)</a>
+<a name="ln246">            readProperty(e, Pid::LINE_WIDTH);</a>
+<a name="ln247">      else if (tag == &quot;topPitch&quot;)</a>
+<a name="ln248">            _topPitch = e.readInt();</a>
+<a name="ln249">      else if (tag == &quot;bottomPitch&quot;)</a>
+<a name="ln250">            _bottomPitch = e.readInt();</a>
+<a name="ln251">      else if (tag == &quot;topTpc&quot;)</a>
+<a name="ln252">            _topTpc = e.readInt();</a>
+<a name="ln253">      else if (tag == &quot;bottomTpc&quot;)</a>
+<a name="ln254">            _bottomTpc = e.readInt();</a>
+<a name="ln255">      else if (tag == &quot;topAccidental&quot;) {</a>
+<a name="ln256">            while (e.readNextStartElement()) {</a>
+<a name="ln257">                  if (e.name() == &quot;Accidental&quot;) {</a>
+<a name="ln258">                        if (score()-&gt;mscVersion() &lt; 301)</a>
+<a name="ln259">                              readAccidental206(&amp;_topAccid, e);</a>
+<a name="ln260">                        else</a>
+<a name="ln261">                              _topAccid.read(e);</a>
+<a name="ln262">                        }</a>
+<a name="ln263">                  else</a>
+<a name="ln264">                        e.skipCurrentElement();</a>
+<a name="ln265">                  }</a>
+<a name="ln266">            }</a>
+<a name="ln267">      else if (tag == &quot;bottomAccidental&quot;) {</a>
+<a name="ln268">            while (e.readNextStartElement()) {</a>
+<a name="ln269">                  if (e.name() == &quot;Accidental&quot;) {</a>
+<a name="ln270">                        if (score()-&gt;mscVersion() &lt; 301)</a>
+<a name="ln271">                              readAccidental206(&amp;_bottomAccid, e);</a>
+<a name="ln272">                        else</a>
+<a name="ln273">                              _bottomAccid.read(e);</a>
+<a name="ln274">                        }</a>
+<a name="ln275">                  else</a>
+<a name="ln276">                        e.skipCurrentElement();</a>
+<a name="ln277">                  }</a>
+<a name="ln278">            }</a>
+<a name="ln279">      else if (Element::readProperties(e))</a>
+<a name="ln280">            ;</a>
+<a name="ln281">      else</a>
+<a name="ln282">            return false;</a>
+<a name="ln283">      return true;</a>
+<a name="ln284">      }</a>
+<a name="ln285"> </a>
+<a name="ln286">//---------------------------------------------------------</a>
+<a name="ln287">//   layout</a>
+<a name="ln288">//---------------------------------------------------------</a>
+<a name="ln289"> </a>
+<a name="ln290">void Ambitus::layout()</a>
+<a name="ln291">      {</a>
+<a name="ln292">      int         bottomLine, topLine;</a>
+<a name="ln293">      ClefType    clf;</a>
+<a name="ln294">      qreal       headWdt     = headWidth();</a>
+<a name="ln295">      Key         key;</a>
+<a name="ln296">      qreal       lineDist;</a>
+<a name="ln297">      int         numOfLines;</a>
+<a name="ln298">      Segment*    segm        = segment();</a>
+<a name="ln299">      qreal       _spatium    = spatium();</a>
+<a name="ln300">      Staff*      stf         = nullptr;</a>
+<a name="ln301">      if (segm &amp;&amp; track() &gt; -1) {</a>
+<a name="ln302">            Fraction tick    = segm-&gt;tick();</a>
+<a name="ln303">            stf         = score()-&gt;staff(staffIdx());</a>
+<a name="ln304">            lineDist    = stf-&gt;lineDistance(tick) * _spatium;</a>
+<a name="ln305">            numOfLines  = stf-&gt;lines(tick);</a>
+<a name="ln306">            clf         = stf-&gt;clef(tick);</a>
+<a name="ln307">            }</a>
+<a name="ln308">      else {                              // for use in palettes</a>
+<a name="ln309">            lineDist    = _spatium;</a>
+<a name="ln310">            numOfLines  = 3;</a>
+<a name="ln311">            clf         = ClefType::G;</a>
+<a name="ln312">            }</a>
+<a name="ln313"> </a>
+<a name="ln314">      //</a>
+<a name="ln315">      // NOTEHEADS Y POS</a>
+<a name="ln316">      //</a>
+<a name="ln317">      // if pitch == INVALID_PITCH oor tpc == INALID_TPC, set to some default:</a>
+<a name="ln318">      // for use in palettes and when actual range cannot be calculated (new ambitus or no notes in staff)</a>
+<a name="ln319">      //</a>
+<a name="ln320">      qreal xAccidOffTop    = 0;</a>
+<a name="ln321">      qreal xAccidOffBottom = 0;</a>
+<a name="ln322">      if (stf)</a>
+<a name="ln323">            key = stf-&gt;key(segm-&gt;tick());</a>
+<a name="ln324">      else</a>
+<a name="ln325">            key = Key::C;</a>
+<a name="ln326"> </a>
+<a name="ln327">      // top notehead</a>
+<a name="ln328">      if (_topPitch == INVALID_PITCH || _topTpc == Tpc::TPC_INVALID)</a>
+<a name="ln329">            _topPos.setY(0);                          // if uninitialized, set to top staff line</a>
+<a name="ln330">      else {</a>
+<a name="ln331">            topLine  = absStep(_topTpc, _topPitch);</a>
+<a name="ln332">            topLine  = relStep(topLine, clf);</a>
+<a name="ln333">            _topPos.setY(topLine * lineDist * 0.5);</a>
+<a name="ln334">            // compute accidental</a>
+<a name="ln335">            AccidentalType accidType;</a>
+<a name="ln336">            // if (13 &lt;= (tpc - key) &lt;= 19) there is no accidental)</a>
+<a name="ln337">            if (_topTpc - int(key) &gt;= 13 &amp;&amp; _topTpc - int(key) &lt;= 19)</a>
+<a name="ln338">                  accidType = AccidentalType::NONE;</a>
+<a name="ln339">            else {</a>
+<a name="ln340">                  AccidentalVal accidVal = AccidentalVal( (_topTpc - Tpc::TPC_MIN) / TPC_DELTA_SEMITONE - 2 );</a>
+<a name="ln341">                  accidType = Accidental::value2subtype(accidVal);</a>
+<a name="ln342">                  if (accidType == AccidentalType::NONE)</a>
+<a name="ln343">                        accidType = AccidentalType::NATURAL;</a>
+<a name="ln344">                  }</a>
+<a name="ln345">            _topAccid.setAccidentalType(accidType);</a>
+<a name="ln346">            if (accidType != AccidentalType::NONE)</a>
+<a name="ln347">                  _topAccid.layout();</a>
+<a name="ln348">            else</a>
+<a name="ln349">                  _topAccid.setbbox(QRect());</a>
+<a name="ln350">            _topAccid.rypos() = _topPos.y();</a>
+<a name="ln351">            }</a>
+<a name="ln352"> </a>
+<a name="ln353">      // bottom notehead</a>
+<a name="ln354">      if (_bottomPitch == INVALID_PITCH || _bottomTpc == Tpc::TPC_INVALID)</a>
+<a name="ln355">            _bottomPos.setY( (numOfLines-1) * lineDist);          // if uninitialized, set to last staff line</a>
+<a name="ln356">      else {</a>
+<a name="ln357">            bottomLine  = absStep(_bottomTpc, _bottomPitch);</a>
+<a name="ln358">            bottomLine  = relStep(bottomLine, clf);</a>
+<a name="ln359">            _bottomPos.setY(bottomLine * lineDist * 0.5);</a>
+<a name="ln360">            // compute accidental</a>
+<a name="ln361">            AccidentalType accidType;</a>
+<a name="ln362">            if (_bottomTpc - int(key) &gt;= 13 &amp;&amp; _bottomTpc - int(key) &lt;= 19)</a>
+<a name="ln363">                  accidType = AccidentalType::NONE;</a>
+<a name="ln364">            else {</a>
+<a name="ln365">                  AccidentalVal accidVal = AccidentalVal( (_bottomTpc - Tpc::TPC_MIN) / TPC_DELTA_SEMITONE - 2 );</a>
+<a name="ln366">                  accidType = Accidental::value2subtype(accidVal);</a>
+<a name="ln367">                  if (accidType == AccidentalType::NONE)</a>
+<a name="ln368">                        accidType = AccidentalType::NATURAL;</a>
+<a name="ln369">                  }</a>
+<a name="ln370">            _bottomAccid.setAccidentalType(accidType);</a>
+<a name="ln371">            if (accidType != AccidentalType::NONE)</a>
+<a name="ln372">                  _bottomAccid.layout();</a>
+<a name="ln373">            else</a>
+<a name="ln374">                  _bottomAccid.setbbox(QRect());</a>
+<a name="ln375">            _bottomAccid.rypos() = _bottomPos.y();</a>
+<a name="ln376">            }</a>
+<a name="ln377"> </a>
+<a name="ln378">      //</a>
+<a name="ln379">      // NOTEHEAD X POS</a>
+<a name="ln380">      //</a>
+<a name="ln381">      // Note: manages colliding accidentals</a>
+<a name="ln382">      //</a>
+<a name="ln383">      qreal accNoteDist = point(score()-&gt;styleS(Sid::accidentalNoteDistance));</a>
+<a name="ln384">      xAccidOffTop      = _topAccid.width() + accNoteDist;</a>
+<a name="ln385">      xAccidOffBottom   = _bottomAccid.width() + accNoteDist;</a>
+<a name="ln386"> </a>
+<a name="ln387">      // if top accidental extends down more than bottom accidental extends up,</a>
+<a name="ln388">      // AND ambitus is not leaning right, bottom accidental needs to be displaced</a>
+<a name="ln389">      bool collision =</a>
+<a name="ln390">            (_topAccid.ipos().y() + _topAccid.bbox().y() + _topAccid.height()</a>
+<a name="ln391">                   &gt; _bottomAccid.ipos().y() + _bottomAccid.bbox().y() )</a>
+<a name="ln392">            &amp;&amp; _dir != MScore::DirectionH::RIGHT;</a>
+<a name="ln393">      if (collision) {</a>
+<a name="ln394">            // displace bottom accidental (also attempting to 'undercut' flats)</a>
+<a name="ln395">            xAccidOffBottom = xAccidOffTop +</a>
+<a name="ln396">                  ((_bottomAccid.accidentalType() == AccidentalType::FLAT</a>
+<a name="ln397">                        || _bottomAccid.accidentalType() == AccidentalType::FLAT2</a>
+<a name="ln398">                        || _bottomAccid.accidentalType() == AccidentalType::NATURAL)</a>
+<a name="ln399">                  ? _bottomAccid.width() * 0.5 : _bottomAccid.width());</a>
+<a name="ln400">            }</a>
+<a name="ln401"> </a>
+<a name="ln402">      switch (_dir) {</a>
+<a name="ln403">            case MScore::DirectionH::AUTO:               // noteheads one above the other</a>
+<a name="ln404">                  // left align noteheads and right align accidentals 'hanging' on the left</a>
+<a name="ln405">                  _topPos.setX(0.0);</a>
+<a name="ln406">                  _bottomPos.setX(0.0);</a>
+<a name="ln407">                  _topAccid.rxpos()       = - xAccidOffTop;</a>
+<a name="ln408">                  _bottomAccid.rxpos()    = - xAccidOffBottom;</a>
+<a name="ln409">                  break;</a>
+<a name="ln410">            case MScore::DirectionH::LEFT:               // top notehead at the left of bottom notehead</a>
+<a name="ln411">                  // place top notehead at left margin; bottom notehead at right of top head;</a>
+<a name="ln412">                  // top accid. 'hanging' on left of top head and bottom accid. 'hanging' at left of bottom head</a>
+<a name="ln413">                  _topPos.setX(0.0);</a>
+<a name="ln414">                  _bottomPos.setX(headWdt);</a>
+<a name="ln415">                  _topAccid.rxpos() = - xAccidOffTop;</a>
+<a name="ln416">                  _bottomAccid.rxpos() = collision ? - xAccidOffBottom : headWdt - xAccidOffBottom;</a>
+<a name="ln417">                  break;</a>
+<a name="ln418">            case MScore::DirectionH::RIGHT:              // top notehead at the right of bottom notehead</a>
+<a name="ln419">                  // bottom notehead at left margin; top notehead at right of bottomnotehead</a>
+<a name="ln420">                  // top accid. 'hanging' on left of top head and bottom accid. 'hanging' at left of bottom head</a>
+<a name="ln421">                  _bottomPos.setX(0.0);</a>
+<a name="ln422">                  _topPos.setX(headWdt);</a>
+<a name="ln423">                  _bottomAccid.rxpos() = - xAccidOffBottom;</a>
+<a name="ln424">                  _topAccid.rxpos() = headWdt - xAccidOffTop;</a>
+<a name="ln425">                  break;</a>
+<a name="ln426">            }</a>
+<a name="ln427"> </a>
+<a name="ln428">      // compute line from top note centre to bottom note centre</a>
+<a name="ln429">      QLineF fullLine(_topPos.x() + headWdt*0.5, _topPos.y(),</a>
+<a name="ln430">            _bottomPos.x() + headWdt*0.5, _bottomPos.y());</a>
+<a name="ln431">      // shorten line on each side by offsets</a>
+<a name="ln432">      qreal yDelta = _bottomPos.y() - _topPos.y();</a>
+<a name="ln433">      if (yDelta != 0.0) {</a>
+<a name="ln434">            qreal off = _spatium * LINEOFFSET_DEFAULT;</a>
+<a name="ln435">            QPointF p1 = fullLine.pointAt(off / yDelta);</a>
+<a name="ln436">            QPointF p2 = fullLine.pointAt(1 - (off / yDelta));</a>
+<a name="ln437">            _line = QLineF(p1, p2);</a>
+<a name="ln438">            }</a>
+<a name="ln439">      else</a>
+<a name="ln440">            _line = fullLine;</a>
+<a name="ln441"> </a>
+<a name="ln442">      QRectF headRect = QRectF(0, -0.5*_spatium, headWdt, 1*_spatium);</a>
+<a name="ln443">      setbbox(headRect.translated(_topPos).united(headRect.translated(_bottomPos))</a>
+<a name="ln444">            .united(_topAccid.bbox().translated(_topAccid.ipos()))</a>
+<a name="ln445">            .united(_bottomAccid.bbox().translated(_bottomAccid.ipos()))</a>
+<a name="ln446">            );</a>
+<a name="ln447">      }</a>
+<a name="ln448"> </a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450">//   draw</a>
+<a name="ln451">//---------------------------------------------------------</a>
+<a name="ln452"> </a>
+<a name="ln453">void Ambitus::draw(QPainter* p) const</a>
+<a name="ln454">      {</a>
+<a name="ln455">      qreal _spatium = spatium();</a>
+<a name="ln456">      qreal lw = lineWidth().val() * _spatium;</a>
+<a name="ln457">      p-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::RoundCap));</a>
+<a name="ln458">      drawSymbol(noteHead(), p, _topPos);</a>
+<a name="ln459">      drawSymbol(noteHead(), p, _bottomPos);</a>
+<a name="ln460">      if (_hasLine)</a>
+<a name="ln461">            p-&gt;drawLine(_line);</a>
+<a name="ln462"> </a>
+<a name="ln463">      // draw ledger lines (if not in a palette)</a>
+<a name="ln464">      if (segment() &amp;&amp; track() &gt; -1) {</a>
+<a name="ln465">            Fraction tick          = segment()-&gt;tick();</a>
+<a name="ln466">            Staff* stf        = score()-&gt;staff(staffIdx());</a>
+<a name="ln467">            qreal lineDist    = stf-&gt;lineDistance(tick);</a>
+<a name="ln468">            int numOfLines    = stf-&gt;lines(tick);</a>
+<a name="ln469">            qreal step        = lineDist * _spatium;</a>
+<a name="ln470">            qreal stepTolerance = step * 0.1;</a>
+<a name="ln471">            qreal ledgerOffset = score()-&gt;styleS(Sid::ledgerLineLength).val() * 0.5 * _spatium;</a>
+<a name="ln472">            p-&gt;setPen(QPen(curColor(), score()-&gt;styleS(Sid::ledgerLineWidth).val() * _spatium,</a>
+<a name="ln473">                        Qt::SolidLine, Qt::RoundCap) );</a>
+<a name="ln474">            if (_topPos.y()-stepTolerance &lt;= -step) {</a>
+<a name="ln475">                  qreal xMin = _topPos.x() - ledgerOffset;</a>
+<a name="ln476">                  qreal xMax = _topPos.x() + headWidth() + ledgerOffset;</a>
+<a name="ln477">                  for (qreal y = -step; y &gt;= _topPos.y()-stepTolerance; y -= step)</a>
+<a name="ln478">                        p-&gt;drawLine(QPointF(xMin, y), QPointF(xMax, y));</a>
+<a name="ln479">                  }</a>
+<a name="ln480">            if (_bottomPos.y()+stepTolerance &gt;= numOfLines * step) {</a>
+<a name="ln481">                  qreal xMin = _bottomPos.x() - ledgerOffset;</a>
+<a name="ln482">                  qreal xMax = _bottomPos.x() + headWidth() + ledgerOffset;</a>
+<a name="ln483">                  for (qreal y = numOfLines*step; y &lt;= _bottomPos.y()+stepTolerance; y += step)</a>
+<a name="ln484">                        p-&gt;drawLine(QPointF(xMin, y), QPointF(xMax, y));</a>
+<a name="ln485">                  }</a>
+<a name="ln486">            }</a>
+<a name="ln487">      }</a>
+<a name="ln488"> </a>
+<a name="ln489">//---------------------------------------------------------</a>
+<a name="ln490">//   scanElements</a>
+<a name="ln491">//---------------------------------------------------------</a>
+<a name="ln492"> </a>
+<a name="ln493">void Ambitus::scanElements(void* data, void (*func)(void*, Element*), bool /*all*/)</a>
+<a name="ln494">      {</a>
+<a name="ln495">      func(data, this);</a>
+<a name="ln496">      if (_topAccid.accidentalType() != AccidentalType::NONE)</a>
+<a name="ln497">            func(data, &amp;_topAccid);</a>
+<a name="ln498">      if (_bottomAccid.accidentalType() != AccidentalType::NONE)</a>
+<a name="ln499">            func(data, &amp;_bottomAccid);</a>
+<a name="ln500">      }</a>
+<a name="ln501"> </a>
+<a name="ln502">//---------------------------------------------------------</a>
+<a name="ln503">//   noteHead</a>
+<a name="ln504">//---------------------------------------------------------</a>
+<a name="ln505"> </a>
+<a name="ln506">SymId Ambitus::noteHead() const</a>
+<a name="ln507">      {</a>
+<a name="ln508">      int hg = 1;</a>
+<a name="ln509">      NoteHead::Type ht  = NoteHead::Type::HEAD_QUARTER;</a>
+<a name="ln510"> </a>
+<a name="ln511">      if (_noteHeadType != NoteHead::Type::HEAD_AUTO)</a>
+<a name="ln512">            ht = _noteHeadType;</a>
+<a name="ln513"> </a>
+<a name="ln514">      SymId t = Note::noteHead(hg, _noteHeadGroup, ht);</a>
+<a name="ln515">      if (t == SymId::noSym) {</a>
+<a name="ln516">            qDebug(&quot;invalid notehead %d/%d&quot;, int(_noteHeadGroup), int(_noteHeadType));</a>
+<a name="ln517">            t = Note::noteHead(0, NoteHead::Group::HEAD_NORMAL, ht);</a>
+<a name="ln518">            }</a>
+<a name="ln519">      return t;</a>
+<a name="ln520">      }</a>
+<a name="ln521"> </a>
+<a name="ln522">//---------------------------------------------------------</a>
+<a name="ln523">//   headWidth</a>
+<a name="ln524">//</a>
+<a name="ln525">//    returns the width of the notehead symbol</a>
+<a name="ln526">//---------------------------------------------------------</a>
+<a name="ln527"> </a>
+<a name="ln528">qreal Ambitus::headWidth() const</a>
+<a name="ln529">      {</a>
+<a name="ln530">//      int head  = noteHead();</a>
+<a name="ln531">//      qreal val = symbols[score()-&gt;symIdx()][head].width(magS());</a>
+<a name="ln532">//      return val;</a>
+<a name="ln533">      return symWidth(noteHead());</a>
+<a name="ln534">      }</a>
+<a name="ln535"> </a>
+<a name="ln536">//---------------------------------------------------------</a>
+<a name="ln537">//   pagePos</a>
+<a name="ln538">//---------------------------------------------------------</a>
+<a name="ln539"> </a>
+<a name="ln540">QPointF Ambitus::pagePos() const</a>
+<a name="ln541">      {</a>
+<a name="ln542">      if (parent() == 0)</a>
+<a name="ln543">            return pos();</a>
+<a name="ln544">      System* system = segment()-&gt;measure()-&gt;system();</a>
+<a name="ln545">      qreal yp = y();</a>
+<a name="ln546">      if (system)</a>
+<a name="ln547">            yp += system-&gt;staff(staffIdx())-&gt;y() + system-&gt;y();</a>
+<a name="ln548">      return QPointF(pageX(), yp);</a>
+<a name="ln549">      }</a>
+<a name="ln550"> </a>
+<a name="ln551">//---------------------------------------------------------</a>
+<a name="ln552">//   normalize</a>
+<a name="ln553">//</a>
+<a name="ln554">//    makes sure _topPitch is not &lt; _bottomPitch</a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556"> </a>
+<a name="ln557">void Ambitus::normalize()</a>
+<a name="ln558">      {</a>
+<a name="ln559">      if (_topPitch &lt; _bottomPitch) {</a>
+<a name="ln560">            int temp    = _topPitch;</a>
+<a name="ln561">            _topPitch   = _bottomPitch;</a>
+<a name="ln562">            _bottomPitch= temp;</a>
+<a name="ln563">            temp        = _topTpc;</a>
+<a name="ln564">            _topTpc     = _bottomTpc;</a>
+<a name="ln565">            _bottomTpc  = temp;</a>
+<a name="ln566">            }</a>
+<a name="ln567">      }</a>
+<a name="ln568"> </a>
+<a name="ln569">//---------------------------------------------------------</a>
+<a name="ln570">//   updateRange</a>
+<a name="ln571">//</a>
+<a name="ln572">//    scans the staff contents up to next section break to update the range pitches/tpc's</a>
+<a name="ln573">//---------------------------------------------------------</a>
+<a name="ln574"> </a>
+<a name="ln575">void Ambitus::updateRange()</a>
+<a name="ln576">      {</a>
+<a name="ln577">      if (!segment())</a>
+<a name="ln578">            return;</a>
+<a name="ln579">      Chord* chord;</a>
+<a name="ln580">      int   firstTrack  = track();</a>
+<a name="ln581">      int   lastTrack   = firstTrack + VOICES-1;</a>
+<a name="ln582">      int   pitchTop    = -1000;</a>
+<a name="ln583">      int   pitchBottom = 1000;</a>
+<a name="ln584">      int   tpcTop      = 0;  // Initialized to prevent warning</a>
+<a name="ln585">      int   tpcBottom   = 0;  // Initialized to prevent warning</a>
+<a name="ln586">      int   trk;</a>
+<a name="ln587">      Measure* meas     = segment()-&gt;measure();</a>
+<a name="ln588">      Segment* segm     = meas-&gt;findSegment(SegmentType::ChordRest, segment()-&gt;tick());</a>
+<a name="ln589">      bool     stop     = meas-&gt;sectionBreak();</a>
+<a name="ln590">      while (segm) {</a>
+<a name="ln591">            // moved to another measure?</a>
+<a name="ln592">            if (segm-&gt;measure() != meas) {</a>
+<a name="ln593">                  // if section break has been found, stop here</a>
+<a name="ln594">                  if (stop)</a>
+<a name="ln595">                        break;</a>
+<a name="ln596">                  // update meas and stop condition</a>
+<a name="ln597">                  meas = segm-&gt;measure();</a>
+<a name="ln598">                  stop = meas-&gt;sectionBreak();</a>
+<a name="ln599">                  }</a>
+<a name="ln600">            // scan all relevant tracks of this segment for chords</a>
+<a name="ln601">            for (trk = firstTrack; trk &lt;= lastTrack; trk++) {</a>
+<a name="ln602">                  Element* e = segm-&gt;element(trk);</a>
+<a name="ln603">                  if (!e || !e-&gt;isChord())</a>
+<a name="ln604">                        continue;</a>
+<a name="ln605">                  chord = toChord(e);</a>
+<a name="ln606">                  // update pitch range (with associated tpc's)</a>
+<a name="ln607">                  for (Note* n : chord-&gt;notes()) {</a>
+<a name="ln608">                        if (!n-&gt;play())         // skip notes which are not to be played</a>
+<a name="ln609">                              continue;</a>
+<a name="ln610">                        int pitch = n-&gt;ppitch();</a>
+<a name="ln611">                        if (pitch &gt; pitchTop) {</a>
+<a name="ln612">                              pitchTop = pitch;</a>
+<a name="ln613">                              tpcTop   = n-&gt;tpc();</a>
+<a name="ln614">                              }</a>
+<a name="ln615">                        if (pitch &lt; pitchBottom) {</a>
+<a name="ln616">                              pitchBottom = pitch;</a>
+<a name="ln617">                              tpcBottom   = n-&gt;tpc();</a>
+<a name="ln618">                              }</a>
+<a name="ln619">                        }</a>
+<a name="ln620">                  }</a>
+<a name="ln621">            segm = segm-&gt;nextCR();</a>
+<a name="ln622">            }</a>
+<a name="ln623"> </a>
+<a name="ln624">      if (pitchTop &gt; -1000) {             // if something has been found, update this</a>
+<a name="ln625">            _topPitch    = pitchTop;</a>
+<a name="ln626">            _bottomPitch = pitchBottom;</a>
+<a name="ln627">            _topTpc      = tpcTop;</a>
+<a name="ln628">            _bottomTpc   = tpcBottom;</a>
+<a name="ln629">            }</a>
+<a name="ln630">      }</a>
+<a name="ln631"> </a>
+<a name="ln632">//---------------------------------------------------------</a>
+<a name="ln633">//   getProperty</a>
+<a name="ln634">//---------------------------------------------------------</a>
+<a name="ln635"> </a>
+<a name="ln636">QVariant Ambitus::getProperty(Pid propertyId) const</a>
+<a name="ln637">      {</a>
+<a name="ln638">      switch(propertyId) {</a>
+<a name="ln639">            case Pid::HEAD_GROUP:</a>
+<a name="ln640">                  return int(noteHeadGroup());</a>
+<a name="ln641">            case Pid::HEAD_TYPE:</a>
+<a name="ln642">                  return int(noteHeadType());</a>
+<a name="ln643">            case Pid::MIRROR_HEAD:</a>
+<a name="ln644">                  return int(direction());</a>
+<a name="ln645">            case Pid::GHOST:                 // recycled property = _hasLine</a>
+<a name="ln646">                  return hasLine();</a>
+<a name="ln647">            case Pid::LINE_WIDTH:</a>
+<a name="ln648">                  return lineWidth();</a>
+<a name="ln649">            case Pid::TPC1:</a>
+<a name="ln650">                  return topTpc();</a>
+<a name="ln651">            case Pid::FBPARENTHESIS1:        // recycled property = _bottomTpc</a>
+<a name="ln652">                  return bottomTpc();</a>
+<a name="ln653">            case Pid::PITCH:</a>
+<a name="ln654">                  return topPitch();</a>
+<a name="ln655">            case Pid::FBPARENTHESIS2:        // recycled property = _bottomPitch</a>
+<a name="ln656">                  return bottomPitch();</a>
+<a name="ln657">            case Pid::FBPARENTHESIS3:        // recycled property = octave of _topPitch</a>
+<a name="ln658">                  return topOctave();</a>
+<a name="ln659">            case Pid::FBPARENTHESIS4:        // recycled property = octave of _bottomPitch</a>
+<a name="ln660">                  return bottomOctave();</a>
+<a name="ln661">            default:</a>
+<a name="ln662">                  return Element::getProperty(propertyId);</a>
+<a name="ln663">            }</a>
+<a name="ln664">      }</a>
+<a name="ln665"> </a>
+<a name="ln666">//---------------------------------------------------------</a>
+<a name="ln667">//   setProperty</a>
+<a name="ln668">//---------------------------------------------------------</a>
+<a name="ln669"> </a>
+<a name="ln670">bool Ambitus::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln671">      {</a>
+<a name="ln672">      switch (propertyId) {</a>
+<a name="ln673">            case Pid::HEAD_GROUP:</a>
+<a name="ln674">                  setNoteHeadGroup( NoteHead::Group(v.toInt()) );</a>
+<a name="ln675">                  break;</a>
+<a name="ln676">            case Pid::HEAD_TYPE:</a>
+<a name="ln677">                  setNoteHeadType( NoteHead::Type(v.toInt()) );</a>
+<a name="ln678">                  break;</a>
+<a name="ln679">            case Pid::MIRROR_HEAD:</a>
+<a name="ln680">                  setDirection(MScore::DirectionH(v.toInt()) );</a>
+<a name="ln681">                  break;</a>
+<a name="ln682">            case Pid::GHOST:                 // recycled property = _hasLine</a>
+<a name="ln683">                  setHasLine(v.toBool());</a>
+<a name="ln684">                  break;</a>
+<a name="ln685">            case Pid::LINE_WIDTH:</a>
+<a name="ln686">                  setLineWidth(v.value&lt;Spatium&gt;());</a>
+<a name="ln687">                  break;</a>
+<a name="ln688">            case Pid::TPC1:</a>
+<a name="ln689">                  setTopTpc(v.toInt());</a>
+<a name="ln690">                  break;</a>
+<a name="ln691">            case Pid::FBPARENTHESIS1:        // recycled property = _bottomTpc</a>
+<a name="ln692">                  setBottomTpc(v.toInt());</a>
+<a name="ln693">                  break;</a>
+<a name="ln694">            case Pid::PITCH:</a>
+<a name="ln695">                  setTopPitch(v.toInt());</a>
+<a name="ln696">                  break;</a>
+<a name="ln697">            case Pid::FBPARENTHESIS2:        // recycled property = _bottomPitch</a>
+<a name="ln698">                  setBottomPitch(v.toInt());</a>
+<a name="ln699">                  break;</a>
+<a name="ln700">            case Pid::FBPARENTHESIS3:        // recycled property = octave of _topPitch</a>
+<a name="ln701">                  setTopPitch(topPitch() % 12 + v.toInt() * 12);</a>
+<a name="ln702">                  break;</a>
+<a name="ln703">            case Pid::FBPARENTHESIS4:        // recycled property = octave of _bottomPitch</a>
+<a name="ln704">                  setBottomPitch(bottomPitch() % 12 + v.toInt() * 12);</a>
+<a name="ln705">                  break;</a>
+<a name="ln706">            default:</a>
+<a name="ln707">                  return Element::setProperty(propertyId, v);</a>
+<a name="ln708">            }</a>
+<a name="ln709">      triggerLayout();</a>
+<a name="ln710">      return true;</a>
+<a name="ln711">      }</a>
+<a name="ln712"> </a>
+<a name="ln713">//---------------------------------------------------------</a>
+<a name="ln714">//   propertyDefault</a>
+<a name="ln715">//---------------------------------------------------------</a>
+<a name="ln716"> </a>
+<a name="ln717">QVariant Ambitus::propertyDefault(Pid id) const</a>
+<a name="ln718">      {</a>
+<a name="ln719">      switch(id) {</a>
+<a name="ln720">            case Pid::HEAD_GROUP:</a>
+<a name="ln721">                  return int(NOTEHEADGROUP_DEFAULT);</a>
+<a name="ln722">            case Pid::HEAD_TYPE:</a>
+<a name="ln723">                  return int(NOTEHEADTYPE_DEFAULT);</a>
+<a name="ln724">            case Pid::MIRROR_HEAD:</a>
+<a name="ln725">                  return int(DIR_DEFAULT);</a>
+<a name="ln726">            case Pid::GHOST:</a>
+<a name="ln727">                  return HASLINE_DEFAULT;</a>
+<a name="ln728">            case Pid::LINE_WIDTH:</a>
+<a name="ln729">                  return Spatium(LINEWIDTH_DEFAULT);</a>
+<a name="ln730">            case Pid::TPC1:                  // no defaults for pitches, tpc's and octaves</a>
+<a name="ln731">            case Pid::FBPARENTHESIS1:</a>
+<a name="ln732">            case Pid::PITCH:</a>
+<a name="ln733">            case Pid::FBPARENTHESIS2:</a>
+<a name="ln734">            case Pid::FBPARENTHESIS3:</a>
+<a name="ln735">            case Pid::FBPARENTHESIS4:</a>
+<a name="ln736">                  break;</a>
+<a name="ln737">            default:</a>
+<a name="ln738">                  return Element::propertyDefault(id);</a>
+<a name="ln739">            }</a>
+<a name="ln740">      return QVariant();</a>
+<a name="ln741">      }</a>
+<a name="ln742"> </a>
+<a name="ln743">//---------------------------------------------------------</a>
+<a name="ln744">//   nextSegmentElement</a>
+<a name="ln745">//---------------------------------------------------------</a>
+<a name="ln746"> </a>
+<a name="ln747">Element* Ambitus::nextSegmentElement()</a>
+<a name="ln748">      {</a>
+<a name="ln749">      return segment()-&gt;firstInNextSegments(staffIdx());</a>
+<a name="ln750">      }</a>
+<a name="ln751"> </a>
+<a name="ln752">//---------------------------------------------------------</a>
+<a name="ln753">//   prevSegmentElement</a>
+<a name="ln754">//---------------------------------------------------------</a>
+<a name="ln755"> </a>
+<a name="ln756">Element* Ambitus::prevSegmentElement()</a>
+<a name="ln757">      {</a>
+<a name="ln758">      return segment()-&gt;lastInPrevSegments(staffIdx());</a>
+<a name="ln759">      }</a>
+<a name="ln760"> </a>
+<a name="ln761">//---------------------------------------------------------</a>
+<a name="ln762">//   accessibleInfo</a>
+<a name="ln763">//---------------------------------------------------------</a>
+<a name="ln764"> </a>
+<a name="ln765">QString Ambitus::accessibleInfo() const</a>
+<a name="ln766">      {</a>
+<a name="ln767">      return QObject::tr(&quot;%1; Top pitch: %2%3; Bottom pitch: %4%5&quot;).arg(Element::accessibleInfo())</a>
+<a name="ln768">                                                          .arg(tpc2name(topTpc(), NoteSpellingType::STANDARD, NoteCaseType::AUTO, false))</a>
+<a name="ln769">                                                          .arg(QString::number(topOctave()))</a>
+<a name="ln770">                                                          .arg(tpc2name(bottomTpc(), NoteSpellingType::STANDARD, NoteCaseType::AUTO, false))</a>
+<a name="ln771">                                                          .arg(QString::number(bottomOctave()));</a>
+<a name="ln772">      }</a>
+<a name="ln773">}</a>
+<a name="ln774"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

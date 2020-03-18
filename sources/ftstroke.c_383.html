@@ -1,0 +1,2516 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ftstroke.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ftstroke.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    FreeType path stroker (body).                                        */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2002-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_STROKER_H</a>
+<a name="ln21">#include FT_TRIGONOMETRY_H</a>
+<a name="ln22">#include FT_OUTLINE_H</a>
+<a name="ln23">#include FT_INTERNAL_MEMORY_H</a>
+<a name="ln24">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln25">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;basepic.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29"> </a>
+<a name="ln30">  /* declare an extern to access `ft_outline_glyph_class' globally     */</a>
+<a name="ln31">  /* allocated  in `ftglyph.c', and use the FT_OUTLINE_GLYPH_CLASS_GET */</a>
+<a name="ln32">  /* macro to access it when FT_CONFIG_OPTION_PIC is defined           */</a>
+<a name="ln33">#ifndef FT_CONFIG_OPTION_PIC</a>
+<a name="ln34">  FT_CALLBACK_TABLE const FT_Glyph_Class  ft_outline_glyph_class;</a>
+<a name="ln35">#endif</a>
+<a name="ln36"> </a>
+<a name="ln37"> </a>
+<a name="ln38">  /* documentation is in ftstroke.h */</a>
+<a name="ln39"> </a>
+<a name="ln40">  FT_EXPORT_DEF( FT_StrokerBorder )</a>
+<a name="ln41">  FT_Outline_GetInsideBorder( FT_Outline*  outline )</a>
+<a name="ln42">  {</a>
+<a name="ln43">    FT_Orientation  o = FT_Outline_Get_Orientation( outline );</a>
+<a name="ln44"> </a>
+<a name="ln45"> </a>
+<a name="ln46">    return o == FT_ORIENTATION_TRUETYPE ? FT_STROKER_BORDER_RIGHT</a>
+<a name="ln47">                                        : FT_STROKER_BORDER_LEFT;</a>
+<a name="ln48">  }</a>
+<a name="ln49"> </a>
+<a name="ln50"> </a>
+<a name="ln51">  /* documentation is in ftstroke.h */</a>
+<a name="ln52"> </a>
+<a name="ln53">  FT_EXPORT_DEF( FT_StrokerBorder )</a>
+<a name="ln54">  FT_Outline_GetOutsideBorder( FT_Outline*  outline )</a>
+<a name="ln55">  {</a>
+<a name="ln56">    FT_Orientation  o = FT_Outline_Get_Orientation( outline );</a>
+<a name="ln57"> </a>
+<a name="ln58"> </a>
+<a name="ln59">    return o == FT_ORIENTATION_TRUETYPE ? FT_STROKER_BORDER_LEFT</a>
+<a name="ln60">                                        : FT_STROKER_BORDER_RIGHT;</a>
+<a name="ln61">  }</a>
+<a name="ln62"> </a>
+<a name="ln63"> </a>
+<a name="ln64">  /*************************************************************************/</a>
+<a name="ln65">  /*************************************************************************/</a>
+<a name="ln66">  /*****                                                               *****/</a>
+<a name="ln67">  /*****                      BEZIER COMPUTATIONS                      *****/</a>
+<a name="ln68">  /*****                                                               *****/</a>
+<a name="ln69">  /*************************************************************************/</a>
+<a name="ln70">  /*************************************************************************/</a>
+<a name="ln71"> </a>
+<a name="ln72">#define FT_SMALL_CONIC_THRESHOLD  ( FT_ANGLE_PI / 6 )</a>
+<a name="ln73">#define FT_SMALL_CUBIC_THRESHOLD  ( FT_ANGLE_PI / 8 )</a>
+<a name="ln74"> </a>
+<a name="ln75">#define FT_EPSILON  2</a>
+<a name="ln76"> </a>
+<a name="ln77">#define FT_IS_SMALL( x )  ( (x) &gt; -FT_EPSILON &amp;&amp; (x) &lt; FT_EPSILON )</a>
+<a name="ln78"> </a>
+<a name="ln79"> </a>
+<a name="ln80">  static FT_Pos</a>
+<a name="ln81">  ft_pos_abs( FT_Pos  x )</a>
+<a name="ln82">  {</a>
+<a name="ln83">    return x &gt;= 0 ? x : -x;</a>
+<a name="ln84">  }</a>
+<a name="ln85"> </a>
+<a name="ln86"> </a>
+<a name="ln87">  static void</a>
+<a name="ln88">  ft_conic_split( FT_Vector*  base )</a>
+<a name="ln89">  {</a>
+<a name="ln90">    FT_Pos  a, b;</a>
+<a name="ln91"> </a>
+<a name="ln92"> </a>
+<a name="ln93">    base[4].x = base[2].x;</a>
+<a name="ln94">    b = base[1].x;</a>
+<a name="ln95">    a = base[3].x = ( base[2].x + b ) / 2;</a>
+<a name="ln96">    b = base[1].x = ( base[0].x + b ) / 2;</a>
+<a name="ln97">    base[2].x = ( a + b ) / 2;</a>
+<a name="ln98"> </a>
+<a name="ln99">    base[4].y = base[2].y;</a>
+<a name="ln100">    b = base[1].y;</a>
+<a name="ln101">    a = base[3].y = ( base[2].y + b ) / 2;</a>
+<a name="ln102">    b = base[1].y = ( base[0].y + b ) / 2;</a>
+<a name="ln103">    base[2].y = ( a + b ) / 2;</a>
+<a name="ln104">  }</a>
+<a name="ln105"> </a>
+<a name="ln106"> </a>
+<a name="ln107">  static FT_Bool</a>
+<a name="ln108">  ft_conic_is_small_enough( FT_Vector*  base,</a>
+<a name="ln109">                            FT_Angle   *angle_in,</a>
+<a name="ln110">                            FT_Angle   *angle_out )</a>
+<a name="ln111">  {</a>
+<a name="ln112">    FT_Vector  d1, d2;</a>
+<a name="ln113">    FT_Angle   theta;</a>
+<a name="ln114">    FT_Int     close1, close2;</a>
+<a name="ln115"> </a>
+<a name="ln116"> </a>
+<a name="ln117">    d1.x = base[1].x - base[2].x;</a>
+<a name="ln118">    d1.y = base[1].y - base[2].y;</a>
+<a name="ln119">    d2.x = base[0].x - base[1].x;</a>
+<a name="ln120">    d2.y = base[0].y - base[1].y;</a>
+<a name="ln121"> </a>
+<a name="ln122">    close1 = FT_IS_SMALL( d1.x ) &amp;&amp; FT_IS_SMALL( d1.y );</a>
+<a name="ln123">    close2 = FT_IS_SMALL( d2.x ) &amp;&amp; FT_IS_SMALL( d2.y );</a>
+<a name="ln124"> </a>
+<a name="ln125">    if ( close1 )</a>
+<a name="ln126">    {</a>
+<a name="ln127">      if ( close2 )</a>
+<a name="ln128">      {</a>
+<a name="ln129">        /* basically a point;                      */</a>
+<a name="ln130">        /* do nothing to retain original direction */</a>
+<a name="ln131">      }</a>
+<a name="ln132">      else</a>
+<a name="ln133">      {</a>
+<a name="ln134">        *angle_in  =</a>
+<a name="ln135">        *angle_out = FT_Atan2( d2.x, d2.y );</a>
+<a name="ln136">      }</a>
+<a name="ln137">    }</a>
+<a name="ln138">    else /* !close1 */</a>
+<a name="ln139">    {</a>
+<a name="ln140">      if ( close2 )</a>
+<a name="ln141">      {</a>
+<a name="ln142">        *angle_in  =</a>
+<a name="ln143">        *angle_out = FT_Atan2( d1.x, d1.y );</a>
+<a name="ln144">      }</a>
+<a name="ln145">      else</a>
+<a name="ln146">      {</a>
+<a name="ln147">        *angle_in  = FT_Atan2( d1.x, d1.y );</a>
+<a name="ln148">        *angle_out = FT_Atan2( d2.x, d2.y );</a>
+<a name="ln149">      }</a>
+<a name="ln150">    }</a>
+<a name="ln151"> </a>
+<a name="ln152">    theta = ft_pos_abs( FT_Angle_Diff( *angle_in, *angle_out ) );</a>
+<a name="ln153"> </a>
+<a name="ln154">    return FT_BOOL( theta &lt; FT_SMALL_CONIC_THRESHOLD );</a>
+<a name="ln155">  }</a>
+<a name="ln156"> </a>
+<a name="ln157"> </a>
+<a name="ln158">  static void</a>
+<a name="ln159">  ft_cubic_split( FT_Vector*  base )</a>
+<a name="ln160">  {</a>
+<a name="ln161">    FT_Pos  a, b, c, d;</a>
+<a name="ln162"> </a>
+<a name="ln163"> </a>
+<a name="ln164">    base[6].x = base[3].x;</a>
+<a name="ln165">    c = base[1].x;</a>
+<a name="ln166">    d = base[2].x;</a>
+<a name="ln167">    base[1].x = a = ( base[0].x + c ) / 2;</a>
+<a name="ln168">    base[5].x = b = ( base[3].x + d ) / 2;</a>
+<a name="ln169">    c = ( c + d ) / 2;</a>
+<a name="ln170">    base[2].x = a = ( a + c ) / 2;</a>
+<a name="ln171">    base[4].x = b = ( b + c ) / 2;</a>
+<a name="ln172">    base[3].x = ( a + b ) / 2;</a>
+<a name="ln173"> </a>
+<a name="ln174">    base[6].y = base[3].y;</a>
+<a name="ln175">    c = base[1].y;</a>
+<a name="ln176">    d = base[2].y;</a>
+<a name="ln177">    base[1].y = a = ( base[0].y + c ) / 2;</a>
+<a name="ln178">    base[5].y = b = ( base[3].y + d ) / 2;</a>
+<a name="ln179">    c = ( c + d ) / 2;</a>
+<a name="ln180">    base[2].y = a = ( a + c ) / 2;</a>
+<a name="ln181">    base[4].y = b = ( b + c ) / 2;</a>
+<a name="ln182">    base[3].y = ( a + b ) / 2;</a>
+<a name="ln183">  }</a>
+<a name="ln184"> </a>
+<a name="ln185"> </a>
+<a name="ln186">  /* Return the average of `angle1' and `angle2'.            */</a>
+<a name="ln187">  /* This gives correct result even if `angle1' and `angle2' */</a>
+<a name="ln188">  /* have opposite signs.                                    */</a>
+<a name="ln189">  static FT_Angle</a>
+<a name="ln190">  ft_angle_mean( FT_Angle  angle1,</a>
+<a name="ln191">                 FT_Angle  angle2 )</a>
+<a name="ln192">  {</a>
+<a name="ln193">    return angle1 + FT_Angle_Diff( angle1, angle2 ) / 2;</a>
+<a name="ln194">  }</a>
+<a name="ln195"> </a>
+<a name="ln196"> </a>
+<a name="ln197">  static FT_Bool</a>
+<a name="ln198">  ft_cubic_is_small_enough( FT_Vector*  base,</a>
+<a name="ln199">                            FT_Angle   *angle_in,</a>
+<a name="ln200">                            FT_Angle   *angle_mid,</a>
+<a name="ln201">                            FT_Angle   *angle_out )</a>
+<a name="ln202">  {</a>
+<a name="ln203">    FT_Vector  d1, d2, d3;</a>
+<a name="ln204">    FT_Angle   theta1, theta2;</a>
+<a name="ln205">    FT_Int     close1, close2, close3;</a>
+<a name="ln206"> </a>
+<a name="ln207"> </a>
+<a name="ln208">    d1.x = base[2].x - base[3].x;</a>
+<a name="ln209">    d1.y = base[2].y - base[3].y;</a>
+<a name="ln210">    d2.x = base[1].x - base[2].x;</a>
+<a name="ln211">    d2.y = base[1].y - base[2].y;</a>
+<a name="ln212">    d3.x = base[0].x - base[1].x;</a>
+<a name="ln213">    d3.y = base[0].y - base[1].y;</a>
+<a name="ln214"> </a>
+<a name="ln215">    close1 = FT_IS_SMALL( d1.x ) &amp;&amp; FT_IS_SMALL( d1.y );</a>
+<a name="ln216">    close2 = FT_IS_SMALL( d2.x ) &amp;&amp; FT_IS_SMALL( d2.y );</a>
+<a name="ln217">    close3 = FT_IS_SMALL( d3.x ) &amp;&amp; FT_IS_SMALL( d3.y );</a>
+<a name="ln218"> </a>
+<a name="ln219">    if ( close1 )</a>
+<a name="ln220">    {</a>
+<a name="ln221">      if ( close2 )</a>
+<a name="ln222">      {</a>
+<a name="ln223">        if ( close3 )</a>
+<a name="ln224">        {</a>
+<a name="ln225">          /* basically a point;                      */</a>
+<a name="ln226">          /* do nothing to retain original direction */</a>
+<a name="ln227">        }</a>
+<a name="ln228">        else /* !close3 */</a>
+<a name="ln229">        {</a>
+<a name="ln230">          *angle_in  =</a>
+<a name="ln231">          *angle_mid =</a>
+<a name="ln232">          *angle_out = FT_Atan2( d3.x, d3.y );</a>
+<a name="ln233">        }</a>
+<a name="ln234">      }</a>
+<a name="ln235">      else /* !close2 */</a>
+<a name="ln236">      {</a>
+<a name="ln237">        if ( close3 )</a>
+<a name="ln238">        {</a>
+<a name="ln239">          *angle_in  =</a>
+<a name="ln240">          *angle_mid =</a>
+<a name="ln241">          *angle_out = FT_Atan2( d2.x, d2.y );</a>
+<a name="ln242">        }</a>
+<a name="ln243">        else /* !close3 */</a>
+<a name="ln244">        {</a>
+<a name="ln245">          *angle_in  =</a>
+<a name="ln246">          *angle_mid = FT_Atan2( d2.x, d2.y );</a>
+<a name="ln247">          *angle_out = FT_Atan2( d3.x, d3.y );</a>
+<a name="ln248">        }</a>
+<a name="ln249">      }</a>
+<a name="ln250">    }</a>
+<a name="ln251">    else /* !close1 */</a>
+<a name="ln252">    {</a>
+<a name="ln253">      if ( close2 )</a>
+<a name="ln254">      {</a>
+<a name="ln255">        if ( close3 )</a>
+<a name="ln256">        {</a>
+<a name="ln257">          *angle_in  =</a>
+<a name="ln258">          *angle_mid =</a>
+<a name="ln259">          *angle_out = FT_Atan2( d1.x, d1.y );</a>
+<a name="ln260">        }</a>
+<a name="ln261">        else /* !close3 */</a>
+<a name="ln262">        {</a>
+<a name="ln263">          *angle_in  = FT_Atan2( d1.x, d1.y );</a>
+<a name="ln264">          *angle_out = FT_Atan2( d3.x, d3.y );</a>
+<a name="ln265">          *angle_mid = ft_angle_mean( *angle_in, *angle_out );</a>
+<a name="ln266">        }</a>
+<a name="ln267">      }</a>
+<a name="ln268">      else /* !close2 */</a>
+<a name="ln269">      {</a>
+<a name="ln270">        if ( close3 )</a>
+<a name="ln271">        {</a>
+<a name="ln272">          *angle_in  = FT_Atan2( d1.x, d1.y );</a>
+<a name="ln273">          *angle_mid =</a>
+<a name="ln274">          *angle_out = FT_Atan2( d2.x, d2.y );</a>
+<a name="ln275">        }</a>
+<a name="ln276">        else /* !close3 */</a>
+<a name="ln277">        {</a>
+<a name="ln278">          *angle_in  = FT_Atan2( d1.x, d1.y );</a>
+<a name="ln279">          *angle_mid = FT_Atan2( d2.x, d2.y );</a>
+<a name="ln280">          *angle_out = FT_Atan2( d3.x, d3.y );</a>
+<a name="ln281">        }</a>
+<a name="ln282">      }</a>
+<a name="ln283">    }</a>
+<a name="ln284"> </a>
+<a name="ln285">    theta1 = ft_pos_abs( FT_Angle_Diff( *angle_in,  *angle_mid ) );</a>
+<a name="ln286">    theta2 = ft_pos_abs( FT_Angle_Diff( *angle_mid, *angle_out ) );</a>
+<a name="ln287"> </a>
+<a name="ln288">    return FT_BOOL( theta1 &lt; FT_SMALL_CUBIC_THRESHOLD &amp;&amp;</a>
+<a name="ln289">                    theta2 &lt; FT_SMALL_CUBIC_THRESHOLD );</a>
+<a name="ln290">  }</a>
+<a name="ln291"> </a>
+<a name="ln292"> </a>
+<a name="ln293">  /*************************************************************************/</a>
+<a name="ln294">  /*************************************************************************/</a>
+<a name="ln295">  /*****                                                               *****/</a>
+<a name="ln296">  /*****                       STROKE BORDERS                          *****/</a>
+<a name="ln297">  /*****                                                               *****/</a>
+<a name="ln298">  /*************************************************************************/</a>
+<a name="ln299">  /*************************************************************************/</a>
+<a name="ln300"> </a>
+<a name="ln301">  typedef enum  FT_StrokeTags_</a>
+<a name="ln302">  {</a>
+<a name="ln303">    FT_STROKE_TAG_ON    = 1,   /* on-curve point  */</a>
+<a name="ln304">    FT_STROKE_TAG_CUBIC = 2,   /* cubic off-point */</a>
+<a name="ln305">    FT_STROKE_TAG_BEGIN = 4,   /* sub-path start  */</a>
+<a name="ln306">    FT_STROKE_TAG_END   = 8    /* sub-path end    */</a>
+<a name="ln307"> </a>
+<a name="ln308">  } FT_StrokeTags;</a>
+<a name="ln309"> </a>
+<a name="ln310">#define  FT_STROKE_TAG_BEGIN_END  ( FT_STROKE_TAG_BEGIN | FT_STROKE_TAG_END )</a>
+<a name="ln311"> </a>
+<a name="ln312">  typedef struct  FT_StrokeBorderRec_</a>
+<a name="ln313">  {</a>
+<a name="ln314">    FT_UInt     num_points;</a>
+<a name="ln315">    FT_UInt     max_points;</a>
+<a name="ln316">    FT_Vector*  points;</a>
+<a name="ln317">    FT_Byte*    tags;</a>
+<a name="ln318">    FT_Bool     movable;  /* TRUE for ends of lineto borders */</a>
+<a name="ln319">    FT_Int      start;    /* index of current sub-path start point */</a>
+<a name="ln320">    FT_Memory   memory;</a>
+<a name="ln321">    FT_Bool     valid;</a>
+<a name="ln322"> </a>
+<a name="ln323">  } FT_StrokeBorderRec, *FT_StrokeBorder;</a>
+<a name="ln324"> </a>
+<a name="ln325"> </a>
+<a name="ln326">  static FT_Error</a>
+<a name="ln327">  ft_stroke_border_grow( FT_StrokeBorder  border,</a>
+<a name="ln328">                         FT_UInt          new_points )</a>
+<a name="ln329">  {</a>
+<a name="ln330">    FT_UInt   old_max = border-&gt;max_points;</a>
+<a name="ln331">    FT_UInt   new_max = border-&gt;num_points + new_points;</a>
+<a name="ln332">    FT_Error  error   = FT_Err_Ok;</a>
+<a name="ln333"> </a>
+<a name="ln334"> </a>
+<a name="ln335">    if ( new_max &gt; old_max )</a>
+<a name="ln336">    {</a>
+<a name="ln337">      FT_UInt    cur_max = old_max;</a>
+<a name="ln338">      FT_Memory  memory  = border-&gt;memory;</a>
+<a name="ln339"> </a>
+<a name="ln340"> </a>
+<a name="ln341">      while ( cur_max &lt; new_max )</a>
+<a name="ln342">        cur_max += ( cur_max &gt;&gt; 1 ) + 16;</a>
+<a name="ln343"> </a>
+<a name="ln344">      if ( FT_RENEW_ARRAY( border-&gt;points, old_max, cur_max ) ||</a>
+<a name="ln345">           FT_RENEW_ARRAY( border-&gt;tags,   old_max, cur_max ) )</a>
+<a name="ln346">        goto Exit;</a>
+<a name="ln347"> </a>
+<a name="ln348">      border-&gt;max_points = cur_max;</a>
+<a name="ln349">    }</a>
+<a name="ln350"> </a>
+<a name="ln351">  Exit:</a>
+<a name="ln352">    return error;</a>
+<a name="ln353">  }</a>
+<a name="ln354"> </a>
+<a name="ln355"> </a>
+<a name="ln356">  static void</a>
+<a name="ln357">  ft_stroke_border_close( FT_StrokeBorder  border,</a>
+<a name="ln358">                          FT_Bool          reverse )</a>
+<a name="ln359">  {</a>
+<a name="ln360">    FT_UInt  start = (FT_UInt)border-&gt;start;</a>
+<a name="ln361">    FT_UInt  count = border-&gt;num_points;</a>
+<a name="ln362"> </a>
+<a name="ln363"> </a>
+<a name="ln364">    FT_ASSERT( border-&gt;start &gt;= 0 );</a>
+<a name="ln365"> </a>
+<a name="ln366">    /* don't record empty paths! */</a>
+<a name="ln367">    if ( count &lt;= start + 1U )</a>
+<a name="ln368">      border-&gt;num_points = start;</a>
+<a name="ln369">    else</a>
+<a name="ln370">    {</a>
+<a name="ln371">      /* copy the last point to the start of this sub-path, since */</a>
+<a name="ln372">      /* it contains the `adjusted' starting coordinates          */</a>
+<a name="ln373">      border-&gt;num_points    = --count;</a>
+<a name="ln374">      border-&gt;points[start] = border-&gt;points[count];</a>
+<a name="ln375"> </a>
+<a name="ln376">      if ( reverse )</a>
+<a name="ln377">      {</a>
+<a name="ln378">        /* reverse the points */</a>
+<a name="ln379">        {</a>
+<a name="ln380">          FT_Vector*  vec1 = border-&gt;points + start + 1;</a>
+<a name="ln381">          FT_Vector*  vec2 = border-&gt;points + count - 1;</a>
+<a name="ln382"> </a>
+<a name="ln383"> </a>
+<a name="ln384">          for ( ; vec1 &lt; vec2; vec1++, vec2-- )</a>
+<a name="ln385">          {</a>
+<a name="ln386">            FT_Vector  tmp;</a>
+<a name="ln387"> </a>
+<a name="ln388"> </a>
+<a name="ln389">            tmp   = *vec1;</a>
+<a name="ln390">            *vec1 = *vec2;</a>
+<a name="ln391">            *vec2 = tmp;</a>
+<a name="ln392">          }</a>
+<a name="ln393">        }</a>
+<a name="ln394"> </a>
+<a name="ln395">        /* then the tags */</a>
+<a name="ln396">        {</a>
+<a name="ln397">          FT_Byte*  tag1 = border-&gt;tags + start + 1;</a>
+<a name="ln398">          FT_Byte*  tag2 = border-&gt;tags + count - 1;</a>
+<a name="ln399"> </a>
+<a name="ln400"> </a>
+<a name="ln401">          for ( ; tag1 &lt; tag2; tag1++, tag2-- )</a>
+<a name="ln402">          {</a>
+<a name="ln403">            FT_Byte  tmp;</a>
+<a name="ln404"> </a>
+<a name="ln405"> </a>
+<a name="ln406">            tmp   = *tag1;</a>
+<a name="ln407">            *tag1 = *tag2;</a>
+<a name="ln408">            *tag2 = tmp;</a>
+<a name="ln409">          }</a>
+<a name="ln410">        }</a>
+<a name="ln411">      }</a>
+<a name="ln412"> </a>
+<a name="ln413">      border-&gt;tags[start    ] |= FT_STROKE_TAG_BEGIN;</a>
+<a name="ln414">      border-&gt;tags[count - 1] |= FT_STROKE_TAG_END;</a>
+<a name="ln415">    }</a>
+<a name="ln416"> </a>
+<a name="ln417">    border-&gt;start   = -1;</a>
+<a name="ln418">    border-&gt;movable = FALSE;</a>
+<a name="ln419">  }</a>
+<a name="ln420"> </a>
+<a name="ln421"> </a>
+<a name="ln422">  static FT_Error</a>
+<a name="ln423">  ft_stroke_border_lineto( FT_StrokeBorder  border,</a>
+<a name="ln424">                           FT_Vector*       to,</a>
+<a name="ln425">                           FT_Bool          movable )</a>
+<a name="ln426">  {</a>
+<a name="ln427">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln428"> </a>
+<a name="ln429"> </a>
+<a name="ln430">    FT_ASSERT( border-&gt;start &gt;= 0 );</a>
+<a name="ln431"> </a>
+<a name="ln432">    if ( border-&gt;movable )</a>
+<a name="ln433">    {</a>
+<a name="ln434">      /* move last point */</a>
+<a name="ln435">      border-&gt;points[border-&gt;num_points - 1] = *to;</a>
+<a name="ln436">    }</a>
+<a name="ln437">    else</a>
+<a name="ln438">    {</a>
+<a name="ln439">      /* don't add zero-length lineto */</a>
+<a name="ln440">      if ( border-&gt;num_points &gt; 0                                          &amp;&amp;</a>
+<a name="ln441">           FT_IS_SMALL( border-&gt;points[border-&gt;num_points - 1].x - to-&gt;x ) &amp;&amp;</a>
+<a name="ln442">           FT_IS_SMALL( border-&gt;points[border-&gt;num_points - 1].y - to-&gt;y ) )</a>
+<a name="ln443">        return error;</a>
+<a name="ln444"> </a>
+<a name="ln445">      /* add one point */</a>
+<a name="ln446">      error = ft_stroke_border_grow( border, 1 );</a>
+<a name="ln447">      if ( !error )</a>
+<a name="ln448">      {</a>
+<a name="ln449">        FT_Vector*  vec = border-&gt;points + border-&gt;num_points;</a>
+<a name="ln450">        FT_Byte*    tag = border-&gt;tags   + border-&gt;num_points;</a>
+<a name="ln451"> </a>
+<a name="ln452"> </a>
+<a name="ln453">        vec[0] = *to;</a>
+<a name="ln454">        tag[0] = FT_STROKE_TAG_ON;</a>
+<a name="ln455"> </a>
+<a name="ln456">        border-&gt;num_points += 1;</a>
+<a name="ln457">      }</a>
+<a name="ln458">    }</a>
+<a name="ln459">    border-&gt;movable = movable;</a>
+<a name="ln460">    return error;</a>
+<a name="ln461">  }</a>
+<a name="ln462"> </a>
+<a name="ln463"> </a>
+<a name="ln464">  static FT_Error</a>
+<a name="ln465">  ft_stroke_border_conicto( FT_StrokeBorder  border,</a>
+<a name="ln466">                            FT_Vector*       control,</a>
+<a name="ln467">                            FT_Vector*       to )</a>
+<a name="ln468">  {</a>
+<a name="ln469">    FT_Error  error;</a>
+<a name="ln470"> </a>
+<a name="ln471"> </a>
+<a name="ln472">    FT_ASSERT( border-&gt;start &gt;= 0 );</a>
+<a name="ln473"> </a>
+<a name="ln474">    error = ft_stroke_border_grow( border, 2 );</a>
+<a name="ln475">    if ( !error )</a>
+<a name="ln476">    {</a>
+<a name="ln477">      FT_Vector*  vec = border-&gt;points + border-&gt;num_points;</a>
+<a name="ln478">      FT_Byte*    tag = border-&gt;tags   + border-&gt;num_points;</a>
+<a name="ln479"> </a>
+<a name="ln480"> </a>
+<a name="ln481">      vec[0] = *control;</a>
+<a name="ln482">      vec[1] = *to;</a>
+<a name="ln483"> </a>
+<a name="ln484">      tag[0] = 0;</a>
+<a name="ln485">      tag[1] = FT_STROKE_TAG_ON;</a>
+<a name="ln486"> </a>
+<a name="ln487">      border-&gt;num_points += 2;</a>
+<a name="ln488">    }</a>
+<a name="ln489"> </a>
+<a name="ln490">    border-&gt;movable = FALSE;</a>
+<a name="ln491"> </a>
+<a name="ln492">    return error;</a>
+<a name="ln493">  }</a>
+<a name="ln494"> </a>
+<a name="ln495"> </a>
+<a name="ln496">  static FT_Error</a>
+<a name="ln497">  ft_stroke_border_cubicto( FT_StrokeBorder  border,</a>
+<a name="ln498">                            FT_Vector*       control1,</a>
+<a name="ln499">                            FT_Vector*       control2,</a>
+<a name="ln500">                            FT_Vector*       to )</a>
+<a name="ln501">  {</a>
+<a name="ln502">    FT_Error  error;</a>
+<a name="ln503"> </a>
+<a name="ln504"> </a>
+<a name="ln505">    FT_ASSERT( border-&gt;start &gt;= 0 );</a>
+<a name="ln506"> </a>
+<a name="ln507">    error = ft_stroke_border_grow( border, 3 );</a>
+<a name="ln508">    if ( !error )</a>
+<a name="ln509">    {</a>
+<a name="ln510">      FT_Vector*  vec = border-&gt;points + border-&gt;num_points;</a>
+<a name="ln511">      FT_Byte*    tag = border-&gt;tags   + border-&gt;num_points;</a>
+<a name="ln512"> </a>
+<a name="ln513"> </a>
+<a name="ln514">      vec[0] = *control1;</a>
+<a name="ln515">      vec[1] = *control2;</a>
+<a name="ln516">      vec[2] = *to;</a>
+<a name="ln517"> </a>
+<a name="ln518">      tag[0] = FT_STROKE_TAG_CUBIC;</a>
+<a name="ln519">      tag[1] = FT_STROKE_TAG_CUBIC;</a>
+<a name="ln520">      tag[2] = FT_STROKE_TAG_ON;</a>
+<a name="ln521"> </a>
+<a name="ln522">      border-&gt;num_points += 3;</a>
+<a name="ln523">    }</a>
+<a name="ln524"> </a>
+<a name="ln525">    border-&gt;movable = FALSE;</a>
+<a name="ln526"> </a>
+<a name="ln527">    return error;</a>
+<a name="ln528">  }</a>
+<a name="ln529"> </a>
+<a name="ln530"> </a>
+<a name="ln531">#define FT_ARC_CUBIC_ANGLE  ( FT_ANGLE_PI / 2 )</a>
+<a name="ln532"> </a>
+<a name="ln533"> </a>
+<a name="ln534">  static FT_Error</a>
+<a name="ln535">  ft_stroke_border_arcto( FT_StrokeBorder  border,</a>
+<a name="ln536">                          FT_Vector*       center,</a>
+<a name="ln537">                          FT_Fixed         radius,</a>
+<a name="ln538">                          FT_Angle         angle_start,</a>
+<a name="ln539">                          FT_Angle         angle_diff )</a>
+<a name="ln540">  {</a>
+<a name="ln541">    FT_Angle   total, angle, step, rotate, next, theta;</a>
+<a name="ln542">    FT_Vector  a, b, a2, b2;</a>
+<a name="ln543">    FT_Fixed   length;</a>
+<a name="ln544">    FT_Error   error = FT_Err_Ok;</a>
+<a name="ln545"> </a>
+<a name="ln546"> </a>
+<a name="ln547">    /* compute start point */</a>
+<a name="ln548">    FT_Vector_From_Polar( &amp;a, radius, angle_start );</a>
+<a name="ln549">    a.x += center-&gt;x;</a>
+<a name="ln550">    a.y += center-&gt;y;</a>
+<a name="ln551"> </a>
+<a name="ln552">    total  = angle_diff;</a>
+<a name="ln553">    angle  = angle_start;</a>
+<a name="ln554">    rotate = ( angle_diff &gt;= 0 ) ? FT_ANGLE_PI2 : -FT_ANGLE_PI2;</a>
+<a name="ln555"> </a>
+<a name="ln556">    while ( total != 0 )</a>
+<a name="ln557">    {</a>
+<a name="ln558">      step = total;</a>
+<a name="ln559">      if ( step &gt; FT_ARC_CUBIC_ANGLE )</a>
+<a name="ln560">        step = FT_ARC_CUBIC_ANGLE;</a>
+<a name="ln561"> </a>
+<a name="ln562">      else if ( step &lt; -FT_ARC_CUBIC_ANGLE )</a>
+<a name="ln563">        step = -FT_ARC_CUBIC_ANGLE;</a>
+<a name="ln564"> </a>
+<a name="ln565">      next  = angle + step;</a>
+<a name="ln566">      theta = step;</a>
+<a name="ln567">      if ( theta &lt; 0 )</a>
+<a name="ln568">        theta = -theta;</a>
+<a name="ln569"> </a>
+<a name="ln570">      theta &gt;&gt;= 1;</a>
+<a name="ln571"> </a>
+<a name="ln572">      /* compute end point */</a>
+<a name="ln573">      FT_Vector_From_Polar( &amp;b, radius, next );</a>
+<a name="ln574">      b.x += center-&gt;x;</a>
+<a name="ln575">      b.y += center-&gt;y;</a>
+<a name="ln576"> </a>
+<a name="ln577">      /* compute first and second control points */</a>
+<a name="ln578">      length = FT_MulDiv( radius, FT_Sin( theta ) * 4,</a>
+<a name="ln579">                          ( 0x10000L + FT_Cos( theta ) ) * 3 );</a>
+<a name="ln580"> </a>
+<a name="ln581">      FT_Vector_From_Polar( &amp;a2, length, angle + rotate );</a>
+<a name="ln582">      a2.x += a.x;</a>
+<a name="ln583">      a2.y += a.y;</a>
+<a name="ln584"> </a>
+<a name="ln585">      FT_Vector_From_Polar( &amp;b2, length, next - rotate );</a>
+<a name="ln586">      b2.x += b.x;</a>
+<a name="ln587">      b2.y += b.y;</a>
+<a name="ln588"> </a>
+<a name="ln589">      /* add cubic arc */</a>
+<a name="ln590">      error = ft_stroke_border_cubicto( border, &amp;a2, &amp;b2, &amp;b );</a>
+<a name="ln591">      if ( error )</a>
+<a name="ln592">        break;</a>
+<a name="ln593"> </a>
+<a name="ln594">      /* process the rest of the arc ?? */</a>
+<a name="ln595">      a      = b;</a>
+<a name="ln596">      total -= step;</a>
+<a name="ln597">      angle  = next;</a>
+<a name="ln598">    }</a>
+<a name="ln599"> </a>
+<a name="ln600">    return error;</a>
+<a name="ln601">  }</a>
+<a name="ln602"> </a>
+<a name="ln603"> </a>
+<a name="ln604">  static FT_Error</a>
+<a name="ln605">  ft_stroke_border_moveto( FT_StrokeBorder  border,</a>
+<a name="ln606">                           FT_Vector*       to )</a>
+<a name="ln607">  {</a>
+<a name="ln608">    /* close current open path if any ? */</a>
+<a name="ln609">    if ( border-&gt;start &gt;= 0 )</a>
+<a name="ln610">      ft_stroke_border_close( border, FALSE );</a>
+<a name="ln611"> </a>
+<a name="ln612">    border-&gt;start = (FT_Int)border-&gt;num_points;</a>
+<a name="ln613">    border-&gt;movable = FALSE;</a>
+<a name="ln614"> </a>
+<a name="ln615">    return ft_stroke_border_lineto( border, to, FALSE );</a>
+<a name="ln616">  }</a>
+<a name="ln617"> </a>
+<a name="ln618"> </a>
+<a name="ln619">  static void</a>
+<a name="ln620">  ft_stroke_border_init( FT_StrokeBorder  border,</a>
+<a name="ln621">                         FT_Memory        memory )</a>
+<a name="ln622">  {</a>
+<a name="ln623">    border-&gt;memory = memory;</a>
+<a name="ln624">    border-&gt;points = NULL;</a>
+<a name="ln625">    border-&gt;tags   = NULL;</a>
+<a name="ln626"> </a>
+<a name="ln627">    border-&gt;num_points = 0;</a>
+<a name="ln628">    border-&gt;max_points = 0;</a>
+<a name="ln629">    border-&gt;start      = -1;</a>
+<a name="ln630">    border-&gt;valid      = FALSE;</a>
+<a name="ln631">  }</a>
+<a name="ln632"> </a>
+<a name="ln633"> </a>
+<a name="ln634">  static void</a>
+<a name="ln635">  ft_stroke_border_reset( FT_StrokeBorder  border )</a>
+<a name="ln636">  {</a>
+<a name="ln637">    border-&gt;num_points = 0;</a>
+<a name="ln638">    border-&gt;start      = -1;</a>
+<a name="ln639">    border-&gt;valid      = FALSE;</a>
+<a name="ln640">  }</a>
+<a name="ln641"> </a>
+<a name="ln642"> </a>
+<a name="ln643">  static void</a>
+<a name="ln644">  ft_stroke_border_done( FT_StrokeBorder  border )</a>
+<a name="ln645">  {</a>
+<a name="ln646">    FT_Memory  memory = border-&gt;memory;</a>
+<a name="ln647"> </a>
+<a name="ln648"> </a>
+<a name="ln649">    FT_FREE( border-&gt;points );</a>
+<a name="ln650">    FT_FREE( border-&gt;tags );</a>
+<a name="ln651"> </a>
+<a name="ln652">    border-&gt;num_points = 0;</a>
+<a name="ln653">    border-&gt;max_points = 0;</a>
+<a name="ln654">    border-&gt;start      = -1;</a>
+<a name="ln655">    border-&gt;valid      = FALSE;</a>
+<a name="ln656">  }</a>
+<a name="ln657"> </a>
+<a name="ln658"> </a>
+<a name="ln659">  static FT_Error</a>
+<a name="ln660">  ft_stroke_border_get_counts( FT_StrokeBorder  border,</a>
+<a name="ln661">                               FT_UInt         *anum_points,</a>
+<a name="ln662">                               FT_UInt         *anum_contours )</a>
+<a name="ln663">  {</a>
+<a name="ln664">    FT_Error  error        = FT_Err_Ok;</a>
+<a name="ln665">    FT_UInt   num_points   = 0;</a>
+<a name="ln666">    FT_UInt   num_contours = 0;</a>
+<a name="ln667"> </a>
+<a name="ln668">    FT_UInt     count      = border-&gt;num_points;</a>
+<a name="ln669">    FT_Vector*  point      = border-&gt;points;</a>
+<a name="ln670">    FT_Byte*    tags       = border-&gt;tags;</a>
+<a name="ln671">    FT_Int      in_contour = 0;</a>
+<a name="ln672"> </a>
+<a name="ln673"> </a>
+<a name="ln674">    for ( ; count &gt; 0; count--, num_points++, point++, tags++ )</a>
+<a name="ln675">    {</a>
+<a name="ln676">      if ( tags[0] &amp; FT_STROKE_TAG_BEGIN )</a>
+<a name="ln677">      {</a>
+<a name="ln678">        if ( in_contour != 0 )</a>
+<a name="ln679">          goto Fail;</a>
+<a name="ln680"> </a>
+<a name="ln681">        in_contour = 1;</a>
+<a name="ln682">      }</a>
+<a name="ln683">      else if ( in_contour == 0 )</a>
+<a name="ln684">        goto Fail;</a>
+<a name="ln685"> </a>
+<a name="ln686">      if ( tags[0] &amp; FT_STROKE_TAG_END )</a>
+<a name="ln687">      {</a>
+<a name="ln688">        in_contour = 0;</a>
+<a name="ln689">        num_contours++;</a>
+<a name="ln690">      }</a>
+<a name="ln691">    }</a>
+<a name="ln692"> </a>
+<a name="ln693">    if ( in_contour != 0 )</a>
+<a name="ln694">      goto Fail;</a>
+<a name="ln695"> </a>
+<a name="ln696">    border-&gt;valid = TRUE;</a>
+<a name="ln697"> </a>
+<a name="ln698">  Exit:</a>
+<a name="ln699">    *anum_points   = num_points;</a>
+<a name="ln700">    *anum_contours = num_contours;</a>
+<a name="ln701">    return error;</a>
+<a name="ln702"> </a>
+<a name="ln703">  Fail:</a>
+<a name="ln704">    num_points   = 0;</a>
+<a name="ln705">    num_contours = 0;</a>
+<a name="ln706">    goto Exit;</a>
+<a name="ln707">  }</a>
+<a name="ln708"> </a>
+<a name="ln709"> </a>
+<a name="ln710">  static void</a>
+<a name="ln711">  ft_stroke_border_export( FT_StrokeBorder  border,</a>
+<a name="ln712">                           FT_Outline*      outline )</a>
+<a name="ln713">  {</a>
+<a name="ln714">    /* copy point locations */</a>
+<a name="ln715">    FT_ARRAY_COPY( outline-&gt;points + outline-&gt;n_points,</a>
+<a name="ln716">                   border-&gt;points,</a>
+<a name="ln717">                   border-&gt;num_points );</a>
+<a name="ln718"> </a>
+<a name="ln719">    /* copy tags */</a>
+<a name="ln720">    {</a>
+<a name="ln721">      FT_UInt   count = border-&gt;num_points;</a>
+<a name="ln722">      FT_Byte*  read  = border-&gt;tags;</a>
+<a name="ln723">      FT_Byte*  write = (FT_Byte*)outline-&gt;tags + outline-&gt;n_points;</a>
+<a name="ln724"> </a>
+<a name="ln725"> </a>
+<a name="ln726">      for ( ; count &gt; 0; count--, read++, write++ )</a>
+<a name="ln727">      {</a>
+<a name="ln728">        if ( *read &amp; FT_STROKE_TAG_ON )</a>
+<a name="ln729">          *write = FT_CURVE_TAG_ON;</a>
+<a name="ln730">        else if ( *read &amp; FT_STROKE_TAG_CUBIC )</a>
+<a name="ln731">          *write = FT_CURVE_TAG_CUBIC;</a>
+<a name="ln732">        else</a>
+<a name="ln733">          *write = FT_CURVE_TAG_CONIC;</a>
+<a name="ln734">      }</a>
+<a name="ln735">    }</a>
+<a name="ln736"> </a>
+<a name="ln737">    /* copy contours */</a>
+<a name="ln738">    {</a>
+<a name="ln739">      FT_UInt    count = border-&gt;num_points;</a>
+<a name="ln740">      FT_Byte*   tags  = border-&gt;tags;</a>
+<a name="ln741">      FT_Short*  write = outline-&gt;contours + outline-&gt;n_contours;</a>
+<a name="ln742">      FT_Short   idx   = (FT_Short)outline-&gt;n_points;</a>
+<a name="ln743"> </a>
+<a name="ln744"> </a>
+<a name="ln745">      for ( ; count &gt; 0; count--, tags++, idx++ )</a>
+<a name="ln746">      {</a>
+<a name="ln747">        if ( *tags &amp; FT_STROKE_TAG_END )</a>
+<a name="ln748">        {</a>
+<a name="ln749">          *write++ = idx;</a>
+<a name="ln750">          outline-&gt;n_contours++;</a>
+<a name="ln751">        }</a>
+<a name="ln752">      }</a>
+<a name="ln753">    }</a>
+<a name="ln754"> </a>
+<a name="ln755">    outline-&gt;n_points += (short)border-&gt;num_points;</a>
+<a name="ln756"> </a>
+<a name="ln757">    FT_ASSERT( FT_Outline_Check( outline ) == 0 );</a>
+<a name="ln758">  }</a>
+<a name="ln759"> </a>
+<a name="ln760"> </a>
+<a name="ln761">  /*************************************************************************/</a>
+<a name="ln762">  /*************************************************************************/</a>
+<a name="ln763">  /*****                                                               *****/</a>
+<a name="ln764">  /*****                           STROKER                             *****/</a>
+<a name="ln765">  /*****                                                               *****/</a>
+<a name="ln766">  /*************************************************************************/</a>
+<a name="ln767">  /*************************************************************************/</a>
+<a name="ln768"> </a>
+<a name="ln769">#define FT_SIDE_TO_ROTATE( s )   ( FT_ANGLE_PI2 - (s) * FT_ANGLE_PI )</a>
+<a name="ln770"> </a>
+<a name="ln771">  typedef struct  FT_StrokerRec_</a>
+<a name="ln772">  {</a>
+<a name="ln773">    FT_Angle             angle_in;             /* direction into curr join */</a>
+<a name="ln774">    FT_Angle             angle_out;            /* direction out of join  */</a>
+<a name="ln775">    FT_Vector            center;               /* current position */</a>
+<a name="ln776">    FT_Fixed             line_length;          /* length of last lineto */</a>
+<a name="ln777">    FT_Bool              first_point;          /* is this the start? */</a>
+<a name="ln778">    FT_Bool              subpath_open;         /* is the subpath open? */</a>
+<a name="ln779">    FT_Angle             subpath_angle;        /* subpath start direction */</a>
+<a name="ln780">    FT_Vector            subpath_start;        /* subpath start position */</a>
+<a name="ln781">    FT_Fixed             subpath_line_length;  /* subpath start lineto len */</a>
+<a name="ln782">    FT_Bool              handle_wide_strokes;  /* use wide strokes logic? */</a>
+<a name="ln783"> </a>
+<a name="ln784">    FT_Stroker_LineCap   line_cap;</a>
+<a name="ln785">    FT_Stroker_LineJoin  line_join;</a>
+<a name="ln786">    FT_Stroker_LineJoin  line_join_saved;</a>
+<a name="ln787">    FT_Fixed             miter_limit;</a>
+<a name="ln788">    FT_Fixed             radius;</a>
+<a name="ln789"> </a>
+<a name="ln790">    FT_StrokeBorderRec   borders[2];</a>
+<a name="ln791">    FT_Library           library;</a>
+<a name="ln792"> </a>
+<a name="ln793">  } FT_StrokerRec;</a>
+<a name="ln794"> </a>
+<a name="ln795"> </a>
+<a name="ln796">  /* documentation is in ftstroke.h */</a>
+<a name="ln797"> </a>
+<a name="ln798">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln799">  FT_Stroker_New( FT_Library   library,</a>
+<a name="ln800">                  FT_Stroker  *astroker )</a>
+<a name="ln801">  {</a>
+<a name="ln802">    FT_Error    error;           /* assigned in FT_NEW */</a>
+<a name="ln803">    FT_Memory   memory;</a>
+<a name="ln804">    FT_Stroker  stroker = NULL;</a>
+<a name="ln805"> </a>
+<a name="ln806"> </a>
+<a name="ln807">    if ( !library )</a>
+<a name="ln808">      return FT_THROW( Invalid_Library_Handle );</a>
+<a name="ln809"> </a>
+<a name="ln810">    if ( !astroker )</a>
+<a name="ln811">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln812"> </a>
+<a name="ln813">    memory = library-&gt;memory;</a>
+<a name="ln814"> </a>
+<a name="ln815">    if ( !FT_NEW( stroker ) )</a>
+<a name="ln816">    {</a>
+<a name="ln817">      stroker-&gt;library = library;</a>
+<a name="ln818"> </a>
+<a name="ln819">      ft_stroke_border_init( &amp;stroker-&gt;borders[0], memory );</a>
+<a name="ln820">      ft_stroke_border_init( &amp;stroker-&gt;borders[1], memory );</a>
+<a name="ln821">    }</a>
+<a name="ln822"> </a>
+<a name="ln823">    *astroker = stroker;</a>
+<a name="ln824"> </a>
+<a name="ln825">    return error;</a>
+<a name="ln826">  }</a>
+<a name="ln827"> </a>
+<a name="ln828"> </a>
+<a name="ln829">  /* documentation is in ftstroke.h */</a>
+<a name="ln830"> </a>
+<a name="ln831">  FT_EXPORT_DEF( void )</a>
+<a name="ln832">  FT_Stroker_Set( FT_Stroker           stroker,</a>
+<a name="ln833">                  FT_Fixed             radius,</a>
+<a name="ln834">                  FT_Stroker_LineCap   line_cap,</a>
+<a name="ln835">                  FT_Stroker_LineJoin  line_join,</a>
+<a name="ln836">                  FT_Fixed             miter_limit )</a>
+<a name="ln837">  {</a>
+<a name="ln838">    if ( !stroker )</a>
+<a name="ln839">      return;</a>
+<a name="ln840"> </a>
+<a name="ln841">    stroker-&gt;radius      = radius;</a>
+<a name="ln842">    stroker-&gt;line_cap    = line_cap;</a>
+<a name="ln843">    stroker-&gt;line_join   = line_join;</a>
+<a name="ln844">    stroker-&gt;miter_limit = miter_limit;</a>
+<a name="ln845"> </a>
+<a name="ln846">    /* ensure miter limit has sensible value */</a>
+<a name="ln847">    if ( stroker-&gt;miter_limit &lt; 0x10000L )</a>
+<a name="ln848">      stroker-&gt;miter_limit = 0x10000L;</a>
+<a name="ln849"> </a>
+<a name="ln850">    /* save line join style:                                           */</a>
+<a name="ln851">    /* line join style can be temporarily changed when stroking curves */</a>
+<a name="ln852">    stroker-&gt;line_join_saved = line_join;</a>
+<a name="ln853"> </a>
+<a name="ln854">    FT_Stroker_Rewind( stroker );</a>
+<a name="ln855">  }</a>
+<a name="ln856"> </a>
+<a name="ln857"> </a>
+<a name="ln858">  /* documentation is in ftstroke.h */</a>
+<a name="ln859"> </a>
+<a name="ln860">  FT_EXPORT_DEF( void )</a>
+<a name="ln861">  FT_Stroker_Rewind( FT_Stroker  stroker )</a>
+<a name="ln862">  {</a>
+<a name="ln863">    if ( stroker )</a>
+<a name="ln864">    {</a>
+<a name="ln865">      ft_stroke_border_reset( &amp;stroker-&gt;borders[0] );</a>
+<a name="ln866">      ft_stroke_border_reset( &amp;stroker-&gt;borders[1] );</a>
+<a name="ln867">    }</a>
+<a name="ln868">  }</a>
+<a name="ln869"> </a>
+<a name="ln870"> </a>
+<a name="ln871">  /* documentation is in ftstroke.h */</a>
+<a name="ln872"> </a>
+<a name="ln873">  FT_EXPORT_DEF( void )</a>
+<a name="ln874">  FT_Stroker_Done( FT_Stroker  stroker )</a>
+<a name="ln875">  {</a>
+<a name="ln876">    if ( stroker )</a>
+<a name="ln877">    {</a>
+<a name="ln878">      FT_Memory  memory = stroker-&gt;library-&gt;memory;</a>
+<a name="ln879"> </a>
+<a name="ln880"> </a>
+<a name="ln881">      ft_stroke_border_done( &amp;stroker-&gt;borders[0] );</a>
+<a name="ln882">      ft_stroke_border_done( &amp;stroker-&gt;borders[1] );</a>
+<a name="ln883"> </a>
+<a name="ln884">      stroker-&gt;library = NULL;</a>
+<a name="ln885">      FT_FREE( stroker );</a>
+<a name="ln886">    }</a>
+<a name="ln887">  }</a>
+<a name="ln888"> </a>
+<a name="ln889"> </a>
+<a name="ln890">  /* create a circular arc at a corner or cap */</a>
+<a name="ln891">  static FT_Error</a>
+<a name="ln892">  ft_stroker_arcto( FT_Stroker  stroker,</a>
+<a name="ln893">                    FT_Int      side )</a>
+<a name="ln894">  {</a>
+<a name="ln895">    FT_Angle         total, rotate;</a>
+<a name="ln896">    FT_Fixed         radius = stroker-&gt;radius;</a>
+<a name="ln897">    FT_Error         error  = FT_Err_Ok;</a>
+<a name="ln898">    FT_StrokeBorder  border = stroker-&gt;borders + side;</a>
+<a name="ln899"> </a>
+<a name="ln900"> </a>
+<a name="ln901">    rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln902"> </a>
+<a name="ln903">    total = FT_Angle_Diff( stroker-&gt;angle_in, stroker-&gt;angle_out );</a>
+<a name="ln904">    if ( total == FT_ANGLE_PI )</a>
+<a name="ln905">      total = -rotate * 2;</a>
+<a name="ln906"> </a>
+<a name="ln907">    error = ft_stroke_border_arcto( border,</a>
+<a name="ln908">                                    &amp;stroker-&gt;center,</a>
+<a name="ln909">                                    radius,</a>
+<a name="ln910">                                    stroker-&gt;angle_in + rotate,</a>
+<a name="ln911">                                    total );</a>
+<a name="ln912">    border-&gt;movable = FALSE;</a>
+<a name="ln913">    return error;</a>
+<a name="ln914">  }</a>
+<a name="ln915"> </a>
+<a name="ln916"> </a>
+<a name="ln917">  /* add a cap at the end of an opened path */</a>
+<a name="ln918">  static FT_Error</a>
+<a name="ln919">  ft_stroker_cap( FT_Stroker  stroker,</a>
+<a name="ln920">                  FT_Angle    angle,</a>
+<a name="ln921">                  FT_Int      side )</a>
+<a name="ln922">  {</a>
+<a name="ln923">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln924"> </a>
+<a name="ln925"> </a>
+<a name="ln926">    if ( stroker-&gt;line_cap == FT_STROKER_LINECAP_ROUND )</a>
+<a name="ln927">    {</a>
+<a name="ln928">      /* add a round cap */</a>
+<a name="ln929">      stroker-&gt;angle_in  = angle;</a>
+<a name="ln930">      stroker-&gt;angle_out = angle + FT_ANGLE_PI;</a>
+<a name="ln931"> </a>
+<a name="ln932">      error = ft_stroker_arcto( stroker, side );</a>
+<a name="ln933">    }</a>
+<a name="ln934">    else if ( stroker-&gt;line_cap == FT_STROKER_LINECAP_SQUARE )</a>
+<a name="ln935">    {</a>
+<a name="ln936">      /* add a square cap */</a>
+<a name="ln937">      FT_Vector        delta, delta2;</a>
+<a name="ln938">      FT_Angle         rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln939">      FT_Fixed         radius = stroker-&gt;radius;</a>
+<a name="ln940">      FT_StrokeBorder  border = stroker-&gt;borders + side;</a>
+<a name="ln941"> </a>
+<a name="ln942"> </a>
+<a name="ln943">      FT_Vector_From_Polar( &amp;delta2, radius, angle + rotate );</a>
+<a name="ln944">      FT_Vector_From_Polar( &amp;delta,  radius, angle );</a>
+<a name="ln945"> </a>
+<a name="ln946">      delta.x += stroker-&gt;center.x + delta2.x;</a>
+<a name="ln947">      delta.y += stroker-&gt;center.y + delta2.y;</a>
+<a name="ln948"> </a>
+<a name="ln949">      error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln950">      if ( error )</a>
+<a name="ln951">        goto Exit;</a>
+<a name="ln952"> </a>
+<a name="ln953">      FT_Vector_From_Polar( &amp;delta2, radius, angle - rotate );</a>
+<a name="ln954">      FT_Vector_From_Polar( &amp;delta,  radius, angle );</a>
+<a name="ln955"> </a>
+<a name="ln956">      delta.x += delta2.x + stroker-&gt;center.x;</a>
+<a name="ln957">      delta.y += delta2.y + stroker-&gt;center.y;</a>
+<a name="ln958"> </a>
+<a name="ln959">      error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln960">    }</a>
+<a name="ln961">    else if ( stroker-&gt;line_cap == FT_STROKER_LINECAP_BUTT )</a>
+<a name="ln962">    {</a>
+<a name="ln963">      /* add a butt ending */</a>
+<a name="ln964">      FT_Vector        delta;</a>
+<a name="ln965">      FT_Angle         rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln966">      FT_Fixed         radius = stroker-&gt;radius;</a>
+<a name="ln967">      FT_StrokeBorder  border = stroker-&gt;borders + side;</a>
+<a name="ln968"> </a>
+<a name="ln969"> </a>
+<a name="ln970">      FT_Vector_From_Polar( &amp;delta, radius, angle + rotate );</a>
+<a name="ln971"> </a>
+<a name="ln972">      delta.x += stroker-&gt;center.x;</a>
+<a name="ln973">      delta.y += stroker-&gt;center.y;</a>
+<a name="ln974"> </a>
+<a name="ln975">      error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln976">      if ( error )</a>
+<a name="ln977">        goto Exit;</a>
+<a name="ln978"> </a>
+<a name="ln979">      FT_Vector_From_Polar( &amp;delta, radius, angle - rotate );</a>
+<a name="ln980"> </a>
+<a name="ln981">      delta.x += stroker-&gt;center.x;</a>
+<a name="ln982">      delta.y += stroker-&gt;center.y;</a>
+<a name="ln983"> </a>
+<a name="ln984">      error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln985">    }</a>
+<a name="ln986"> </a>
+<a name="ln987">  Exit:</a>
+<a name="ln988">    return error;</a>
+<a name="ln989">  }</a>
+<a name="ln990"> </a>
+<a name="ln991"> </a>
+<a name="ln992">  /* process an inside corner, i.e. compute intersection */</a>
+<a name="ln993">  static FT_Error</a>
+<a name="ln994">  ft_stroker_inside( FT_Stroker  stroker,</a>
+<a name="ln995">                     FT_Int      side,</a>
+<a name="ln996">                     FT_Fixed    line_length )</a>
+<a name="ln997">  {</a>
+<a name="ln998">    FT_StrokeBorder  border = stroker-&gt;borders + side;</a>
+<a name="ln999">    FT_Angle         phi, theta, rotate;</a>
+<a name="ln1000">    FT_Fixed         length, thcos;</a>
+<a name="ln1001">    FT_Vector        delta;</a>
+<a name="ln1002">    FT_Error         error = FT_Err_Ok;</a>
+<a name="ln1003">    FT_Bool          intersect;          /* use intersection of lines? */</a>
+<a name="ln1004"> </a>
+<a name="ln1005"> </a>
+<a name="ln1006">    rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln1007"> </a>
+<a name="ln1008">    theta = FT_Angle_Diff( stroker-&gt;angle_in, stroker-&gt;angle_out ) / 2;</a>
+<a name="ln1009"> </a>
+<a name="ln1010">    /* Only intersect borders if between two lineto's and both */</a>
+<a name="ln1011">    /* lines are long enough (line_length is zero for curves). */</a>
+<a name="ln1012">    /* Also avoid U-turns of nearly 180 degree.                */</a>
+<a name="ln1013">    if ( !border-&gt;movable || line_length == 0  ||</a>
+<a name="ln1014">         theta &gt; 0x59C000 || theta &lt; -0x59C000 )</a>
+<a name="ln1015">      intersect = FALSE;</a>
+<a name="ln1016">    else</a>
+<a name="ln1017">    {</a>
+<a name="ln1018">      /* compute minimum required length of lines */</a>
+<a name="ln1019">      FT_Fixed  min_length = ft_pos_abs( FT_MulFix( stroker-&gt;radius,</a>
+<a name="ln1020">                                                    FT_Tan( theta ) ) );</a>
+<a name="ln1021"> </a>
+<a name="ln1022"> </a>
+<a name="ln1023">      intersect = FT_BOOL( min_length                         &amp;&amp;</a>
+<a name="ln1024">                           stroker-&gt;line_length &gt;= min_length &amp;&amp;</a>
+<a name="ln1025">                           line_length          &gt;= min_length );</a>
+<a name="ln1026">    }</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    if ( !intersect )</a>
+<a name="ln1029">    {</a>
+<a name="ln1030">      FT_Vector_From_Polar( &amp;delta, stroker-&gt;radius,</a>
+<a name="ln1031">                            stroker-&gt;angle_out + rotate );</a>
+<a name="ln1032">      delta.x += stroker-&gt;center.x;</a>
+<a name="ln1033">      delta.y += stroker-&gt;center.y;</a>
+<a name="ln1034"> </a>
+<a name="ln1035">      border-&gt;movable = FALSE;</a>
+<a name="ln1036">    }</a>
+<a name="ln1037">    else</a>
+<a name="ln1038">    {</a>
+<a name="ln1039">      /* compute median angle */</a>
+<a name="ln1040">      phi = stroker-&gt;angle_in + theta;</a>
+<a name="ln1041"> </a>
+<a name="ln1042">      thcos = FT_Cos( theta );</a>
+<a name="ln1043"> </a>
+<a name="ln1044">      length = FT_DivFix( stroker-&gt;radius, thcos );</a>
+<a name="ln1045"> </a>
+<a name="ln1046">      FT_Vector_From_Polar( &amp;delta, length, phi + rotate );</a>
+<a name="ln1047">      delta.x += stroker-&gt;center.x;</a>
+<a name="ln1048">      delta.y += stroker-&gt;center.y;</a>
+<a name="ln1049">    }</a>
+<a name="ln1050"> </a>
+<a name="ln1051">    error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1052"> </a>
+<a name="ln1053">    return error;</a>
+<a name="ln1054">  }</a>
+<a name="ln1055"> </a>
+<a name="ln1056"> </a>
+<a name="ln1057">  /* process an outside corner, i.e. compute bevel/miter/round */</a>
+<a name="ln1058">  static FT_Error</a>
+<a name="ln1059">  ft_stroker_outside( FT_Stroker  stroker,</a>
+<a name="ln1060">                      FT_Int      side,</a>
+<a name="ln1061">                      FT_Fixed    line_length )</a>
+<a name="ln1062">  {</a>
+<a name="ln1063">    FT_StrokeBorder  border = stroker-&gt;borders + side;</a>
+<a name="ln1064">    FT_Error         error;</a>
+<a name="ln1065">    FT_Angle         rotate;</a>
+<a name="ln1066"> </a>
+<a name="ln1067"> </a>
+<a name="ln1068">    if ( stroker-&gt;line_join == FT_STROKER_LINEJOIN_ROUND )</a>
+<a name="ln1069">      error = ft_stroker_arcto( stroker, side );</a>
+<a name="ln1070">    else</a>
+<a name="ln1071">    {</a>
+<a name="ln1072">      /* this is a mitered (pointed) or beveled (truncated) corner */</a>
+<a name="ln1073">      FT_Fixed  sigma = 0, radius = stroker-&gt;radius;</a>
+<a name="ln1074">      FT_Angle  theta = 0, phi = 0;</a>
+<a name="ln1075">      FT_Fixed  thcos = 0;</a>
+<a name="ln1076">      FT_Bool   bevel, fixed_bevel;</a>
+<a name="ln1077"> </a>
+<a name="ln1078"> </a>
+<a name="ln1079">      rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln1080"> </a>
+<a name="ln1081">      bevel =</a>
+<a name="ln1082">        FT_BOOL( stroker-&gt;line_join == FT_STROKER_LINEJOIN_BEVEL );</a>
+<a name="ln1083"> </a>
+<a name="ln1084">      fixed_bevel =</a>
+<a name="ln1085">        FT_BOOL( stroker-&gt;line_join != FT_STROKER_LINEJOIN_MITER_VARIABLE );</a>
+<a name="ln1086"> </a>
+<a name="ln1087">      if ( !bevel )</a>
+<a name="ln1088">      {</a>
+<a name="ln1089">        theta = FT_Angle_Diff( stroker-&gt;angle_in, stroker-&gt;angle_out );</a>
+<a name="ln1090"> </a>
+<a name="ln1091">        if ( theta == FT_ANGLE_PI )</a>
+<a name="ln1092">        {</a>
+<a name="ln1093">          theta = rotate;</a>
+<a name="ln1094">          phi   = stroker-&gt;angle_in;</a>
+<a name="ln1095">        }</a>
+<a name="ln1096">        else</a>
+<a name="ln1097">        {</a>
+<a name="ln1098">          theta /= 2;</a>
+<a name="ln1099">          phi    = stroker-&gt;angle_in + theta + rotate;</a>
+<a name="ln1100">        }</a>
+<a name="ln1101"> </a>
+<a name="ln1102">        thcos = FT_Cos( theta );</a>
+<a name="ln1103">        sigma = FT_MulFix( stroker-&gt;miter_limit, thcos );</a>
+<a name="ln1104"> </a>
+<a name="ln1105">        /* is miter limit exceeded? */</a>
+<a name="ln1106">        if ( sigma &lt; 0x10000L )</a>
+<a name="ln1107">        {</a>
+<a name="ln1108">          /* don't create variable bevels for very small deviations; */</a>
+<a name="ln1109">          /* FT_Sin(x) = 0 for x &lt;= 57                               */</a>
+<a name="ln1110">          if ( fixed_bevel || ft_pos_abs( theta ) &gt; 57 )</a>
+<a name="ln1111">            bevel = TRUE;</a>
+<a name="ln1112">        }</a>
+<a name="ln1113">      }</a>
+<a name="ln1114"> </a>
+<a name="ln1115">      if ( bevel )  /* this is a bevel (broken angle) */</a>
+<a name="ln1116">      {</a>
+<a name="ln1117">        if ( fixed_bevel )</a>
+<a name="ln1118">        {</a>
+<a name="ln1119">          /* the outer corners are simply joined together */</a>
+<a name="ln1120">          FT_Vector  delta;</a>
+<a name="ln1121"> </a>
+<a name="ln1122"> </a>
+<a name="ln1123">          /* add bevel */</a>
+<a name="ln1124">          FT_Vector_From_Polar( &amp;delta,</a>
+<a name="ln1125">                                radius,</a>
+<a name="ln1126">                                stroker-&gt;angle_out + rotate );</a>
+<a name="ln1127">          delta.x += stroker-&gt;center.x;</a>
+<a name="ln1128">          delta.y += stroker-&gt;center.y;</a>
+<a name="ln1129"> </a>
+<a name="ln1130">          border-&gt;movable = FALSE;</a>
+<a name="ln1131">          error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1132">        }</a>
+<a name="ln1133">        else /* variable bevel */</a>
+<a name="ln1134">        {</a>
+<a name="ln1135">          /* the miter is truncated */</a>
+<a name="ln1136">          FT_Vector  middle, delta;</a>
+<a name="ln1137">          FT_Fixed   length;</a>
+<a name="ln1138"> </a>
+<a name="ln1139"> </a>
+<a name="ln1140">          /* compute middle point */</a>
+<a name="ln1141">          FT_Vector_From_Polar( &amp;middle,</a>
+<a name="ln1142">                                FT_MulFix( radius, stroker-&gt;miter_limit ),</a>
+<a name="ln1143">                                phi );</a>
+<a name="ln1144">          middle.x += stroker-&gt;center.x;</a>
+<a name="ln1145">          middle.y += stroker-&gt;center.y;</a>
+<a name="ln1146"> </a>
+<a name="ln1147">          /* compute first angle point */</a>
+<a name="ln1148">          length = FT_MulDiv( radius, 0x10000L - sigma,</a>
+<a name="ln1149">                              ft_pos_abs( FT_Sin( theta ) ) );</a>
+<a name="ln1150"> </a>
+<a name="ln1151">          FT_Vector_From_Polar( &amp;delta, length, phi + rotate );</a>
+<a name="ln1152">          delta.x += middle.x;</a>
+<a name="ln1153">          delta.y += middle.y;</a>
+<a name="ln1154"> </a>
+<a name="ln1155">          error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1156">          if ( error )</a>
+<a name="ln1157">            goto Exit;</a>
+<a name="ln1158"> </a>
+<a name="ln1159">          /* compute second angle point */</a>
+<a name="ln1160">          FT_Vector_From_Polar( &amp;delta, length, phi - rotate );</a>
+<a name="ln1161">          delta.x += middle.x;</a>
+<a name="ln1162">          delta.y += middle.y;</a>
+<a name="ln1163"> </a>
+<a name="ln1164">          error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1165">          if ( error )</a>
+<a name="ln1166">            goto Exit;</a>
+<a name="ln1167"> </a>
+<a name="ln1168">          /* finally, add an end point; only needed if not lineto */</a>
+<a name="ln1169">          /* (line_length is zero for curves)                     */</a>
+<a name="ln1170">          if ( line_length == 0 )</a>
+<a name="ln1171">          {</a>
+<a name="ln1172">            FT_Vector_From_Polar( &amp;delta,</a>
+<a name="ln1173">                                  radius,</a>
+<a name="ln1174">                                  stroker-&gt;angle_out + rotate );</a>
+<a name="ln1175"> </a>
+<a name="ln1176">            delta.x += stroker-&gt;center.x;</a>
+<a name="ln1177">            delta.y += stroker-&gt;center.y;</a>
+<a name="ln1178"> </a>
+<a name="ln1179">            error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1180">          }</a>
+<a name="ln1181">        }</a>
+<a name="ln1182">      }</a>
+<a name="ln1183">      else /* this is a miter (intersection) */</a>
+<a name="ln1184">      {</a>
+<a name="ln1185">        FT_Fixed   length;</a>
+<a name="ln1186">        FT_Vector  delta;</a>
+<a name="ln1187"> </a>
+<a name="ln1188"> </a>
+<a name="ln1189">        length = FT_DivFix( stroker-&gt;radius, thcos );</a>
+<a name="ln1190"> </a>
+<a name="ln1191">        FT_Vector_From_Polar( &amp;delta, length, phi );</a>
+<a name="ln1192">        delta.x += stroker-&gt;center.x;</a>
+<a name="ln1193">        delta.y += stroker-&gt;center.y;</a>
+<a name="ln1194"> </a>
+<a name="ln1195">        error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1196">        if ( error )</a>
+<a name="ln1197">          goto Exit;</a>
+<a name="ln1198"> </a>
+<a name="ln1199">        /* now add an end point; only needed if not lineto */</a>
+<a name="ln1200">        /* (line_length is zero for curves)                */</a>
+<a name="ln1201">        if ( line_length == 0 )</a>
+<a name="ln1202">        {</a>
+<a name="ln1203">          FT_Vector_From_Polar( &amp;delta,</a>
+<a name="ln1204">                                stroker-&gt;radius,</a>
+<a name="ln1205">                                stroker-&gt;angle_out + rotate );</a>
+<a name="ln1206">          delta.x += stroker-&gt;center.x;</a>
+<a name="ln1207">          delta.y += stroker-&gt;center.y;</a>
+<a name="ln1208"> </a>
+<a name="ln1209">          error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1210">        }</a>
+<a name="ln1211">      }</a>
+<a name="ln1212">    }</a>
+<a name="ln1213"> </a>
+<a name="ln1214">  Exit:</a>
+<a name="ln1215">    return error;</a>
+<a name="ln1216">  }</a>
+<a name="ln1217"> </a>
+<a name="ln1218"> </a>
+<a name="ln1219">  static FT_Error</a>
+<a name="ln1220">  ft_stroker_process_corner( FT_Stroker  stroker,</a>
+<a name="ln1221">                             FT_Fixed    line_length )</a>
+<a name="ln1222">  {</a>
+<a name="ln1223">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln1224">    FT_Angle  turn;</a>
+<a name="ln1225">    FT_Int    inside_side;</a>
+<a name="ln1226"> </a>
+<a name="ln1227"> </a>
+<a name="ln1228">    turn = FT_Angle_Diff( stroker-&gt;angle_in, stroker-&gt;angle_out );</a>
+<a name="ln1229"> </a>
+<a name="ln1230">    /* no specific corner processing is required if the turn is 0 */</a>
+<a name="ln1231">    if ( turn == 0 )</a>
+<a name="ln1232">      goto Exit;</a>
+<a name="ln1233"> </a>
+<a name="ln1234">    /* when we turn to the right, the inside side is 0 */</a>
+<a name="ln1235">    /* otherwise, the inside side is 1 */</a>
+<a name="ln1236">    inside_side = ( turn &lt; 0 );</a>
+<a name="ln1237"> </a>
+<a name="ln1238">    /* process the inside side */</a>
+<a name="ln1239">    error = ft_stroker_inside( stroker, inside_side, line_length );</a>
+<a name="ln1240">    if ( error )</a>
+<a name="ln1241">      goto Exit;</a>
+<a name="ln1242"> </a>
+<a name="ln1243">    /* process the outside side */</a>
+<a name="ln1244">    error = ft_stroker_outside( stroker, !inside_side, line_length );</a>
+<a name="ln1245"> </a>
+<a name="ln1246">  Exit:</a>
+<a name="ln1247">    return error;</a>
+<a name="ln1248">  }</a>
+<a name="ln1249"> </a>
+<a name="ln1250"> </a>
+<a name="ln1251">  /* add two points to the left and right borders corresponding to the */</a>
+<a name="ln1252">  /* start of the subpath                                              */</a>
+<a name="ln1253">  static FT_Error</a>
+<a name="ln1254">  ft_stroker_subpath_start( FT_Stroker  stroker,</a>
+<a name="ln1255">                            FT_Angle    start_angle,</a>
+<a name="ln1256">                            FT_Fixed    line_length )</a>
+<a name="ln1257">  {</a>
+<a name="ln1258">    FT_Vector        delta;</a>
+<a name="ln1259">    FT_Vector        point;</a>
+<a name="ln1260">    FT_Error         error;</a>
+<a name="ln1261">    FT_StrokeBorder  border;</a>
+<a name="ln1262"> </a>
+<a name="ln1263"> </a>
+<a name="ln1264">    FT_Vector_From_Polar( &amp;delta, stroker-&gt;radius,</a>
+<a name="ln1265">                          start_angle + FT_ANGLE_PI2 );</a>
+<a name="ln1266"> </a>
+<a name="ln1267">    point.x = stroker-&gt;center.x + delta.x;</a>
+<a name="ln1268">    point.y = stroker-&gt;center.y + delta.y;</a>
+<a name="ln1269"> </a>
+<a name="ln1270">    border = stroker-&gt;borders;</a>
+<a name="ln1271">    error = ft_stroke_border_moveto( border, &amp;point );</a>
+<a name="ln1272">    if ( error )</a>
+<a name="ln1273">      goto Exit;</a>
+<a name="ln1274"> </a>
+<a name="ln1275">    point.x = stroker-&gt;center.x - delta.x;</a>
+<a name="ln1276">    point.y = stroker-&gt;center.y - delta.y;</a>
+<a name="ln1277"> </a>
+<a name="ln1278">    border++;</a>
+<a name="ln1279">    error = ft_stroke_border_moveto( border, &amp;point );</a>
+<a name="ln1280"> </a>
+<a name="ln1281">    /* save angle, position, and line length for last join */</a>
+<a name="ln1282">    /* (line_length is zero for curves)                    */</a>
+<a name="ln1283">    stroker-&gt;subpath_angle       = start_angle;</a>
+<a name="ln1284">    stroker-&gt;first_point         = FALSE;</a>
+<a name="ln1285">    stroker-&gt;subpath_line_length = line_length;</a>
+<a name="ln1286"> </a>
+<a name="ln1287">  Exit:</a>
+<a name="ln1288">    return error;</a>
+<a name="ln1289">  }</a>
+<a name="ln1290"> </a>
+<a name="ln1291"> </a>
+<a name="ln1292">  /* documentation is in ftstroke.h */</a>
+<a name="ln1293"> </a>
+<a name="ln1294">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln1295">  FT_Stroker_LineTo( FT_Stroker  stroker,</a>
+<a name="ln1296">                     FT_Vector*  to )</a>
+<a name="ln1297">  {</a>
+<a name="ln1298">    FT_Error         error = FT_Err_Ok;</a>
+<a name="ln1299">    FT_StrokeBorder  border;</a>
+<a name="ln1300">    FT_Vector        delta;</a>
+<a name="ln1301">    FT_Angle         angle;</a>
+<a name="ln1302">    FT_Int           side;</a>
+<a name="ln1303">    FT_Fixed         line_length;</a>
+<a name="ln1304"> </a>
+<a name="ln1305"> </a>
+<a name="ln1306">    if ( !stroker || !to )</a>
+<a name="ln1307">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1308"> </a>
+<a name="ln1309">    delta.x = to-&gt;x - stroker-&gt;center.x;</a>
+<a name="ln1310">    delta.y = to-&gt;y - stroker-&gt;center.y;</a>
+<a name="ln1311"> </a>
+<a name="ln1312">    /* a zero-length lineto is a no-op; avoid creating a spurious corner */</a>
+<a name="ln1313">    if ( delta.x == 0 &amp;&amp; delta.y == 0 )</a>
+<a name="ln1314">       goto Exit;</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    /* compute length of line */</a>
+<a name="ln1317">    line_length = FT_Vector_Length( &amp;delta );</a>
+<a name="ln1318"> </a>
+<a name="ln1319">    angle = FT_Atan2( delta.x, delta.y );</a>
+<a name="ln1320">    FT_Vector_From_Polar( &amp;delta, stroker-&gt;radius, angle + FT_ANGLE_PI2 );</a>
+<a name="ln1321"> </a>
+<a name="ln1322">    /* process corner if necessary */</a>
+<a name="ln1323">    if ( stroker-&gt;first_point )</a>
+<a name="ln1324">    {</a>
+<a name="ln1325">      /* This is the first segment of a subpath.  We need to     */</a>
+<a name="ln1326">      /* add a point to each border at their respective starting */</a>
+<a name="ln1327">      /* point locations.                                        */</a>
+<a name="ln1328">      error = ft_stroker_subpath_start( stroker, angle, line_length );</a>
+<a name="ln1329">      if ( error )</a>
+<a name="ln1330">        goto Exit;</a>
+<a name="ln1331">    }</a>
+<a name="ln1332">    else</a>
+<a name="ln1333">    {</a>
+<a name="ln1334">      /* process the current corner */</a>
+<a name="ln1335">      stroker-&gt;angle_out = angle;</a>
+<a name="ln1336">      error = ft_stroker_process_corner( stroker, line_length );</a>
+<a name="ln1337">      if ( error )</a>
+<a name="ln1338">        goto Exit;</a>
+<a name="ln1339">    }</a>
+<a name="ln1340"> </a>
+<a name="ln1341">    /* now add a line segment to both the `inside' and `outside' paths */</a>
+<a name="ln1342">    for ( border = stroker-&gt;borders, side = 1; side &gt;= 0; side--, border++ )</a>
+<a name="ln1343">    {</a>
+<a name="ln1344">      FT_Vector  point;</a>
+<a name="ln1345"> </a>
+<a name="ln1346"> </a>
+<a name="ln1347">      point.x = to-&gt;x + delta.x;</a>
+<a name="ln1348">      point.y = to-&gt;y + delta.y;</a>
+<a name="ln1349"> </a>
+<a name="ln1350">      /* the ends of lineto borders are movable */</a>
+<a name="ln1351">      error = ft_stroke_border_lineto( border, &amp;point, TRUE );</a>
+<a name="ln1352">      if ( error )</a>
+<a name="ln1353">        goto Exit;</a>
+<a name="ln1354"> </a>
+<a name="ln1355">      delta.x = -delta.x;</a>
+<a name="ln1356">      delta.y = -delta.y;</a>
+<a name="ln1357">    }</a>
+<a name="ln1358"> </a>
+<a name="ln1359">    stroker-&gt;angle_in    = angle;</a>
+<a name="ln1360">    stroker-&gt;center      = *to;</a>
+<a name="ln1361">    stroker-&gt;line_length = line_length;</a>
+<a name="ln1362"> </a>
+<a name="ln1363">  Exit:</a>
+<a name="ln1364">    return error;</a>
+<a name="ln1365">  }</a>
+<a name="ln1366"> </a>
+<a name="ln1367"> </a>
+<a name="ln1368">  /* documentation is in ftstroke.h */</a>
+<a name="ln1369"> </a>
+<a name="ln1370">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln1371">  FT_Stroker_ConicTo( FT_Stroker  stroker,</a>
+<a name="ln1372">                      FT_Vector*  control,</a>
+<a name="ln1373">                      FT_Vector*  to )</a>
+<a name="ln1374">  {</a>
+<a name="ln1375">    FT_Error    error = FT_Err_Ok;</a>
+<a name="ln1376">    FT_Vector   bez_stack[34];</a>
+<a name="ln1377">    FT_Vector*  arc;</a>
+<a name="ln1378">    FT_Vector*  limit = bez_stack + 30;</a>
+<a name="ln1379">    FT_Bool     first_arc = TRUE;</a>
+<a name="ln1380"> </a>
+<a name="ln1381"> </a>
+<a name="ln1382">    if ( !stroker || !control || !to )</a>
+<a name="ln1383">    {</a>
+<a name="ln1384">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1385">      goto Exit;</a>
+<a name="ln1386">    }</a>
+<a name="ln1387"> </a>
+<a name="ln1388">    /* if all control points are coincident, this is a no-op; */</a>
+<a name="ln1389">    /* avoid creating a spurious corner                       */</a>
+<a name="ln1390">    if ( FT_IS_SMALL( stroker-&gt;center.x - control-&gt;x ) &amp;&amp;</a>
+<a name="ln1391">         FT_IS_SMALL( stroker-&gt;center.y - control-&gt;y ) &amp;&amp;</a>
+<a name="ln1392">         FT_IS_SMALL( control-&gt;x        - to-&gt;x      ) &amp;&amp;</a>
+<a name="ln1393">         FT_IS_SMALL( control-&gt;y        - to-&gt;y      ) )</a>
+<a name="ln1394">    {</a>
+<a name="ln1395">       stroker-&gt;center = *to;</a>
+<a name="ln1396">       goto Exit;</a>
+<a name="ln1397">    }</a>
+<a name="ln1398"> </a>
+<a name="ln1399">    arc    = bez_stack;</a>
+<a name="ln1400">    arc[0] = *to;</a>
+<a name="ln1401">    arc[1] = *control;</a>
+<a name="ln1402">    arc[2] = stroker-&gt;center;</a>
+<a name="ln1403"> </a>
+<a name="ln1404">    while ( arc &gt;= bez_stack )</a>
+<a name="ln1405">    {</a>
+<a name="ln1406">      FT_Angle  angle_in, angle_out;</a>
+<a name="ln1407"> </a>
+<a name="ln1408"> </a>
+<a name="ln1409">      /* initialize with current direction */</a>
+<a name="ln1410">      angle_in = angle_out = stroker-&gt;angle_in;</a>
+<a name="ln1411"> </a>
+<a name="ln1412">      if ( arc &lt; limit                                             &amp;&amp;</a>
+<a name="ln1413">           !ft_conic_is_small_enough( arc, &amp;angle_in, &amp;angle_out ) )</a>
+<a name="ln1414">      {</a>
+<a name="ln1415">        if ( stroker-&gt;first_point )</a>
+<a name="ln1416">          stroker-&gt;angle_in = angle_in;</a>
+<a name="ln1417"> </a>
+<a name="ln1418">        ft_conic_split( arc );</a>
+<a name="ln1419">        arc += 2;</a>
+<a name="ln1420">        continue;</a>
+<a name="ln1421">      }</a>
+<a name="ln1422"> </a>
+<a name="ln1423">      if ( first_arc )</a>
+<a name="ln1424">      {</a>
+<a name="ln1425">        first_arc = FALSE;</a>
+<a name="ln1426"> </a>
+<a name="ln1427">        /* process corner if necessary */</a>
+<a name="ln1428">        if ( stroker-&gt;first_point )</a>
+<a name="ln1429">          error = ft_stroker_subpath_start( stroker, angle_in, 0 );</a>
+<a name="ln1430">        else</a>
+<a name="ln1431">        {</a>
+<a name="ln1432">          stroker-&gt;angle_out = angle_in;</a>
+<a name="ln1433">          error = ft_stroker_process_corner( stroker, 0 );</a>
+<a name="ln1434">        }</a>
+<a name="ln1435">      }</a>
+<a name="ln1436">      else if ( ft_pos_abs( FT_Angle_Diff( stroker-&gt;angle_in, angle_in ) ) &gt;</a>
+<a name="ln1437">                  FT_SMALL_CONIC_THRESHOLD / 4                             )</a>
+<a name="ln1438">      {</a>
+<a name="ln1439">        /* if the deviation from one arc to the next is too great, */</a>
+<a name="ln1440">        /* add a round corner                                      */</a>
+<a name="ln1441">        stroker-&gt;center    = arc[2];</a>
+<a name="ln1442">        stroker-&gt;angle_out = angle_in;</a>
+<a name="ln1443">        stroker-&gt;line_join = FT_STROKER_LINEJOIN_ROUND;</a>
+<a name="ln1444"> </a>
+<a name="ln1445">        error = ft_stroker_process_corner( stroker, 0 );</a>
+<a name="ln1446"> </a>
+<a name="ln1447">        /* reinstate line join style */</a>
+<a name="ln1448">        stroker-&gt;line_join = stroker-&gt;line_join_saved;</a>
+<a name="ln1449">      }</a>
+<a name="ln1450"> </a>
+<a name="ln1451">      if ( error )</a>
+<a name="ln1452">        goto Exit;</a>
+<a name="ln1453"> </a>
+<a name="ln1454">      /* the arc's angle is small enough; we can add it directly to each */</a>
+<a name="ln1455">      /* border                                                          */</a>
+<a name="ln1456">      {</a>
+<a name="ln1457">        FT_Vector        ctrl, end;</a>
+<a name="ln1458">        FT_Angle         theta, phi, rotate, alpha0 = 0;</a>
+<a name="ln1459">        FT_Fixed         length;</a>
+<a name="ln1460">        FT_StrokeBorder  border;</a>
+<a name="ln1461">        FT_Int           side;</a>
+<a name="ln1462"> </a>
+<a name="ln1463"> </a>
+<a name="ln1464">        theta  = FT_Angle_Diff( angle_in, angle_out ) / 2;</a>
+<a name="ln1465">        phi    = angle_in + theta;</a>
+<a name="ln1466">        length = FT_DivFix( stroker-&gt;radius, FT_Cos( theta ) );</a>
+<a name="ln1467"> </a>
+<a name="ln1468">        /* compute direction of original arc */</a>
+<a name="ln1469">        if ( stroker-&gt;handle_wide_strokes )</a>
+<a name="ln1470">          alpha0 = FT_Atan2( arc[0].x - arc[2].x, arc[0].y - arc[2].y );</a>
+<a name="ln1471"> </a>
+<a name="ln1472">        for ( border = stroker-&gt;borders, side = 0;</a>
+<a name="ln1473">              side &lt;= 1;</a>
+<a name="ln1474">              side++, border++ )</a>
+<a name="ln1475">        {</a>
+<a name="ln1476">          rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln1477"> </a>
+<a name="ln1478">          /* compute control point */</a>
+<a name="ln1479">          FT_Vector_From_Polar( &amp;ctrl, length, phi + rotate );</a>
+<a name="ln1480">          ctrl.x += arc[1].x;</a>
+<a name="ln1481">          ctrl.y += arc[1].y;</a>
+<a name="ln1482"> </a>
+<a name="ln1483">          /* compute end point */</a>
+<a name="ln1484">          FT_Vector_From_Polar( &amp;end, stroker-&gt;radius, angle_out + rotate );</a>
+<a name="ln1485">          end.x += arc[0].x;</a>
+<a name="ln1486">          end.y += arc[0].y;</a>
+<a name="ln1487"> </a>
+<a name="ln1488">          if ( stroker-&gt;handle_wide_strokes )</a>
+<a name="ln1489">          {</a>
+<a name="ln1490">            FT_Vector  start;</a>
+<a name="ln1491">            FT_Angle   alpha1;</a>
+<a name="ln1492"> </a>
+<a name="ln1493"> </a>
+<a name="ln1494">            /* determine whether the border radius is greater than the */</a>
+<a name="ln1495">            /* radius of curvature of the original arc                 */</a>
+<a name="ln1496">            start = border-&gt;points[border-&gt;num_points - 1];</a>
+<a name="ln1497"> </a>
+<a name="ln1498">            alpha1 = FT_Atan2( end.x - start.x, end.y - start.y );</a>
+<a name="ln1499"> </a>
+<a name="ln1500">            /* is the direction of the border arc opposite to */</a>
+<a name="ln1501">            /* that of the original arc? */</a>
+<a name="ln1502">            if ( ft_pos_abs( FT_Angle_Diff( alpha0, alpha1 ) ) &gt;</a>
+<a name="ln1503">                   FT_ANGLE_PI / 2                             )</a>
+<a name="ln1504">            {</a>
+<a name="ln1505">              FT_Angle   beta, gamma;</a>
+<a name="ln1506">              FT_Vector  bvec, delta;</a>
+<a name="ln1507">              FT_Fixed   blen, sinA, sinB, alen;</a>
+<a name="ln1508"> </a>
+<a name="ln1509"> </a>
+<a name="ln1510">              /* use the sine rule to find the intersection point */</a>
+<a name="ln1511">              beta  = FT_Atan2( arc[2].x - start.x, arc[2].y - start.y );</a>
+<a name="ln1512">              gamma = FT_Atan2( arc[0].x - end.x,   arc[0].y - end.y );</a>
+<a name="ln1513"> </a>
+<a name="ln1514">              bvec.x = end.x - start.x;</a>
+<a name="ln1515">              bvec.y = end.y - start.y;</a>
+<a name="ln1516"> </a>
+<a name="ln1517">              blen = FT_Vector_Length( &amp;bvec );</a>
+<a name="ln1518"> </a>
+<a name="ln1519">              sinA = ft_pos_abs( FT_Sin( alpha1 - gamma ) );</a>
+<a name="ln1520">              sinB = ft_pos_abs( FT_Sin( beta - gamma ) );</a>
+<a name="ln1521"> </a>
+<a name="ln1522">              alen = FT_MulDiv( blen, sinA, sinB );</a>
+<a name="ln1523"> </a>
+<a name="ln1524">              FT_Vector_From_Polar( &amp;delta, alen, beta );</a>
+<a name="ln1525">              delta.x += start.x;</a>
+<a name="ln1526">              delta.y += start.y;</a>
+<a name="ln1527"> </a>
+<a name="ln1528">              /* circumnavigate the negative sector backwards */</a>
+<a name="ln1529">              border-&gt;movable = FALSE;</a>
+<a name="ln1530">              error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1531">              if ( error )</a>
+<a name="ln1532">                goto Exit;</a>
+<a name="ln1533">              error = ft_stroke_border_lineto( border, &amp;end, FALSE );</a>
+<a name="ln1534">              if ( error )</a>
+<a name="ln1535">                goto Exit;</a>
+<a name="ln1536">              error = ft_stroke_border_conicto( border, &amp;ctrl, &amp;start );</a>
+<a name="ln1537">              if ( error )</a>
+<a name="ln1538">                goto Exit;</a>
+<a name="ln1539">              /* and then move to the endpoint */</a>
+<a name="ln1540">              error = ft_stroke_border_lineto( border, &amp;end, FALSE );</a>
+<a name="ln1541">              if ( error )</a>
+<a name="ln1542">                goto Exit;</a>
+<a name="ln1543"> </a>
+<a name="ln1544">              continue;</a>
+<a name="ln1545">            }</a>
+<a name="ln1546"> </a>
+<a name="ln1547">            /* else fall through */</a>
+<a name="ln1548">          }</a>
+<a name="ln1549"> </a>
+<a name="ln1550">          /* simply add an arc */</a>
+<a name="ln1551">          error = ft_stroke_border_conicto( border, &amp;ctrl, &amp;end );</a>
+<a name="ln1552">          if ( error )</a>
+<a name="ln1553">            goto Exit;</a>
+<a name="ln1554">        }</a>
+<a name="ln1555">      }</a>
+<a name="ln1556"> </a>
+<a name="ln1557">      arc -= 2;</a>
+<a name="ln1558"> </a>
+<a name="ln1559">      stroker-&gt;angle_in = angle_out;</a>
+<a name="ln1560">    }</a>
+<a name="ln1561"> </a>
+<a name="ln1562">    stroker-&gt;center = *to;</a>
+<a name="ln1563"> </a>
+<a name="ln1564">  Exit:</a>
+<a name="ln1565">    return error;</a>
+<a name="ln1566">  }</a>
+<a name="ln1567"> </a>
+<a name="ln1568"> </a>
+<a name="ln1569">  /* documentation is in ftstroke.h */</a>
+<a name="ln1570"> </a>
+<a name="ln1571">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln1572">  FT_Stroker_CubicTo( FT_Stroker  stroker,</a>
+<a name="ln1573">                      FT_Vector*  control1,</a>
+<a name="ln1574">                      FT_Vector*  control2,</a>
+<a name="ln1575">                      FT_Vector*  to )</a>
+<a name="ln1576">  {</a>
+<a name="ln1577">    FT_Error    error = FT_Err_Ok;</a>
+<a name="ln1578">    FT_Vector   bez_stack[37];</a>
+<a name="ln1579">    FT_Vector*  arc;</a>
+<a name="ln1580">    FT_Vector*  limit = bez_stack + 32;</a>
+<a name="ln1581">    FT_Bool     first_arc = TRUE;</a>
+<a name="ln1582"> </a>
+<a name="ln1583"> </a>
+<a name="ln1584">    if ( !stroker || !control1 || !control2 || !to )</a>
+<a name="ln1585">    {</a>
+<a name="ln1586">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1587">      goto Exit;</a>
+<a name="ln1588">    }</a>
+<a name="ln1589"> </a>
+<a name="ln1590">    /* if all control points are coincident, this is a no-op; */</a>
+<a name="ln1591">    /* avoid creating a spurious corner */</a>
+<a name="ln1592">    if ( FT_IS_SMALL( stroker-&gt;center.x - control1-&gt;x ) &amp;&amp;</a>
+<a name="ln1593">         FT_IS_SMALL( stroker-&gt;center.y - control1-&gt;y ) &amp;&amp;</a>
+<a name="ln1594">         FT_IS_SMALL( control1-&gt;x       - control2-&gt;x ) &amp;&amp;</a>
+<a name="ln1595">         FT_IS_SMALL( control1-&gt;y       - control2-&gt;y ) &amp;&amp;</a>
+<a name="ln1596">         FT_IS_SMALL( control2-&gt;x       - to-&gt;x       ) &amp;&amp;</a>
+<a name="ln1597">         FT_IS_SMALL( control2-&gt;y       - to-&gt;y       ) )</a>
+<a name="ln1598">    {</a>
+<a name="ln1599">       stroker-&gt;center = *to;</a>
+<a name="ln1600">       goto Exit;</a>
+<a name="ln1601">    }</a>
+<a name="ln1602"> </a>
+<a name="ln1603">    arc    = bez_stack;</a>
+<a name="ln1604">    arc[0] = *to;</a>
+<a name="ln1605">    arc[1] = *control2;</a>
+<a name="ln1606">    arc[2] = *control1;</a>
+<a name="ln1607">    arc[3] = stroker-&gt;center;</a>
+<a name="ln1608"> </a>
+<a name="ln1609">    while ( arc &gt;= bez_stack )</a>
+<a name="ln1610">    {</a>
+<a name="ln1611">      FT_Angle  angle_in, angle_mid, angle_out;</a>
+<a name="ln1612"> </a>
+<a name="ln1613"> </a>
+<a name="ln1614">      /* initialize with current direction */</a>
+<a name="ln1615">      angle_in = angle_out = angle_mid = stroker-&gt;angle_in;</a>
+<a name="ln1616"> </a>
+<a name="ln1617">      if ( arc &lt; limit                                         &amp;&amp;</a>
+<a name="ln1618">           !ft_cubic_is_small_enough( arc, &amp;angle_in,</a>
+<a name="ln1619">                                      &amp;angle_mid, &amp;angle_out ) )</a>
+<a name="ln1620">      {</a>
+<a name="ln1621">        if ( stroker-&gt;first_point )</a>
+<a name="ln1622">          stroker-&gt;angle_in = angle_in;</a>
+<a name="ln1623"> </a>
+<a name="ln1624">        ft_cubic_split( arc );</a>
+<a name="ln1625">        arc += 3;</a>
+<a name="ln1626">        continue;</a>
+<a name="ln1627">      }</a>
+<a name="ln1628"> </a>
+<a name="ln1629">      if ( first_arc )</a>
+<a name="ln1630">      {</a>
+<a name="ln1631">        first_arc = FALSE;</a>
+<a name="ln1632"> </a>
+<a name="ln1633">        /* process corner if necessary */</a>
+<a name="ln1634">        if ( stroker-&gt;first_point )</a>
+<a name="ln1635">          error = ft_stroker_subpath_start( stroker, angle_in, 0 );</a>
+<a name="ln1636">        else</a>
+<a name="ln1637">        {</a>
+<a name="ln1638">          stroker-&gt;angle_out = angle_in;</a>
+<a name="ln1639">          error = ft_stroker_process_corner( stroker, 0 );</a>
+<a name="ln1640">        }</a>
+<a name="ln1641">      }</a>
+<a name="ln1642">      else if ( ft_pos_abs( FT_Angle_Diff( stroker-&gt;angle_in, angle_in ) ) &gt;</a>
+<a name="ln1643">                  FT_SMALL_CUBIC_THRESHOLD / 4                             )</a>
+<a name="ln1644">      {</a>
+<a name="ln1645">        /* if the deviation from one arc to the next is too great, */</a>
+<a name="ln1646">        /* add a round corner                                      */</a>
+<a name="ln1647">        stroker-&gt;center    = arc[3];</a>
+<a name="ln1648">        stroker-&gt;angle_out = angle_in;</a>
+<a name="ln1649">        stroker-&gt;line_join = FT_STROKER_LINEJOIN_ROUND;</a>
+<a name="ln1650"> </a>
+<a name="ln1651">        error = ft_stroker_process_corner( stroker, 0 );</a>
+<a name="ln1652"> </a>
+<a name="ln1653">        /* reinstate line join style */</a>
+<a name="ln1654">        stroker-&gt;line_join = stroker-&gt;line_join_saved;</a>
+<a name="ln1655">      }</a>
+<a name="ln1656"> </a>
+<a name="ln1657">      if ( error )</a>
+<a name="ln1658">        goto Exit;</a>
+<a name="ln1659"> </a>
+<a name="ln1660">      /* the arc's angle is small enough; we can add it directly to each */</a>
+<a name="ln1661">      /* border                                                          */</a>
+<a name="ln1662">      {</a>
+<a name="ln1663">        FT_Vector        ctrl1, ctrl2, end;</a>
+<a name="ln1664">        FT_Angle         theta1, phi1, theta2, phi2, rotate, alpha0 = 0;</a>
+<a name="ln1665">        FT_Fixed         length1, length2;</a>
+<a name="ln1666">        FT_StrokeBorder  border;</a>
+<a name="ln1667">        FT_Int           side;</a>
+<a name="ln1668"> </a>
+<a name="ln1669"> </a>
+<a name="ln1670">        theta1  = FT_Angle_Diff( angle_in,  angle_mid ) / 2;</a>
+<a name="ln1671">        theta2  = FT_Angle_Diff( angle_mid, angle_out ) / 2;</a>
+<a name="ln1672">        phi1    = ft_angle_mean( angle_in,  angle_mid );</a>
+<a name="ln1673">        phi2    = ft_angle_mean( angle_mid, angle_out );</a>
+<a name="ln1674">        length1 = FT_DivFix( stroker-&gt;radius, FT_Cos( theta1 ) );</a>
+<a name="ln1675">        length2 = FT_DivFix( stroker-&gt;radius, FT_Cos( theta2 ) );</a>
+<a name="ln1676"> </a>
+<a name="ln1677">        /* compute direction of original arc */</a>
+<a name="ln1678">        if ( stroker-&gt;handle_wide_strokes )</a>
+<a name="ln1679">          alpha0 = FT_Atan2( arc[0].x - arc[3].x, arc[0].y - arc[3].y );</a>
+<a name="ln1680"> </a>
+<a name="ln1681">        for ( border = stroker-&gt;borders, side = 0;</a>
+<a name="ln1682">              side &lt;= 1;</a>
+<a name="ln1683">              side++, border++ )</a>
+<a name="ln1684">        {</a>
+<a name="ln1685">          rotate = FT_SIDE_TO_ROTATE( side );</a>
+<a name="ln1686"> </a>
+<a name="ln1687">          /* compute control points */</a>
+<a name="ln1688">          FT_Vector_From_Polar( &amp;ctrl1, length1, phi1 + rotate );</a>
+<a name="ln1689">          ctrl1.x += arc[2].x;</a>
+<a name="ln1690">          ctrl1.y += arc[2].y;</a>
+<a name="ln1691"> </a>
+<a name="ln1692">          FT_Vector_From_Polar( &amp;ctrl2, length2, phi2 + rotate );</a>
+<a name="ln1693">          ctrl2.x += arc[1].x;</a>
+<a name="ln1694">          ctrl2.y += arc[1].y;</a>
+<a name="ln1695"> </a>
+<a name="ln1696">          /* compute end point */</a>
+<a name="ln1697">          FT_Vector_From_Polar( &amp;end, stroker-&gt;radius, angle_out + rotate );</a>
+<a name="ln1698">          end.x += arc[0].x;</a>
+<a name="ln1699">          end.y += arc[0].y;</a>
+<a name="ln1700"> </a>
+<a name="ln1701">          if ( stroker-&gt;handle_wide_strokes )</a>
+<a name="ln1702">          {</a>
+<a name="ln1703">            FT_Vector  start;</a>
+<a name="ln1704">            FT_Angle   alpha1;</a>
+<a name="ln1705"> </a>
+<a name="ln1706"> </a>
+<a name="ln1707">            /* determine whether the border radius is greater than the */</a>
+<a name="ln1708">            /* radius of curvature of the original arc                 */</a>
+<a name="ln1709">            start = border-&gt;points[border-&gt;num_points - 1];</a>
+<a name="ln1710"> </a>
+<a name="ln1711">            alpha1 = FT_Atan2( end.x - start.x, end.y - start.y );</a>
+<a name="ln1712"> </a>
+<a name="ln1713">            /* is the direction of the border arc opposite to */</a>
+<a name="ln1714">            /* that of the original arc? */</a>
+<a name="ln1715">            if ( ft_pos_abs( FT_Angle_Diff( alpha0, alpha1 ) ) &gt;</a>
+<a name="ln1716">                   FT_ANGLE_PI / 2                             )</a>
+<a name="ln1717">            {</a>
+<a name="ln1718">              FT_Angle   beta, gamma;</a>
+<a name="ln1719">              FT_Vector  bvec, delta;</a>
+<a name="ln1720">              FT_Fixed   blen, sinA, sinB, alen;</a>
+<a name="ln1721"> </a>
+<a name="ln1722"> </a>
+<a name="ln1723">              /* use the sine rule to find the intersection point */</a>
+<a name="ln1724">              beta  = FT_Atan2( arc[3].x - start.x, arc[3].y - start.y );</a>
+<a name="ln1725">              gamma = FT_Atan2( arc[0].x - end.x,   arc[0].y - end.y );</a>
+<a name="ln1726"> </a>
+<a name="ln1727">              bvec.x = end.x - start.x;</a>
+<a name="ln1728">              bvec.y = end.y - start.y;</a>
+<a name="ln1729"> </a>
+<a name="ln1730">              blen = FT_Vector_Length( &amp;bvec );</a>
+<a name="ln1731"> </a>
+<a name="ln1732">              sinA = ft_pos_abs( FT_Sin( alpha1 - gamma ) );</a>
+<a name="ln1733">              sinB = ft_pos_abs( FT_Sin( beta - gamma ) );</a>
+<a name="ln1734"> </a>
+<a name="ln1735">              alen = FT_MulDiv( blen, sinA, sinB );</a>
+<a name="ln1736"> </a>
+<a name="ln1737">              FT_Vector_From_Polar( &amp;delta, alen, beta );</a>
+<a name="ln1738">              delta.x += start.x;</a>
+<a name="ln1739">              delta.y += start.y;</a>
+<a name="ln1740"> </a>
+<a name="ln1741">              /* circumnavigate the negative sector backwards */</a>
+<a name="ln1742">              border-&gt;movable = FALSE;</a>
+<a name="ln1743">              error = ft_stroke_border_lineto( border, &amp;delta, FALSE );</a>
+<a name="ln1744">              if ( error )</a>
+<a name="ln1745">                goto Exit;</a>
+<a name="ln1746">              error = ft_stroke_border_lineto( border, &amp;end, FALSE );</a>
+<a name="ln1747">              if ( error )</a>
+<a name="ln1748">                goto Exit;</a>
+<a name="ln1749">              error = ft_stroke_border_cubicto( border,</a>
+<a name="ln1750">                                                &amp;ctrl2,</a>
+<a name="ln1751">                                                &amp;ctrl1,</a>
+<a name="ln1752">                                                &amp;start );</a>
+<a name="ln1753">              if ( error )</a>
+<a name="ln1754">                goto Exit;</a>
+<a name="ln1755">              /* and then move to the endpoint */</a>
+<a name="ln1756">              error = ft_stroke_border_lineto( border, &amp;end, FALSE );</a>
+<a name="ln1757">              if ( error )</a>
+<a name="ln1758">                goto Exit;</a>
+<a name="ln1759"> </a>
+<a name="ln1760">              continue;</a>
+<a name="ln1761">            }</a>
+<a name="ln1762"> </a>
+<a name="ln1763">            /* else fall through */</a>
+<a name="ln1764">          }</a>
+<a name="ln1765"> </a>
+<a name="ln1766">          /* simply add an arc */</a>
+<a name="ln1767">          error = ft_stroke_border_cubicto( border, &amp;ctrl1, &amp;ctrl2, &amp;end );</a>
+<a name="ln1768">          if ( error )</a>
+<a name="ln1769">            goto Exit;</a>
+<a name="ln1770">        }</a>
+<a name="ln1771">      }</a>
+<a name="ln1772"> </a>
+<a name="ln1773">      arc -= 3;</a>
+<a name="ln1774"> </a>
+<a name="ln1775">      stroker-&gt;angle_in = angle_out;</a>
+<a name="ln1776">    }</a>
+<a name="ln1777"> </a>
+<a name="ln1778">    stroker-&gt;center = *to;</a>
+<a name="ln1779"> </a>
+<a name="ln1780">  Exit:</a>
+<a name="ln1781">    return error;</a>
+<a name="ln1782">  }</a>
+<a name="ln1783"> </a>
+<a name="ln1784"> </a>
+<a name="ln1785">  /* documentation is in ftstroke.h */</a>
+<a name="ln1786"> </a>
+<a name="ln1787">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln1788">  FT_Stroker_BeginSubPath( FT_Stroker  stroker,</a>
+<a name="ln1789">                           FT_Vector*  to,</a>
+<a name="ln1790">                           FT_Bool     open )</a>
+<a name="ln1791">  {</a>
+<a name="ln1792">    if ( !stroker || !to )</a>
+<a name="ln1793">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln1794"> </a>
+<a name="ln1795">    /* We cannot process the first point, because there is not enough      */</a>
+<a name="ln1796">    /* information regarding its corner/cap.  The latter will be processed */</a>
+<a name="ln1797">    /* in the `FT_Stroker_EndSubPath' routine.                             */</a>
+<a name="ln1798">    /*                                                                     */</a>
+<a name="ln1799">    stroker-&gt;first_point  = TRUE;</a>
+<a name="ln1800">    stroker-&gt;center       = *to;</a>
+<a name="ln1801">    stroker-&gt;subpath_open = open;</a>
+<a name="ln1802"> </a>
+<a name="ln1803">    /* Determine if we need to check whether the border radius is greater */</a>
+<a name="ln1804">    /* than the radius of curvature of a curve, to handle this case       */</a>
+<a name="ln1805">    /* specially.  This is only required if bevel joins or butt caps may  */</a>
+<a name="ln1806">    /* be created, because round &amp; miter joins and round &amp; square caps    */</a>
+<a name="ln1807">    /* cover the negative sector created with wide strokes.               */</a>
+<a name="ln1808">    stroker-&gt;handle_wide_strokes =</a>
+<a name="ln1809">      FT_BOOL( stroker-&gt;line_join != FT_STROKER_LINEJOIN_ROUND  ||</a>
+<a name="ln1810">               ( stroker-&gt;subpath_open                        &amp;&amp;</a>
+<a name="ln1811">                 stroker-&gt;line_cap == FT_STROKER_LINECAP_BUTT ) );</a>
+<a name="ln1812"> </a>
+<a name="ln1813">    /* record the subpath start point for each border */</a>
+<a name="ln1814">    stroker-&gt;subpath_start = *to;</a>
+<a name="ln1815"> </a>
+<a name="ln1816">    stroker-&gt;angle_in = 0;</a>
+<a name="ln1817"> </a>
+<a name="ln1818">    return FT_Err_Ok;</a>
+<a name="ln1819">  }</a>
+<a name="ln1820"> </a>
+<a name="ln1821"> </a>
+<a name="ln1822">  static FT_Error</a>
+<a name="ln1823">  ft_stroker_add_reverse_left( FT_Stroker  stroker,</a>
+<a name="ln1824">                               FT_Bool     open )</a>
+<a name="ln1825">  {</a>
+<a name="ln1826">    FT_StrokeBorder  right = stroker-&gt;borders + 0;</a>
+<a name="ln1827">    FT_StrokeBorder  left  = stroker-&gt;borders + 1;</a>
+<a name="ln1828">    FT_Int           new_points;</a>
+<a name="ln1829">    FT_Error         error = FT_Err_Ok;</a>
+<a name="ln1830"> </a>
+<a name="ln1831"> </a>
+<a name="ln1832">    FT_ASSERT( left-&gt;start &gt;= 0 );</a>
+<a name="ln1833"> </a>
+<a name="ln1834">    new_points = (FT_Int)left-&gt;num_points - left-&gt;start;</a>
+<a name="ln1835">    if ( new_points &gt; 0 )</a>
+<a name="ln1836">    {</a>
+<a name="ln1837">      error = ft_stroke_border_grow( right, (FT_UInt)new_points );</a>
+<a name="ln1838">      if ( error )</a>
+<a name="ln1839">        goto Exit;</a>
+<a name="ln1840"> </a>
+<a name="ln1841">      {</a>
+<a name="ln1842">        FT_Vector*  dst_point = right-&gt;points + right-&gt;num_points;</a>
+<a name="ln1843">        FT_Byte*    dst_tag   = right-&gt;tags   + right-&gt;num_points;</a>
+<a name="ln1844">        FT_Vector*  src_point = left-&gt;points  + left-&gt;num_points - 1;</a>
+<a name="ln1845">        FT_Byte*    src_tag   = left-&gt;tags    + left-&gt;num_points - 1;</a>
+<a name="ln1846"> </a>
+<a name="ln1847"> </a>
+<a name="ln1848">        while ( src_point &gt;= left-&gt;points + left-&gt;start )</a>
+<a name="ln1849">        {</a>
+<a name="ln1850">          *dst_point = *src_point;</a>
+<a name="ln1851">          *dst_tag   = *src_tag;</a>
+<a name="ln1852"> </a>
+<a name="ln1853">          if ( open )</a>
+<a name="ln1854">            dst_tag[0] &amp;= ~FT_STROKE_TAG_BEGIN_END;</a>
+<a name="ln1855">          else</a>
+<a name="ln1856">          {</a>
+<a name="ln1857">            FT_Byte  ttag =</a>
+<a name="ln1858">                       (FT_Byte)( dst_tag[0] &amp; FT_STROKE_TAG_BEGIN_END );</a>
+<a name="ln1859"> </a>
+<a name="ln1860"> </a>
+<a name="ln1861">            /* switch begin/end tags if necessary */</a>
+<a name="ln1862">            if ( ttag == FT_STROKE_TAG_BEGIN ||</a>
+<a name="ln1863">                 ttag == FT_STROKE_TAG_END   )</a>
+<a name="ln1864">              dst_tag[0] ^= FT_STROKE_TAG_BEGIN_END;</a>
+<a name="ln1865">          }</a>
+<a name="ln1866"> </a>
+<a name="ln1867">          src_point--;</a>
+<a name="ln1868">          src_tag--;</a>
+<a name="ln1869">          dst_point++;</a>
+<a name="ln1870">          dst_tag++;</a>
+<a name="ln1871">        }</a>
+<a name="ln1872">      }</a>
+<a name="ln1873"> </a>
+<a name="ln1874">      left-&gt;num_points   = (FT_UInt)left-&gt;start;</a>
+<a name="ln1875">      right-&gt;num_points += (FT_UInt)new_points;</a>
+<a name="ln1876"> </a>
+<a name="ln1877">      right-&gt;movable = FALSE;</a>
+<a name="ln1878">      left-&gt;movable  = FALSE;</a>
+<a name="ln1879">    }</a>
+<a name="ln1880"> </a>
+<a name="ln1881">  Exit:</a>
+<a name="ln1882">    return error;</a>
+<a name="ln1883">  }</a>
+<a name="ln1884"> </a>
+<a name="ln1885"> </a>
+<a name="ln1886">  /* documentation is in ftstroke.h */</a>
+<a name="ln1887"> </a>
+<a name="ln1888">  /* there's a lot of magic in this function! */</a>
+<a name="ln1889">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln1890">  FT_Stroker_EndSubPath( FT_Stroker  stroker )</a>
+<a name="ln1891">  {</a>
+<a name="ln1892">    FT_Error  error = FT_Err_Ok;</a>
+<a name="ln1893"> </a>
+<a name="ln1894"> </a>
+<a name="ln1895">    if ( !stroker )</a>
+<a name="ln1896">    {</a>
+<a name="ln1897">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1898">      goto Exit;</a>
+<a name="ln1899">    }</a>
+<a name="ln1900"> </a>
+<a name="ln1901">    if ( stroker-&gt;subpath_open )</a>
+<a name="ln1902">    {</a>
+<a name="ln1903">      FT_StrokeBorder  right = stroker-&gt;borders;</a>
+<a name="ln1904"> </a>
+<a name="ln1905"> </a>
+<a name="ln1906">      /* All right, this is an opened path, we need to add a cap between */</a>
+<a name="ln1907">      /* right &amp; left, add the reverse of left, then add a final cap     */</a>
+<a name="ln1908">      /* between left &amp; right.                                           */</a>
+<a name="ln1909">      error = ft_stroker_cap( stroker, stroker-&gt;angle_in, 0 );</a>
+<a name="ln1910">      if ( error )</a>
+<a name="ln1911">        goto Exit;</a>
+<a name="ln1912"> </a>
+<a name="ln1913">      /* add reversed points from `left' to `right' */</a>
+<a name="ln1914">      error = ft_stroker_add_reverse_left( stroker, TRUE );</a>
+<a name="ln1915">      if ( error )</a>
+<a name="ln1916">        goto Exit;</a>
+<a name="ln1917"> </a>
+<a name="ln1918">      /* now add the final cap */</a>
+<a name="ln1919">      stroker-&gt;center = stroker-&gt;subpath_start;</a>
+<a name="ln1920">      error = ft_stroker_cap( stroker,</a>
+<a name="ln1921">                              stroker-&gt;subpath_angle + FT_ANGLE_PI, 0 );</a>
+<a name="ln1922">      if ( error )</a>
+<a name="ln1923">        goto Exit;</a>
+<a name="ln1924"> </a>
+<a name="ln1925">      /* Now end the right subpath accordingly.  The left one is */</a>
+<a name="ln1926">      /* rewind and doesn't need further processing.             */</a>
+<a name="ln1927">      ft_stroke_border_close( right, FALSE );</a>
+<a name="ln1928">    }</a>
+<a name="ln1929">    else</a>
+<a name="ln1930">    {</a>
+<a name="ln1931">      FT_Angle  turn;</a>
+<a name="ln1932">      FT_Int    inside_side;</a>
+<a name="ln1933"> </a>
+<a name="ln1934"> </a>
+<a name="ln1935">      /* close the path if needed */</a>
+<a name="ln1936">      if ( stroker-&gt;center.x != stroker-&gt;subpath_start.x ||</a>
+<a name="ln1937">           stroker-&gt;center.y != stroker-&gt;subpath_start.y )</a>
+<a name="ln1938">      {</a>
+<a name="ln1939">         error = FT_Stroker_LineTo( stroker, &amp;stroker-&gt;subpath_start );</a>
+<a name="ln1940">         if ( error )</a>
+<a name="ln1941">           goto Exit;</a>
+<a name="ln1942">      }</a>
+<a name="ln1943"> </a>
+<a name="ln1944">      /* process the corner */</a>
+<a name="ln1945">      stroker-&gt;angle_out = stroker-&gt;subpath_angle;</a>
+<a name="ln1946">      turn               = FT_Angle_Diff( stroker-&gt;angle_in,</a>
+<a name="ln1947">                                          stroker-&gt;angle_out );</a>
+<a name="ln1948"> </a>
+<a name="ln1949">      /* no specific corner processing is required if the turn is 0 */</a>
+<a name="ln1950">      if ( turn != 0 )</a>
+<a name="ln1951">      {</a>
+<a name="ln1952">        /* when we turn to the right, the inside side is 0 */</a>
+<a name="ln1953">        /* otherwise, the inside side is 1 */</a>
+<a name="ln1954">        inside_side = ( turn &lt; 0 );</a>
+<a name="ln1955"> </a>
+<a name="ln1956">        error = ft_stroker_inside( stroker,</a>
+<a name="ln1957">                                   inside_side,</a>
+<a name="ln1958">                                   stroker-&gt;subpath_line_length );</a>
+<a name="ln1959">        if ( error )</a>
+<a name="ln1960">          goto Exit;</a>
+<a name="ln1961"> </a>
+<a name="ln1962">        /* process the outside side */</a>
+<a name="ln1963">        error = ft_stroker_outside( stroker,</a>
+<a name="ln1964">                                    !inside_side,</a>
+<a name="ln1965">                                    stroker-&gt;subpath_line_length );</a>
+<a name="ln1966">        if ( error )</a>
+<a name="ln1967">          goto Exit;</a>
+<a name="ln1968">      }</a>
+<a name="ln1969"> </a>
+<a name="ln1970">      /* then end our two subpaths */</a>
+<a name="ln1971">      ft_stroke_border_close( stroker-&gt;borders + 0, FALSE );</a>
+<a name="ln1972">      ft_stroke_border_close( stroker-&gt;borders + 1, TRUE );</a>
+<a name="ln1973">    }</a>
+<a name="ln1974"> </a>
+<a name="ln1975">  Exit:</a>
+<a name="ln1976">    return error;</a>
+<a name="ln1977">  }</a>
+<a name="ln1978"> </a>
+<a name="ln1979"> </a>
+<a name="ln1980">  /* documentation is in ftstroke.h */</a>
+<a name="ln1981"> </a>
+<a name="ln1982">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln1983">  FT_Stroker_GetBorderCounts( FT_Stroker        stroker,</a>
+<a name="ln1984">                              FT_StrokerBorder  border,</a>
+<a name="ln1985">                              FT_UInt          *anum_points,</a>
+<a name="ln1986">                              FT_UInt          *anum_contours )</a>
+<a name="ln1987">  {</a>
+<a name="ln1988">    FT_UInt   num_points = 0, num_contours = 0;</a>
+<a name="ln1989">    FT_Error  error;</a>
+<a name="ln1990"> </a>
+<a name="ln1991"> </a>
+<a name="ln1992">    if ( !stroker || border &gt; 1 )</a>
+<a name="ln1993">    {</a>
+<a name="ln1994">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln1995">      goto Exit;</a>
+<a name="ln1996">    }</a>
+<a name="ln1997"> </a>
+<a name="ln1998">    error = ft_stroke_border_get_counts( stroker-&gt;borders + border,</a>
+<a name="ln1999">                                         &amp;num_points, &amp;num_contours );</a>
+<a name="ln2000">  Exit:</a>
+<a name="ln2001">    if ( anum_points )</a>
+<a name="ln2002">      *anum_points = num_points;</a>
+<a name="ln2003"> </a>
+<a name="ln2004">    if ( anum_contours )</a>
+<a name="ln2005">      *anum_contours = num_contours;</a>
+<a name="ln2006"> </a>
+<a name="ln2007">    return error;</a>
+<a name="ln2008">  }</a>
+<a name="ln2009"> </a>
+<a name="ln2010"> </a>
+<a name="ln2011">  /* documentation is in ftstroke.h */</a>
+<a name="ln2012"> </a>
+<a name="ln2013">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln2014">  FT_Stroker_GetCounts( FT_Stroker  stroker,</a>
+<a name="ln2015">                        FT_UInt    *anum_points,</a>
+<a name="ln2016">                        FT_UInt    *anum_contours )</a>
+<a name="ln2017">  {</a>
+<a name="ln2018">    FT_UInt   count1, count2, num_points   = 0;</a>
+<a name="ln2019">    FT_UInt   count3, count4, num_contours = 0;</a>
+<a name="ln2020">    FT_Error  error;</a>
+<a name="ln2021"> </a>
+<a name="ln2022"> </a>
+<a name="ln2023">    if ( !stroker )</a>
+<a name="ln2024">    {</a>
+<a name="ln2025">      error = FT_THROW( Invalid_Argument );</a>
+<a name="ln2026">      goto Exit;</a>
+<a name="ln2027">    }</a>
+<a name="ln2028"> </a>
+<a name="ln2029">    error = ft_stroke_border_get_counts( stroker-&gt;borders + 0,</a>
+<a name="ln2030">                                         &amp;count1, &amp;count2 );</a>
+<a name="ln2031">    if ( error )</a>
+<a name="ln2032">      goto Exit;</a>
+<a name="ln2033"> </a>
+<a name="ln2034">    error = ft_stroke_border_get_counts( stroker-&gt;borders + 1,</a>
+<a name="ln2035">                                         &amp;count3, &amp;count4 );</a>
+<a name="ln2036">    if ( error )</a>
+<a name="ln2037">      goto Exit;</a>
+<a name="ln2038"> </a>
+<a name="ln2039">    num_points   = count1 + count3;</a>
+<a name="ln2040">    num_contours = count2 + count4;</a>
+<a name="ln2041"> </a>
+<a name="ln2042">  Exit:</a>
+<a name="ln2043">    if ( anum_points )</a>
+<a name="ln2044">      *anum_points   = num_points;</a>
+<a name="ln2045"> </a>
+<a name="ln2046">    if ( anum_contours )</a>
+<a name="ln2047">      *anum_contours = num_contours;</a>
+<a name="ln2048"> </a>
+<a name="ln2049">    return error;</a>
+<a name="ln2050">  }</a>
+<a name="ln2051"> </a>
+<a name="ln2052"> </a>
+<a name="ln2053">  /* documentation is in ftstroke.h */</a>
+<a name="ln2054"> </a>
+<a name="ln2055">  FT_EXPORT_DEF( void )</a>
+<a name="ln2056">  FT_Stroker_ExportBorder( FT_Stroker        stroker,</a>
+<a name="ln2057">                           FT_StrokerBorder  border,</a>
+<a name="ln2058">                           FT_Outline*       outline )</a>
+<a name="ln2059">  {</a>
+<a name="ln2060">    if ( !stroker || !outline )</a>
+<a name="ln2061">      return;</a>
+<a name="ln2062"> </a>
+<a name="ln2063">    if ( border == FT_STROKER_BORDER_LEFT  ||</a>
+<a name="ln2064">         border == FT_STROKER_BORDER_RIGHT )</a>
+<a name="ln2065">    {</a>
+<a name="ln2066">      FT_StrokeBorder  sborder = &amp; stroker-&gt;borders[border];</a>
+<a name="ln2067"> </a>
+<a name="ln2068"> </a>
+<a name="ln2069">      if ( sborder-&gt;valid )</a>
+<a name="ln2070">        ft_stroke_border_export( sborder, outline );</a>
+<a name="ln2071">    }</a>
+<a name="ln2072">  }</a>
+<a name="ln2073"> </a>
+<a name="ln2074"> </a>
+<a name="ln2075">  /* documentation is in ftstroke.h */</a>
+<a name="ln2076"> </a>
+<a name="ln2077">  FT_EXPORT_DEF( void )</a>
+<a name="ln2078">  FT_Stroker_Export( FT_Stroker   stroker,</a>
+<a name="ln2079">                     FT_Outline*  outline )</a>
+<a name="ln2080">  {</a>
+<a name="ln2081">    FT_Stroker_ExportBorder( stroker, FT_STROKER_BORDER_LEFT, outline );</a>
+<a name="ln2082">    FT_Stroker_ExportBorder( stroker, FT_STROKER_BORDER_RIGHT, outline );</a>
+<a name="ln2083">  }</a>
+<a name="ln2084"> </a>
+<a name="ln2085"> </a>
+<a name="ln2086">  /* documentation is in ftstroke.h */</a>
+<a name="ln2087"> </a>
+<a name="ln2088">  /*</a>
+<a name="ln2089">   *  The following is very similar to FT_Outline_Decompose, except</a>
+<a name="ln2090">   *  that we do support opened paths, and do not scale the outline.</a>
+<a name="ln2091">   */</a>
+<a name="ln2092">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln2093">  FT_Stroker_ParseOutline( FT_Stroker   stroker,</a>
+<a name="ln2094">                           FT_Outline*  outline,</a>
+<a name="ln2095">                           FT_Bool      opened )</a>
+<a name="ln2096">  {</a>
+<a name="ln2097">    FT_Vector   v_last;</a>
+<a name="ln2098">    FT_Vector   v_control;</a>
+<a name="ln2099">    FT_Vector   v_start;</a>
+<a name="ln2100"> </a>
+<a name="ln2101">    FT_Vector*  point;</a>
+<a name="ln2102">    FT_Vector*  limit;</a>
+<a name="ln2103">    char*       tags;</a>
+<a name="ln2104"> </a>
+<a name="ln2105">    FT_Error    error;</a>
+<a name="ln2106"> </a>
+<a name="ln2107">    FT_Int      n;         /* index of contour in outline     */</a>
+<a name="ln2108">    FT_UInt     first;     /* index of first point in contour */</a>
+<a name="ln2109">    FT_Int      tag;       /* current point's state           */</a>
+<a name="ln2110"> </a>
+<a name="ln2111"> </a>
+<a name="ln2112">    if ( !outline )</a>
+<a name="ln2113">      return FT_THROW( Invalid_Outline );</a>
+<a name="ln2114"> </a>
+<a name="ln2115">    if ( !stroker )</a>
+<a name="ln2116">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln2117"> </a>
+<a name="ln2118">    FT_Stroker_Rewind( stroker );</a>
+<a name="ln2119"> </a>
+<a name="ln2120">    first = 0;</a>
+<a name="ln2121"> </a>
+<a name="ln2122">    for ( n = 0; n &lt; outline-&gt;n_contours; n++ )</a>
+<a name="ln2123">    {</a>
+<a name="ln2124">      FT_UInt  last;  /* index of last point in contour */</a>
+<a name="ln2125"> </a>
+<a name="ln2126"> </a>
+<a name="ln2127">      last  = (FT_UInt)outline-&gt;contours[n];</a>
+<a name="ln2128">      limit = outline-&gt;points + last;</a>
+<a name="ln2129"> </a>
+<a name="ln2130">      /* skip empty points; we don't stroke these */</a>
+<a name="ln2131">      if ( last &lt;= first )</a>
+<a name="ln2132">      {</a>
+<a name="ln2133">        first = last + 1;</a>
+<a name="ln2134">        continue;</a>
+<a name="ln2135">      }</a>
+<a name="ln2136"> </a>
+<a name="ln2137">      v_start = outline-&gt;points[first];</a>
+<a name="ln2138">      v_last  = outline-&gt;points[last];</a>
+<a name="ln2139"> </a>
+<a name="ln2140">      v_control = v_start;</a>
+<a name="ln2141"> </a>
+<a name="ln2142">      point = outline-&gt;points + first;</a>
+<a name="ln2143">      tags  = outline-&gt;tags   + first;</a>
+<a name="ln2144">      tag   = FT_CURVE_TAG( tags[0] );</a>
+<a name="ln2145"> </a>
+<a name="ln2146">      /* A contour cannot start with a cubic control point! */</a>
+<a name="ln2147">      if ( tag == FT_CURVE_TAG_CUBIC )</a>
+<a name="ln2148">        goto Invalid_Outline;</a>
+<a name="ln2149"> </a>
+<a name="ln2150">      /* check first point to determine origin */</a>
+<a name="ln2151">      if ( tag == FT_CURVE_TAG_CONIC )</a>
+<a name="ln2152">      {</a>
+<a name="ln2153">        /* First point is conic control.  Yes, this happens. */</a>
+<a name="ln2154">        if ( FT_CURVE_TAG( outline-&gt;tags[last] ) == FT_CURVE_TAG_ON )</a>
+<a name="ln2155">        {</a>
+<a name="ln2156">          /* start at last point if it is on the curve */</a>
+<a name="ln2157">          v_start = v_last;</a>
+<a name="ln2158">          limit--;</a>
+<a name="ln2159">        }</a>
+<a name="ln2160">        else</a>
+<a name="ln2161">        {</a>
+<a name="ln2162">          /* if both first and last points are conic, */</a>
+<a name="ln2163">          /* start at their middle                    */</a>
+<a name="ln2164">          v_start.x = ( v_start.x + v_last.x ) / 2;</a>
+<a name="ln2165">          v_start.y = ( v_start.y + v_last.y ) / 2;</a>
+<a name="ln2166">        }</a>
+<a name="ln2167">        point--;</a>
+<a name="ln2168">        tags--;</a>
+<a name="ln2169">      }</a>
+<a name="ln2170"> </a>
+<a name="ln2171">      error = FT_Stroker_BeginSubPath( stroker, &amp;v_start, opened );</a>
+<a name="ln2172">      if ( error )</a>
+<a name="ln2173">        goto Exit;</a>
+<a name="ln2174"> </a>
+<a name="ln2175">      while ( point &lt; limit )</a>
+<a name="ln2176">      {</a>
+<a name="ln2177">        point++;</a>
+<a name="ln2178">        tags++;</a>
+<a name="ln2179"> </a>
+<a name="ln2180">        tag = FT_CURVE_TAG( tags[0] );</a>
+<a name="ln2181">        switch ( tag )</a>
+<a name="ln2182">        {</a>
+<a name="ln2183">        case FT_CURVE_TAG_ON:  /* emit a single line_to */</a>
+<a name="ln2184">          {</a>
+<a name="ln2185">            FT_Vector  vec;</a>
+<a name="ln2186"> </a>
+<a name="ln2187"> </a>
+<a name="ln2188">            vec.x = point-&gt;x;</a>
+<a name="ln2189">            vec.y = point-&gt;y;</a>
+<a name="ln2190"> </a>
+<a name="ln2191">            error = FT_Stroker_LineTo( stroker, &amp;vec );</a>
+<a name="ln2192">            if ( error )</a>
+<a name="ln2193">              goto Exit;</a>
+<a name="ln2194">            continue;</a>
+<a name="ln2195">          }</a>
+<a name="ln2196"> </a>
+<a name="ln2197">        case FT_CURVE_TAG_CONIC:  /* consume conic arcs */</a>
+<a name="ln2198">          v_control.x = point-&gt;x;</a>
+<a name="ln2199">          v_control.y = point-&gt;y;</a>
+<a name="ln2200"> </a>
+<a name="ln2201">        Do_Conic:</a>
+<a name="ln2202">          if ( point &lt; limit )</a>
+<a name="ln2203">          {</a>
+<a name="ln2204">            FT_Vector  vec;</a>
+<a name="ln2205">            FT_Vector  v_middle;</a>
+<a name="ln2206"> </a>
+<a name="ln2207"> </a>
+<a name="ln2208">            point++;</a>
+<a name="ln2209">            tags++;</a>
+<a name="ln2210">            tag = FT_CURVE_TAG( tags[0] );</a>
+<a name="ln2211"> </a>
+<a name="ln2212">            vec = point[0];</a>
+<a name="ln2213"> </a>
+<a name="ln2214">            if ( tag == FT_CURVE_TAG_ON )</a>
+<a name="ln2215">            {</a>
+<a name="ln2216">              error = FT_Stroker_ConicTo( stroker, &amp;v_control, &amp;vec );</a>
+<a name="ln2217">              if ( error )</a>
+<a name="ln2218">                goto Exit;</a>
+<a name="ln2219">              continue;</a>
+<a name="ln2220">            }</a>
+<a name="ln2221"> </a>
+<a name="ln2222">            if ( tag != FT_CURVE_TAG_CONIC )</a>
+<a name="ln2223">              goto Invalid_Outline;</a>
+<a name="ln2224"> </a>
+<a name="ln2225">            v_middle.x = ( v_control.x + vec.x ) / 2;</a>
+<a name="ln2226">            v_middle.y = ( v_control.y + vec.y ) / 2;</a>
+<a name="ln2227"> </a>
+<a name="ln2228">            error = FT_Stroker_ConicTo( stroker, &amp;v_control, &amp;v_middle );</a>
+<a name="ln2229">            if ( error )</a>
+<a name="ln2230">              goto Exit;</a>
+<a name="ln2231"> </a>
+<a name="ln2232">            v_control = vec;</a>
+<a name="ln2233">            goto Do_Conic;</a>
+<a name="ln2234">          }</a>
+<a name="ln2235"> </a>
+<a name="ln2236">          error = FT_Stroker_ConicTo( stroker, &amp;v_control, &amp;v_start );</a>
+<a name="ln2237">          goto Close;</a>
+<a name="ln2238"> </a>
+<a name="ln2239">        default:  /* FT_CURVE_TAG_CUBIC */</a>
+<a name="ln2240">          {</a>
+<a name="ln2241">            FT_Vector  vec1, vec2;</a>
+<a name="ln2242"> </a>
+<a name="ln2243"> </a>
+<a name="ln2244">            if ( point + 1 &gt; limit                             ||</a>
+<a name="ln2245">                 FT_CURVE_TAG( tags[1] ) != FT_CURVE_TAG_CUBIC )</a>
+<a name="ln2246">              goto Invalid_Outline;</a>
+<a name="ln2247"> </a>
+<a name="ln2248">            point += 2;</a>
+<a name="ln2249">            tags  += 2;</a>
+<a name="ln2250"> </a>
+<a name="ln2251">            vec1 = point[-2];</a>
+<a name="ln2252">            vec2 = point[-1];</a>
+<a name="ln2253"> </a>
+<a name="ln2254">            if ( point &lt;= limit )</a>
+<a name="ln2255">            {</a>
+<a name="ln2256">              FT_Vector  vec;</a>
+<a name="ln2257"> </a>
+<a name="ln2258"> </a>
+<a name="ln2259">              vec = point[0];</a>
+<a name="ln2260"> </a>
+<a name="ln2261">              error = FT_Stroker_CubicTo( stroker, &amp;vec1, &amp;vec2, &amp;vec );</a>
+<a name="ln2262">              if ( error )</a>
+<a name="ln2263">                goto Exit;</a>
+<a name="ln2264">              continue;</a>
+<a name="ln2265">            }</a>
+<a name="ln2266"> </a>
+<a name="ln2267">            error = FT_Stroker_CubicTo( stroker, &amp;vec1, &amp;vec2, &amp;v_start );</a>
+<a name="ln2268">            goto Close;</a>
+<a name="ln2269">          }</a>
+<a name="ln2270">        }</a>
+<a name="ln2271">      }</a>
+<a name="ln2272"> </a>
+<a name="ln2273">    Close:</a>
+<a name="ln2274">      if ( error )</a>
+<a name="ln2275">        goto Exit;</a>
+<a name="ln2276"> </a>
+<a name="ln2277">      /* don't try to end the path if no segments have been generated */</a>
+<a name="ln2278">      if ( !stroker-&gt;first_point )</a>
+<a name="ln2279">      {</a>
+<a name="ln2280">        error = FT_Stroker_EndSubPath( stroker );</a>
+<a name="ln2281">        if ( error )</a>
+<a name="ln2282">          goto Exit;</a>
+<a name="ln2283">      }</a>
+<a name="ln2284"> </a>
+<a name="ln2285">      first = last + 1;</a>
+<a name="ln2286">    }</a>
+<a name="ln2287"> </a>
+<a name="ln2288">    return FT_Err_Ok;</a>
+<a name="ln2289"> </a>
+<a name="ln2290">  Exit:</a>
+<a name="ln2291">    return error;</a>
+<a name="ln2292"> </a>
+<a name="ln2293">  Invalid_Outline:</a>
+<a name="ln2294">    return FT_THROW( Invalid_Outline );</a>
+<a name="ln2295">  }</a>
+<a name="ln2296"> </a>
+<a name="ln2297"> </a>
+<a name="ln2298">  /* documentation is in ftstroke.h */</a>
+<a name="ln2299"> </a>
+<a name="ln2300">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln2301">  FT_Glyph_Stroke( FT_Glyph    *pglyph,</a>
+<a name="ln2302">                   FT_Stroker   stroker,</a>
+<a name="ln2303">                   FT_Bool      destroy )</a>
+<a name="ln2304">  {</a>
+<a name="ln2305">    FT_Error  error = FT_ERR( Invalid_Argument );</a>
+<a name="ln2306">    FT_Glyph  glyph = NULL;</a>
+<a name="ln2307"> </a>
+<a name="ln2308">    /* for FT_OUTLINE_GLYPH_CLASS_GET (in PIC mode) */</a>
+<a name="ln2309">    FT_Library  library = stroker-&gt;library;</a>
+<a name="ln2310"> </a>
+<a name="ln2311">    FT_UNUSED( library );</a>
+<a name="ln2312"> </a>
+<a name="ln2313"> </a>
+<a name="ln2314">    if ( !pglyph )</a>
+<a name="ln2315">      goto Exit;</a>
+<a name="ln2316"> </a>
+<a name="ln2317">    glyph = *pglyph;</a>
+<a name="ln2318">    if ( !glyph || glyph-&gt;clazz != FT_OUTLINE_GLYPH_CLASS_GET )</a>
+<a name="ln2319">      goto Exit;</a>
+<a name="ln2320"> </a>
+<a name="ln2321">    {</a>
+<a name="ln2322">      FT_Glyph  copy;</a>
+<a name="ln2323"> </a>
+<a name="ln2324"> </a>
+<a name="ln2325">      error = FT_Glyph_Copy( glyph, &amp;copy );</a>
+<a name="ln2326">      if ( error )</a>
+<a name="ln2327">        goto Exit;</a>
+<a name="ln2328"> </a>
+<a name="ln2329">      glyph = copy;</a>
+<a name="ln2330">    }</a>
+<a name="ln2331"> </a>
+<a name="ln2332">    {</a>
+<a name="ln2333">      FT_OutlineGlyph  oglyph  = (FT_OutlineGlyph)glyph;</a>
+<a name="ln2334">      FT_Outline*      outline = &amp;oglyph-&gt;outline;</a>
+<a name="ln2335">      FT_UInt          num_points, num_contours;</a>
+<a name="ln2336"> </a>
+<a name="ln2337"> </a>
+<a name="ln2338">      error = FT_Stroker_ParseOutline( stroker, outline, FALSE );</a>
+<a name="ln2339">      if ( error )</a>
+<a name="ln2340">        goto Fail;</a>
+<a name="ln2341"> </a>
+<a name="ln2342">      FT_Stroker_GetCounts( stroker, &amp;num_points, &amp;num_contours );</a>
+<a name="ln2343"> </a>
+<a name="ln2344">      FT_Outline_Done( glyph-&gt;library, outline );</a>
+<a name="ln2345"> </a>
+<a name="ln2346">      error = FT_Outline_New( glyph-&gt;library,</a>
+<a name="ln2347">                              num_points,</a>
+<a name="ln2348">                              (FT_Int)num_contours,</a>
+<a name="ln2349">                              outline );</a>
+<a name="ln2350">      if ( error )</a>
+<a name="ln2351">        goto Fail;</a>
+<a name="ln2352"> </a>
+<a name="ln2353">      outline-&gt;n_points   = 0;</a>
+<a name="ln2354">      outline-&gt;n_contours = 0;</a>
+<a name="ln2355"> </a>
+<a name="ln2356">      FT_Stroker_Export( stroker, outline );</a>
+<a name="ln2357">    }</a>
+<a name="ln2358"> </a>
+<a name="ln2359">    if ( destroy )</a>
+<a name="ln2360">      FT_Done_Glyph( *pglyph );</a>
+<a name="ln2361"> </a>
+<a name="ln2362">    *pglyph = glyph;</a>
+<a name="ln2363">    goto Exit;</a>
+<a name="ln2364"> </a>
+<a name="ln2365">  Fail:</a>
+<a name="ln2366">    FT_Done_Glyph( glyph );</a>
+<a name="ln2367">    glyph = NULL;</a>
+<a name="ln2368"> </a>
+<a name="ln2369">    if ( !destroy )</a>
+<a name="ln2370">      *pglyph = NULL;</a>
+<a name="ln2371"> </a>
+<a name="ln2372">  Exit:</a>
+<a name="ln2373">    return error;</a>
+<a name="ln2374">  }</a>
+<a name="ln2375"> </a>
+<a name="ln2376"> </a>
+<a name="ln2377">  /* documentation is in ftstroke.h */</a>
+<a name="ln2378"> </a>
+<a name="ln2379">  FT_EXPORT_DEF( FT_Error )</a>
+<a name="ln2380">  FT_Glyph_StrokeBorder( FT_Glyph    *pglyph,</a>
+<a name="ln2381">                         FT_Stroker   stroker,</a>
+<a name="ln2382">                         FT_Bool      inside,</a>
+<a name="ln2383">                         FT_Bool      destroy )</a>
+<a name="ln2384">  {</a>
+<a name="ln2385">    FT_Error  error = FT_ERR( Invalid_Argument );</a>
+<a name="ln2386">    FT_Glyph  glyph = NULL;</a>
+<a name="ln2387"> </a>
+<a name="ln2388">    /* for FT_OUTLINE_GLYPH_CLASS_GET (in PIC mode) */</a>
+<a name="ln2389">    FT_Library  library = stroker-&gt;library;</a>
+<a name="ln2390"> </a>
+<a name="ln2391">    FT_UNUSED( library );</a>
+<a name="ln2392"> </a>
+<a name="ln2393"> </a>
+<a name="ln2394">    if ( !pglyph )</a>
+<a name="ln2395">      goto Exit;</a>
+<a name="ln2396"> </a>
+<a name="ln2397">    glyph = *pglyph;</a>
+<a name="ln2398">    if ( !glyph || glyph-&gt;clazz != FT_OUTLINE_GLYPH_CLASS_GET )</a>
+<a name="ln2399">      goto Exit;</a>
+<a name="ln2400"> </a>
+<a name="ln2401">    {</a>
+<a name="ln2402">      FT_Glyph  copy;</a>
+<a name="ln2403"> </a>
+<a name="ln2404"> </a>
+<a name="ln2405">      error = FT_Glyph_Copy( glyph, &amp;copy );</a>
+<a name="ln2406">      if ( error )</a>
+<a name="ln2407">        goto Exit;</a>
+<a name="ln2408"> </a>
+<a name="ln2409">      glyph = copy;</a>
+<a name="ln2410">    }</a>
+<a name="ln2411"> </a>
+<a name="ln2412">    {</a>
+<a name="ln2413">      FT_OutlineGlyph   oglyph  = (FT_OutlineGlyph)glyph;</a>
+<a name="ln2414">      FT_StrokerBorder  border;</a>
+<a name="ln2415">      FT_Outline*       outline = &amp;oglyph-&gt;outline;</a>
+<a name="ln2416">      FT_UInt           num_points, num_contours;</a>
+<a name="ln2417"> </a>
+<a name="ln2418"> </a>
+<a name="ln2419">      border = FT_Outline_GetOutsideBorder( outline );</a>
+<a name="ln2420">      if ( inside )</a>
+<a name="ln2421">      {</a>
+<a name="ln2422">        if ( border == FT_STROKER_BORDER_LEFT )</a>
+<a name="ln2423">          border = FT_STROKER_BORDER_RIGHT;</a>
+<a name="ln2424">        else</a>
+<a name="ln2425">          border = FT_STROKER_BORDER_LEFT;</a>
+<a name="ln2426">      }</a>
+<a name="ln2427"> </a>
+<a name="ln2428">      error = FT_Stroker_ParseOutline( stroker, outline, FALSE );</a>
+<a name="ln2429">      if ( error )</a>
+<a name="ln2430">        goto Fail;</a>
+<a name="ln2431"> </a>
+<a name="ln2432">      FT_Stroker_GetBorderCounts( stroker, border,</a>
+<a name="ln2433">                                  &amp;num_points, &amp;num_contours );</a>
+<a name="ln2434"> </a>
+<a name="ln2435">      FT_Outline_Done( glyph-&gt;library, outline );</a>
+<a name="ln2436"> </a>
+<a name="ln2437">      error = FT_Outline_New( glyph-&gt;library,</a>
+<a name="ln2438">                              num_points,</a>
+<a name="ln2439">                              (FT_Int)num_contours,</a>
+<a name="ln2440">                              outline );</a>
+<a name="ln2441">      if ( error )</a>
+<a name="ln2442">        goto Fail;</a>
+<a name="ln2443"> </a>
+<a name="ln2444">      outline-&gt;n_points   = 0;</a>
+<a name="ln2445">      outline-&gt;n_contours = 0;</a>
+<a name="ln2446"> </a>
+<a name="ln2447">      FT_Stroker_ExportBorder( stroker, border, outline );</a>
+<a name="ln2448">    }</a>
+<a name="ln2449"> </a>
+<a name="ln2450">    if ( destroy )</a>
+<a name="ln2451">      FT_Done_Glyph( *pglyph );</a>
+<a name="ln2452"> </a>
+<a name="ln2453">    *pglyph = glyph;</a>
+<a name="ln2454">    goto Exit;</a>
+<a name="ln2455"> </a>
+<a name="ln2456">  Fail:</a>
+<a name="ln2457">    FT_Done_Glyph( glyph );</a>
+<a name="ln2458">    glyph = NULL;</a>
+<a name="ln2459"> </a>
+<a name="ln2460">    if ( !destroy )</a>
+<a name="ln2461">      *pglyph = NULL;</a>
+<a name="ln2462"> </a>
+<a name="ln2463">  Exit:</a>
+<a name="ln2464">    return error;</a>
+<a name="ln2465">  }</a>
+<a name="ln2466"> </a>
+<a name="ln2467"> </a>
+<a name="ln2468">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="1992"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression 'border > 1' is always false.</p></div>
+<div class="balloon" rel="2034"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+<div class="balloon" rel="2064"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: border == FT_STROKER_BORDER_RIGHT.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

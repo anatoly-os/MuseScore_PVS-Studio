@@ -1,0 +1,449 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>keyedit.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2009-2011 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;musescore.h&quot;</a>
+<a name="ln21">#include &quot;palette.h&quot;</a>
+<a name="ln22">#include &quot;keyedit.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/keysig.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/accidental.h&quot;</a>
+<a name="ln26">#include &quot;keycanvas.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/clef.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">namespace Ms {</a>
+<a name="ln32"> </a>
+<a name="ln33">extern bool useFactorySettings;</a>
+<a name="ln34">extern Palette* newAccidentalsPalette();</a>
+<a name="ln35">extern Palette* newKeySigPalette();</a>
+<a name="ln36"> </a>
+<a name="ln37">static const qreal editScale = 1.0;</a>
+<a name="ln38"> </a>
+<a name="ln39">//---------------------------------------------------------</a>
+<a name="ln40">//   KeyCanvas</a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42"> </a>
+<a name="ln43">KeyCanvas::KeyCanvas(QWidget* parent)</a>
+<a name="ln44">   : QFrame(parent)</a>
+<a name="ln45">      {</a>
+<a name="ln46">      setAcceptDrops(true);</a>
+<a name="ln47">      extraMag   = editScale * guiScaling;</a>
+<a name="ln48">      qreal mag  = PALETTE_SPATIUM * extraMag / gscore-&gt;spatium();</a>
+<a name="ln49">      _matrix    = QTransform(mag, 0.0, 0.0, mag, 0.0, 0.0);</a>
+<a name="ln50">      imatrix    = _matrix.inverted();</a>
+<a name="ln51">      dragElement = 0;</a>
+<a name="ln52">      setFocusPolicy(Qt::StrongFocus);</a>
+<a name="ln53">      QAction* a = new QAction(&quot;delete&quot;, this);</a>
+<a name="ln54">      a-&gt;setShortcut(Qt::Key_Delete);</a>
+<a name="ln55">      addAction(a);</a>
+<a name="ln56">      clef = new Clef(gscore);</a>
+<a name="ln57">      clef-&gt;setClefType(ClefType::G);</a>
+<a name="ln58">      connect(a, SIGNAL(triggered()), SLOT(deleteElement()));</a>
+<a name="ln59">      }</a>
+<a name="ln60"> </a>
+<a name="ln61">//---------------------------------------------------------</a>
+<a name="ln62">//   delete</a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64"> </a>
+<a name="ln65">void KeyCanvas::deleteElement()</a>
+<a name="ln66">      {</a>
+<a name="ln67">      foreach(Accidental* a, accidentals) {</a>
+<a name="ln68">            if (a-&gt;selected()) {</a>
+<a name="ln69">                  accidentals.removeOne(a);</a>
+<a name="ln70">                  delete a;</a>
+<a name="ln71">                  update();</a>
+<a name="ln72">                  break;</a>
+<a name="ln73">                  }</a>
+<a name="ln74">            }</a>
+<a name="ln75">      }</a>
+<a name="ln76"> </a>
+<a name="ln77">//---------------------------------------------------------</a>
+<a name="ln78">//   clear</a>
+<a name="ln79">//---------------------------------------------------------</a>
+<a name="ln80"> </a>
+<a name="ln81">void KeyCanvas::clear()</a>
+<a name="ln82">      {</a>
+<a name="ln83">      foreach(Accidental* a, accidentals)</a>
+<a name="ln84">            delete a;</a>
+<a name="ln85">      accidentals.clear();</a>
+<a name="ln86">      update();</a>
+<a name="ln87">      }</a>
+<a name="ln88"> </a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90">//   paintEvent</a>
+<a name="ln91">//---------------------------------------------------------</a>
+<a name="ln92"> </a>
+<a name="ln93">void KeyCanvas::paintEvent(QPaintEvent*)</a>
+<a name="ln94">      {</a>
+<a name="ln95">      QPainter painter(this);</a>
+<a name="ln96">      painter.setRenderHint(QPainter::Antialiasing, true);</a>
+<a name="ln97">      qreal wh = double(height());</a>
+<a name="ln98">      qreal ww = double(width());</a>
+<a name="ln99">      double y = wh * .5 - 2 * PALETTE_SPATIUM * extraMag;</a>
+<a name="ln100"> </a>
+<a name="ln101">      qreal mag  = PALETTE_SPATIUM * extraMag / gscore-&gt;spatium();</a>
+<a name="ln102">      _matrix    = QTransform(mag, 0.0, 0.0, mag, 0.0, y);</a>
+<a name="ln103">      imatrix    = _matrix.inverted();</a>
+<a name="ln104"> </a>
+<a name="ln105">      qreal x = 3;</a>
+<a name="ln106">      qreal w = ww - 6;</a>
+<a name="ln107"> </a>
+<a name="ln108">      painter.setWorldTransform(_matrix);</a>
+<a name="ln109"> </a>
+<a name="ln110">      QRectF r = imatrix.mapRect(QRectF(x, y, w, wh));</a>
+<a name="ln111"> </a>
+<a name="ln112">      QRectF background = imatrix.mapRect(QRectF(0, 0, ww, wh));</a>
+<a name="ln113">      painter.fillRect(background, Qt::white);</a>
+<a name="ln114"> </a>
+<a name="ln115">      QPen pen(Qt::black);</a>
+<a name="ln116">      pen.setWidthF(MScore::defaultStyle().value(Sid::staffLineWidth).toDouble() * gscore-&gt;spatium());</a>
+<a name="ln117">      painter.setPen(pen);</a>
+<a name="ln118"> </a>
+<a name="ln119">      for (int i = 0; i &lt; 5; ++i) {</a>
+<a name="ln120">            qreal yy = r.y() + i * gscore-&gt;spatium();</a>
+<a name="ln121">            painter.drawLine(QLineF(r.x(), yy, r.x() + r.width(), yy));</a>
+<a name="ln122">            }</a>
+<a name="ln123">      if (dragElement) {</a>
+<a name="ln124">            painter.save();</a>
+<a name="ln125">            painter.translate(dragElement-&gt;pagePos());</a>
+<a name="ln126">            dragElement-&gt;draw(&amp;painter);</a>
+<a name="ln127">            painter.restore();</a>
+<a name="ln128">            }</a>
+<a name="ln129">      foreach(Accidental* a, accidentals) {</a>
+<a name="ln130">            painter.save();</a>
+<a name="ln131">            painter.translate(a-&gt;pagePos());</a>
+<a name="ln132">            a-&gt;draw(&amp;painter);</a>
+<a name="ln133">            painter.restore();</a>
+<a name="ln134">            }</a>
+<a name="ln135">      clef-&gt;setPos(0.0, 0.0);</a>
+<a name="ln136">      clef-&gt;layout();</a>
+<a name="ln137">      painter.translate(clef-&gt;pagePos());</a>
+<a name="ln138">      clef-&gt;draw(&amp;painter);</a>
+<a name="ln139">      }</a>
+<a name="ln140"> </a>
+<a name="ln141">//---------------------------------------------------------</a>
+<a name="ln142">//   mousePressEvent</a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144"> </a>
+<a name="ln145">void KeyCanvas::mousePressEvent(QMouseEvent* event)</a>
+<a name="ln146">      {</a>
+<a name="ln147">      startMove = imatrix.map(QPointF(event-&gt;pos() - base));</a>
+<a name="ln148">      moveElement = 0;</a>
+<a name="ln149">      foreach(Accidental* a, accidentals) {</a>
+<a name="ln150">            QRectF r = a-&gt;abbox();</a>
+<a name="ln151">            if (r.contains(startMove)) {</a>
+<a name="ln152">                  a-&gt;setSelected(true);</a>
+<a name="ln153">                  moveElement = a;</a>
+<a name="ln154">                  }</a>
+<a name="ln155">            else</a>
+<a name="ln156">                  a-&gt;setSelected(false);</a>
+<a name="ln157">            }</a>
+<a name="ln158">      update();</a>
+<a name="ln159">      }</a>
+<a name="ln160"> </a>
+<a name="ln161">//---------------------------------------------------------</a>
+<a name="ln162">//   mouseMoveEvent</a>
+<a name="ln163">//---------------------------------------------------------</a>
+<a name="ln164"> </a>
+<a name="ln165">void KeyCanvas::mouseMoveEvent(QMouseEvent* event)</a>
+<a name="ln166">      {</a>
+<a name="ln167">      if (moveElement == 0)</a>
+<a name="ln168">            return;</a>
+<a name="ln169">      QPointF p = imatrix.map(QPointF(event-&gt;pos()));</a>
+<a name="ln170">      QPointF delta = p - startMove;</a>
+<a name="ln171">      moveElement-&gt;move(delta);</a>
+<a name="ln172">      startMove = p;</a>
+<a name="ln173">      update();</a>
+<a name="ln174">      }</a>
+<a name="ln175"> </a>
+<a name="ln176">//---------------------------------------------------------</a>
+<a name="ln177">//   mouseReleaseEvent</a>
+<a name="ln178">//---------------------------------------------------------</a>
+<a name="ln179"> </a>
+<a name="ln180">void KeyCanvas::mouseReleaseEvent(QMouseEvent*)</a>
+<a name="ln181">      {</a>
+<a name="ln182">      if (moveElement == 0)</a>
+<a name="ln183">            return;</a>
+<a name="ln184">      snap(moveElement);</a>
+<a name="ln185">      update();</a>
+<a name="ln186">      }</a>
+<a name="ln187"> </a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189">//   dragEnterEvent</a>
+<a name="ln190">//---------------------------------------------------------</a>
+<a name="ln191"> </a>
+<a name="ln192">void KeyCanvas::dragEnterEvent(QDragEnterEvent* event)</a>
+<a name="ln193">      {</a>
+<a name="ln194">      const QMimeData* dta = event-&gt;mimeData();</a>
+<a name="ln195">      if (dta-&gt;hasFormat(mimeSymbolFormat)) {</a>
+<a name="ln196">            QByteArray a = dta-&gt;data(mimeSymbolFormat);</a>
+<a name="ln197"> </a>
+<a name="ln198">            XmlReader e(a);</a>
+<a name="ln199"> </a>
+<a name="ln200">            QPointF dragOffset;</a>
+<a name="ln201">            Fraction duration;</a>
+<a name="ln202">            ElementType type = Element::readType(e, &amp;dragOffset, &amp;duration);</a>
+<a name="ln203">            if (type != ElementType::ACCIDENTAL)</a>
+<a name="ln204">                  return;</a>
+<a name="ln205"> </a>
+<a name="ln206">            event-&gt;acceptProposedAction();</a>
+<a name="ln207">            dragElement = static_cast&lt;Accidental*&gt;(Element::create(type, gscore));</a>
+<a name="ln208">            dragElement-&gt;setParent(0);</a>
+<a name="ln209">            dragElement-&gt;read(e);</a>
+<a name="ln210">            dragElement-&gt;layout();</a>
+<a name="ln211">            }</a>
+<a name="ln212">      else {</a>
+<a name="ln213">            if (MScore::debugMode) {</a>
+<a name="ln214">                  qDebug(&quot;KeyCanvas::dragEnterEvent: formats:&quot;);</a>
+<a name="ln215">                  foreach(const QString&amp; s, event-&gt;mimeData()-&gt;formats())</a>
+<a name="ln216">                        qDebug(&quot;   %s&quot;, qPrintable(s));</a>
+<a name="ln217">                  }</a>
+<a name="ln218">            }</a>
+<a name="ln219">      }</a>
+<a name="ln220"> </a>
+<a name="ln221">//---------------------------------------------------------</a>
+<a name="ln222">//   dragMoveEvent</a>
+<a name="ln223">//---------------------------------------------------------</a>
+<a name="ln224"> </a>
+<a name="ln225">void KeyCanvas::dragMoveEvent(QDragMoveEvent* event)</a>
+<a name="ln226">      {</a>
+<a name="ln227">      if (dragElement) {</a>
+<a name="ln228">            event-&gt;acceptProposedAction();</a>
+<a name="ln229">            QPointF pos(imatrix.map(QPointF(event-&gt;pos())));</a>
+<a name="ln230">            dragElement-&gt;setPos(pos);</a>
+<a name="ln231">            update();</a>
+<a name="ln232">            }</a>
+<a name="ln233">      }</a>
+<a name="ln234"> </a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236">//   dropEvent</a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238"> </a>
+<a name="ln239">void KeyCanvas::dropEvent(QDropEvent*)</a>
+<a name="ln240">      {</a>
+<a name="ln241">      for (Accidental* a : accidentals)</a>
+<a name="ln242">            a-&gt;setSelected(false);</a>
+<a name="ln243">      dragElement-&gt;setSelected(true);</a>
+<a name="ln244">      accidentals.append(dragElement);</a>
+<a name="ln245">      snap(dragElement);</a>
+<a name="ln246">      dragElement = 0;</a>
+<a name="ln247">      update();</a>
+<a name="ln248">      }</a>
+<a name="ln249"> </a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251">//   snap</a>
+<a name="ln252">//---------------------------------------------------------</a>
+<a name="ln253"> </a>
+<a name="ln254">void KeyCanvas::snap(Accidental* a)</a>
+<a name="ln255">      {</a>
+<a name="ln256">      double y        = a-&gt;ipos().y();</a>
+<a name="ln257">      double spatium2 = gscore-&gt;spatium() * .5;</a>
+<a name="ln258">      int line        = int((y + spatium2 * .5) / spatium2);</a>
+<a name="ln259">      y               = line * spatium2;</a>
+<a name="ln260">      a-&gt;rypos()      = y;</a>
+<a name="ln261">      }</a>
+<a name="ln262"> </a>
+<a name="ln263">//---------------------------------------------------------</a>
+<a name="ln264">//   KeyEditor</a>
+<a name="ln265">//---------------------------------------------------------</a>
+<a name="ln266"> </a>
+<a name="ln267">KeyEditor::KeyEditor(QWidget* parent)</a>
+<a name="ln268">   : QWidget(parent, Qt::WindowFlags(Qt::Dialog | Qt::Window))</a>
+<a name="ln269">      {</a>
+<a name="ln270">      setupUi(this);</a>
+<a name="ln271">      setWindowTitle(tr(&quot;Key Signatures&quot;));</a>
+<a name="ln272"> </a>
+<a name="ln273">      // create key signature palette</a>
+<a name="ln274"> </a>
+<a name="ln275">      QLayout* l = new QVBoxLayout();</a>
+<a name="ln276">      l-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln277">      frame-&gt;setLayout(l);</a>
+<a name="ln278"> </a>
+<a name="ln279">      sp = MuseScore::newKeySigPalette();</a>
+<a name="ln280">      sp-&gt;setReadOnly(false);</a>
+<a name="ln281"> </a>
+<a name="ln282">      _keyPalette = new PaletteScrollArea(sp);</a>
+<a name="ln283">      QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);</a>
+<a name="ln284">      _keyPalette-&gt;setSizePolicy(policy);</a>
+<a name="ln285">      _keyPalette-&gt;setRestrictHeight(false);</a>
+<a name="ln286"> </a>
+<a name="ln287">      l-&gt;addWidget(_keyPalette);</a>
+<a name="ln288"> </a>
+<a name="ln289">      // create accidental palette</a>
+<a name="ln290"> </a>
+<a name="ln291">      l = new QVBoxLayout();</a>
+<a name="ln292">      l-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln293">      frame_3-&gt;setLayout(l);</a>
+<a name="ln294">      sp1 = MuseScore::newAccidentalsPalette();</a>
+<a name="ln295">      qreal adj = sp1-&gt;mag();</a>
+<a name="ln296">      sp1-&gt;setGrid(sp1-&gt;gridWidth() * editScale / adj, sp1-&gt;gridHeight() * editScale / adj);</a>
+<a name="ln297">      sp1-&gt;setMag(editScale);</a>
+<a name="ln298">      PaletteScrollArea* accPalette = new PaletteScrollArea(sp1);</a>
+<a name="ln299">      QSizePolicy policy1(QSizePolicy::Expanding, QSizePolicy::Expanding);</a>
+<a name="ln300">      accPalette-&gt;setSizePolicy(policy1);</a>
+<a name="ln301">      accPalette-&gt;setRestrictHeight(false);</a>
+<a name="ln302"> </a>
+<a name="ln303">      l-&gt;addWidget(accPalette);</a>
+<a name="ln304"> </a>
+<a name="ln305">      connect(addButton,   SIGNAL(clicked()), SLOT(addClicked()));</a>
+<a name="ln306">      connect(clearButton, SIGNAL(clicked()), SLOT(clearClicked()));</a>
+<a name="ln307">      connect(sp,          SIGNAL(changed()), SLOT(setDirty()));</a>
+<a name="ln308"> </a>
+<a name="ln309">      //</a>
+<a name="ln310">      // set all &quot;buildin&quot; key signatures to read only</a>
+<a name="ln311">      //</a>
+<a name="ln312">      int n = sp-&gt;size();</a>
+<a name="ln313">      for (int i = 0; i &lt; n; ++i)</a>
+<a name="ln314">            sp-&gt;setCellReadOnly(i, true);</a>
+<a name="ln315"> </a>
+<a name="ln316">      if (!useFactorySettings) {</a>
+<a name="ln317">            QString path = dataPath + &quot;/keysigs&quot;;</a>
+<a name="ln318">            if (!sp-&gt;read(path))</a>
+<a name="ln319">                  qDebug(&quot;KeyEditor: read &lt;%s&gt; failed&quot;, qPrintable(dataPath + &quot;/keysigs.mpal&quot;));</a>
+<a name="ln320">            }</a>
+<a name="ln321">      }</a>
+<a name="ln322"> </a>
+<a name="ln323">//---------------------------------------------------------</a>
+<a name="ln324">//   addClicked</a>
+<a name="ln325">//---------------------------------------------------------</a>
+<a name="ln326"> </a>
+<a name="ln327">void KeyEditor::addClicked()</a>
+<a name="ln328">      {</a>
+<a name="ln329">      // double extraMag = 2.0;</a>
+<a name="ln330">      const QList&lt;Accidental*&gt; al = canvas-&gt;getAccidentals();</a>
+<a name="ln331">      // qreal mag  = PALETTE_SPATIUM * extraMag / gscore-&gt;spatium();</a>
+<a name="ln332">      // double spatium = 2.0 * PALETTE_SPATIUM / extraMag;</a>
+<a name="ln333">      double spatium = gscore-&gt;spatium();</a>
+<a name="ln334">      double xoff = 10000000.0;</a>
+<a name="ln335"> </a>
+<a name="ln336">      for (Accidental* a : al) {</a>
+<a name="ln337">            QPointF pos = a-&gt;ipos();</a>
+<a name="ln338">            if (pos.x() &lt; xoff)</a>
+<a name="ln339">                  xoff = pos.x();</a>
+<a name="ln340">            }</a>
+<a name="ln341"> </a>
+<a name="ln342">      KeySigEvent e;</a>
+<a name="ln343">      e.setCustom(true);</a>
+<a name="ln344">      for (Accidental* a : al) {</a>
+<a name="ln345">            KeySym s;</a>
+<a name="ln346">            s.sym       = a-&gt;symbol();</a>
+<a name="ln347">            QPointF pos = a-&gt;ipos();</a>
+<a name="ln348">            pos.rx()   -= xoff;</a>
+<a name="ln349">            s.spos      = pos / spatium;</a>
+<a name="ln350">            e.keySymbols().append(s);</a>
+<a name="ln351">            }</a>
+<a name="ln352">      KeySig* ks = new KeySig(gscore);</a>
+<a name="ln353">      ks-&gt;setKeySigEvent(e);</a>
+<a name="ln354">      sp-&gt;append(ks, &quot;custom&quot;);</a>
+<a name="ln355">      _dirty = true;</a>
+<a name="ln356">      emit keySigAdded(ks);</a>
+<a name="ln357">      }</a>
+<a name="ln358"> </a>
+<a name="ln359">//---------------------------------------------------------</a>
+<a name="ln360">//   clearClicked</a>
+<a name="ln361">//---------------------------------------------------------</a>
+<a name="ln362"> </a>
+<a name="ln363">void KeyEditor::clearClicked()</a>
+<a name="ln364">      {</a>
+<a name="ln365">      canvas-&gt;clear();</a>
+<a name="ln366">      }</a>
+<a name="ln367"> </a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369">//   showKeyPalette</a>
+<a name="ln370">//---------------------------------------------------------</a>
+<a name="ln371"> </a>
+<a name="ln372">void KeyEditor::showKeyPalette(bool val)</a>
+<a name="ln373">      {</a>
+<a name="ln374">      _keyPalette-&gt;setVisible(val);</a>
+<a name="ln375">      }</a>
+<a name="ln376"> </a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378">//   save</a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380"> </a>
+<a name="ln381">void KeyEditor::save()</a>
+<a name="ln382">      {</a>
+<a name="ln383">      QDir dir;</a>
+<a name="ln384">      dir.mkpath(dataPath);</a>
+<a name="ln385">      sp-&gt;write(dataPath + &quot;/keysigs&quot;);</a>
+<a name="ln386">      }</a>
+<a name="ln387"> </a>
+<a name="ln388">//---------------------------------------------------------</a>
+<a name="ln389">//   showKeyEditor</a>
+<a name="ln390">//---------------------------------------------------------</a>
+<a name="ln391"> </a>
+<a name="ln392">void MuseScore::showKeyEditor()</a>
+<a name="ln393">      {</a>
+<a name="ln394">      if (keyEditor == 0) {</a>
+<a name="ln395">            keyEditor = new KeyEditor(0);</a>
+<a name="ln396">            }</a>
+<a name="ln397">      keyEditor-&gt;show();</a>
+<a name="ln398">      keyEditor-&gt;raise();</a>
+<a name="ln399">      }</a>
+<a name="ln400">}</a>
+<a name="ln401"> </a>
+
+</code></pre>
+<div class="balloon" rel="216"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="319"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

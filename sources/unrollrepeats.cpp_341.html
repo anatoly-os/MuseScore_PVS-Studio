@@ -1,0 +1,243 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>unrollrepeats.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2019 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">/**</a>
+<a name="ln14"> File handling: loading and saving.</a>
+<a name="ln15"> */</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &quot;xml.h&quot;</a>
+<a name="ln18">#include &quot;element.h&quot;</a>
+<a name="ln19">#include &quot;note.h&quot;</a>
+<a name="ln20">#include &quot;chord.h&quot;</a>
+<a name="ln21">#include &quot;rest.h&quot;</a>
+<a name="ln22">#include &quot;sig.h&quot;</a>
+<a name="ln23">#include &quot;clef.h&quot;</a>
+<a name="ln24">#include &quot;key.h&quot;</a>
+<a name="ln25">#include &quot;score.h&quot;</a>
+<a name="ln26">#include &quot;page.h&quot;</a>
+<a name="ln27">#include &quot;dynamic.h&quot;</a>
+<a name="ln28">#include &quot;style.h&quot;</a>
+<a name="ln29">#include &quot;tempo.h&quot;</a>
+<a name="ln30">#include &quot;select.h&quot;</a>
+<a name="ln31">#include &quot;staff.h&quot;</a>
+<a name="ln32">#include &quot;part.h&quot;</a>
+<a name="ln33">#include &quot;utils.h&quot;</a>
+<a name="ln34">#include &quot;barline.h&quot;</a>
+<a name="ln35">#include &quot;slur.h&quot;</a>
+<a name="ln36">#include &quot;hairpin.h&quot;</a>
+<a name="ln37">#include &quot;ottava.h&quot;</a>
+<a name="ln38">#include &quot;textline.h&quot;</a>
+<a name="ln39">#include &quot;pedal.h&quot;</a>
+<a name="ln40">#include &quot;trill.h&quot;</a>
+<a name="ln41">#include &quot;volta.h&quot;</a>
+<a name="ln42">#include &quot;timesig.h&quot;</a>
+<a name="ln43">#include &quot;box.h&quot;</a>
+<a name="ln44">#include &quot;excerpt.h&quot;</a>
+<a name="ln45">#include &quot;system.h&quot;</a>
+<a name="ln46">#include &quot;tuplet.h&quot;</a>
+<a name="ln47">#include &quot;keysig.h&quot;</a>
+<a name="ln48">#include &quot;measure.h&quot;</a>
+<a name="ln49">#include &quot;undo.h&quot;</a>
+<a name="ln50">#include &quot;repeatlist.h&quot;</a>
+<a name="ln51">#include &quot;beam.h&quot;</a>
+<a name="ln52">#include &quot;stafftype.h&quot;</a>
+<a name="ln53">#include &quot;revisions.h&quot;</a>
+<a name="ln54">#include &quot;lyrics.h&quot;</a>
+<a name="ln55">#include &quot;segment.h&quot;</a>
+<a name="ln56">#include &quot;tempotext.h&quot;</a>
+<a name="ln57">#include &quot;sym.h&quot;</a>
+<a name="ln58">#include &quot;image.h&quot;</a>
+<a name="ln59">#include &quot;tiemap.h&quot;</a>
+<a name="ln60">#include &quot;tie.h&quot;</a>
+<a name="ln61">#include &quot;measurebase.h&quot;</a>
+<a name="ln62">#include &quot;chordlist.h&quot;</a>
+<a name="ln63">#include &quot;mscore.h&quot;</a>
+<a name="ln64"> </a>
+<a name="ln65"> </a>
+<a name="ln66">namespace Ms {</a>
+<a name="ln67"> </a>
+<a name="ln68">static void removeRepeatMarkings(Score* score)</a>
+<a name="ln69">      {</a>
+<a name="ln70"> </a>
+<a name="ln71">      // remove bar-level repeats</a>
+<a name="ln72">      for (Measure* m = score-&gt;firstMeasure(); m; m = m-&gt;nextMeasure()) {</a>
+<a name="ln73">            m-&gt;setRepeatStart(false);</a>
+<a name="ln74">            m-&gt;setRepeatEnd(false);</a>
+<a name="ln75">            }</a>
+<a name="ln76"> </a>
+<a name="ln77">      // remove volta markers</a>
+<a name="ln78">      auto smap = score-&gt;spannerMap().map();</a>
+<a name="ln79">      for (auto it = smap.cbegin(); it != smap.cend(); ++it) {</a>
+<a name="ln80">            Spanner* s = (*it).second;</a>
+<a name="ln81">            if (!s || !s-&gt;isVolta()) continue;</a>
+<a name="ln82">            score-&gt;removeSpanner(s);</a>
+<a name="ln83">            }</a>
+<a name="ln84"> </a>
+<a name="ln85">      // remove coda/fine labels and jumps</a>
+<a name="ln86">      QList&lt;Element*&gt; elems;</a>
+<a name="ln87">      score-&gt;scanElements(&amp;elems, collectElements, false);</a>
+<a name="ln88">      for (auto e : elems) {</a>
+<a name="ln89">            if (e-&gt;isMarker() || e-&gt;isJump())</a>
+<a name="ln90">                  score-&gt;deleteItem(e);</a>
+<a name="ln91">            else if (e-&gt;isBarLine())</a>
+<a name="ln92">                  toBarLine(e)-&gt;setBarLineType(BarLineType::NORMAL);</a>
+<a name="ln93">            }</a>
+<a name="ln94"> </a>
+<a name="ln95">      // set the last bar line to end symbol</a>
+<a name="ln96">      score-&gt;lastMeasure()-&gt;setEndBarLineType(BarLineType::END, false);</a>
+<a name="ln97">      Segment* last = score-&gt;lastMeasure()-&gt;segments().last();</a>
+<a name="ln98">      if (last-&gt;segmentType() == SegmentType::EndBarLine) {</a>
+<a name="ln99">            auto els = last-&gt;elist();</a>
+<a name="ln100">            for (uint i = 0; i &lt; els.size(); i++) {</a>
+<a name="ln101">                  if (!els[i]) continue;</a>
+<a name="ln102">                  toBarLine(els[i])-&gt;setBarLineType(BarLineType::END);</a>
+<a name="ln103">                  }</a>
+<a name="ln104">            }</a>
+<a name="ln105">      }</a>
+<a name="ln106"> </a>
+<a name="ln107"> </a>
+<a name="ln108">//---------------------------------------------------------</a>
+<a name="ln109">//   createExcerpts</a>
+<a name="ln110">//    re-create all the excerpts once the master score</a>
+<a name="ln111">//    has been unrolled</a>
+<a name="ln112">//---------------------------------------------------------</a>
+<a name="ln113"> </a>
+<a name="ln114">static void createExcerpts(MasterScore* cs, QList&lt;Excerpt *&gt; excerpts)</a>
+<a name="ln115">      {</a>
+<a name="ln116">      // borrowed from musescore.cpp endsWith(&quot;.pdf&quot;)</a>
+<a name="ln117">      for (Excerpt* e: excerpts) {</a>
+<a name="ln118">            Score* nscore = new Score(e-&gt;oscore());</a>
+<a name="ln119">            e-&gt;setPartScore(nscore);</a>
+<a name="ln120">            nscore-&gt;style().set(Sid::createMultiMeasureRests, true);</a>
+<a name="ln121">            cs-&gt;startCmd();</a>
+<a name="ln122">            cs-&gt;undo(new AddExcerpt(e));</a>
+<a name="ln123">            Excerpt::createExcerpt(e);</a>
+<a name="ln124"> </a>
+<a name="ln125">            // borrowed from excerptsdialog.cpp</a>
+<a name="ln126">            // a new excerpt is created in AddExcerpt, make sure the parts are filed</a>
+<a name="ln127">            for (Excerpt* ee : e-&gt;oscore()-&gt;excerpts())</a>
+<a name="ln128">                  if (ee-&gt;partScore() == nscore &amp;&amp; ee != e) {</a>
+<a name="ln129">                        ee-&gt;parts().clear();</a>
+<a name="ln130">                        ee-&gt;parts().append(e-&gt;parts());</a>
+<a name="ln131">                        }</a>
+<a name="ln132"> </a>
+<a name="ln133">            cs-&gt;endCmd();</a>
+<a name="ln134">            }</a>
+<a name="ln135">      }</a>
+<a name="ln136"> </a>
+<a name="ln137">//---------------------------------------------------------</a>
+<a name="ln138">//   unrollRepeats</a>
+<a name="ln139">//    unroll all the repeats</a>
+<a name="ln140">//---------------------------------------------------------</a>
+<a name="ln141"> </a>
+<a name="ln142">MasterScore* MasterScore::unrollRepeats()</a>
+<a name="ln143">      {</a>
+<a name="ln144"> </a>
+<a name="ln145">      MasterScore* original = this;</a>
+<a name="ln146">      </a>
+<a name="ln147">      // create a copy of the original score to play with</a>
+<a name="ln148">      MasterScore* score = original-&gt;clone();</a>
+<a name="ln149"> </a>
+<a name="ln150">      // Give it an appropriate name</a>
+<a name="ln151">      score-&gt;setName(original-&gt;title()+&quot;_unrolled&quot;);</a>
+<a name="ln152"> </a>
+<a name="ln153">      // figure out repeat structure</a>
+<a name="ln154">      original-&gt;setExpandRepeats(true);</a>
+<a name="ln155"> </a>
+<a name="ln156">      // if no repeats, just return the score as-is</a>
+<a name="ln157">      if (original-&gt;repeatList().size() == 1)</a>
+<a name="ln158">            return score;</a>
+<a name="ln159"> </a>
+<a name="ln160">      // remove excerpts for now (they are re-created after unrolling master score)</a>
+<a name="ln161">      QList&lt;Excerpt *&gt; excerpts;</a>
+<a name="ln162">      for (Excerpt* e : score-&gt;excerpts()) {</a>
+<a name="ln163">            excerpts.append(new Excerpt(*e,false));</a>
+<a name="ln164">            score-&gt;masterScore()-&gt;deleteExcerpt(e);</a>
+<a name="ln165">            }</a>
+<a name="ln166"> </a>
+<a name="ln167">      // follow along with the repeatList</a>
+<a name="ln168">      bool first = true;</a>
+<a name="ln169">      for (const RepeatSegment* rs: original-&gt;repeatList()) {</a>
+<a name="ln170">            Fraction startTick = Fraction::fromTicks(rs-&gt;tick);</a>
+<a name="ln171">            Fraction endTick   = Fraction::fromTicks(rs-&gt;tick + rs-&gt;len());</a>
+<a name="ln172"> </a>
+<a name="ln173">            // first segment left from clone, everything past that removed</a>
+<a name="ln174">            if (first) {</a>
+<a name="ln175">                  if (endTick &lt;= score-&gt;lastMeasure()-&gt;tick()) // check if we actually need to remove any measures</a>
+<a name="ln176">                        score-&gt;deleteMeasures(score-&gt;tick2measure(endTick), score-&gt;lastMeasure());</a>
+<a name="ln177">                  first = false;</a>
+<a name="ln178">                  }</a>
+<a name="ln179">            else {// just append this section from the original to the new score</a>
+<a name="ln180">                  score-&gt;appendMeasuresFromScore(original, startTick, endTick);</a>
+<a name="ln181">                  }    </a>
+<a name="ln182">            }</a>
+<a name="ln183"> </a>
+<a name="ln184">      removeRepeatMarkings(score);</a>
+<a name="ln185"> </a>
+<a name="ln186">      score-&gt;fixTicks();</a>
+<a name="ln187"> </a>
+<a name="ln188">      score-&gt;setLayoutAll();</a>
+<a name="ln189">      score-&gt;doLayout();</a>
+<a name="ln190"> </a>
+<a name="ln191">      // re-create excerpt parts</a>
+<a name="ln192">      if (!excerpts.isEmpty())</a>
+<a name="ln193">            createExcerpts(score, excerpts);</a>
+<a name="ln194"> </a>
+<a name="ln195">      return score;</a>
+<a name="ln196">      }</a>
+<a name="ln197">}</a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>voice.h</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  Zerberus</a>
+<a name="ln3">//  Zample player</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#ifndef __MVOICE_H__</a>
+<a name="ln14">#define __MVOICE_H__</a>
+<a name="ln15"> </a>
+<a name="ln16">#include &lt;cstdint&gt;</a>
+<a name="ln17">#include &lt;math.h&gt;</a>
+<a name="ln18">#include &quot;filter.h&quot;</a>
+<a name="ln19"> </a>
+<a name="ln20">// Disable warning C4201: nonstandard extension used: nameless struct/union in VS2017</a>
+<a name="ln21">#if (defined (_MSCVER) || defined (_MSC_VER))</a>
+<a name="ln22">      #pragma warning ( disable: 4201)</a>
+<a name="ln23">#endif</a>
+<a name="ln24"> </a>
+<a name="ln25">class Channel;</a>
+<a name="ln26">struct Zone;</a>
+<a name="ln27">class Sample;</a>
+<a name="ln28">class Zerberus;</a>
+<a name="ln29"> </a>
+<a name="ln30">enum class LoopMode : char;</a>
+<a name="ln31">enum class OffMode : char;</a>
+<a name="ln32">enum class Trigger : char;</a>
+<a name="ln33"> </a>
+<a name="ln34">static const int EG_SIZE    = 256;</a>
+<a name="ln35"> </a>
+<a name="ln36">//---------------------------------------------------------</a>
+<a name="ln37">//   Envelope</a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39"> </a>
+<a name="ln40">struct Envelope {</a>
+<a name="ln41">      static float egPow[EG_SIZE];</a>
+<a name="ln42">      static float egLin[EG_SIZE];</a>
+<a name="ln43"> </a>
+<a name="ln44">      int steps, count;</a>
+<a name="ln45">      bool constant = false;</a>
+<a name="ln46">      float offset = 0.0;</a>
+<a name="ln47">      float max = 1.0;</a>
+<a name="ln48">      float val;</a>
+<a name="ln49">      float* table;</a>
+<a name="ln50"> </a>
+<a name="ln51">      void setTable(float* f) { table = f; }</a>
+<a name="ln52">      bool step() {</a>
+<a name="ln53">            if (count) {</a>
+<a name="ln54">                  --count;</a>
+<a name="ln55">                  if (!constant)</a>
+<a name="ln56">                        val = table[EG_SIZE * count/steps]*(max-offset)+offset;</a>
+<a name="ln57">                  return false;</a>
+<a name="ln58">                  }</a>
+<a name="ln59">            else</a>
+<a name="ln60">                  return true;</a>
+<a name="ln61">            }</a>
+<a name="ln62">      void setTime(float ms, int sampleRate);</a>
+<a name="ln63">      void setConstant(float v) { constant = true; val = v; }</a>
+<a name="ln64">      void setVariable()        { constant = false; }</a>
+<a name="ln65">      };</a>
+<a name="ln66"> </a>
+<a name="ln67">//-----------------------------------------------------------------------------</a>
+<a name="ln68">//   Phase</a>
+<a name="ln69">//    Playing pointer for voice playback</a>
+<a name="ln70">//</a>
+<a name="ln71">//    When a sample is played back at a different pitch, the playing pointer</a>
+<a name="ln72">//    in the source sample will not advance exactly one sample per output sample.</a>
+<a name="ln73">//</a>
+<a name="ln74">//    This playing pointer is implemented using Phase.</a>
+<a name="ln75">//-----------------------------------------------------------------------------</a>
+<a name="ln76"> </a>
+<a name="ln77">struct Phase {</a>
+<a name="ln78">      union {</a>
+<a name="ln79">            int64_t data;</a>
+<a name="ln80">            struct {</a>
+<a name="ln81">                  uint8_t _fract;</a>
+<a name="ln82">                  };</a>
+<a name="ln83">            };</a>
+<a name="ln84"> </a>
+<a name="ln85">      void operator+=(const Phase&amp; p) { data += p.data;   }</a>
+<a name="ln86">      void set(int b)                 { data = b * 256;   }</a>
+<a name="ln87">      void set(double b)              { data = b * 256.0; }</a>
+<a name="ln88">      void setIndex(int b)            { data = b * 256 + _fract; }</a>
+<a name="ln89">      int index() const               { return data &gt;&gt; 8; }</a>
+<a name="ln90">      unsigned fract() const          { return _fract;    }</a>
+<a name="ln91"> </a>
+<a name="ln92">      Phase() {}</a>
+<a name="ln93">      Phase(int64_t v) : data(v) {}</a>
+<a name="ln94">      };</a>
+<a name="ln95"> </a>
+<a name="ln96">enum class VoiceState : char {</a>
+<a name="ln97">      OFF,</a>
+<a name="ln98">      ATTACK,</a>
+<a name="ln99">      PLAYING,</a>
+<a name="ln100">      SUSTAINED,</a>
+<a name="ln101">      STOP</a>
+<a name="ln102">      };</a>
+<a name="ln103"> </a>
+<a name="ln104">enum V1Envelopes : int {</a>
+<a name="ln105">      DELAY,</a>
+<a name="ln106">      ATTACK,</a>
+<a name="ln107">      HOLD,</a>
+<a name="ln108">      DECAY,</a>
+<a name="ln109">      SUSTAIN,</a>
+<a name="ln110">      RELEASE,</a>
+<a name="ln111">      COUNT</a>
+<a name="ln112">      };</a>
+<a name="ln113"> </a>
+<a name="ln114">//---------------------------------------------------------</a>
+<a name="ln115">//   Voice</a>
+<a name="ln116">//---------------------------------------------------------</a>
+<a name="ln117"> </a>
+<a name="ln118">class Voice {</a>
+<a name="ln119">      Voice* _next;</a>
+<a name="ln120">      Zerberus* _zerberus;</a>
+<a name="ln121"> </a>
+<a name="ln122">      VoiceState _state = VoiceState::OFF;</a>
+<a name="ln123">      Channel* _channel;</a>
+<a name="ln124">      int _key;</a>
+<a name="ln125">      int _velocity;</a>
+<a name="ln126">      int audioChan;</a>
+<a name="ln127"> </a>
+<a name="ln128">      short* data;</a>
+<a name="ln129">      long long eidx;</a>
+<a name="ln130">      LoopMode _loopMode;</a>
+<a name="ln131">      OffMode _offMode;</a>
+<a name="ln132">      int _offBy;</a>
+<a name="ln133">      long long _loopStart;</a>
+<a name="ln134">      long long _loopEnd;</a>
+<a name="ln135">      bool _looping;</a>
+<a name="ln136">      int _samplesSinceStart;</a>
+<a name="ln137"> </a>
+<a name="ln138">      float gain;</a>
+<a name="ln139"> </a>
+<a name="ln140">      Phase phase, phaseIncr;</a>
+<a name="ln141"> </a>
+<a name="ln142">      ZFilter filter;</a>
+<a name="ln143"> </a>
+<a name="ln144">      int currentEnvelope;</a>
+<a name="ln145">      Envelope envelopes[V1Envelopes::COUNT];</a>
+<a name="ln146"> </a>
+<a name="ln147">      Trigger trigger;</a>
+<a name="ln148"> </a>
+<a name="ln149">      const Zone* z;</a>
+<a name="ln150"> </a>
+<a name="ln151">   public:</a>
+<a name="ln152">      Voice(Zerberus*);</a>
+<a name="ln153">      Voice* next() const         { return _next; }</a>
+<a name="ln154">      void setNext(Voice* v)      { _next = v; }</a>
+<a name="ln155"> </a>
+<a name="ln156">      void start(Channel* channel, int key, int velo, const Zone*, double durSinceNoteOn);</a>
+<a name="ln157">      void updateEnvelopes();</a>
+<a name="ln158">      void process(int frames, float*);</a>
+<a name="ln159">      void updateLoop();</a>
+<a name="ln160">      short getData(long long pos);</a>
+<a name="ln161"> </a>
+<a name="ln162">      Channel* channel() const    { return _channel; }</a>
+<a name="ln163">      int key() const             { return _key;     }</a>
+<a name="ln164">      int velocity() const        { return _velocity; }</a>
+<a name="ln165"> </a>
+<a name="ln166">      bool isPlaying() const      { return _state == VoiceState::PLAYING || _state == VoiceState::ATTACK;   }</a>
+<a name="ln167">      bool isSustained() const    { return _state == VoiceState::SUSTAINED; }</a>
+<a name="ln168">      bool isOff() const          { return _state == VoiceState::OFF; }</a>
+<a name="ln169">      bool isStopped() const      { return _state == VoiceState::STOP; }</a>
+<a name="ln170">      void stop()                 { envelopes[currentEnvelope].step(); envelopes[V1Envelopes::RELEASE].max = envelopes[currentEnvelope].val; currentEnvelope = V1Envelopes::RELEASE; _state = VoiceState::STOP;      }</a>
+<a name="ln171">      void stop(float time);</a>
+<a name="ln172">      void sustained()            { _state = VoiceState::SUSTAINED; }</a>
+<a name="ln173">      void off()                  { _state = VoiceState::OFF;       }</a>
+<a name="ln174">      const char* state() const;</a>
+<a name="ln175">      LoopMode loopMode() const   { return _loopMode; }</a>
+<a name="ln176">      int getSamplesSinceStart()  { return _samplesSinceStart;    }</a>
+<a name="ln177">      float getGain()             { return gain; }</a>
+<a name="ln178"> </a>
+<a name="ln179">      OffMode offMode() const     { return _offMode;  }</a>
+<a name="ln180">      int offBy() const           { return _offBy;    }</a>
+<a name="ln181">      static void init();</a>
+<a name="ln182">      };</a>
+<a name="ln183"> </a>
+<a name="ln184">#endif</a>
+<a name="ln185"> </a>
+
+</code></pre>
+<div class="balloon" rel="40"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the compiler generated constructor. Consider inspecting: steps, count, val, table.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

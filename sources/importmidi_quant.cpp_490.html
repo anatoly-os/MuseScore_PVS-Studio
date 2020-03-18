@@ -1,0 +1,1477 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>importmidi_quant.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;importmidi_quant.h&quot;</a>
+<a name="ln2">#include &quot;libmscore/sig.h&quot;</a>
+<a name="ln3">#include &quot;importmidi_fraction.h&quot;</a>
+<a name="ln4">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln5">#include &quot;mscore/preferences.h&quot;</a>
+<a name="ln6">#include &quot;importmidi_chord.h&quot;</a>
+<a name="ln7">#include &quot;importmidi_meter.h&quot;</a>
+<a name="ln8">#include &quot;importmidi_tuplet.h&quot;</a>
+<a name="ln9">#include &quot;importmidi_inner.h&quot;</a>
+<a name="ln10">#include &quot;importmidi_beat.h&quot;</a>
+<a name="ln11">#include &quot;importmidi_voice.h&quot;</a>
+<a name="ln12">#include &quot;importmidi_tempo.h&quot;</a>
+<a name="ln13">#include &quot;importmidi_operations.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &lt;set&gt;</a>
+<a name="ln16">#include &lt;deque&gt;</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">namespace Ms {</a>
+<a name="ln20"> </a>
+<a name="ln21">namespace Quantize {</a>
+<a name="ln22"> </a>
+<a name="ln23">ReducedFraction quantValueToFraction(MidiOperations::QuantValue quantValue)</a>
+<a name="ln24">      {</a>
+<a name="ln25">      const auto division = ReducedFraction::fromTicks(MScore::division);</a>
+<a name="ln26">      ReducedFraction fraction;</a>
+<a name="ln27"> </a>
+<a name="ln28">      switch (quantValue) {</a>
+<a name="ln29">            case MidiOperations::QuantValue::Q_4:</a>
+<a name="ln30">                  fraction = division;</a>
+<a name="ln31">                  break;</a>
+<a name="ln32">            case MidiOperations::QuantValue::Q_8:</a>
+<a name="ln33">                  fraction = division / 2;</a>
+<a name="ln34">                  break;</a>
+<a name="ln35">            case MidiOperations::QuantValue::Q_16:</a>
+<a name="ln36">                  fraction = division / 4;</a>
+<a name="ln37">                  break;</a>
+<a name="ln38">            case MidiOperations::QuantValue::Q_32:</a>
+<a name="ln39">                  fraction = division / 8;</a>
+<a name="ln40">                  break;</a>
+<a name="ln41">            case MidiOperations::QuantValue::Q_64:</a>
+<a name="ln42">                  fraction = division / 16;</a>
+<a name="ln43">                  break;</a>
+<a name="ln44">            case MidiOperations::QuantValue::Q_128:</a>
+<a name="ln45">                  fraction = division / 32;</a>
+<a name="ln46">                  break;</a>
+<a name="ln47">            default:</a>
+<a name="ln48">                  Q_ASSERT_X(false, &quot;Quantize::quantValueToFraction&quot;, &quot;Unknown quant value&quot;);</a>
+<a name="ln49">                  break;</a>
+<a name="ln50">            }</a>
+<a name="ln51"> </a>
+<a name="ln52">      return fraction;</a>
+<a name="ln53">      }</a>
+<a name="ln54"> </a>
+<a name="ln55">MidiOperations::QuantValue fractionToQuantValue(const ReducedFraction &amp;fraction)</a>
+<a name="ln56">      {</a>
+<a name="ln57">      const auto division = ReducedFraction::fromTicks(MScore::division);</a>
+<a name="ln58">       MidiOperations::QuantValue quantValue = MidiOperations::QuantValue::Q_4;</a>
+<a name="ln59"> </a>
+<a name="ln60">      if (fraction == division)</a>
+<a name="ln61">            quantValue = MidiOperations::QuantValue::Q_4;</a>
+<a name="ln62">      else if (fraction == division / 2)</a>
+<a name="ln63">            quantValue = MidiOperations::QuantValue::Q_8;</a>
+<a name="ln64">      else if (fraction == division / 4)</a>
+<a name="ln65">            quantValue = MidiOperations::QuantValue::Q_16;</a>
+<a name="ln66">      else if (fraction == division / 8)</a>
+<a name="ln67">            quantValue = MidiOperations::QuantValue::Q_32;</a>
+<a name="ln68">      else if (fraction == division / 16)</a>
+<a name="ln69">            quantValue = MidiOperations::QuantValue::Q_64;</a>
+<a name="ln70">      else if (fraction == division / 32)</a>
+<a name="ln71">            quantValue = MidiOperations::QuantValue::Q_128;</a>
+<a name="ln72">      else {</a>
+<a name="ln73">            qDebug(&quot;unknown quant fraction %d/%d  division %d/%d&quot;, fraction.numerator(), fraction.denominator(),</a>
+<a name="ln74">               division.numerator(), division.denominator());</a>
+<a name="ln75">            Q_ASSERT_X(false, &quot;Quantize::fractionToQuantValue&quot;, &quot;Unknown quant fraction&quot;);</a>
+<a name="ln76">            }</a>
+<a name="ln77"> </a>
+<a name="ln78">      return quantValue;</a>
+<a name="ln79">      }</a>
+<a name="ln80"> </a>
+<a name="ln81">MidiOperations::QuantValue defaultQuantValueFromPreferences()</a>
+<a name="ln82">      {</a>
+<a name="ln83">      const auto fraction = ReducedFraction::fromTicks(preferences.getInt(PREF_IO_MIDI_SHORTESTNOTE));</a>
+<a name="ln84">      return fractionToQuantValue(fraction);</a>
+<a name="ln85">      }</a>
+<a name="ln86"> </a>
+<a name="ln87">ReducedFraction shortestQuantizedNoteInRange(</a>
+<a name="ln88">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator &amp;beg,</a>
+<a name="ln89">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator &amp;end)</a>
+<a name="ln90">      {</a>
+<a name="ln91">      const auto division = ReducedFraction::fromTicks(MScore::division);</a>
+<a name="ln92">      auto minDuration = division;</a>
+<a name="ln93">      for (auto it = beg; it != end; ++it) {</a>
+<a name="ln94">            for (const auto &amp;note: it-&gt;second.notes) {</a>
+<a name="ln95">                  if (note.offTime - it-&gt;first &lt; minDuration)</a>
+<a name="ln96">                        minDuration = note.offTime - it-&gt;first;</a>
+<a name="ln97">                  }</a>
+<a name="ln98">            }</a>
+<a name="ln99">      const auto minAllowedDuration = MChord::minAllowedDuration();</a>
+<a name="ln100">      auto shortest = division;</a>
+<a name="ln101">      for ( ; shortest &gt; minAllowedDuration; shortest /= 2) {</a>
+<a name="ln102">            if (shortest &lt;= minDuration)</a>
+<a name="ln103">                  break;</a>
+<a name="ln104">            }</a>
+<a name="ln105">      return shortest;</a>
+<a name="ln106">      }</a>
+<a name="ln107"> </a>
+<a name="ln108">ReducedFraction reduceQuantIfDottedNote(const ReducedFraction &amp;noteLen,</a>
+<a name="ln109">                                        const ReducedFraction &amp;raster)</a>
+<a name="ln110">      {</a>
+<a name="ln111">      auto newRaster = raster;</a>
+<a name="ln112">      const auto div = noteLen / raster;</a>
+<a name="ln113">      const double ratio = div.toDouble();</a>
+<a name="ln114">      if (ratio &gt; 1.45 &amp;&amp; ratio &lt; 1.55)     // 1.5: dotted note that is larger than quantization value</a>
+<a name="ln115">            newRaster /= 2;                 // reduce quantization error for dotted notes</a>
+<a name="ln116">      return newRaster;</a>
+<a name="ln117">      }</a>
+<a name="ln118"> </a>
+<a name="ln119">ReducedFraction quantizeValue(const ReducedFraction &amp;value,</a>
+<a name="ln120">                              const ReducedFraction &amp;quant)</a>
+<a name="ln121">      {</a>
+<a name="ln122">      const auto valueReduced = value.reduced();</a>
+<a name="ln123">      const auto rasterReduced = quant.reduced();</a>
+<a name="ln124">      int valNum = valueReduced.numerator() * rasterReduced.denominator();</a>
+<a name="ln125">      const int rastNum = rasterReduced.numerator() * valueReduced.denominator();</a>
+<a name="ln126">      const int commonDen = valueReduced.denominator() * rasterReduced.denominator();</a>
+<a name="ln127">      valNum = ((valNum + rastNum / 2) / rastNum) * rastNum;</a>
+<a name="ln128">      return ReducedFraction(valNum, commonDen).reduced();</a>
+<a name="ln129">      }</a>
+<a name="ln130"> </a>
+<a name="ln131">ReducedFraction quantForLen(const ReducedFraction &amp;noteLen,</a>
+<a name="ln132">                            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln133">      {</a>
+<a name="ln134">      auto quant = basicQuant;</a>
+<a name="ln135">      while (quant &gt; noteLen &amp;&amp; quant &gt;= MChord::minAllowedDuration() * 2)</a>
+<a name="ln136">            quant /= 2;</a>
+<a name="ln137"> </a>
+<a name="ln138">      if (quant &gt;= MChord::minAllowedDuration() * 2)</a>
+<a name="ln139">            quant = reduceQuantIfDottedNote(noteLen, quant);</a>
+<a name="ln140"> </a>
+<a name="ln141">      return quant;</a>
+<a name="ln142">      }</a>
+<a name="ln143"> </a>
+<a name="ln144">ReducedFraction quantForTuplet(const ReducedFraction &amp;tupletLen,</a>
+<a name="ln145">                               const ReducedFraction &amp;tupletRatio)</a>
+<a name="ln146">      {</a>
+<a name="ln147">      const auto quant = tupletLen / tupletRatio.numerator();</a>
+<a name="ln148"> </a>
+<a name="ln149">      Q_ASSERT_X(quant &gt;= MChord::minAllowedDuration(),</a>
+<a name="ln150">                 &quot;Quantize::quantForTuplet&quot;, &quot;Too small quant value&quot;);</a>
+<a name="ln151"> </a>
+<a name="ln152">      if (quant &gt;= MChord::minAllowedDuration() * 2)</a>
+<a name="ln153">            return quant / 2;</a>
+<a name="ln154"> </a>
+<a name="ln155">      return quant;</a>
+<a name="ln156">      }</a>
+<a name="ln157"> </a>
+<a name="ln158">ReducedFraction findMinQuant(</a>
+<a name="ln159">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln160">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln161">      {</a>
+<a name="ln162">      ReducedFraction minQuant(-1, 1);</a>
+<a name="ln163">      for (const auto &amp;note: chord.second.notes) {</a>
+<a name="ln164">            const auto quant = quantForLen(note.offTime - chord.first, basicQuant);</a>
+<a name="ln165">            if (minQuant == ReducedFraction(-1, 1) || quant &lt; minQuant)</a>
+<a name="ln166">                  minQuant = quant;</a>
+<a name="ln167">            }</a>
+<a name="ln168">      return minQuant;</a>
+<a name="ln169">      }</a>
+<a name="ln170"> </a>
+<a name="ln171">ReducedFraction findQuantizedTupletChordOnTime(</a>
+<a name="ln172">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln173">            const ReducedFraction &amp;tupletLen,</a>
+<a name="ln174">            const ReducedFraction &amp;tupletRatio,</a>
+<a name="ln175">            const ReducedFraction &amp;rangeStart)</a>
+<a name="ln176">      {</a>
+<a name="ln177">      if (chord.first &lt;= rangeStart)</a>
+<a name="ln178">            return rangeStart;</a>
+<a name="ln179">      const auto quant = quantForTuplet(tupletLen, tupletRatio);</a>
+<a name="ln180">      return rangeStart + quantizeValue(chord.first - rangeStart, quant);</a>
+<a name="ln181">      }</a>
+<a name="ln182"> </a>
+<a name="ln183">ReducedFraction findQuantizedChordOnTime(</a>
+<a name="ln184">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln185">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln186">      {</a>
+<a name="ln187">      const ReducedFraction quant = findMinQuant(chord, basicQuant);</a>
+<a name="ln188">      return quantizeValue(chord.first, quant);</a>
+<a name="ln189">      }</a>
+<a name="ln190"> </a>
+<a name="ln191">std::pair&lt;ReducedFraction, ReducedFraction&gt;</a>
+<a name="ln192">findQuantizedTupletNoteOffTime(</a>
+<a name="ln193">            const ReducedFraction &amp;onTime,</a>
+<a name="ln194">            const ReducedFraction &amp;offTime,</a>
+<a name="ln195">            const ReducedFraction &amp;tupletLen,</a>
+<a name="ln196">            const ReducedFraction &amp;tupletRatio,</a>
+<a name="ln197">            const ReducedFraction &amp;rangeStart)</a>
+<a name="ln198">      {</a>
+<a name="ln199">      if (offTime &lt;= rangeStart)</a>
+<a name="ln200">            return {rangeStart, tupletLen};</a>
+<a name="ln201"> </a>
+<a name="ln202">      ReducedFraction qOffTime;</a>
+<a name="ln203">      auto quant = quantForTuplet(tupletLen, tupletRatio);</a>
+<a name="ln204"> </a>
+<a name="ln205">      while (true) {</a>
+<a name="ln206">            qOffTime = rangeStart + quantizeValue(offTime - rangeStart, quant);</a>
+<a name="ln207">            if (qOffTime &lt;= onTime) {</a>
+<a name="ln208">                  if (quant &gt;= MChord::minAllowedDuration() * 2) {</a>
+<a name="ln209">                        quant /= 2;</a>
+<a name="ln210">                        continue;</a>
+<a name="ln211">                        }</a>
+<a name="ln212">                  qOffTime = onTime + quant;</a>
+<a name="ln213">                  }</a>
+<a name="ln214">            break;</a>
+<a name="ln215">            }</a>
+<a name="ln216">      return {qOffTime, quant};</a>
+<a name="ln217">      }</a>
+<a name="ln218"> </a>
+<a name="ln219">std::pair&lt;ReducedFraction, ReducedFraction&gt;</a>
+<a name="ln220">findQuantizedNoteOffTime(</a>
+<a name="ln221">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln222">            const ReducedFraction &amp;offTime,</a>
+<a name="ln223">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln224">      {</a>
+<a name="ln225">      ReducedFraction qOffTime;</a>
+<a name="ln226">      auto quant = quantForLen(offTime - chord.first, basicQuant);</a>
+<a name="ln227"> </a>
+<a name="ln228">      while (true) {</a>
+<a name="ln229">            qOffTime = quantizeValue(offTime, quant);</a>
+<a name="ln230">            if (qOffTime &lt;= chord.first) {</a>
+<a name="ln231">                  if (quant &gt;= MChord::minAllowedDuration() * 2) {</a>
+<a name="ln232">                        quant /= 2;</a>
+<a name="ln233">                        continue;</a>
+<a name="ln234">                        }</a>
+<a name="ln235">                  qOffTime = chord.first + quant;</a>
+<a name="ln236">                  }</a>
+<a name="ln237">            break;</a>
+<a name="ln238">            }</a>
+<a name="ln239">      return {qOffTime, quant};</a>
+<a name="ln240">      }</a>
+<a name="ln241"> </a>
+<a name="ln242">ReducedFraction findMinQuantizedOnTime(</a>
+<a name="ln243">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln244">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln245">      {</a>
+<a name="ln246">      ReducedFraction minOnTime(-1, 1);</a>
+<a name="ln247">      for (const auto &amp;note: chord.second.notes) {</a>
+<a name="ln248">            const auto quant = quantForLen(note.offTime - chord.first, basicQuant);</a>
+<a name="ln249">            const auto onTime = quantizeValue(chord.first, quant);</a>
+<a name="ln250">            if (minOnTime == ReducedFraction(-1, 1) || onTime &lt; minOnTime)</a>
+<a name="ln251">                  minOnTime = onTime;</a>
+<a name="ln252">            }</a>
+<a name="ln253">      return minOnTime;</a>
+<a name="ln254">      }</a>
+<a name="ln255"> </a>
+<a name="ln256">ReducedFraction findMaxQuantizedTupletOffTime(</a>
+<a name="ln257">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln258">            const ReducedFraction &amp;tupletLen,</a>
+<a name="ln259">            const ReducedFraction &amp;tupletRatio,</a>
+<a name="ln260">            const ReducedFraction &amp;rangeStart)</a>
+<a name="ln261">      {</a>
+<a name="ln262">      ReducedFraction maxOffTime(0, 1);</a>
+<a name="ln263">      for (const auto &amp;note: chord.second.notes) {</a>
+<a name="ln264">            if (note.offTime &lt;= rangeStart)</a>
+<a name="ln265">                  continue;</a>
+<a name="ln266">            const auto offTime = findQuantizedTupletNoteOffTime(</a>
+<a name="ln267">                              chord.first, note.offTime, tupletLen, tupletRatio, rangeStart).first;</a>
+<a name="ln268">            if (offTime &gt; maxOffTime)</a>
+<a name="ln269">                  maxOffTime = offTime;</a>
+<a name="ln270">            }</a>
+<a name="ln271">      return maxOffTime;</a>
+<a name="ln272">      }</a>
+<a name="ln273"> </a>
+<a name="ln274">ReducedFraction findMaxQuantizedOffTime(</a>
+<a name="ln275">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln276">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln277">      {</a>
+<a name="ln278">      ReducedFraction maxOffTime(0, 1);</a>
+<a name="ln279">      for (const auto &amp;note: chord.second.notes) {</a>
+<a name="ln280">            const auto offTime = findQuantizedNoteOffTime(chord, note.offTime, basicQuant).first;</a>
+<a name="ln281">            if (offTime &gt; maxOffTime)</a>
+<a name="ln282">                  maxOffTime = offTime;</a>
+<a name="ln283">            }</a>
+<a name="ln284">      return maxOffTime;</a>
+<a name="ln285">      }</a>
+<a name="ln286"> </a>
+<a name="ln287">ReducedFraction findOnTimeTupletQuantError(</a>
+<a name="ln288">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln289">            const ReducedFraction &amp;tupletLen,</a>
+<a name="ln290">            const ReducedFraction &amp;tupletRatio,</a>
+<a name="ln291">            const ReducedFraction &amp;rangeStart)</a>
+<a name="ln292">      {</a>
+<a name="ln293">      const auto qOnTime = findQuantizedTupletChordOnTime(chord, tupletLen,</a>
+<a name="ln294">                                                          tupletRatio, rangeStart);</a>
+<a name="ln295">      return (chord.first - qOnTime).absValue();</a>
+<a name="ln296">      }</a>
+<a name="ln297"> </a>
+<a name="ln298">ReducedFraction findOnTimeQuantError(</a>
+<a name="ln299">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln300">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln301">      {</a>
+<a name="ln302">      const auto qOnTime = findQuantizedChordOnTime(chord, basicQuant);</a>
+<a name="ln303">      return (chord.first - qOnTime).absValue();</a>
+<a name="ln304">      }</a>
+<a name="ln305"> </a>
+<a name="ln306">ReducedFraction findOffTimeTupletQuantError(</a>
+<a name="ln307">            const ReducedFraction &amp;onTime,</a>
+<a name="ln308">            const ReducedFraction &amp;offTime,</a>
+<a name="ln309">            const ReducedFraction &amp;tupletLen,</a>
+<a name="ln310">            const ReducedFraction &amp;tupletRatio,</a>
+<a name="ln311">            const ReducedFraction &amp;rangeStart)</a>
+<a name="ln312">      {</a>
+<a name="ln313">      const auto qOffTime = findQuantizedTupletNoteOffTime(onTime, offTime, tupletLen,</a>
+<a name="ln314">                                                           tupletRatio, rangeStart).first;</a>
+<a name="ln315">      return (offTime - qOffTime).absValue();</a>
+<a name="ln316">      }</a>
+<a name="ln317"> </a>
+<a name="ln318">ReducedFraction findOffTimeQuantError(</a>
+<a name="ln319">            const std::pair&lt;const ReducedFraction, MidiChord&gt; &amp;chord,</a>
+<a name="ln320">            const ReducedFraction &amp;offTime,</a>
+<a name="ln321">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln322">      {</a>
+<a name="ln323">      const auto qOffTime = findQuantizedNoteOffTime(chord, offTime, basicQuant).first;</a>
+<a name="ln324">      return (offTime - qOffTime).absValue();</a>
+<a name="ln325">      }</a>
+<a name="ln326"> </a>
+<a name="ln327">ReducedFraction findQuantForRange(</a>
+<a name="ln328">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator &amp;beg,</a>
+<a name="ln329">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator &amp;end,</a>
+<a name="ln330">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln331">      {</a>
+<a name="ln332">      const auto shortestLen = shortestQuantizedNoteInRange(beg, end);</a>
+<a name="ln333">      return quantForLen(shortestLen, basicQuant);</a>
+<a name="ln334">      }</a>
+<a name="ln335"> </a>
+<a name="ln336">//--------------------------------------------------------------------------------------------</a>
+<a name="ln337"> </a>
+<a name="ln338">bool isHumanPerformance(</a>
+<a name="ln339">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln340">            const TimeSigMap *sigmap)</a>
+<a name="ln341">      {</a>
+<a name="ln342">      if (chords.empty())</a>
+<a name="ln343">            return false;</a>
+<a name="ln344"> </a>
+<a name="ln345">      const auto basicQuant = ReducedFraction::fromTicks(MScore::division) / 4;    // 1/16</a>
+<a name="ln346">      int matches = 0;</a>
+<a name="ln347">      int count = 0;</a>
+<a name="ln348"> </a>
+<a name="ln349">      std::set&lt;ReducedFraction&gt; usedOnTimes;</a>
+<a name="ln350"> </a>
+<a name="ln351">      for (const auto &amp;chord: chords) {</a>
+<a name="ln352">            const auto quant = qMin(basicQuant,</a>
+<a name="ln353">                                    quantForLen(MChord::maxNoteLen(chord), basicQuant));</a>
+<a name="ln354">            const auto onTime = quantizeValue(chord.first, quant);</a>
+<a name="ln355">            int barIndex, beat, tick;</a>
+<a name="ln356">            sigmap-&gt;tickValues(onTime.ticks(), &amp;barIndex, &amp;beat, &amp;tick);</a>
+<a name="ln357"> </a>
+<a name="ln358">            const auto barStart = ReducedFraction::fromTicks(sigmap-&gt;bar2tick(barIndex, 0));</a>
+<a name="ln359">            const auto barFraction = ReducedFraction(sigmap-&gt;timesig(barStart.ticks()).timesig());</a>
+<a name="ln360">            const auto beatLen = Meter::beatLength(barFraction);</a>
+<a name="ln361"> </a>
+<a name="ln362">            if (((onTime - barStart) / beatLen).reduced().denominator() == 1</a>
+<a name="ln363">                        &amp;&amp; usedOnTimes.find(onTime) == usedOnTimes.end()) {</a>
+<a name="ln364">                  usedOnTimes.insert(onTime);</a>
+<a name="ln365">                  ++count;</a>
+<a name="ln366">                  const auto diff = (onTime - chord.first).absValue();</a>
+<a name="ln367">                  if (diff &lt; MChord::minAllowedDuration())</a>
+<a name="ln368">                        ++matches;</a>
+<a name="ln369">                  }</a>
+<a name="ln370">            }</a>
+<a name="ln371"> </a>
+<a name="ln372">      const double TOL = 0.6;</a>
+<a name="ln373">      const double matched = matches * 1.0 / count;</a>
+<a name="ln374"> </a>
+<a name="ln375">      return matched &lt; TOL;</a>
+<a name="ln376">      }</a>
+<a name="ln377"> </a>
+<a name="ln378">std::multimap&lt;int, MTrack&gt;</a>
+<a name="ln379">getTrackWithAllChords(const std::multimap&lt;int, MTrack&gt; &amp;tracks)</a>
+<a name="ln380">      {</a>
+<a name="ln381">      std::multimap&lt;int, MTrack&gt; singleTrack{{0, MTrack()}};</a>
+<a name="ln382">      auto &amp;allChords = singleTrack.begin()-&gt;second.chords;</a>
+<a name="ln383">      for (const auto &amp;track: tracks) {</a>
+<a name="ln384">            const MTrack &amp;t = track.second;</a>
+<a name="ln385">            for (const auto &amp;chord: t.chords) {</a>
+<a name="ln386">                  allChords.insert(chord);</a>
+<a name="ln387">                  }</a>
+<a name="ln388">            }</a>
+<a name="ln389">      return singleTrack;</a>
+<a name="ln390">      }</a>
+<a name="ln391"> </a>
+<a name="ln392">void setIfHumanPerformance(</a>
+<a name="ln393">            const std::multimap&lt;int, MTrack&gt; &amp;tracks,</a>
+<a name="ln394">            TimeSigMap *sigmap)</a>
+<a name="ln395">      {</a>
+<a name="ln396">      auto allChordsTrack = getTrackWithAllChords(tracks);</a>
+<a name="ln397">      MChord::collectChords(allChordsTrack, {2, 1}, {1, 2});</a>
+<a name="ln398">      const MTrack &amp;track = allChordsTrack.begin()-&gt;second;</a>
+<a name="ln399">      const auto &amp;allChords = track.chords;</a>
+<a name="ln400">      if (allChords.empty())</a>
+<a name="ln401">            return;</a>
+<a name="ln402">      const bool isHuman = isHumanPerformance(allChords, sigmap);</a>
+<a name="ln403">      auto &amp;opers = midiImportOperations.data()-&gt;trackOpers;</a>
+<a name="ln404">      if (opers.isHumanPerformance.canRedefineDefaultLater())</a>
+<a name="ln405">            opers.isHumanPerformance.setDefaultValue(isHuman);</a>
+<a name="ln406"> </a>
+<a name="ln407">      if (isHuman) {</a>
+<a name="ln408">            if (opers.quantValue.canRedefineDefaultLater())</a>
+<a name="ln409">                  opers.quantValue.setDefaultValue(MidiOperations::QuantValue::Q_8);</a>
+<a name="ln410">            if (opers.maxVoiceCount.canRedefineDefaultLater())</a>
+<a name="ln411">                  opers.maxVoiceCount.setDefaultValue(MidiOperations::VoiceCount::V_2);</a>
+<a name="ln412">            const double ticksPerSec = MidiTempo::findBasicTempo(tracks, true) * MScore::division;</a>
+<a name="ln413">            MidiBeat::findBeatLocations(allChords, sigmap, ticksPerSec);      // and set time sig</a>
+<a name="ln414">            }</a>
+<a name="ln415">      }</a>
+<a name="ln416"> </a>
+<a name="ln417">//--------------------------------------------------------------------------------------------</a>
+<a name="ln418"> </a>
+<a name="ln419">// remove small intersection with the next chord</a>
+<a name="ln420"> </a>
+<a name="ln421">void preserveLegato(</a>
+<a name="ln422">            ReducedFraction &amp;offTime,</a>
+<a name="ln423">            bool isOffTimeInTuplet,</a>
+<a name="ln424">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::iterator &amp;chordIt,</a>
+<a name="ln425">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln426">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln427">      {</a>
+<a name="ln428">      auto it = std::next(chordIt);</a>
+<a name="ln429">      while (it != chords.end() &amp;&amp; it-&gt;second.voice != chordIt-&gt;second.voice)</a>
+<a name="ln430">            ++it;</a>
+<a name="ln431">      if (it != chords.end()) {</a>
+<a name="ln432">            const auto ioi = it-&gt;first - chordIt-&gt;first;</a>
+<a name="ln433">            const auto cross = offTime - it-&gt;first;</a>
+<a name="ln434"> </a>
+<a name="ln435">            if (it-&gt;second.isInTuplet &amp;&amp; isOffTimeInTuplet) {</a>
+<a name="ln436">                              // while we don't split tuplet into voices we don't want to have</a>
+<a name="ln437">                              // note intersections smaller than tuplet note length</a>
+<a name="ln438">                  const auto &amp;tuplet = it-&gt;second.tuplet-&gt;second;</a>
+<a name="ln439">                  const auto tupletNoteLen = tuplet.len / tuplet.tupletNumber;</a>
+<a name="ln440">                  if (cross &gt; ReducedFraction(0, 1) &amp;&amp; cross &lt; tupletNoteLen)</a>
+<a name="ln441">                        offTime = it-&gt;first;</a>
+<a name="ln442">                  }</a>
+<a name="ln443">            else if (!it-&gt;second.isInTuplet &amp;&amp; !isOffTimeInTuplet) {</a>
+<a name="ln444">                  if (cross &gt; ReducedFraction(0, 1) &amp;&amp; cross &lt; ioi / 2 &amp;&amp; cross &lt; basicQuant / 2)</a>
+<a name="ln445">                        offTime = it-&gt;first;</a>
+<a name="ln446">                  }</a>
+<a name="ln447">            }</a>
+<a name="ln448">      }</a>
+<a name="ln449"> </a>
+<a name="ln450">std::pair&lt;ReducedFraction, ReducedFraction&gt;</a>
+<a name="ln451">quantizeOffTimeForTuplet(</a>
+<a name="ln452">            const ReducedFraction &amp;noteOffTime,</a>
+<a name="ln453">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::iterator &amp;chordIt,</a>
+<a name="ln454">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln455">            const ReducedFraction &amp;basicQuant,</a>
+<a name="ln456">            const MidiTuplet::TupletData &amp;tuplet)</a>
+<a name="ln457">      {</a>
+<a name="ln458"> </a>
+<a name="ln459">      Q_ASSERT_X(chordIt-&gt;first &lt; noteOffTime,</a>
+<a name="ln460">                 &quot;Quantize::quantizeOffTimeForTuplet&quot;, &quot;Negative or zero note length&quot;);</a>
+<a name="ln461"> </a>
+<a name="ln462">      const auto tupletRatio = MidiTuplet::tupletLimits(tuplet.tupletNumber).ratio;</a>
+<a name="ln463">      const auto result = findQuantizedTupletNoteOffTime(</a>
+<a name="ln464">                             chordIt-&gt;first, noteOffTime, tuplet.len, tupletRatio, tuplet.onTime);</a>
+<a name="ln465">      auto offTime = result.first;</a>
+<a name="ln466">      auto quant = result.second;</a>
+<a name="ln467"> </a>
+<a name="ln468">      preserveLegato(offTime, true, chordIt, chords, basicQuant);</a>
+<a name="ln469"> </a>
+<a name="ln470">                  // verify that offTime is still inside tuplet</a>
+<a name="ln471">      if (offTime &lt; tuplet.onTime) {</a>
+<a name="ln472">            offTime = tuplet.onTime;</a>
+<a name="ln473">            quant = tuplet.len;</a>
+<a name="ln474">            }</a>
+<a name="ln475">      else if (offTime &gt; tuplet.onTime + tuplet.len) {</a>
+<a name="ln476">            offTime = tuplet.onTime + tuplet.len;</a>
+<a name="ln477">            quant = tuplet.len;</a>
+<a name="ln478">            }</a>
+<a name="ln479"> </a>
+<a name="ln480">      return {offTime, quant};</a>
+<a name="ln481">      }</a>
+<a name="ln482"> </a>
+<a name="ln483">std::pair&lt;ReducedFraction, ReducedFraction&gt;</a>
+<a name="ln484">quantizeOffTimeForNonTuplet(</a>
+<a name="ln485">            const ReducedFraction &amp;noteOffTime,</a>
+<a name="ln486">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::iterator &amp;chordIt,</a>
+<a name="ln487">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln488">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln489">      {</a>
+<a name="ln490"> </a>
+<a name="ln491">      Q_ASSERT_X(chordIt-&gt;first &lt; noteOffTime,</a>
+<a name="ln492">                 &quot;Quantize::quantizeOffTimeForNonTuplet&quot;, &quot;Negative or zero note length&quot;);</a>
+<a name="ln493"> </a>
+<a name="ln494">      const MidiChord &amp;chord = chordIt-&gt;second;</a>
+<a name="ln495">      const auto result = findQuantizedNoteOffTime(*chordIt, noteOffTime, basicQuant);</a>
+<a name="ln496">      auto offTime = result.first;</a>
+<a name="ln497">      auto quant = result.second;</a>
+<a name="ln498">      preserveLegato(offTime, false, chordIt, chords, basicQuant);</a>
+<a name="ln499"> </a>
+<a name="ln500">                  // verify that offTime is still outside tuplets</a>
+<a name="ln501">      if (chord.isInTuplet) {</a>
+<a name="ln502">            const auto &amp;tuplet = chord.tuplet-&gt;second;</a>
+<a name="ln503">            if (offTime &lt; tuplet.onTime + tuplet.len) {</a>
+<a name="ln504">                  offTime = tuplet.onTime + tuplet.len;</a>
+<a name="ln505">                  quant = tuplet.len;</a>
+<a name="ln506">                  return {offTime, quant};</a>
+<a name="ln507">                  }</a>
+<a name="ln508">            }</a>
+<a name="ln509">      auto next = std::next(chordIt);</a>
+<a name="ln510">      while (true) {</a>
+<a name="ln511">            if (next == chords.end())</a>
+<a name="ln512">                  break;</a>
+<a name="ln513">            if (!next-&gt;second.isInTuplet || next-&gt;second.voice != chord.voice) {</a>
+<a name="ln514">                  ++next;</a>
+<a name="ln515">                  continue;</a>
+<a name="ln516">                  }</a>
+<a name="ln517">            const auto &amp;tuplet = next-&gt;second.tuplet-&gt;second;</a>
+<a name="ln518">            if (next-&gt;second.tuplet == chord.tuplet</a>
+<a name="ln519">                        || tuplet.onTime + tuplet.len &lt;= offTime) {</a>
+<a name="ln520">                  ++next;</a>
+<a name="ln521">                  continue;</a>
+<a name="ln522">                  }</a>
+<a name="ln523"> </a>
+<a name="ln524">            if (offTime &gt; tuplet.onTime) {</a>
+<a name="ln525">                  offTime = tuplet.onTime;</a>
+<a name="ln526">                  quant = tuplet.len;</a>
+<a name="ln527">                  }</a>
+<a name="ln528">            break;</a>
+<a name="ln529">            }</a>
+<a name="ln530"> </a>
+<a name="ln531">      return {offTime, quant};</a>
+<a name="ln532">      }</a>
+<a name="ln533"> </a>
+<a name="ln534"> </a>
+<a name="ln535">struct QuantPos</a>
+<a name="ln536">      {</a>
+<a name="ln537">      ReducedFraction time;</a>
+<a name="ln538">      int metricalLevel;</a>
+<a name="ln539">      double penalty;</a>
+<a name="ln540">      int prevPos;</a>
+<a name="ln541">      };</a>
+<a name="ln542"> </a>
+<a name="ln543">struct QuantData</a>
+<a name="ln544">      {</a>
+<a name="ln545">      std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator chord;</a>
+<a name="ln546">      ReducedFraction quant;</a>
+<a name="ln547">      ReducedFraction quantForLen;</a>
+<a name="ln548">      ReducedFraction chordRangeStart;</a>
+<a name="ln549">      ReducedFraction chordRangeEnd;</a>
+<a name="ln550">                  // if inter on time interval with previous chord</a>
+<a name="ln551">                  // is less than min allowed duration</a>
+<a name="ln552">                  // then chord can be merged with previous chord</a>
+<a name="ln553">      bool canMergeWithPrev = false;</a>
+<a name="ln554">      int metricalLevelForLen;</a>
+<a name="ln555">      std::vector&lt;QuantPos&gt; positions;</a>
+<a name="ln556">      };</a>
+<a name="ln557"> </a>
+<a name="ln558"> </a>
+<a name="ln559">#ifdef QT_DEBUG</a>
+<a name="ln560"> </a>
+<a name="ln561">bool areAllVoicesSame(</a>
+<a name="ln562">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords)</a>
+<a name="ln563">      {</a>
+<a name="ln564">      auto it = chords.begin();</a>
+<a name="ln565">      const int voice = (*it)-&gt;second.voice;</a>
+<a name="ln566">      for (++it; it != chords.end(); ++it) {</a>
+<a name="ln567">            if ((*it)-&gt;second.voice != voice)</a>
+<a name="ln568">                  return false;</a>
+<a name="ln569">            }</a>
+<a name="ln570">      return true;</a>
+<a name="ln571">      }</a>
+<a name="ln572"> </a>
+<a name="ln573">bool areChordsDifferent(</a>
+<a name="ln574">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords)</a>
+<a name="ln575">      {</a>
+<a name="ln576">      std::set&lt;const std::pair&lt;const ReducedFraction, MidiChord&gt; *&gt; chordSet;</a>
+<a name="ln577"> </a>
+<a name="ln578">      for (const auto &amp;chord: chords) {</a>
+<a name="ln579">            const auto it = chordSet.find(&amp;*chord);</a>
+<a name="ln580">            if (it == chordSet.end())</a>
+<a name="ln581">                  chordSet.insert(&amp;*chord);</a>
+<a name="ln582">            else</a>
+<a name="ln583">                  return false;</a>
+<a name="ln584">            }</a>
+<a name="ln585"> </a>
+<a name="ln586">      return true;</a>
+<a name="ln587">      }</a>
+<a name="ln588"> </a>
+<a name="ln589">bool notLessThanPrev(</a>
+<a name="ln590">            const std::vector&lt;QuantData&gt;::iterator &amp;it,</a>
+<a name="ln591">            const std::vector&lt;QuantData&gt; &amp;data)</a>
+<a name="ln592">      {</a>
+<a name="ln593">      if (it != data.begin()) {</a>
+<a name="ln594">            const auto prev = std::prev(it);</a>
+<a name="ln595">            if (prev-&gt;chordRangeStart &gt; it-&gt;chordRangeStart)</a>
+<a name="ln596">                  return false;</a>
+<a name="ln597">            }</a>
+<a name="ln598">      return true;</a>
+<a name="ln599">      }</a>
+<a name="ln600"> </a>
+<a name="ln601">bool isTupletRangeCorrect(</a>
+<a name="ln602">            const MidiTuplet::TupletData &amp;tuplet,</a>
+<a name="ln603">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln604">            const ReducedFraction &amp;rangeEnd)</a>
+<a name="ln605">      {</a>
+<a name="ln606">      return (rangeStart == tuplet.onTime &amp;&amp; rangeEnd == tuplet.onTime + tuplet.len);</a>
+<a name="ln607">      }</a>
+<a name="ln608"> </a>
+<a name="ln609">void checkOffTime(</a>
+<a name="ln610">            const MidiNote &amp;note,</a>
+<a name="ln611">            const std::multimap&lt;ReducedFraction, MidiChord&gt;::iterator &amp;chordIt,</a>
+<a name="ln612">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln613">      {</a>
+<a name="ln614"> </a>
+<a name="ln615">      Q_ASSERT_X(note.offTime - chordIt-&gt;first &gt;= MChord::minAllowedDuration(),</a>
+<a name="ln616">                 &quot;Quantize::checkOffTime&quot;, &quot;Too small note length&quot;);</a>
+<a name="ln617"> </a>
+<a name="ln618">      if (note.isInTuplet) {</a>
+<a name="ln619">            const auto &amp;tuplet = note.tuplet-&gt;second;</a>
+<a name="ln620"> </a>
+<a name="ln621">            Q_ASSERT_X(note.offTime &gt;= tuplet.onTime</a>
+<a name="ln622">                       &amp;&amp; note.offTime &lt;= tuplet.onTime + tuplet.len,</a>
+<a name="ln623">                       &quot;Quantize::checkOffTime&quot;,</a>
+<a name="ln624">                       &quot;Note off time is outside tuplet but should be inside&quot;);</a>
+<a name="ln625">            }</a>
+<a name="ln626">      else {</a>
+<a name="ln627">            const auto &amp;chord = chordIt-&gt;second;</a>
+<a name="ln628"> </a>
+<a name="ln629">            auto next = std::next(chordIt);</a>
+<a name="ln630">            while (true) {</a>
+<a name="ln631">                  if (next == chords.end())</a>
+<a name="ln632">                        break;</a>
+<a name="ln633">                  if (!next-&gt;second.isInTuplet || next-&gt;second.voice != chord.voice) {</a>
+<a name="ln634">                        ++next;</a>
+<a name="ln635">                        continue;</a>
+<a name="ln636">                        }</a>
+<a name="ln637">                  const auto &amp;tuplet = next-&gt;second.tuplet-&gt;second;</a>
+<a name="ln638">                  if ((chord.isInTuplet &amp;&amp; next-&gt;second.tuplet == chord.tuplet)</a>
+<a name="ln639">                              || tuplet.onTime + tuplet.len &lt;= note.offTime) {</a>
+<a name="ln640">                        ++next;</a>
+<a name="ln641">                        continue;</a>
+<a name="ln642">                        }</a>
+<a name="ln643"> </a>
+<a name="ln644">                  Q_ASSERT_X(note.offTime &lt;= tuplet.onTime,</a>
+<a name="ln645">                             &quot;Quantize::checkOffTime&quot;,</a>
+<a name="ln646">                             &quot;Note off time is inside next tuplet but it shouldn't&quot;);</a>
+<a name="ln647">                  break;</a>
+<a name="ln648">                  }</a>
+<a name="ln649"> </a>
+<a name="ln650">            auto prev = chordIt;</a>
+<a name="ln651">            while (true) {</a>
+<a name="ln652">                  if (prev-&gt;second.barIndex != chord.barIndex)</a>
+<a name="ln653">                        break;</a>
+<a name="ln654">                  if (prev-&gt;second.voice != chord.voice</a>
+<a name="ln655">                              || !prev-&gt;second.isInTuplet</a>
+<a name="ln656">                              || (chord.isInTuplet &amp;&amp; prev-&gt;second.tuplet == chord.tuplet)) {</a>
+<a name="ln657">                        if (prev != chords.begin()) {</a>
+<a name="ln658">                              --prev;</a>
+<a name="ln659">                              continue;</a>
+<a name="ln660">                              }</a>
+<a name="ln661">                        }</a>
+<a name="ln662">                  else {</a>
+<a name="ln663">                        const auto &amp;tuplet = prev-&gt;second.tuplet-&gt;second;</a>
+<a name="ln664"> </a>
+<a name="ln665">                        Q_ASSERT_X(note.offTime &gt;= tuplet.onTime + tuplet.len,</a>
+<a name="ln666">                                   &quot;Quantize::checkOffTime&quot;,</a>
+<a name="ln667">                                   &quot;Note off time is inside prev tuplet but it shouldn't&quot;);</a>
+<a name="ln668">                        }</a>
+<a name="ln669">                  break;</a>
+<a name="ln670">                  }</a>
+<a name="ln671">            }</a>
+<a name="ln672">      }</a>
+<a name="ln673"> </a>
+<a name="ln674">bool areOnTimeValuesDifferent(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln675">      {</a>
+<a name="ln676">      std::set&lt;std::tuple&lt;ReducedFraction, int, int&gt;&gt; onTimeVoicesBars;</a>
+<a name="ln677">      for (const auto &amp;chord: chords) {</a>
+<a name="ln678">            const auto tuple = std::make_tuple(chord.first,</a>
+<a name="ln679">                                               chord.second.voice,</a>
+<a name="ln680">                                               chord.second.barIndex);</a>
+<a name="ln681">            if (onTimeVoicesBars.find(tuple) == onTimeVoicesBars.end())</a>
+<a name="ln682">                  onTimeVoicesBars.insert(tuple);</a>
+<a name="ln683">            else</a>
+<a name="ln684">                  return false;</a>
+<a name="ln685">            }</a>
+<a name="ln686">      return true;</a>
+<a name="ln687">      }</a>
+<a name="ln688"> </a>
+<a name="ln689">bool areTupletChordsConsistent(const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln690">      {</a>
+<a name="ln691">      std::multimap&lt;ReducedFraction, MidiTuplet::TupletData&gt;::iterator prevTuplet;</a>
+<a name="ln692">      bool prevTupletSet = false;</a>
+<a name="ln693">      bool isInTuplet = false;</a>
+<a name="ln694">      const int limit = MidiVoice::voiceLimit();</a>
+<a name="ln695"> </a>
+<a name="ln696">      for (int voice = 0; voice != limit; ++voice) {</a>
+<a name="ln697">            for (const auto &amp;chord: chords) {</a>
+<a name="ln698">                  const MidiChord &amp;c = chord.second;</a>
+<a name="ln699">                  if (c.voice != voice)</a>
+<a name="ln700">                        continue;</a>
+<a name="ln701">                  if (c.isInTuplet) {</a>
+<a name="ln702">                        if (!isInTuplet &amp;&amp; prevTupletSet &amp;&amp; c.tuplet == prevTuplet) {</a>
+<a name="ln703">                              qDebug() &lt;&lt; &quot;Inconsistent tuplets, bar (from 1):&quot;</a>
+<a name="ln704">                                       &lt;&lt; (c.barIndex + 1);</a>
+<a name="ln705">                              return false;     // there is a non-tuplet chord inside tuplet</a>
+<a name="ln706">                              }</a>
+<a name="ln707">                        isInTuplet = true;</a>
+<a name="ln708">                        prevTuplet = c.tuplet;</a>
+<a name="ln709">                        prevTupletSet = true;</a>
+<a name="ln710">                        }</a>
+<a name="ln711">                  else {</a>
+<a name="ln712">                        isInTuplet = false;</a>
+<a name="ln713">                        }</a>
+<a name="ln714">                  }</a>
+<a name="ln715">            }</a>
+<a name="ln716">      return true;</a>
+<a name="ln717">      }</a>
+<a name="ln718"> </a>
+<a name="ln719">bool areTupletChordsConsistent(</a>
+<a name="ln720">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords)</a>
+<a name="ln721">      {</a>
+<a name="ln722">      auto it = chords.begin();</a>
+<a name="ln723">      const bool isInTuplet = (*it)-&gt;second.isInTuplet;</a>
+<a name="ln724">      for (std::next(it); it != chords.end(); ++it) {</a>
+<a name="ln725">            if (isInTuplet &amp;&amp; (!(*it)-&gt;second.isInTuplet</a>
+<a name="ln726">                               || (*it)-&gt;second.tuplet != (*chords.begin())-&gt;second.tuplet)) {</a>
+<a name="ln727">                  return false;</a>
+<a name="ln728">                  }</a>
+<a name="ln729">            if (!isInTuplet &amp;&amp; (*it)-&gt;second.isInTuplet)</a>
+<a name="ln730">                  return false;</a>
+<a name="ln731">            }</a>
+<a name="ln732">      return true;</a>
+<a name="ln733">      }</a>
+<a name="ln734"> </a>
+<a name="ln735">bool areChordsSortedByOnTime(</a>
+<a name="ln736">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords)</a>
+<a name="ln737">      {</a>
+<a name="ln738">      for (size_t i = 0; i != chords.size() - 1; ++i) {</a>
+<a name="ln739">            if (chords[i]-&gt;first &gt;= chords[i + 1]-&gt;first)</a>
+<a name="ln740">                  return false;</a>
+<a name="ln741">            }</a>
+<a name="ln742">      return true;</a>
+<a name="ln743">      }</a>
+<a name="ln744"> </a>
+<a name="ln745">#endif</a>
+<a name="ln746"> </a>
+<a name="ln747"> </a>
+<a name="ln748">ReducedFraction quantizeToLarge(</a>
+<a name="ln749">            const ReducedFraction &amp;time,</a>
+<a name="ln750">            const ReducedFraction &amp;quant)</a>
+<a name="ln751">      {</a>
+<a name="ln752">      const auto ratio = time / quant;</a>
+<a name="ln753">      auto quantized = quant * (ratio.numerator() / ratio.denominator());</a>
+<a name="ln754">      if (quantized &lt; time)</a>
+<a name="ln755">            quantized += quant;</a>
+<a name="ln756">      return quantized;</a>
+<a name="ln757">      }</a>
+<a name="ln758"> </a>
+<a name="ln759">ReducedFraction quantizeToSmall(</a>
+<a name="ln760">            const ReducedFraction &amp;time,</a>
+<a name="ln761">            const ReducedFraction &amp;quant)</a>
+<a name="ln762">      {</a>
+<a name="ln763">      const auto ratio = time / quant;</a>
+<a name="ln764">      auto quantized = quant * (ratio.numerator() / ratio.denominator());</a>
+<a name="ln765">      if (quantized &gt;= time)</a>
+<a name="ln766">            quantized -= quant;</a>
+<a name="ln767">      return quantized;</a>
+<a name="ln768">      }</a>
+<a name="ln769"> </a>
+<a name="ln770">void findMetricalLevels(</a>
+<a name="ln771">            std::vector&lt;QuantData&gt; &amp;data,</a>
+<a name="ln772">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords,</a>
+<a name="ln773">            const ReducedFraction &amp;tupletQuant,</a>
+<a name="ln774">            const ReducedFraction &amp;barStart,</a>
+<a name="ln775">            const ReducedFraction &amp;barFraction)</a>
+<a name="ln776">      {</a>
+<a name="ln777">      const auto divsInfo = (tupletQuant != ReducedFraction(-1, 1))</a>
+<a name="ln778">                  ? Meter::divisionInfo(barFraction, {(*chords.begin())-&gt;second.tuplet-&gt;second})</a>
+<a name="ln779">                  : Meter::divisionInfo(barFraction, {});</a>
+<a name="ln780"> </a>
+<a name="ln781">      for (QuantData &amp;d: data) {</a>
+<a name="ln782">            for (auto t = d.chordRangeStart; t &lt;= d.chordRangeEnd; t += d.quant) {</a>
+<a name="ln783">                  QuantPos p;</a>
+<a name="ln784">                  p.time = t;</a>
+<a name="ln785">                  p.metricalLevel = Meter::levelOfTick(t - barStart, divsInfo);</a>
+<a name="ln786">                  d.positions.push_back(p);</a>
+<a name="ln787">                  }</a>
+<a name="ln788"> </a>
+<a name="ln789">            int minLevel = std::numeric_limits&lt;int&gt;::max();</a>
+<a name="ln790">            while (true) {</a>
+<a name="ln791">                  for (auto t = d.chordRangeStart; t &lt;= d.chordRangeEnd; t += d.quant) {</a>
+<a name="ln792">                        if (((t - barStart) / d.quantForLen).reduced().denominator() != 1)</a>
+<a name="ln793">                              continue;</a>
+<a name="ln794">                        int level = Meter::levelOfTick(t - barStart, divsInfo);</a>
+<a name="ln795">                        if (level &lt; minLevel)</a>
+<a name="ln796">                              minLevel = level;</a>
+<a name="ln797">                        }</a>
+<a name="ln798">                  if (minLevel == std::numeric_limits&lt;int&gt;::max()) {</a>
+<a name="ln799">                        d.quantForLen /= 2;</a>
+<a name="ln800"> </a>
+<a name="ln801">                        Q_ASSERT_X(d.quantForLen &gt;= MChord::minAllowedDuration(),</a>
+<a name="ln802">                                   &quot;Quantize::findMetricalLevels&quot;,</a>
+<a name="ln803">                                   &quot;quantForLen &lt; min allowed duration&quot;);</a>
+<a name="ln804"> </a>
+<a name="ln805">                        continue;</a>
+<a name="ln806">                        }</a>
+<a name="ln807">                  break;</a>
+<a name="ln808">                  }</a>
+<a name="ln809">            d.metricalLevelForLen = minLevel;</a>
+<a name="ln810">            }</a>
+<a name="ln811">      }</a>
+<a name="ln812"> </a>
+<a name="ln813">void findChordRangeEnds(</a>
+<a name="ln814">            std::vector&lt;QuantData&gt; &amp;data,</a>
+<a name="ln815">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln816">            const ReducedFraction &amp;rangeEnd,</a>
+<a name="ln817">            const ReducedFraction &amp;barStart,</a>
+<a name="ln818">            const ReducedFraction &amp;beatLen)</a>
+<a name="ln819">      {</a>
+<a name="ln820">#ifdef NDEBUG</a>
+<a name="ln821">      (void)rangeStart;</a>
+<a name="ln822">#endif</a>
+<a name="ln823">      for (auto it = data.rbegin(); it != data.rend(); ++it) {</a>
+<a name="ln824">            QuantData &amp;d = *it;</a>
+<a name="ln825">            d.chordRangeEnd = barStart + quantizeToSmall(rangeEnd - barStart, d.quant);</a>
+<a name="ln826"> </a>
+<a name="ln827">            Q_ASSERT_X(d.chord-&gt;first + beatLen &gt;= rangeStart,</a>
+<a name="ln828">                       &quot;Quantize::findChordRangeEnds&quot;, &quot;chord on time + beatLen &lt; rangeStart&quot;);</a>
+<a name="ln829"> </a>
+<a name="ln830">            if (d.chord-&gt;first + beatLen &lt; rangeEnd) {</a>
+<a name="ln831">                  d.chordRangeEnd = barStart + quantizeToSmall(</a>
+<a name="ln832">                                          d.chord-&gt;first + beatLen - barStart, d.quant);</a>
+<a name="ln833">                  }</a>
+<a name="ln834">            if (it != data.rbegin()) {</a>
+<a name="ln835">                  const auto prev = std::prev(it);    // next in terms of time</a>
+<a name="ln836">                  if (prev-&gt;chordRangeEnd &lt; d.chordRangeEnd) {</a>
+<a name="ln837">                        d.chordRangeEnd = barStart + quantizeToSmall(</a>
+<a name="ln838">                                                prev-&gt;chordRangeEnd - barStart, d.quant);</a>
+<a name="ln839">                        }</a>
+<a name="ln840">                  if (!prev-&gt;canMergeWithPrev &amp;&amp; d.chordRangeEnd == prev-&gt;chordRangeEnd)</a>
+<a name="ln841">                        d.chordRangeEnd -= d.quant;</a>
+<a name="ln842">                  }</a>
+<a name="ln843">            if (d.chordRangeEnd &lt; d.chordRangeStart)</a>
+<a name="ln844">                  d.chordRangeEnd = d.chordRangeStart;</a>
+<a name="ln845"> </a>
+<a name="ln846">            Q_ASSERT_X(d.chordRangeEnd &lt; rangeEnd,</a>
+<a name="ln847">                       &quot;Quantize::findChordRangeEnds&quot;, &quot;chordRangeEnd &gt; rangeEnd&quot;);</a>
+<a name="ln848">            Q_ASSERT_X(d.chordRangeStart &lt;= d.chordRangeEnd,</a>
+<a name="ln849">                       &quot;Quantize::findChordRangeEnds&quot;, &quot;chordRangeStart is greater than chordRangeEnd&quot;);</a>
+<a name="ln850">            Q_ASSERT_X(((d.chordRangeEnd - barStart) / d.quant).reduced().denominator() == 1,</a>
+<a name="ln851">                       &quot;Quantize::findChordRangeEnds&quot;,</a>
+<a name="ln852">                       &quot;chordRangeEnd - barStart is not dividable by quant&quot;);</a>
+<a name="ln853">            Q_ASSERT_X(((d.chordRangeEnd - d.chordRangeStart) / d.quant).reduced().denominator() == 1,</a>
+<a name="ln854">                       &quot;Quantize::findChordRangeEnds&quot;,</a>
+<a name="ln855">                       &quot;chordRangeEnd - chordRangeStart is not dividable by quant&quot;);</a>
+<a name="ln856">            }</a>
+<a name="ln857">      }</a>
+<a name="ln858"> </a>
+<a name="ln859">void findChordRangeStarts(</a>
+<a name="ln860">            std::vector&lt;QuantData&gt; &amp;data,</a>
+<a name="ln861">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln862">            const ReducedFraction &amp;rangeEnd,</a>
+<a name="ln863">            const ReducedFraction &amp;barStart,</a>
+<a name="ln864">            const ReducedFraction &amp;beatLen)</a>
+<a name="ln865">      {</a>
+<a name="ln866">      for (auto it = data.begin(); it != data.end(); ++it) {</a>
+<a name="ln867">            QuantData &amp;d = *it;</a>
+<a name="ln868">            while (true) {</a>
+<a name="ln869">                  d.chordRangeStart = barStart + quantizeToLarge(rangeStart - barStart, d.quant);</a>
+<a name="ln870"> </a>
+<a name="ln871">                  Q_ASSERT_X(d.chord-&gt;first - beatLen &lt;= rangeEnd,</a>
+<a name="ln872">                             &quot;Quantize::findChordRangeStarts&quot;, &quot;chord on time - beatLen &gt; rangeEnd&quot;);</a>
+<a name="ln873"> </a>
+<a name="ln874">                  if (d.chord-&gt;first - beatLen &gt; rangeStart) {</a>
+<a name="ln875">                        d.chordRangeStart = barStart + quantizeToLarge(</a>
+<a name="ln876">                                                d.chord-&gt;first - beatLen - barStart, d.quant);</a>
+<a name="ln877">                        }</a>
+<a name="ln878"> </a>
+<a name="ln879">                  if (it != data.begin()) {</a>
+<a name="ln880">                        const auto prev = std::prev(it);</a>
+<a name="ln881">                        if (prev-&gt;chordRangeStart &gt; d.chordRangeStart) {</a>
+<a name="ln882">                              d.chordRangeStart = barStart + quantizeToLarge(</a>
+<a name="ln883">                                                      prev-&gt;chordRangeStart - barStart, d.quant);</a>
+<a name="ln884">                              }</a>
+<a name="ln885">                        if (!d.canMergeWithPrev &amp;&amp; d.chordRangeStart == prev-&gt;chordRangeStart)</a>
+<a name="ln886">                              d.chordRangeStart += d.quant;</a>
+<a name="ln887">                        }</a>
+<a name="ln888"> </a>
+<a name="ln889">                  if (d.chordRangeStart &gt;= rangeEnd) {</a>
+<a name="ln890">                        if (d.quant &gt;= MChord::minAllowedDuration() * 2)</a>
+<a name="ln891">                              d.quant /= 2;</a>
+<a name="ln892">                        else</a>
+<a name="ln893">                              d.canMergeWithPrev = true;</a>
+<a name="ln894">                        continue;</a>
+<a name="ln895">                        }</a>
+<a name="ln896">                  break;</a>
+<a name="ln897">                  }</a>
+<a name="ln898"> </a>
+<a name="ln899">            Q_ASSERT_X(notLessThanPrev(it, data),</a>
+<a name="ln900">                       &quot;Quantize::findChordRangeStarts&quot;,</a>
+<a name="ln901">                       &quot;chordRangeStart is less than previous chordRangeStart&quot;);</a>
+<a name="ln902">            Q_ASSERT_X(d.chordRangeStart &gt;= rangeStart,</a>
+<a name="ln903">                       &quot;Quantize::findChordRangeStarts&quot;, &quot;chordRangeStart &lt; rangeStart&quot;);</a>
+<a name="ln904">            Q_ASSERT_X(d.chordRangeStart &lt; rangeEnd,</a>
+<a name="ln905">                       &quot;Quantize::findChordRangeStarts&quot;, &quot;chordRangeStart &gt;= rangeEnd&quot;);</a>
+<a name="ln906">            Q_ASSERT_X(((d.chordRangeStart - barStart) / d.quant).reduced().denominator() == 1,</a>
+<a name="ln907">                       &quot;Quantize::findChordRangeStarts&quot;,</a>
+<a name="ln908">                       &quot;chordRangeStart - barStart is not dividable by quant&quot;);</a>
+<a name="ln909">            }</a>
+<a name="ln910">      }</a>
+<a name="ln911"> </a>
+<a name="ln912">void findQuants(</a>
+<a name="ln913">            std::vector&lt;QuantData&gt; &amp;data,</a>
+<a name="ln914">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords,</a>
+<a name="ln915">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln916">            const ReducedFraction &amp;rangeEnd,</a>
+<a name="ln917">            const ReducedFraction &amp;basicQuant,</a>
+<a name="ln918">            const ReducedFraction &amp;tupletQuant,</a>
+<a name="ln919">            const ReducedFraction &amp;barFraction)</a>
+<a name="ln920">      {</a>
+<a name="ln921">      for (auto it = chords.begin(); it != chords.end(); ++it) {</a>
+<a name="ln922">            const auto chordIt = *it;</a>
+<a name="ln923">            QuantData d;</a>
+<a name="ln924">            d.chord = chordIt;</a>
+<a name="ln925">            auto len = MChord::minNoteLen(*chordIt);</a>
+<a name="ln926">            if (rangeEnd - rangeStart &lt; len)</a>
+<a name="ln927">                  len = rangeEnd - rangeStart;</a>
+<a name="ln928">            if (it != chords.begin()) {</a>
+<a name="ln929">                  const auto prevChordIt = *std::prev(it);</a>
+<a name="ln930">                  if (chordIt-&gt;first - prevChordIt-&gt;first &lt; len)</a>
+<a name="ln931">                        len = chordIt-&gt;first - prevChordIt-&gt;first;</a>
+<a name="ln932">                  if (len &lt; MChord::minAllowedDuration())</a>
+<a name="ln933">                        d.canMergeWithPrev = true;</a>
+<a name="ln934">                  }</a>
+<a name="ln935">            if (tupletQuant != ReducedFraction(-1, 1)) {</a>
+<a name="ln936">                  const MidiTuplet::TupletData &amp;tuplet = (*chords.begin())-&gt;second.tuplet-&gt;second;</a>
+<a name="ln937">                  d.quant = tupletQuant;</a>
+<a name="ln938">                  d.quantForLen = tuplet.len / tuplet.tupletNumber;</a>
+<a name="ln939">                  }</a>
+<a name="ln940">            else {</a>
+<a name="ln941">                  d.quant = quantForLen(len, basicQuant);</a>
+<a name="ln942">                  auto maxQuant = basicQuant;</a>
+<a name="ln943">                  while (maxQuant &lt; barFraction)</a>
+<a name="ln944">                        maxQuant *= 2;</a>
+<a name="ln945">                  d.quantForLen = quantForLen(</a>
+<a name="ln946">                           qMin(MChord::minNoteLen(*chordIt), rangeEnd - rangeStart), maxQuant);</a>
+<a name="ln947">                  }</a>
+<a name="ln948"> </a>
+<a name="ln949">            Q_ASSERT_X(d.quant &lt;= rangeEnd - rangeStart,</a>
+<a name="ln950">                       &quot;Quantize::findQuants&quot;, &quot;Quant value is larger than range interval&quot;);</a>
+<a name="ln951"> </a>
+<a name="ln952">            data.push_back(d);</a>
+<a name="ln953">            }</a>
+<a name="ln954">      }</a>
+<a name="ln955"> </a>
+<a name="ln956">ReducedFraction findTupletQuant(</a>
+<a name="ln957">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords)</a>
+<a name="ln958">      {</a>
+<a name="ln959">      ReducedFraction tupletQuant(-1, 1);</a>
+<a name="ln960">      if ((*chords.begin())-&gt;second.isInTuplet) {</a>
+<a name="ln961">            const MidiTuplet::TupletData &amp;tuplet = (*chords.begin())-&gt;second.tuplet-&gt;second;</a>
+<a name="ln962">            const auto tupletRatio = MidiTuplet::tupletLimits(tuplet.tupletNumber).ratio;</a>
+<a name="ln963">            tupletQuant = quantForTuplet(tuplet.len, tupletRatio);</a>
+<a name="ln964">            }</a>
+<a name="ln965"> </a>
+<a name="ln966">      return tupletQuant;</a>
+<a name="ln967">      }</a>
+<a name="ln968"> </a>
+<a name="ln969">std::vector&lt;QuantData&gt; findQuantData(</a>
+<a name="ln970">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords,</a>
+<a name="ln971">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln972">            const ReducedFraction &amp;rangeEnd,</a>
+<a name="ln973">            const ReducedFraction &amp;basicQuant,</a>
+<a name="ln974">            const ReducedFraction &amp;barStart,</a>
+<a name="ln975">            const ReducedFraction &amp;barFraction)</a>
+<a name="ln976">      {</a>
+<a name="ln977"> </a>
+<a name="ln978">      Q_ASSERT_X(!chords.empty(), &quot;Quantize::findQuantData&quot;, &quot;Empty chords&quot;);</a>
+<a name="ln979"> </a>
+<a name="ln980">      std::vector&lt;QuantData&gt; data;</a>
+<a name="ln981">      const auto tupletQuant = findTupletQuant(chords);</a>
+<a name="ln982">      const auto beatLen = Meter::beatLength(barFraction);</a>
+<a name="ln983"> </a>
+<a name="ln984">      findQuants(data, chords, rangeStart, rangeEnd, basicQuant, tupletQuant, barFraction);</a>
+<a name="ln985">      findChordRangeStarts(data, rangeStart, rangeEnd, barStart, beatLen);</a>
+<a name="ln986">      findChordRangeEnds(data, rangeStart, rangeEnd, barStart, beatLen);</a>
+<a name="ln987">      findMetricalLevels(data, chords, tupletQuant, barStart, barFraction);</a>
+<a name="ln988"> </a>
+<a name="ln989">      return data;</a>
+<a name="ln990">      }</a>
+<a name="ln991"> </a>
+<a name="ln992">struct QuantInfo {</a>
+<a name="ln993">      ReducedFraction onTime;</a>
+<a name="ln994">      double penalty = 0.0;</a>
+<a name="ln995">      std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator chord;</a>
+<a name="ln996">      };</a>
+<a name="ln997"> </a>
+<a name="ln998">int findLastChordPosition(const std::vector&lt;QuantData&gt; &amp;quantData)</a>
+<a name="ln999">      {</a>
+<a name="ln1000">      int posIndex = -1;</a>
+<a name="ln1001">      double minPenalty = std::numeric_limits&lt;double&gt;::max();</a>
+<a name="ln1002">      const auto &amp;lastPositions = quantData[quantData.size() - 1].positions;</a>
+<a name="ln1003">      for (size_t i = 0; i != lastPositions.size(); ++i) {</a>
+<a name="ln1004">            if (lastPositions[i].penalty &lt; minPenalty) {</a>
+<a name="ln1005">                  minPenalty = lastPositions[i].penalty;</a>
+<a name="ln1006">                  posIndex = static_cast&lt;int&gt;(i);</a>
+<a name="ln1007">                  }</a>
+<a name="ln1008">            }</a>
+<a name="ln1009"> </a>
+<a name="ln1010">      Q_ASSERT_X(posIndex != -1,</a>
+<a name="ln1011">                 &quot;Quantize::findLastChordPosition&quot;, &quot;Last index was not found&quot;);</a>
+<a name="ln1012"> </a>
+<a name="ln1013">      return posIndex;</a>
+<a name="ln1014">      }</a>
+<a name="ln1015"> </a>
+<a name="ln1016">void applyDynamicProgramming(std::vector&lt;QuantData&gt; &amp;quantData)</a>
+<a name="ln1017">      {</a>
+<a name="ln1018">      const auto &amp;opers = midiImportOperations.data()-&gt;trackOpers;</a>
+<a name="ln1019">      const bool isHuman = opers.isHumanPerformance.value();</a>
+<a name="ln1020">      const double MERGE_PENALTY_COEFF = 5.0;</a>
+<a name="ln1021"> </a>
+<a name="ln1022">      for (size_t chordIndex = 0; chordIndex != quantData.size(); ++chordIndex) {</a>
+<a name="ln1023">            QuantData &amp;d = quantData[chordIndex];</a>
+<a name="ln1024">            for (size_t pos = 0; pos != d.positions.size(); ++pos) {</a>
+<a name="ln1025">                  QuantPos &amp;p = d.positions[pos];</a>
+<a name="ln1026"> </a>
+<a name="ln1027">                  const auto timePenalty = (d.chord-&gt;first - p.time).absValue().toDouble();</a>
+<a name="ln1028">                  const double levelDiff = qAbs(d.metricalLevelForLen - p.metricalLevel);</a>
+<a name="ln1029"> </a>
+<a name="ln1030">                  if (isHuman) {</a>
+<a name="ln1031">                        if (p.metricalLevel &lt;= d.metricalLevelForLen)</a>
+<a name="ln1032">                              p.penalty = timePenalty + levelDiff * d.quantForLen.toDouble();</a>
+<a name="ln1033">                        else</a>
+<a name="ln1034">                              p.penalty = timePenalty / (1 + levelDiff);</a>
+<a name="ln1035">                        }</a>
+<a name="ln1036">                  else {</a>
+<a name="ln1037">                        if (p.metricalLevel &lt;= d.metricalLevelForLen)</a>
+<a name="ln1038">                              p.penalty = timePenalty * (1 + levelDiff);</a>
+<a name="ln1039">                        else</a>
+<a name="ln1040">                              p.penalty = timePenalty;</a>
+<a name="ln1041">                        }</a>
+<a name="ln1042"> </a>
+<a name="ln1043">                  if (chordIndex == 0)</a>
+<a name="ln1044">                        continue;</a>
+<a name="ln1045"> </a>
+<a name="ln1046">                  const QuantData &amp;dPrev = quantData[chordIndex - 1];</a>
+<a name="ln1047">                  double minPenalty = std::numeric_limits&lt;double&gt;::max();</a>
+<a name="ln1048">                  int minPos = -1;</a>
+<a name="ln1049"> </a>
+<a name="ln1050">                  for (size_t posPrev = 0; posPrev != dPrev.positions.size(); ++posPrev) {</a>
+<a name="ln1051">                        const QuantPos &amp;pPrev = dPrev.positions[posPrev];</a>
+<a name="ln1052">                        if (pPrev.time &gt; p.time)</a>
+<a name="ln1053">                              continue;</a>
+<a name="ln1054"> </a>
+<a name="ln1055">                        double penalty = pPrev.penalty;</a>
+<a name="ln1056">                        if (pPrev.time == p.time) {</a>
+<a name="ln1057">                              if (!d.canMergeWithPrev)</a>
+<a name="ln1058">                                    continue;</a>
+<a name="ln1059">                              penalty += d.quant.toDouble() * MERGE_PENALTY_COEFF;</a>
+<a name="ln1060">                              }</a>
+<a name="ln1061"> </a>
+<a name="ln1062">                        if (penalty &lt; minPenalty) {</a>
+<a name="ln1063">                              minPenalty = penalty;</a>
+<a name="ln1064">                              minPos = static_cast&lt;int&gt;(posPrev);</a>
+<a name="ln1065">                              }</a>
+<a name="ln1066">                        }</a>
+<a name="ln1067"> </a>
+<a name="ln1068">                  Q_ASSERT_X(minPos != -1,</a>
+<a name="ln1069">                             &quot;Quantize::applyDynamicProgramming&quot;, &quot;Min pos was not found&quot;);</a>
+<a name="ln1070"> </a>
+<a name="ln1071">                  p.penalty += minPenalty;</a>
+<a name="ln1072">                  p.prevPos = minPos;</a>
+<a name="ln1073">                  }</a>
+<a name="ln1074">            }</a>
+<a name="ln1075">      }</a>
+<a name="ln1076"> </a>
+<a name="ln1077">void quantizeOnTimesInRange(</a>
+<a name="ln1078">            const std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chords,</a>
+<a name="ln1079">            std::map&lt;const std::pair&lt;const ReducedFraction, MidiChord&gt; *, QuantInfo&gt; &amp;foundOnTimes,</a>
+<a name="ln1080">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln1081">            const ReducedFraction &amp;rangeEnd,</a>
+<a name="ln1082">            const ReducedFraction &amp;basicQuant,</a>
+<a name="ln1083">            const ReducedFraction &amp;barStart,</a>
+<a name="ln1084">            const ReducedFraction &amp;barFraction)</a>
+<a name="ln1085">      {</a>
+<a name="ln1086">      Q_ASSERT_X(!chords.empty(), &quot;Quantize::quantizeOnTimesInRange&quot;, &quot;Empty chords&quot;);</a>
+<a name="ln1087">      Q_ASSERT_X(areAllVoicesSame(chords),</a>
+<a name="ln1088">                 &quot;Quantize::quantizeOnTimesInRange&quot;, &quot;Chord voices are not the same&quot;);</a>
+<a name="ln1089">      Q_ASSERT_X(areChordsDifferent(chords),</a>
+<a name="ln1090">                 &quot;Quantize::quantizeOnTimesInRange&quot;, &quot;There are chord duplicates&quot;);</a>
+<a name="ln1091">      Q_ASSERT_X(areTupletChordsConsistent(chords), &quot;Quantize::quantizeOnTimesInRange&quot;,</a>
+<a name="ln1092">                 &quot;Tuplet and non-tuplet chords mismatch&quot;);</a>
+<a name="ln1093">      Q_ASSERT_X(areChordsSortedByOnTime(chords),</a>
+<a name="ln1094">                 &quot;Quantize::quantizeOnTimesInRange&quot;, &quot;Chords are not sorted by on time values&quot;);</a>
+<a name="ln1095"> </a>
+<a name="ln1096">      Q_ASSERT_X(rangeStart != ReducedFraction(-1, 1)</a>
+<a name="ln1097">                  &amp;&amp; rangeEnd != ReducedFraction(-1, 1)</a>
+<a name="ln1098">                  &amp;&amp; rangeStart &lt; rangeEnd,</a>
+<a name="ln1099">                 &quot;Quantize::quantizeOnTimesInRange&quot;,</a>
+<a name="ln1100">                 &quot;Range start and/or range end are incorrect&quot;);</a>
+<a name="ln1101"> </a>
+<a name="ln1102">      Q_ASSERT_X((chords.front()-&gt;second.isInTuplet) ? isTupletRangeCorrect(</a>
+<a name="ln1103">                  chords.front()-&gt;second.tuplet-&gt;second, rangeStart, rangeEnd) : true,</a>
+<a name="ln1104">                 &quot;Quantize::quantizeOnTimesInRange&quot;, &quot;Tuplet range is incorrect&quot;);</a>
+<a name="ln1105"> </a>
+<a name="ln1106"> </a>
+<a name="ln1107">      std::vector&lt;QuantData&gt; quantData = findQuantData(chords, rangeStart, rangeEnd,</a>
+<a name="ln1108">                                                       basicQuant, barStart, barFraction);</a>
+<a name="ln1109">      applyDynamicProgramming(quantData);</a>
+<a name="ln1110"> </a>
+<a name="ln1111">                  // backward dynamic programming step - collect optimal chord positions</a>
+<a name="ln1112">      int posIndex = findLastChordPosition(quantData);</a>
+<a name="ln1113"> </a>
+<a name="ln1114">      Q_ASSERT_X(quantData.size() == chords.size(),</a>
+<a name="ln1115">                 &quot;Quantize::quantizeOnTimesInRange&quot;,</a>
+<a name="ln1116">                 &quot;Sizes of quant data and chords are not equal&quot;);</a>
+<a name="ln1117"> </a>
+<a name="ln1118">      for (size_t chordIndex = quantData.size() - 1; ; --chordIndex) {</a>
+<a name="ln1119">            const QuantPos &amp;p = quantData[chordIndex].positions[posIndex];</a>
+<a name="ln1120">            const auto onTime = p.time;</a>
+<a name="ln1121">            const auto chordIt = chords[chordIndex];</a>
+<a name="ln1122"> </a>
+<a name="ln1123">            const auto found = foundOnTimes.find(&amp;*chordIt);</a>
+<a name="ln1124">            if (found == foundOnTimes.end()) {</a>
+<a name="ln1125">                  QuantInfo info;</a>
+<a name="ln1126">                  info.chord = chordIt;</a>
+<a name="ln1127">                  info.onTime = onTime;</a>
+<a name="ln1128">                  info.penalty = p.penalty;</a>
+<a name="ln1129">                  foundOnTimes.insert({&amp;*chordIt, info});</a>
+<a name="ln1130">                  }</a>
+<a name="ln1131">            else if (p.penalty &lt; found-&gt;second.penalty) {</a>
+<a name="ln1132">                  found-&gt;second.onTime = onTime;</a>
+<a name="ln1133">                  found-&gt;second.penalty = p.penalty;</a>
+<a name="ln1134">                  }</a>
+<a name="ln1135"> </a>
+<a name="ln1136">            if (chordIndex == 0)</a>
+<a name="ln1137">                  break;</a>
+<a name="ln1138">            posIndex = p.prevPos;</a>
+<a name="ln1139">            }</a>
+<a name="ln1140">      }</a>
+<a name="ln1141"> </a>
+<a name="ln1142">// input chords - sorted by onTime value</a>
+<a name="ln1143"> </a>
+<a name="ln1144">void applyTupletStaccato(std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln1145">      {</a>
+<a name="ln1146">      for (auto chordIt = chords.begin(); chordIt != chords.end(); ++chordIt) {</a>
+<a name="ln1147">            for (MidiNote &amp;note: chordIt-&gt;second.notes) {</a>
+<a name="ln1148">                  if (note.isInTuplet &amp;&amp; note.staccato) {</a>
+<a name="ln1149">                        const MidiTuplet::TupletData &amp;tuplet = note.tuplet-&gt;second;</a>
+<a name="ln1150">                              // decrease tuplet error by enlarging staccato notes:</a>
+<a name="ln1151">                              // make note.len = tuplet note length</a>
+<a name="ln1152">                        const auto tupletNoteLen = tuplet.len / tuplet.tupletNumber;</a>
+<a name="ln1153">                        note.offTime = chordIt-&gt;first + tupletNoteLen;</a>
+<a name="ln1154">                        }</a>
+<a name="ln1155">                  }</a>
+<a name="ln1156">            }</a>
+<a name="ln1157">      }</a>
+<a name="ln1158"> </a>
+<a name="ln1159">void quantizeOffTimes(</a>
+<a name="ln1160">            std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;quantizedChords,</a>
+<a name="ln1161">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln1162">      {</a>
+<a name="ln1163">      for (auto chordIt = quantizedChords.begin(); chordIt != quantizedChords.end(); ++chordIt) {</a>
+<a name="ln1164">            MidiChord &amp;chord = chordIt-&gt;second;</a>
+<a name="ln1165">                        // quantize off times</a>
+<a name="ln1166">            for (auto &amp;note: chord.notes) {</a>
+<a name="ln1167">                              // check if note is not in tuplet anymore</a>
+<a name="ln1168">                  if (note.isInTuplet) {</a>
+<a name="ln1169">                        if (chordIt-&gt;first &gt;= note.tuplet-&gt;first + note.tuplet-&gt;second.len)</a>
+<a name="ln1170">                              note.isInTuplet = false;</a>
+<a name="ln1171">                        }</a>
+<a name="ln1172"> </a>
+<a name="ln1173">                  const auto result = (note.isInTuplet)</a>
+<a name="ln1174">                              ? quantizeOffTimeForTuplet(note.offTime, chordIt, quantizedChords,</a>
+<a name="ln1175">                                                         basicQuant, note.tuplet-&gt;second)</a>
+<a name="ln1176">                              : quantizeOffTimeForNonTuplet(note.offTime, chordIt,</a>
+<a name="ln1177">                                                            quantizedChords, basicQuant);</a>
+<a name="ln1178">                  note.offTime = result.first;</a>
+<a name="ln1179">                  note.offTimeQuant = result.second;</a>
+<a name="ln1180">#ifdef QT_DEBUG</a>
+<a name="ln1181">                  checkOffTime(note, chordIt, quantizedChords);</a>
+<a name="ln1182">#endif</a>
+<a name="ln1183">                  }</a>
+<a name="ln1184">            }</a>
+<a name="ln1185">      }</a>
+<a name="ln1186"> </a>
+<a name="ln1187">void addChordsFromPrevRange(</a>
+<a name="ln1188">            std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; &amp;chordsToQuant,</a>
+<a name="ln1189">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln1190">            bool currentlyInTuplet,</a>
+<a name="ln1191">            int currentBarIndex,</a>
+<a name="ln1192">            int voice,</a>
+<a name="ln1193">            const ReducedFraction &amp;barStart,</a>
+<a name="ln1194">            const ReducedFraction &amp;rangeStart,</a>
+<a name="ln1195">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln1196">      {</a>
+<a name="ln1197">      if (currentlyInTuplet)</a>
+<a name="ln1198">            return;</a>
+<a name="ln1199"> </a>
+<a name="ln1200">      auto it = chordsToQuant.front();</a>
+<a name="ln1201">      if (it == chords.begin())</a>
+<a name="ln1202">            return;</a>
+<a name="ln1203">      --it;</a>
+<a name="ln1204"> </a>
+<a name="ln1205">      if (rangeStart == barStart) {       // new bar</a>
+<a name="ln1206">            while (it-&gt;second.barIndex &gt;= currentBarIndex - 1) {</a>
+<a name="ln1207">                  if (it-&gt;second.voice == voice &amp;&amp; it-&gt;second.barIndex == currentBarIndex) {</a>
+<a name="ln1208"> </a>
+<a name="ln1209">                        Q_ASSERT_X(!it-&gt;second.isInTuplet, &quot;Quantize::addChordsFromPrevRange&quot;,</a>
+<a name="ln1210">                                   &quot;Tuplet chord from previous bar belongs to the current bar&quot;);</a>
+<a name="ln1211"> </a>
+<a name="ln1212">                        chordsToQuant.push_front(it);</a>
+<a name="ln1213">                        }</a>
+<a name="ln1214">                  if (it == chords.begin())</a>
+<a name="ln1215">                        break;</a>
+<a name="ln1216">                  --it;</a>
+<a name="ln1217">                  }</a>
+<a name="ln1218">            }</a>
+<a name="ln1219">      else {</a>
+<a name="ln1220">            const auto tol = basicQuant / 2;</a>
+<a name="ln1221">            while (it-&gt;first &gt; rangeStart - tol) {</a>
+<a name="ln1222">                  if (it-&gt;second.voice == voice &amp;&amp; !it-&gt;second.isInTuplet)</a>
+<a name="ln1223">                        chordsToQuant.push_front(it);</a>
+<a name="ln1224">                  if (it == chords.begin())</a>
+<a name="ln1225">                        break;</a>
+<a name="ln1226">                  --it;</a>
+<a name="ln1227">                  }</a>
+<a name="ln1228">            }</a>
+<a name="ln1229">      }</a>
+<a name="ln1230"> </a>
+<a name="ln1231">void quantizeOnTimes(</a>
+<a name="ln1232">            const std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln1233">            std::map&lt;const std::pair&lt;const ReducedFraction, MidiChord&gt; *, QuantInfo&gt; &amp;foundOnTimes,</a>
+<a name="ln1234">            const ReducedFraction &amp;basicQuant,</a>
+<a name="ln1235">            const TimeSigMap *sigmap)</a>
+<a name="ln1236">      {</a>
+<a name="ln1237">      int maxVoice = 0;</a>
+<a name="ln1238">      for (int voice = 0; voice &lt;= maxVoice; ++voice) {</a>
+<a name="ln1239">            int currentBarIndex = -1;</a>
+<a name="ln1240">            ReducedFraction rangeStart(-1, 1);</a>
+<a name="ln1241">            ReducedFraction rangeEnd(-1, 1);</a>
+<a name="ln1242">            ReducedFraction barFraction(-1, 1);</a>
+<a name="ln1243">            ReducedFraction barStart(-1, 1);</a>
+<a name="ln1244">            bool currentlyInTuplet = false;</a>
+<a name="ln1245">            std::deque&lt;std::multimap&lt;ReducedFraction, MidiChord&gt;::const_iterator&gt; chordsToQuant;</a>
+<a name="ln1246"> </a>
+<a name="ln1247">            for (auto chordIt = chords.begin(); chordIt != chords.end(); ++chordIt) {</a>
+<a name="ln1248"> </a>
+<a name="ln1249">                  Q_ASSERT_X(MChord::minNoteLen(*chordIt) &gt;= MChord::minAllowedDuration(),</a>
+<a name="ln1250">                             &quot;Quantize::quantizeOnTimes&quot;,</a>
+<a name="ln1251">                             &quot;Note length is less than min allowed duration&quot;);</a>
+<a name="ln1252"> </a>
+<a name="ln1253">                  if (chordIt-&gt;second.voice &gt; maxVoice)</a>
+<a name="ln1254">                        maxVoice = chordIt-&gt;second.voice;</a>
+<a name="ln1255">                  if (chordIt-&gt;second.voice != voice)</a>
+<a name="ln1256">                        continue;</a>
+<a name="ln1257"> </a>
+<a name="ln1258">                  if (chordsToQuant.empty()) {</a>
+<a name="ln1259">                        rangeStart = rangeEnd;</a>
+<a name="ln1260">                        currentlyInTuplet = chordIt-&gt;second.isInTuplet;</a>
+<a name="ln1261">                        if (currentBarIndex != chordIt-&gt;second.barIndex) {</a>
+<a name="ln1262">                              currentBarIndex = chordIt-&gt;second.barIndex;</a>
+<a name="ln1263">                              barStart = ReducedFraction::fromTicks(</a>
+<a name="ln1264">                                                sigmap-&gt;bar2tick(currentBarIndex, 0));</a>
+<a name="ln1265">                              barFraction = ReducedFraction(sigmap-&gt;timesig(barStart.ticks()).timesig());</a>
+<a name="ln1266">                              if (!currentlyInTuplet)</a>
+<a name="ln1267">                                    rangeStart = barStart;</a>
+<a name="ln1268">                              }</a>
+<a name="ln1269">                        if (currentlyInTuplet) {</a>
+<a name="ln1270">                              const auto &amp;tuplet = chordIt-&gt;second.tuplet-&gt;second;</a>
+<a name="ln1271">                              rangeStart = tuplet.onTime;</a>
+<a name="ln1272">                              rangeEnd = tuplet.onTime + tuplet.len;</a>
+<a name="ln1273">                              }</a>
+<a name="ln1274">                        }</a>
+<a name="ln1275"> </a>
+<a name="ln1276">                  chordsToQuant.push_back(chordIt);</a>
+<a name="ln1277"> </a>
+<a name="ln1278">                  auto nextChord = std::next(chordIt);</a>
+<a name="ln1279">                  while (nextChord != chords.end() &amp;&amp; nextChord-&gt;second.voice != voice)</a>
+<a name="ln1280">                        ++nextChord;</a>
+<a name="ln1281">                  if (nextChord == chords.end()</a>
+<a name="ln1282">                              || nextChord-&gt;second.barIndex != currentBarIndex</a>
+<a name="ln1283">                              || nextChord-&gt;second.isInTuplet != currentlyInTuplet</a>
+<a name="ln1284">                              || (nextChord-&gt;second.isInTuplet &amp;&amp; currentlyInTuplet</a>
+<a name="ln1285">                                  &amp;&amp; nextChord-&gt;second.tuplet != chordIt-&gt;second.tuplet)) {</a>
+<a name="ln1286"> </a>
+<a name="ln1287">                        if (!currentlyInTuplet) {</a>
+<a name="ln1288">                              if (nextChord != chords.end()) {</a>
+<a name="ln1289">                                    if (nextChord-&gt;second.barIndex != currentBarIndex) {</a>
+<a name="ln1290">                                          rangeEnd = ReducedFraction::fromTicks(</a>
+<a name="ln1291">                                                       sigmap-&gt;bar2tick(currentBarIndex + 1, 0));</a>
+<a name="ln1292">                                          }</a>
+<a name="ln1293">                                    else if (nextChord-&gt;second.isInTuplet) {</a>
+<a name="ln1294">                                          rangeEnd = nextChord-&gt;second.tuplet-&gt;second.onTime;</a>
+<a name="ln1295">                                          }</a>
+<a name="ln1296">                                    }</a>
+<a name="ln1297">                              else {</a>
+<a name="ln1298">                                    rangeEnd = ReducedFraction::fromTicks(</a>
+<a name="ln1299">                                                      sigmap-&gt;bar2tick(currentBarIndex + 1, 0));</a>
+<a name="ln1300">                                    }</a>
+<a name="ln1301">                              }</a>
+<a name="ln1302"> </a>
+<a name="ln1303">                        addChordsFromPrevRange(chordsToQuant, chords,</a>
+<a name="ln1304">                                               currentlyInTuplet, currentBarIndex, voice,</a>
+<a name="ln1305">                                               barStart, rangeStart, basicQuant);</a>
+<a name="ln1306"> </a>
+<a name="ln1307">                        quantizeOnTimesInRange(chordsToQuant, foundOnTimes, rangeStart, rangeEnd,</a>
+<a name="ln1308">                                               basicQuant, barStart, barFraction);</a>
+<a name="ln1309">                        chordsToQuant.clear();</a>
+<a name="ln1310">                        }</a>
+<a name="ln1311">                  }</a>
+<a name="ln1312">            }</a>
+<a name="ln1313">      }</a>
+<a name="ln1314"> </a>
+<a name="ln1315">// if on time after quantization become &gt;= note off time</a>
+<a name="ln1316">// then shift note off time preserving old note length</a>
+<a name="ln1317"> </a>
+<a name="ln1318">void moveOffTimes(</a>
+<a name="ln1319">            const ReducedFraction &amp;oldOnTime,</a>
+<a name="ln1320">            const ReducedFraction &amp;newOnTime,</a>
+<a name="ln1321">            QList&lt;MidiNote&gt; &amp;notes)</a>
+<a name="ln1322">      {</a>
+<a name="ln1323">      for (auto &amp;note: notes) {</a>
+<a name="ln1324">            if (newOnTime &gt;= note.offTime) {</a>
+<a name="ln1325"> </a>
+<a name="ln1326">                  Q_ASSERT_X(newOnTime &gt; oldOnTime,</a>
+<a name="ln1327">                             &quot;Quantize::moveOffTimes&quot;, &quot;Invalid note on time or off time&quot;);</a>
+<a name="ln1328">                  Q_ASSERT_X(note.offTime &gt; oldOnTime,</a>
+<a name="ln1329">                             &quot;Quantize::moveOffTimes&quot;, &quot;Invalid old note length&quot;);</a>
+<a name="ln1330"> </a>
+<a name="ln1331">                  note.offTime += newOnTime - oldOnTime;</a>
+<a name="ln1332">                  }</a>
+<a name="ln1333">            }</a>
+<a name="ln1334">      }</a>
+<a name="ln1335"> </a>
+<a name="ln1336">std::multimap&lt;ReducedFraction, MidiChord&gt;</a>
+<a name="ln1337">findQuantizedChords(</a>
+<a name="ln1338">            const std::map&lt;const std::pair&lt;const ReducedFraction, MidiChord&gt; *, QuantInfo&gt; &amp;foundOnTimes)</a>
+<a name="ln1339">      {</a>
+<a name="ln1340">      std::multimap&lt;ReducedFraction, MidiChord&gt; quantizedChords;</a>
+<a name="ln1341">      for (const auto &amp;f: foundOnTimes) {</a>
+<a name="ln1342">            const QuantInfo &amp;i = f.second;</a>
+<a name="ln1343">            const MidiChord &amp;chord = i.chord-&gt;second;</a>
+<a name="ln1344"> </a>
+<a name="ln1345">            auto found = quantizedChords.end();</a>
+<a name="ln1346">            const auto range = quantizedChords.equal_range(i.onTime);</a>
+<a name="ln1347">            for (auto it = range.first; it != range.second; ++it) {</a>
+<a name="ln1348">                  if (it-&gt;second.voice == chord.voice) {</a>
+<a name="ln1349">                        found = it;</a>
+<a name="ln1350">                        break;</a>
+<a name="ln1351">                        }</a>
+<a name="ln1352">                  }</a>
+<a name="ln1353">            if (found != quantizedChords.end()) {</a>
+<a name="ln1354">                  MidiChord &amp;fc = found-&gt;second;</a>
+<a name="ln1355">                  fc.notes.append(chord.notes);     // merge chords with equal on times</a>
+<a name="ln1356">                  moveOffTimes(i.chord-&gt;first, i.onTime, fc.notes);</a>
+<a name="ln1357">                  if (chord.isInTuplet) {</a>
+<a name="ln1358">                        if (!fc.isInTuplet) {</a>
+<a name="ln1359">                              fc.isInTuplet = true;</a>
+<a name="ln1360">                              fc.tuplet = chord.tuplet;</a>
+<a name="ln1361">                              }</a>
+<a name="ln1362">#ifdef QT_DEBUG</a>
+<a name="ln1363">                        else {</a>
+<a name="ln1364">                              Q_ASSERT_X(fc.tuplet == chord.tuplet,</a>
+<a name="ln1365">                                         &quot;Quantize::findQuantizedChords&quot;,</a>
+<a name="ln1366">                                         &quot;Tuplets of merged chords are different&quot;);</a>
+<a name="ln1367">                              }</a>
+<a name="ln1368">#endif</a>
+<a name="ln1369">                        }</a>
+<a name="ln1370">                  }</a>
+<a name="ln1371">            else {</a>
+<a name="ln1372">                  MidiChord midiChord(chord);  // copy chord</a>
+<a name="ln1373">                  moveOffTimes(i.chord-&gt;first, i.onTime, midiChord.notes);</a>
+<a name="ln1374">                  quantizedChords.insert({i.onTime, midiChord});</a>
+<a name="ln1375">                  }</a>
+<a name="ln1376">            }</a>
+<a name="ln1377"> </a>
+<a name="ln1378">      return quantizedChords;</a>
+<a name="ln1379">      }</a>
+<a name="ln1380"> </a>
+<a name="ln1381">void removeUselessTupletReferences(std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords)</a>
+<a name="ln1382">      {</a>
+<a name="ln1383">      for (auto &amp;chord: chords) {</a>
+<a name="ln1384">            if (chord.second.isInTuplet) {</a>
+<a name="ln1385">                  const auto &amp;tuplet = chord.second.tuplet-&gt;second;</a>
+<a name="ln1386">                  if (chord.first &gt;= tuplet.onTime + tuplet.len)</a>
+<a name="ln1387">                        chord.second.isInTuplet = false;</a>
+<a name="ln1388">                  }</a>
+<a name="ln1389">            for (auto &amp;note: chord.second.notes) {</a>
+<a name="ln1390">                  if (note.isInTuplet) {</a>
+<a name="ln1391">                        const auto &amp;tuplet = note.tuplet-&gt;second;</a>
+<a name="ln1392">                        if (note.offTime &lt;= tuplet.onTime)</a>
+<a name="ln1393">                              note.isInTuplet = false;</a>
+<a name="ln1394">                        }</a>
+<a name="ln1395">                  }</a>
+<a name="ln1396">            }</a>
+<a name="ln1397">      }</a>
+<a name="ln1398"> </a>
+<a name="ln1399">void quantizeChords(</a>
+<a name="ln1400">            std::multimap&lt;ReducedFraction, MidiChord&gt; &amp;chords,</a>
+<a name="ln1401">            const TimeSigMap *sigmap,</a>
+<a name="ln1402">            const ReducedFraction &amp;basicQuant)</a>
+<a name="ln1403">      {</a>
+<a name="ln1404"> </a>
+<a name="ln1405">      Q_ASSERT_X(MidiTuplet::areTupletReferencesValid(chords), &quot;Quantize::quantizeChords&quot;,</a>
+<a name="ln1406">                 &quot;Some tuplet references are invalid&quot;);</a>
+<a name="ln1407">      Q_ASSERT_X(areOnTimeValuesDifferent(chords), &quot;Quantize::quantizeChords&quot;,</a>
+<a name="ln1408">                 &quot;Chords of the same voices have equal on time values&quot;);</a>
+<a name="ln1409">      Q_ASSERT_X(areTupletChordsConsistent(chords), &quot;Quantize::quantizeChords&quot;,</a>
+<a name="ln1410">                 &quot;There are non-tuplet chords between tuplet chords&quot;);</a>
+<a name="ln1411">      Q_ASSERT_X(MChord::areNotesLongEnough(chords), &quot;Quantize::quantizeChords&quot;,</a>
+<a name="ln1412">                 &quot;There are too short notes&quot;);</a>
+<a name="ln1413">      Q_ASSERT_X(MChord::areBarIndexesSuccessive(chords), &quot;Quantize::quantizeChords&quot;,</a>
+<a name="ln1414">                 &quot;Bar indexes are not successive&quot;);</a>
+<a name="ln1415"> </a>
+<a name="ln1416">      applyTupletStaccato(chords);     // apply staccato for tuplet off times</a>
+<a name="ln1417">      std::map&lt;const std::pair&lt;const ReducedFraction, MidiChord&gt; *, QuantInfo&gt; foundOnTimes;</a>
+<a name="ln1418">      quantizeOnTimes(chords, foundOnTimes, basicQuant, sigmap);</a>
+<a name="ln1419">      auto quantizedChords = findQuantizedChords(foundOnTimes);</a>
+<a name="ln1420"> </a>
+<a name="ln1421">      Q_ASSERT_X(MidiTuplet::areTupletReferencesValid(quantizedChords), &quot;Quantize::quantizeChords&quot;,</a>
+<a name="ln1422">                 &quot;Some tuplet references are invalid&quot;);</a>
+<a name="ln1423"> </a>
+<a name="ln1424">      quantizeOffTimes(quantizedChords, basicQuant);</a>
+<a name="ln1425">      std::swap(chords, quantizedChords);</a>
+<a name="ln1426"> </a>
+<a name="ln1427">      removeUselessTupletReferences(chords);</a>
+<a name="ln1428">      }</a>
+<a name="ln1429"> </a>
+<a name="ln1430">} // namespace Quantize</a>
+<a name="ln1431">} // namespace Ms</a>
+
+</code></pre>
+<div class="balloon" rel="543"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the compiler generated constructor. Consider inspecting: metricalLevelForLen.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

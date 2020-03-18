@@ -1,0 +1,1197 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>palettetree.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2019 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;palettetree.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">#include &quot;globals.h&quot;</a>
+<a name="ln23">#include &quot;musescore.h&quot;</a>
+<a name="ln24">#include &quot;preferences.h&quot;</a>
+<a name="ln25">#include &quot;shortcut.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;libmscore/articulation.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/fret.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/icon.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/image.h&quot;</a>
+<a name="ln31">#include &quot;libmscore/imageStore.h&quot;</a>
+<a name="ln32">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln33">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln34">#include &quot;libmscore/textbase.h&quot;</a>
+<a name="ln35"> </a>
+<a name="ln36">#include &quot;thirdparty/qzip/qzipreader_p.h&quot;</a>
+<a name="ln37">#include &quot;thirdparty/qzip/qzipwriter_p.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">namespace Ms {</a>
+<a name="ln40"> </a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42">//   needsStaff</a>
+<a name="ln43">//    should a staff been drawn if e is used as icon in</a>
+<a name="ln44">//    a palette</a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46"> </a>
+<a name="ln47">static bool needsStaff(Element* e)</a>
+<a name="ln48">      {</a>
+<a name="ln49">      if (!e)</a>
+<a name="ln50">            return false;</a>
+<a name="ln51">      switch(e-&gt;type()) {</a>
+<a name="ln52">            case ElementType::CHORD:</a>
+<a name="ln53">            case ElementType::BAR_LINE:</a>
+<a name="ln54">            case ElementType::CLEF:</a>
+<a name="ln55">            case ElementType::KEYSIG:</a>
+<a name="ln56">            case ElementType::TIMESIG:</a>
+<a name="ln57">            case ElementType::REST:</a>
+<a name="ln58">            case ElementType::BAGPIPE_EMBELLISHMENT:</a>
+<a name="ln59">                  return true;</a>
+<a name="ln60">            default:</a>
+<a name="ln61">                  return false;</a>
+<a name="ln62">            }</a>
+<a name="ln63">      }</a>
+<a name="ln64"> </a>
+<a name="ln65">//---------------------------------------------------------</a>
+<a name="ln66">//   mimeData</a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68"> </a>
+<a name="ln69">template&lt;class T&gt;</a>
+<a name="ln70">static QByteArray mimeData(T* t)</a>
+<a name="ln71">      {</a>
+<a name="ln72">      QBuffer buffer;</a>
+<a name="ln73">      buffer.open(QIODevice::WriteOnly);</a>
+<a name="ln74">      XmlWriter xml(/* score */ nullptr, &amp;buffer);</a>
+<a name="ln75">      xml.setClipboardmode(true);</a>
+<a name="ln76">      t-&gt;write(xml);</a>
+<a name="ln77">      buffer.close();</a>
+<a name="ln78">      return buffer.buffer();</a>
+<a name="ln79">      }</a>
+<a name="ln80"> </a>
+<a name="ln81">//---------------------------------------------------------</a>
+<a name="ln82">//   readMimeData</a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84"> </a>
+<a name="ln85">template&lt;class T&gt;</a>
+<a name="ln86">static std::unique_ptr&lt;T&gt; readMimeData(const QByteArray&amp; data, const QString&amp; tagName)</a>
+<a name="ln87">      {</a>
+<a name="ln88">      XmlReader e(data);</a>
+<a name="ln89">      e.setPasteMode(true);</a>
+<a name="ln90">      while (e.readNextStartElement()) {</a>
+<a name="ln91">            const QStringRef tag(e.name());</a>
+<a name="ln92">            if (tag == tagName) {</a>
+<a name="ln93">                  std::unique_ptr&lt;T&gt; t(new T);</a>
+<a name="ln94">                  if (!t-&gt;read(e))</a>
+<a name="ln95">                        return nullptr;</a>
+<a name="ln96">                  return t;</a>
+<a name="ln97">                  }</a>
+<a name="ln98">            else {</a>
+<a name="ln99">                  return nullptr;</a>
+<a name="ln100">                  }</a>
+<a name="ln101">            }</a>
+<a name="ln102">      return nullptr;</a>
+<a name="ln103">      }</a>
+<a name="ln104"> </a>
+<a name="ln105">//---------------------------------------------------------</a>
+<a name="ln106">//   PaletteCell::PaletteCell</a>
+<a name="ln107">//---------------------------------------------------------</a>
+<a name="ln108"> </a>
+<a name="ln109">PaletteCell::PaletteCell(std::unique_ptr&lt;Element&gt; e, const QString&amp; _name, QString _tag, qreal _mag)</a>
+<a name="ln110">   : element(std::move(e)), name(_name), tag(_tag), mag(_mag)</a>
+<a name="ln111">      {</a>
+<a name="ln112">      drawStaff = needsStaff(element.get());</a>
+<a name="ln113">      }</a>
+<a name="ln114"> </a>
+<a name="ln115">//---------------------------------------------------------</a>
+<a name="ln116">//   PaletteCell::translationContext</a>
+<a name="ln117">//---------------------------------------------------------</a>
+<a name="ln118"> </a>
+<a name="ln119">const char* PaletteCell::translationContext() const</a>
+<a name="ln120">      {</a>
+<a name="ln121">      const ElementType type = element ? element-&gt;type() : ElementType::INVALID;</a>
+<a name="ln122">      switch (type) {</a>
+<a name="ln123">            case ElementType::ACCIDENTAL:</a>
+<a name="ln124">            case ElementType::ARTICULATION:</a>
+<a name="ln125">            case ElementType::BREATH:</a>
+<a name="ln126">            case ElementType::FERMATA:</a>
+<a name="ln127">            case ElementType::SYMBOL:</a>
+<a name="ln128">                  return &quot;symUserNames&quot;; // libmscore/sym.cpp, Sym::symUserNames</a>
+<a name="ln129">            case ElementType::CLEF:</a>
+<a name="ln130">                  return &quot;clefTable&quot;; // libmscore/clef.cpp, ClefInfo::clefTable[]</a>
+<a name="ln131">            case ElementType::KEYSIG:</a>
+<a name="ln132">                  return &quot;MuseScore&quot;; // libmscore/keysig.cpp, keyNames[]</a>
+<a name="ln133">            case ElementType::MARKER:</a>
+<a name="ln134">                  return &quot;markerType&quot;; // libmscore/marker.cpp, markerTypeTable[]</a>
+<a name="ln135">            case ElementType::JUMP:</a>
+<a name="ln136">                  return &quot;jumpType&quot;; // libmscore/jump.cpp, jumpTypeTable[]</a>
+<a name="ln137">            case ElementType::TREMOLO:</a>
+<a name="ln138">                  return &quot;Tremolo&quot;; // libmscore/tremolo.cpp, tremoloName[]</a>
+<a name="ln139">            case ElementType::BAGPIPE_EMBELLISHMENT:</a>
+<a name="ln140">                  return &quot;bagpipe&quot;; // libmscore/bagpembell.cpp, BagpipeEmbellishment::BagpipeEmbellishmentList[]</a>
+<a name="ln141">            case ElementType::TRILL:</a>
+<a name="ln142">                  return &quot;trillType&quot;; // libmscore/trill.cpp, trillTable[]</a>
+<a name="ln143">            case ElementType::VIBRATO:</a>
+<a name="ln144">                  return &quot;vibratoType&quot;; // libmscore/vibrato.cpp, vibratoTable[]</a>
+<a name="ln145">            case ElementType::CHORDLINE:</a>
+<a name="ln146">                  return &quot;Ms&quot;; // libmscore/chordline.cpp, scorelineNames[]</a>
+<a name="ln147">            case ElementType::NOTEHEAD:</a>
+<a name="ln148">                  return &quot;noteheadnames&quot;; // libmscore/note.cpp, noteHeadGroupNames[]</a>
+<a name="ln149">            case ElementType::ICON:</a>
+<a name="ln150">                  return &quot;action&quot;; // mscore/shortcut.cpp, Shortcut::_sc[]</a>
+<a name="ln151">            default:</a>
+<a name="ln152">                  break;</a>
+<a name="ln153">            }</a>
+<a name="ln154">      return &quot;Palette&quot;;</a>
+<a name="ln155">      }</a>
+<a name="ln156"> </a>
+<a name="ln157">//---------------------------------------------------------</a>
+<a name="ln158">//   PaletteCell::translatedName</a>
+<a name="ln159">//---------------------------------------------------------</a>
+<a name="ln160"> </a>
+<a name="ln161">QString PaletteCell::translatedName() const</a>
+<a name="ln162">      {</a>
+<a name="ln163">      const QString trName(qApp-&gt;translate(translationContext(), name.toUtf8()));</a>
+<a name="ln164"> </a>
+<a name="ln165">      if (element &amp;&amp; element-&gt;isTextBase() &amp;&amp; name.contains(&quot;%1&quot;))</a>
+<a name="ln166">            return trName.arg(toTextBase(element.get())-&gt;plainText());</a>
+<a name="ln167">      return trName;</a>
+<a name="ln168">      }</a>
+<a name="ln169"> </a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171">//   PaletteCell::retranslate</a>
+<a name="ln172">///   Retranslates cell content, e.g. text if the element</a>
+<a name="ln173">///   is TextBase.</a>
+<a name="ln174">//---------------------------------------------------------</a>
+<a name="ln175"> </a>
+<a name="ln176">void PaletteCell::retranslate()</a>
+<a name="ln177">      {</a>
+<a name="ln178">      if (untranslatedElement &amp;&amp; element-&gt;isTextBase()) {</a>
+<a name="ln179">            TextBase* target = toTextBase(element.get());</a>
+<a name="ln180">            TextBase* orig = toTextBase(untranslatedElement.get());</a>
+<a name="ln181">            const QString&amp; text = orig-&gt;xmlText();</a>
+<a name="ln182">            target-&gt;setXmlText(qApp-&gt;translate(&quot;Palette&quot;, text.toUtf8().constData()));</a>
+<a name="ln183">            }</a>
+<a name="ln184">      }</a>
+<a name="ln185"> </a>
+<a name="ln186">//---------------------------------------------------------</a>
+<a name="ln187">//   PaletteCell::setElementTranslated</a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189"> </a>
+<a name="ln190">void PaletteCell::setElementTranslated(bool translate)</a>
+<a name="ln191">      {</a>
+<a name="ln192">      if (translate &amp;&amp; element) {</a>
+<a name="ln193">            untranslatedElement = std::move(element);</a>
+<a name="ln194">            element.reset(untranslatedElement-&gt;clone());</a>
+<a name="ln195">            retranslate();</a>
+<a name="ln196">            }</a>
+<a name="ln197">      else</a>
+<a name="ln198">            untranslatedElement.reset();</a>
+<a name="ln199">      }</a>
+<a name="ln200"> </a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202">//   PaletteCell::write</a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204"> </a>
+<a name="ln205">void PaletteCell::write(XmlWriter&amp; xml) const</a>
+<a name="ln206">      {</a>
+<a name="ln207">      if (!element) {</a>
+<a name="ln208">            xml.tagE(&quot;Cell&quot;);</a>
+<a name="ln209">            return;</a>
+<a name="ln210">            }</a>
+<a name="ln211"> </a>
+<a name="ln212">      // using attributes for `custom` and `visible`</a>
+<a name="ln213">      // properties instead of nested tags for pre-3.3</a>
+<a name="ln214">      // version compatibility</a>
+<a name="ln215">      xml.stag(QString(&quot;Cell&quot;)</a>
+<a name="ln216">         + (!name.isEmpty() ? &quot; name=\&quot;&quot; + XmlWriter::xmlString(name) + &quot;\&quot;&quot; : &quot;&quot;)</a>
+<a name="ln217">         + (custom ? &quot; custom=\&quot;1\&quot;&quot; : &quot;&quot;)</a>
+<a name="ln218">         + (!visible ? &quot; visible=\&quot;0\&quot;&quot; : &quot;&quot;)</a>
+<a name="ln219">         + (untranslatedElement ? &quot; trElement=\&quot;1\&quot;&quot; : &quot;&quot;)</a>
+<a name="ln220">         );</a>
+<a name="ln221"> </a>
+<a name="ln222">      if (drawStaff)</a>
+<a name="ln223">            xml.tag(&quot;staff&quot;, drawStaff);</a>
+<a name="ln224">      if (xoffset)</a>
+<a name="ln225">            xml.tag(&quot;xoffset&quot;, xoffset);</a>
+<a name="ln226">      if (yoffset)</a>
+<a name="ln227">            xml.tag(&quot;yoffset&quot;, yoffset);</a>
+<a name="ln228">      if (!tag.isEmpty())</a>
+<a name="ln229">            xml.tag(&quot;tag&quot;, tag);</a>
+<a name="ln230">      if (mag != 1.0)</a>
+<a name="ln231">            xml.tag(&quot;mag&quot;, mag);</a>
+<a name="ln232"> </a>
+<a name="ln233">      if (untranslatedElement)</a>
+<a name="ln234">            untranslatedElement-&gt;write(xml);</a>
+<a name="ln235">      else</a>
+<a name="ln236">            element-&gt;write(xml);</a>
+<a name="ln237">      xml.etag();</a>
+<a name="ln238">      }</a>
+<a name="ln239"> </a>
+<a name="ln240">//---------------------------------------------------------</a>
+<a name="ln241">//   PaletteCell::read</a>
+<a name="ln242">//---------------------------------------------------------</a>
+<a name="ln243"> </a>
+<a name="ln244">bool PaletteCell::read(XmlReader&amp; e)</a>
+<a name="ln245">      {</a>
+<a name="ln246">      bool add = true;</a>
+<a name="ln247">      name = e.attribute(&quot;name&quot;);</a>
+<a name="ln248"> </a>
+<a name="ln249">      // using attributes instead of nested tags for</a>
+<a name="ln250">      // pre-3.3 version compatibility</a>
+<a name="ln251">      custom = e.hasAttribute(&quot;custom&quot;) ? e.intAttribute(&quot;custom&quot;) : false; // TODO: actually check master palette?</a>
+<a name="ln252">      visible = e.hasAttribute(&quot;visible&quot;) ? e.intAttribute(&quot;visible&quot;) : true;</a>
+<a name="ln253"> </a>
+<a name="ln254">      const bool translateElement = e.hasAttribute(&quot;trElement&quot;) ? e.intAttribute(&quot;trElement&quot;) : false;</a>
+<a name="ln255"> </a>
+<a name="ln256">      while (e.readNextStartElement()) {</a>
+<a name="ln257">            const QStringRef&amp; s(e.name());</a>
+<a name="ln258">            if (s == &quot;staff&quot;)</a>
+<a name="ln259">                  drawStaff = e.readInt();</a>
+<a name="ln260">            else if (s == &quot;xoffset&quot;)</a>
+<a name="ln261">                  xoffset = e.readDouble();</a>
+<a name="ln262">            else if (s == &quot;yoffset&quot;)</a>
+<a name="ln263">                  yoffset = e.readDouble();</a>
+<a name="ln264">            else if (s == &quot;mag&quot;)</a>
+<a name="ln265">                  mag = e.readDouble();</a>
+<a name="ln266">            else if (s == &quot;tag&quot;)</a>
+<a name="ln267">                  tag = e.readElementText();</a>
+<a name="ln268"> </a>
+<a name="ln269">            // added on palettes rework</a>
+<a name="ln270">            // TODO: remove or leave to switch from using attributes later?</a>
+<a name="ln271">            else if (s == &quot;custom&quot;)</a>
+<a name="ln272">                  custom = e.readBool();</a>
+<a name="ln273">            else if (s == &quot;visible&quot;)</a>
+<a name="ln274">                  visible = e.readBool();</a>
+<a name="ln275"> </a>
+<a name="ln276">            else {</a>
+<a name="ln277">                  element.reset(Element::name2Element(s, gscore));</a>
+<a name="ln278">                  if (!element)</a>
+<a name="ln279">                        e.unknown();</a>
+<a name="ln280">                  else {</a>
+<a name="ln281">                        element-&gt;read(e);</a>
+<a name="ln282">                        element-&gt;styleChanged();</a>
+<a name="ln283">                        if (element-&gt;type() == ElementType::ICON) {</a>
+<a name="ln284">                              Icon* icon = static_cast&lt;Icon*&gt;(element.get());</a>
+<a name="ln285">                              QAction* ac = getAction(icon-&gt;action());</a>
+<a name="ln286">                              if (ac) {</a>
+<a name="ln287">                                    QIcon qicon(ac-&gt;icon());</a>
+<a name="ln288">                                    icon-&gt;setAction(icon-&gt;action(), qicon);</a>
+<a name="ln289">                                    }</a>
+<a name="ln290">                              else {</a>
+<a name="ln291">                                    add = false; // action is not valid, don't add it to the palette.</a>
+<a name="ln292">                                    }</a>
+<a name="ln293">                              }</a>
+<a name="ln294">                        }</a>
+<a name="ln295">                  }</a>
+<a name="ln296">            }</a>
+<a name="ln297"> </a>
+<a name="ln298">      setElementTranslated(translateElement);</a>
+<a name="ln299"> </a>
+<a name="ln300">      return add &amp;&amp; element;</a>
+<a name="ln301">      }</a>
+<a name="ln302"> </a>
+<a name="ln303">//---------------------------------------------------------</a>
+<a name="ln304">//   PaletteCell::readMimeData</a>
+<a name="ln305">//---------------------------------------------------------</a>
+<a name="ln306"> </a>
+<a name="ln307">PaletteCellPtr PaletteCell::readMimeData(const QByteArray&amp; data)</a>
+<a name="ln308">      {</a>
+<a name="ln309">      return Ms::readMimeData&lt;PaletteCell&gt;(data, &quot;Cell&quot;);</a>
+<a name="ln310">      }</a>
+<a name="ln311"> </a>
+<a name="ln312">//---------------------------------------------------------</a>
+<a name="ln313">//   PaletteCell::readMimeData</a>
+<a name="ln314">//---------------------------------------------------------</a>
+<a name="ln315"> </a>
+<a name="ln316">PaletteCellPtr PaletteCell::readElementMimeData(const QByteArray&amp; data)</a>
+<a name="ln317">      {</a>
+<a name="ln318">      QPointF dragOffset;</a>
+<a name="ln319">      Fraction duration(1, 4);</a>
+<a name="ln320">      std::unique_ptr&lt;Element&gt; e(Element::readMimeData(gscore, data, &amp;dragOffset, &amp;duration));</a>
+<a name="ln321"> </a>
+<a name="ln322">      if (!e)</a>
+<a name="ln323">            return nullptr;</a>
+<a name="ln324"> </a>
+<a name="ln325">      if (!e-&gt;isSymbol()) // not sure this check is necessary, it was so in the old palette</a>
+<a name="ln326">            e-&gt;setTrack(0);</a>
+<a name="ln327"> </a>
+<a name="ln328">      if (e-&gt;isIcon()) {</a>
+<a name="ln329">            Icon* i = toIcon(e.get());</a>
+<a name="ln330">            const QByteArray&amp; action = i-&gt;action();</a>
+<a name="ln331">            if (!action.isEmpty()) {</a>
+<a name="ln332">                  const Shortcut* s = Shortcut::getShortcut(action);</a>
+<a name="ln333">                  if (s) {</a>
+<a name="ln334">                        QAction* a = s-&gt;action();</a>
+<a name="ln335">                        QIcon icon(a-&gt;icon());</a>
+<a name="ln336">                        i-&gt;setAction(action, icon);</a>
+<a name="ln337">                        }</a>
+<a name="ln338">                  }</a>
+<a name="ln339">            }</a>
+<a name="ln340"> </a>
+<a name="ln341">      const QString name = (e-&gt;isFretDiagram()) ? toFretDiagram(e.get())-&gt;harmonyText() : e-&gt;userName();</a>
+<a name="ln342"> </a>
+<a name="ln343">      return PaletteCellPtr(new PaletteCell(std::move(e), name));</a>
+<a name="ln344">      }</a>
+<a name="ln345"> </a>
+<a name="ln346">//---------------------------------------------------------</a>
+<a name="ln347">//   PaletteCell::mimeData</a>
+<a name="ln348">//---------------------------------------------------------</a>
+<a name="ln349"> </a>
+<a name="ln350">QByteArray PaletteCell::mimeData() const</a>
+<a name="ln351">      {</a>
+<a name="ln352">      return Ms::mimeData(this);</a>
+<a name="ln353">      }</a>
+<a name="ln354"> </a>
+<a name="ln355">//---------------------------------------------------------</a>
+<a name="ln356">//   PaletteCell::readMimeData</a>
+<a name="ln357">//---------------------------------------------------------</a>
+<a name="ln358"> </a>
+<a name="ln359">std::unique_ptr&lt;PalettePanel&gt; PalettePanel::readMimeData(const QByteArray&amp; data)</a>
+<a name="ln360">      {</a>
+<a name="ln361">      return Ms::readMimeData&lt;PalettePanel&gt;(data, &quot;Palette&quot;);</a>
+<a name="ln362">      }</a>
+<a name="ln363"> </a>
+<a name="ln364">//---------------------------------------------------------</a>
+<a name="ln365">//   PalettePanel::read</a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367"> </a>
+<a name="ln368">bool PalettePanel::read(XmlReader&amp; e)</a>
+<a name="ln369">      {</a>
+<a name="ln370">      _name = e.attribute(&quot;name&quot;);</a>
+<a name="ln371">      _type = Type::Unknown;</a>
+<a name="ln372">      while (e.readNextStartElement()) {</a>
+<a name="ln373">            const QStringRef tag(e.name());</a>
+<a name="ln374">            if (tag == &quot;gridWidth&quot;)</a>
+<a name="ln375">                  _gridSize.setWidth(e.readDouble());</a>
+<a name="ln376">            else if (tag == &quot;gridHeight&quot;)</a>
+<a name="ln377">                  _gridSize.setHeight(e.readDouble());</a>
+<a name="ln378">            else if (tag == &quot;mag&quot;)</a>
+<a name="ln379">                  _mag = e.readDouble();</a>
+<a name="ln380">            else if (tag == &quot;grid&quot;)</a>
+<a name="ln381">                  _drawGrid = e.readInt();</a>
+<a name="ln382">            else if (tag == &quot;moreElements&quot;)</a>
+<a name="ln383">                  setMoreElements(e.readInt());</a>
+<a name="ln384">            else if (tag == &quot;yoffset&quot;)</a>
+<a name="ln385">                  _yOffset = e.readDouble();</a>
+<a name="ln386">            else if (tag == &quot;drumPalette&quot;)      // obsolete</a>
+<a name="ln387">                  e.skipCurrentElement();</a>
+<a name="ln388">            else if (tag == &quot;type&quot;) {</a>
+<a name="ln389">                  bool ok;</a>
+<a name="ln390">                  const int t = QMetaEnum::fromType&lt;Type&gt;().keyToValue(e.readElementText().toLatin1().constData(), &amp;ok);</a>
+<a name="ln391">                  if (ok)</a>
+<a name="ln392">                        _type = Type(t);</a>
+<a name="ln393">                  }</a>
+<a name="ln394">            else if (tag == &quot;visible&quot;)</a>
+<a name="ln395">                  _visible = e.readBool();</a>
+<a name="ln396">            else if (e.pasteMode() &amp;&amp; tag == &quot;expanded&quot;)</a>
+<a name="ln397">                  _expanded = e.readBool();</a>
+<a name="ln398">            else if (tag == &quot;editable&quot;)</a>
+<a name="ln399">                  _editable = e.readBool();</a>
+<a name="ln400">            else if (tag == &quot;Cell&quot;) {</a>
+<a name="ln401">                  PaletteCellPtr cell(new PaletteCell);</a>
+<a name="ln402">                  if (!cell-&gt;read(e))</a>
+<a name="ln403">                        continue;</a>
+<a name="ln404">                  cells.push_back(std::move(cell));</a>
+<a name="ln405">                  }</a>
+<a name="ln406">            else</a>
+<a name="ln407">                  e.unknown();</a>
+<a name="ln408">            }</a>
+<a name="ln409">      // (from old palette): make sure hgrid and vgrid are not 0, we divide by them later</a>
+<a name="ln410">      if (_gridSize.width() &lt;= 0)</a>
+<a name="ln411">            _gridSize.setWidth(28);</a>
+<a name="ln412">      if (_gridSize.width() &lt;= 0)</a>
+<a name="ln413">            _gridSize.setHeight(28);</a>
+<a name="ln414"> </a>
+<a name="ln415">      if (_type == Type::Unknown)</a>
+<a name="ln416">            _type = guessType();</a>
+<a name="ln417"> </a>
+<a name="ln418">      return true;</a>
+<a name="ln419">      }</a>
+<a name="ln420"> </a>
+<a name="ln421">//---------------------------------------------------------</a>
+<a name="ln422">//   PalettePanel::mimeData</a>
+<a name="ln423">//---------------------------------------------------------</a>
+<a name="ln424"> </a>
+<a name="ln425">QByteArray PalettePanel::mimeData() const</a>
+<a name="ln426">      {</a>
+<a name="ln427">      return Ms::mimeData(this);</a>
+<a name="ln428">      }</a>
+<a name="ln429"> </a>
+<a name="ln430">//---------------------------------------------------------</a>
+<a name="ln431">//   PalettePanel::write</a>
+<a name="ln432">//---------------------------------------------------------</a>
+<a name="ln433"> </a>
+<a name="ln434">void PalettePanel::write(XmlWriter&amp; xml) const</a>
+<a name="ln435">      {</a>
+<a name="ln436">      xml.stag(QString(&quot;Palette name=\&quot;%1\&quot;&quot;).arg(XmlWriter::xmlString(_name)));</a>
+<a name="ln437">      xml.tag(&quot;type&quot;, QMetaEnum::fromType&lt;Type&gt;().valueToKey(int(_type)));</a>
+<a name="ln438">      xml.tag(&quot;gridWidth&quot;, _gridSize.width());</a>
+<a name="ln439">      xml.tag(&quot;gridHeight&quot;, _gridSize.height());</a>
+<a name="ln440">      xml.tag(&quot;mag&quot;, _mag);</a>
+<a name="ln441">      if (_drawGrid)</a>
+<a name="ln442">            xml.tag(&quot;grid&quot;, _drawGrid);</a>
+<a name="ln443"> </a>
+<a name="ln444">      xml.tag(&quot;moreElements&quot;, _moreElements);</a>
+<a name="ln445">      if (_yOffset != 0.0)</a>
+<a name="ln446">            xml.tag(&quot;yoffset&quot;, _yOffset);</a>
+<a name="ln447"> </a>
+<a name="ln448">      xml.tag(&quot;visible&quot;, _visible, true);</a>
+<a name="ln449">      xml.tag(&quot;editable&quot;, _editable, true);</a>
+<a name="ln450"> </a>
+<a name="ln451">      if (xml.clipboardmode())</a>
+<a name="ln452">            xml.tag(&quot;expanded&quot;, _expanded, false);</a>
+<a name="ln453"> </a>
+<a name="ln454">      for (auto&amp; cell: cells) {</a>
+<a name="ln455">//             if (cells[i] &amp;&amp; cells[i]-&gt;tag == &quot;ShowMore&quot;)</a>
+<a name="ln456">//                   continue;</a>
+<a name="ln457">            if (!cell) { // from old palette, not sure if it is still needed</a>
+<a name="ln458">                  xml.tagE(&quot;Cell&quot;);</a>
+<a name="ln459">                  continue;</a>
+<a name="ln460">                  }</a>
+<a name="ln461">            cell-&gt;write(xml);</a>
+<a name="ln462">            }</a>
+<a name="ln463">      xml.etag();</a>
+<a name="ln464">      }</a>
+<a name="ln465"> </a>
+<a name="ln466">//---------------------------------------------------------</a>
+<a name="ln467">//   writePaletteFailed</a>
+<a name="ln468">//---------------------------------------------------------</a>
+<a name="ln469"> </a>
+<a name="ln470">static void writePaletteFailed(const QString&amp; path)</a>
+<a name="ln471">      {</a>
+<a name="ln472">      QString s = qApp-&gt;translate(&quot;Palette&quot;, &quot;Writing Palette File\n%1\nfailed: &quot;).arg(path); // reason?</a>
+<a name="ln473">      QMessageBox::critical(mscore, qApp-&gt;translate(&quot;Palette&quot;, &quot;Writing Palette File&quot;), s);</a>
+<a name="ln474">      }</a>
+<a name="ln475"> </a>
+<a name="ln476">//---------------------------------------------------------</a>
+<a name="ln477">//   PalettePanel::writeToFile</a>
+<a name="ln478">///   write as compressed zip file and include</a>
+<a name="ln479">///   images as needed</a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481"> </a>
+<a name="ln482">bool PalettePanel::writeToFile(const QString&amp; p) const</a>
+<a name="ln483">      {</a>
+<a name="ln484">      QSet&lt;ImageStoreItem*&gt; images;</a>
+<a name="ln485">      size_t n = cells.size();</a>
+<a name="ln486">      for (size_t i = 0; i &lt; n; ++i) {</a>
+<a name="ln487">            if (cells[i] == 0 || cells[i]-&gt;element == 0 || cells[i]-&gt;element-&gt;type() != ElementType::IMAGE)</a>
+<a name="ln488">                  continue;</a>
+<a name="ln489">            images.insert(toImage(cells[i]-&gt;element.get())-&gt;storeItem());</a>
+<a name="ln490">            }</a>
+<a name="ln491"> </a>
+<a name="ln492">      QString path(p);</a>
+<a name="ln493">      if (!path.endsWith(&quot;.mpal&quot;))</a>
+<a name="ln494">            path += &quot;.mpal&quot;;</a>
+<a name="ln495"> </a>
+<a name="ln496">      MQZipWriter f(path);</a>
+<a name="ln497">      // f.setCompressionPolicy(QZipWriter::NeverCompress);</a>
+<a name="ln498">      f.setCreationPermissions(</a>
+<a name="ln499">         QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner</a>
+<a name="ln500">         | QFile::ReadUser | QFile::WriteUser | QFile::ExeUser</a>
+<a name="ln501">         | QFile::ReadGroup | QFile::WriteGroup | QFile::ExeGroup</a>
+<a name="ln502">         | QFile::ReadOther | QFile::WriteOther | QFile::ExeOther);</a>
+<a name="ln503"> </a>
+<a name="ln504">      if (f.status() != MQZipWriter::NoError) {</a>
+<a name="ln505">            writePaletteFailed(path);</a>
+<a name="ln506">            return false;</a>
+<a name="ln507">            }</a>
+<a name="ln508">      QBuffer cbuf;</a>
+<a name="ln509">      cbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln510">      XmlWriter xml(gscore, &amp;cbuf);</a>
+<a name="ln511">      xml.header();</a>
+<a name="ln512">      xml.stag(&quot;container&quot;);</a>
+<a name="ln513">      xml.stag(&quot;rootfiles&quot;);</a>
+<a name="ln514">      xml.stag(QString(&quot;rootfile full-path=\&quot;%1\&quot;&quot;).arg(XmlWriter::xmlString(&quot;palette.xml&quot;)));</a>
+<a name="ln515">      xml.etag();</a>
+<a name="ln516">      foreach (ImageStoreItem* ip, images) {</a>
+<a name="ln517">            QString ipath = QString(&quot;Pictures/&quot;) + ip-&gt;hashName();</a>
+<a name="ln518">            xml.tag(&quot;file&quot;, ipath);</a>
+<a name="ln519">            }</a>
+<a name="ln520">      xml.etag();</a>
+<a name="ln521">      xml.etag();</a>
+<a name="ln522">      cbuf.seek(0);</a>
+<a name="ln523">      //f.addDirectory(&quot;META-INF&quot;);</a>
+<a name="ln524">      //f.addDirectory(&quot;Pictures&quot;);</a>
+<a name="ln525">      f.addFile(&quot;META-INF/container.xml&quot;, cbuf.data());</a>
+<a name="ln526"> </a>
+<a name="ln527">      // save images</a>
+<a name="ln528">      foreach(ImageStoreItem* ip, images) {</a>
+<a name="ln529">            QString ipath = QString(&quot;Pictures/&quot;) + ip-&gt;hashName();</a>
+<a name="ln530">            f.addFile(ipath, ip-&gt;buffer());</a>
+<a name="ln531">            }</a>
+<a name="ln532">      {</a>
+<a name="ln533">      QBuffer cbuf1;</a>
+<a name="ln534">      cbuf1.open(QIODevice::ReadWrite);</a>
+<a name="ln535">      XmlWriter xml1(gscore, &amp;cbuf1);</a>
+<a name="ln536">      xml1.header();</a>
+<a name="ln537">      xml1.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln538">      write(xml1);</a>
+<a name="ln539">      xml1.etag();</a>
+<a name="ln540">      cbuf1.close();</a>
+<a name="ln541">      f.addFile(&quot;palette.xml&quot;, cbuf1.data());</a>
+<a name="ln542">      }</a>
+<a name="ln543">      f.close();</a>
+<a name="ln544">      if (f.status() != MQZipWriter::NoError) {</a>
+<a name="ln545">            writePaletteFailed(path);</a>
+<a name="ln546">            return false;</a>
+<a name="ln547">            }</a>
+<a name="ln548">      return true;</a>
+<a name="ln549">      }</a>
+<a name="ln550"> </a>
+<a name="ln551">//---------------------------------------------------------</a>
+<a name="ln552">//   PalettePanel::readFromFile</a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554"> </a>
+<a name="ln555">bool PalettePanel::readFromFile(const QString&amp; p)</a>
+<a name="ln556">      {</a>
+<a name="ln557">      QString path(p);</a>
+<a name="ln558">      if (!path.endsWith(&quot;.mpal&quot;))</a>
+<a name="ln559">            path += &quot;.mpal&quot;;</a>
+<a name="ln560"> </a>
+<a name="ln561">      MQZipReader f(path);</a>
+<a name="ln562">      if (!f.exists()) {</a>
+<a name="ln563">            qDebug(&quot;palette &lt;%s&gt; not found&quot;, qPrintable(path));</a>
+<a name="ln564">            return false;</a>
+<a name="ln565">            }</a>
+<a name="ln566">      cells.clear();</a>
+<a name="ln567"> </a>
+<a name="ln568">      QByteArray ba = f.fileData(&quot;META-INF/container.xml&quot;);</a>
+<a name="ln569"> </a>
+<a name="ln570">      XmlReader e(ba);</a>
+<a name="ln571">      // extract first rootfile</a>
+<a name="ln572">      QString rootfile = &quot;&quot;;</a>
+<a name="ln573">      QList&lt;QString&gt; images;</a>
+<a name="ln574">      while (e.readNextStartElement()) {</a>
+<a name="ln575">            if (e.name() != &quot;container&quot;) {</a>
+<a name="ln576">                  e.unknown();</a>
+<a name="ln577">                  break;;</a>
+<a name="ln578">                  }</a>
+<a name="ln579">            while (e.readNextStartElement()) {</a>
+<a name="ln580">                  if (e.name() != &quot;rootfiles&quot;) {</a>
+<a name="ln581">                        e.unknown();</a>
+<a name="ln582">                        break;</a>
+<a name="ln583">                        }</a>
+<a name="ln584">                  while (e.readNextStartElement()) {</a>
+<a name="ln585">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln586"> </a>
+<a name="ln587">                        if (tag == &quot;rootfile&quot;) {</a>
+<a name="ln588">                              if (rootfile.isEmpty())</a>
+<a name="ln589">                                    rootfile = e.attribute(&quot;full-path&quot;);</a>
+<a name="ln590">                              e.readNext();</a>
+<a name="ln591">                              }</a>
+<a name="ln592">                        else if (tag == &quot;file&quot;)</a>
+<a name="ln593">                              images.append(e.readElementText());</a>
+<a name="ln594">                        else</a>
+<a name="ln595">                              e.unknown();</a>
+<a name="ln596">                        }</a>
+<a name="ln597">                  }</a>
+<a name="ln598">            }</a>
+<a name="ln599">      //</a>
+<a name="ln600">      // load images</a>
+<a name="ln601">      //</a>
+<a name="ln602">      foreach(const QString&amp; s, images)</a>
+<a name="ln603">            imageStore.add(s, f.fileData(s));</a>
+<a name="ln604"> </a>
+<a name="ln605">      if (rootfile.isEmpty()) {</a>
+<a name="ln606">            qDebug(&quot;can't find rootfile in: %s&quot;, qPrintable(path));</a>
+<a name="ln607">            return false;</a>
+<a name="ln608">            }</a>
+<a name="ln609"> </a>
+<a name="ln610">      ba = f.fileData(rootfile);</a>
+<a name="ln611">      e.clear();</a>
+<a name="ln612">      e.addData(ba);</a>
+<a name="ln613">      while (e.readNextStartElement()) {</a>
+<a name="ln614">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln615">                  QString version = e.attribute(&quot;version&quot;);</a>
+<a name="ln616">                  QStringList sl = version.split('.');</a>
+<a name="ln617">                  int versionId = sl[0].toInt() * 100 + sl[1].toInt();</a>
+<a name="ln618">                  gscore-&gt;setMscVersion(versionId); // TODO: what is this?</a>
+<a name="ln619"> </a>
+<a name="ln620">                  while (e.readNextStartElement()) {</a>
+<a name="ln621">                        if (e.name() == &quot;Palette&quot;)</a>
+<a name="ln622">                              read(e);</a>
+<a name="ln623">                        else</a>
+<a name="ln624">                              e.unknown();</a>
+<a name="ln625">                        }</a>
+<a name="ln626">                  }</a>
+<a name="ln627">            else</a>
+<a name="ln628">                  e.unknown();</a>
+<a name="ln629">            }</a>
+<a name="ln630">      return true;</a>
+<a name="ln631">      }</a>
+<a name="ln632"> </a>
+<a name="ln633">//---------------------------------------------------------</a>
+<a name="ln634">//   PalettePanel::insert</a>
+<a name="ln635">//---------------------------------------------------------</a>
+<a name="ln636"> </a>
+<a name="ln637">PaletteCell* PalettePanel::insert(int idx, Element* e, const QString&amp; name, QString tag, qreal mag)</a>
+<a name="ln638">      {</a>
+<a name="ln639">      if (e)</a>
+<a name="ln640">            e-&gt;layout(); // layout may be important for comparing cells, e.g. filtering &quot;More&quot; popup content</a>
+<a name="ln641">      PaletteCell* cell = new PaletteCell(std::unique_ptr&lt;Element&gt;(e), name, tag, mag);</a>
+<a name="ln642">      cells.emplace(cells.begin() + idx, cell);</a>
+<a name="ln643">      return cell;</a>
+<a name="ln644">      }</a>
+<a name="ln645"> </a>
+<a name="ln646">//---------------------------------------------------------</a>
+<a name="ln647">//   PalettePanel::append</a>
+<a name="ln648">//---------------------------------------------------------</a>
+<a name="ln649"> </a>
+<a name="ln650">PaletteCell* PalettePanel::append(Element* e, const QString&amp; name, QString tag, qreal mag)</a>
+<a name="ln651">      {</a>
+<a name="ln652">      if (e)</a>
+<a name="ln653">            e-&gt;layout(); // layout may be important for comparing cells, e.g. filtering &quot;More&quot; popup content</a>
+<a name="ln654">      PaletteCell* cell = new PaletteCell(std::unique_ptr&lt;Element&gt;(e), name, tag, mag);</a>
+<a name="ln655">      cells.emplace_back(cell);</a>
+<a name="ln656">      return cell;</a>
+<a name="ln657">      }</a>
+<a name="ln658"> </a>
+<a name="ln659">//---------------------------------------------------------</a>
+<a name="ln660">//   PalettePanel::takeCells</a>
+<a name="ln661">//---------------------------------------------------------</a>
+<a name="ln662"> </a>
+<a name="ln663">std::vector&lt;PaletteCellPtr&gt; PalettePanel::takeCells(int idx, int count)</a>
+<a name="ln664">      {</a>
+<a name="ln665">      std::vector&lt;PaletteCellPtr&gt; removedCells;</a>
+<a name="ln666">      removedCells.reserve(count);</a>
+<a name="ln667"> </a>
+<a name="ln668">      if (idx &lt; 0 || idx + count &gt; int(cells.size()))</a>
+<a name="ln669">            return removedCells;</a>
+<a name="ln670"> </a>
+<a name="ln671">      auto removeBegin = cells.begin() + idx;</a>
+<a name="ln672">      auto removeEnd = removeBegin + count;</a>
+<a name="ln673"> </a>
+<a name="ln674">      removedCells.insert(removedCells.end(), std::make_move_iterator(removeBegin), std::make_move_iterator(removeEnd));</a>
+<a name="ln675">      cells.erase(removeBegin, removeEnd);</a>
+<a name="ln676"> </a>
+<a name="ln677">      return removedCells;</a>
+<a name="ln678">      }</a>
+<a name="ln679"> </a>
+<a name="ln680">//---------------------------------------------------------</a>
+<a name="ln681">//   PalettePanel::insertCells</a>
+<a name="ln682">//---------------------------------------------------------</a>
+<a name="ln683"> </a>
+<a name="ln684">bool PalettePanel::insertCells(int idx, std::vector&lt;PaletteCellPtr&gt; insertedCells)</a>
+<a name="ln685">      {</a>
+<a name="ln686">      if (idx &lt; 0 || idx &gt; int(cells.size()))</a>
+<a name="ln687">            return false;</a>
+<a name="ln688"> </a>
+<a name="ln689">      cells.insert(cells.begin() + idx, std::make_move_iterator(insertedCells.begin()), std::make_move_iterator(insertedCells.end()));</a>
+<a name="ln690"> </a>
+<a name="ln691">      return true;</a>
+<a name="ln692">      }</a>
+<a name="ln693"> </a>
+<a name="ln694">//---------------------------------------------------------</a>
+<a name="ln695">//   PalettePanel::insertCell</a>
+<a name="ln696">//---------------------------------------------------------</a>
+<a name="ln697"> </a>
+<a name="ln698">bool PalettePanel::insertCell(int idx, PaletteCellPtr cell)</a>
+<a name="ln699">      {</a>
+<a name="ln700">      if (idx &lt; 0 || idx &gt; int(cells.size()))</a>
+<a name="ln701">            return false;</a>
+<a name="ln702"> </a>
+<a name="ln703">      cells.insert(cells.begin() + idx, std::move(cell));</a>
+<a name="ln704"> </a>
+<a name="ln705">      return true;</a>
+<a name="ln706">      }</a>
+<a name="ln707"> </a>
+<a name="ln708">//---------------------------------------------------------</a>
+<a name="ln709">//   isSame</a>
+<a name="ln710">///   Helper function to compare two Elements</a>
+<a name="ln711">// TODO: make it operator==?</a>
+<a name="ln712">//---------------------------------------------------------</a>
+<a name="ln713"> </a>
+<a name="ln714">static bool isSame(const Element&amp; e1, const Element&amp; e2)</a>
+<a name="ln715">      {</a>
+<a name="ln716">      return e1.type() == e2.type()</a>
+<a name="ln717">         &amp;&amp; e1.subtype() == e2.subtype()</a>
+<a name="ln718">         &amp;&amp; e1.mimeData(QPointF()) == e2.mimeData(QPointF());</a>
+<a name="ln719">      }</a>
+<a name="ln720"> </a>
+<a name="ln721">//---------------------------------------------------------</a>
+<a name="ln722">//   PalettePanel::findPaletteCell</a>
+<a name="ln723">//---------------------------------------------------------</a>
+<a name="ln724"> </a>
+<a name="ln725">int PalettePanel::findPaletteCell(const PaletteCell&amp; cell, bool matchName) const</a>
+<a name="ln726">      {</a>
+<a name="ln727">      const Element* el = cell.element.get();</a>
+<a name="ln728">      if (!el)</a>
+<a name="ln729">            return -1;</a>
+<a name="ln730"> </a>
+<a name="ln731">      for (int i = 0; i &lt; int(cells.size()); ++i) {</a>
+<a name="ln732">            const PaletteCell&amp; localCell = *cells[i];</a>
+<a name="ln733">            if (matchName &amp;&amp; localCell.name != cell.name)</a>
+<a name="ln734">                  continue;</a>
+<a name="ln735">            const Element* exElement = localCell.element.get();</a>
+<a name="ln736">            if (exElement &amp;&amp; !isSame(*exElement, *el))</a>
+<a name="ln737">                  continue;</a>
+<a name="ln738">            if (localCell.tag != cell.tag</a>
+<a name="ln739">                  || localCell.drawStaff != cell.drawStaff</a>
+<a name="ln740">                  || localCell.xoffset != cell.xoffset</a>
+<a name="ln741">                  || localCell.yoffset != cell.yoffset</a>
+<a name="ln742">                  || localCell.mag != cell.mag</a>
+<a name="ln743">                  || localCell.readOnly != cell.readOnly</a>
+<a name="ln744">                  || localCell.visible != cell.visible</a>
+<a name="ln745">                  || localCell.custom != cell.custom</a>
+<a name="ln746">                  )</a>
+<a name="ln747">                  continue;</a>
+<a name="ln748">            return i;</a>
+<a name="ln749">            }</a>
+<a name="ln750">      return -1;</a>
+<a name="ln751">      }</a>
+<a name="ln752"> </a>
+<a name="ln753">//---------------------------------------------------------</a>
+<a name="ln754">//   PalettePanel::guessType</a>
+<a name="ln755">//---------------------------------------------------------</a>
+<a name="ln756"> </a>
+<a name="ln757">PalettePanel::Type PalettePanel::guessType() const</a>
+<a name="ln758">      {</a>
+<a name="ln759">      if (cells.empty())</a>
+<a name="ln760">            return Type::Custom;</a>
+<a name="ln761"> </a>
+<a name="ln762">      const Element* e = nullptr;</a>
+<a name="ln763">      for (const auto&amp; c : cells) {</a>
+<a name="ln764">            if (c-&gt;element) {</a>
+<a name="ln765">                  e = c-&gt;element.get();</a>
+<a name="ln766">                  break;</a>
+<a name="ln767">                  }</a>
+<a name="ln768">            }</a>
+<a name="ln769"> </a>
+<a name="ln770">      if (!e)</a>
+<a name="ln771">            return Type::Custom;</a>
+<a name="ln772"> </a>
+<a name="ln773">      switch (e-&gt;type()) {</a>
+<a name="ln774">            case ElementType::CLEF:</a>
+<a name="ln775">                  return Type::Clef;</a>
+<a name="ln776">            case ElementType::KEYSIG:</a>
+<a name="ln777">                  return Type::KeySig;</a>
+<a name="ln778">            case ElementType::TIMESIG:</a>
+<a name="ln779">                  return Type::TimeSig;</a>
+<a name="ln780">            case ElementType::BRACKET:</a>
+<a name="ln781">            case ElementType::BRACKET_ITEM:</a>
+<a name="ln782">                  return Type::Bracket;</a>
+<a name="ln783">            case ElementType::ACCIDENTAL:</a>
+<a name="ln784">                  return Type::Accidental;</a>
+<a name="ln785">            case ElementType::ARTICULATION:</a>
+<a name="ln786">            case ElementType::BEND:</a>
+<a name="ln787">                  return toArticulation(e)-&gt;isOrnament() ? Type::Ornament : Type::Articulation;</a>
+<a name="ln788">            case ElementType::FERMATA:</a>
+<a name="ln789">                  return Type::Articulation;</a>
+<a name="ln790">            case ElementType::BREATH:</a>
+<a name="ln791">                  return Type::Breath;</a>
+<a name="ln792">            case ElementType::NOTEHEAD:</a>
+<a name="ln793">                  return Type::NoteHead;</a>
+<a name="ln794">            case ElementType::BAR_LINE:</a>
+<a name="ln795">                  return Type::BarLine;</a>
+<a name="ln796">            case ElementType::ARPEGGIO:</a>
+<a name="ln797">            case ElementType::GLISSANDO:</a>
+<a name="ln798">                  return Type::Arpeggio;</a>
+<a name="ln799">            case ElementType::TREMOLO:</a>
+<a name="ln800">                  return Type::Tremolo;</a>
+<a name="ln801">            case ElementType::TEMPO_TEXT:</a>
+<a name="ln802">                  return Type::Tempo;</a>
+<a name="ln803">            case ElementType::DYNAMIC:</a>
+<a name="ln804">                  return Type::Dynamic;</a>
+<a name="ln805">            case ElementType::FINGERING:</a>
+<a name="ln806">                  return Type::Fingering;</a>
+<a name="ln807">            case ElementType::MARKER:</a>
+<a name="ln808">            case ElementType::JUMP:</a>
+<a name="ln809">            case ElementType::REPEAT_MEASURE:</a>
+<a name="ln810">                  return Type::Repeat;</a>
+<a name="ln811">            case ElementType::FRET_DIAGRAM:</a>
+<a name="ln812">                  return Type::FretboardDiagram;</a>
+<a name="ln813">            case ElementType::BAGPIPE_EMBELLISHMENT:</a>
+<a name="ln814">                  return Type::BagpipeEmbellishment;</a>
+<a name="ln815">            case ElementType::LAYOUT_BREAK:</a>
+<a name="ln816">            case ElementType::SPACER:</a>
+<a name="ln817">                  return Type::Break;</a>
+<a name="ln818">            case ElementType::SYMBOL:</a>
+<a name="ln819">                  return Type::Accordion;</a>
+<a name="ln820">            case ElementType::ICON: {</a>
+<a name="ln821">                  const Icon* i = toIcon(e);</a>
+<a name="ln822">                  const QByteArray&amp; action = i-&gt;action();</a>
+<a name="ln823">                  if (action.contains(&quot;beam&quot;))</a>
+<a name="ln824">                        return Type::Beam;</a>
+<a name="ln825">                  if (action.contains(&quot;grace&quot;) || action.contains(&quot;acciaccatura&quot;) || action.contains(&quot;appoggiatura&quot;))</a>
+<a name="ln826">                        return Type::GraceNote;</a>
+<a name="ln827">                  if (action.contains(&quot;frame&quot;) || action.contains(&quot;box&quot;) || action.contains(&quot;measure&quot;))</a>
+<a name="ln828">                        return Type::Frame;</a>
+<a name="ln829">                  return Type::Custom;</a>
+<a name="ln830">                  }</a>
+<a name="ln831">            default: {</a>
+<a name="ln832">                  if (e-&gt;isSpanner())</a>
+<a name="ln833">                        return Type::Line;</a>
+<a name="ln834">                  if (e-&gt;isTextBase())</a>
+<a name="ln835">                        return Type::Text;</a>
+<a name="ln836">                  }</a>
+<a name="ln837">            };</a>
+<a name="ln838"> </a>
+<a name="ln839">      return Type::Custom;</a>
+<a name="ln840">      }</a>
+<a name="ln841"> </a>
+<a name="ln842">//---------------------------------------------------------</a>
+<a name="ln843">//   PalettePanel::contentType</a>
+<a name="ln844">///   Returns palette type if it is defined or deduces it</a>
+<a name="ln845">///   from the palette content for custom palettes.</a>
+<a name="ln846">//---------------------------------------------------------</a>
+<a name="ln847"> </a>
+<a name="ln848">PalettePanel::Type PalettePanel::contentType() const</a>
+<a name="ln849">      {</a>
+<a name="ln850">      Type t = type();</a>
+<a name="ln851">      if (t == Type::Unknown || t == Type::Custom)</a>
+<a name="ln852">            t = guessType();</a>
+<a name="ln853"> </a>
+<a name="ln854">      if (t == Type::Unknown || t == Type::Custom)</a>
+<a name="ln855">            return Type::Clef; // if no type can be deduced, use Clef type by default</a>
+<a name="ln856"> </a>
+<a name="ln857">      return t;</a>
+<a name="ln858">      }</a>
+<a name="ln859"> </a>
+<a name="ln860">//---------------------------------------------------------</a>
+<a name="ln861">//   PalettePanel::retranslate</a>
+<a name="ln862">//---------------------------------------------------------</a>
+<a name="ln863"> </a>
+<a name="ln864">void PalettePanel::retranslate()</a>
+<a name="ln865">      {</a>
+<a name="ln866">      for (auto&amp; c : cells)</a>
+<a name="ln867">            c-&gt;retranslate();</a>
+<a name="ln868">      }</a>
+<a name="ln869"> </a>
+<a name="ln870">//---------------------------------------------------------</a>
+<a name="ln871">//   PaletteTree::insert</a>
+<a name="ln872">///   PaletteTree takes the ownership over the PalettePanel</a>
+<a name="ln873">//---------------------------------------------------------</a>
+<a name="ln874"> </a>
+<a name="ln875">void PaletteTree::insert(int idx, PalettePanel* palette)</a>
+<a name="ln876">      {</a>
+<a name="ln877">      palettes.emplace(palettes.begin() + idx, palette);</a>
+<a name="ln878">      }</a>
+<a name="ln879"> </a>
+<a name="ln880">//---------------------------------------------------------</a>
+<a name="ln881">//   PaletteTreeModel::append</a>
+<a name="ln882">///   PaletteTree takes the ownership over the PalettePanel</a>
+<a name="ln883">//---------------------------------------------------------</a>
+<a name="ln884"> </a>
+<a name="ln885">void PaletteTree::append(PalettePanel* palette)</a>
+<a name="ln886">      {</a>
+<a name="ln887">      palettes.emplace_back(palette);</a>
+<a name="ln888">      }</a>
+<a name="ln889"> </a>
+<a name="ln890">//---------------------------------------------------------</a>
+<a name="ln891">//   PaletteTree::write</a>
+<a name="ln892">//---------------------------------------------------------</a>
+<a name="ln893"> </a>
+<a name="ln894">void PaletteTree::write(XmlWriter&amp; xml) const</a>
+<a name="ln895">      {</a>
+<a name="ln896">      xml.stag(&quot;PaletteBox&quot;); // for compatibility with old palettes file format</a>
+<a name="ln897">      for (const auto&amp; p : palettes)</a>
+<a name="ln898">            p-&gt;write(xml);</a>
+<a name="ln899">      xml.etag();</a>
+<a name="ln900">      }</a>
+<a name="ln901"> </a>
+<a name="ln902">//---------------------------------------------------------</a>
+<a name="ln903">//   PaletteTree::read</a>
+<a name="ln904">//---------------------------------------------------------</a>
+<a name="ln905"> </a>
+<a name="ln906">bool PaletteTree::read(XmlReader&amp; e)</a>
+<a name="ln907">      {</a>
+<a name="ln908">      while (e.readNextStartElement()) {</a>
+<a name="ln909">            const QStringRef tag(e.name());</a>
+<a name="ln910">            if (tag == &quot;Palette&quot;) {</a>
+<a name="ln911">                  std::unique_ptr&lt;PalettePanel&gt; p(new PalettePanel);</a>
+<a name="ln912">                  p-&gt;read(e);</a>
+<a name="ln913">                  palettes.push_back(std::move(p));</a>
+<a name="ln914">                  }</a>
+<a name="ln915">            else</a>
+<a name="ln916">                  e.unknown();</a>
+<a name="ln917">            }</a>
+<a name="ln918">      return true;</a>
+<a name="ln919">      }</a>
+<a name="ln920"> </a>
+<a name="ln921">//---------------------------------------------------------</a>
+<a name="ln922">//   PaletteTree::retranslate</a>
+<a name="ln923">//---------------------------------------------------------</a>
+<a name="ln924"> </a>
+<a name="ln925">void PaletteTree::retranslate()</a>
+<a name="ln926">      {</a>
+<a name="ln927">      for (auto&amp; p : palettes)</a>
+<a name="ln928">            p-&gt;retranslate();</a>
+<a name="ln929">      }</a>
+<a name="ln930"> </a>
+<a name="ln931">//---------------------------------------------------------</a>
+<a name="ln932">//   paintIconElement</a>
+<a name="ln933">/// Paint an icon element so that it fills a QRect, preserving</a>
+<a name="ln934">/// aspect ratio, and leaving a small margin around the edges.</a>
+<a name="ln935">//---------------------------------------------------------</a>
+<a name="ln936"> </a>
+<a name="ln937">static void paintIconElement(QPainter&amp; painter, const QRect&amp; rect, Element* e)</a>
+<a name="ln938">      {</a>
+<a name="ln939">      Q_ASSERT(e &amp;&amp; e-&gt;isIcon());</a>
+<a name="ln940">      painter.save(); // so we can restore it after we are done using it</a>
+<a name="ln941"> </a>
+<a name="ln942">      constexpr int margin = 4.0;</a>
+<a name="ln943">      qreal extent = qMin(rect.height(), rect.width()) - margin;</a>
+<a name="ln944"> </a>
+<a name="ln945">      Icon* icon = toIcon(e);</a>
+<a name="ln946">      icon-&gt;setExtent(extent);</a>
+<a name="ln947"> </a>
+<a name="ln948">      extent /= 2.0;</a>
+<a name="ln949">      QPointF iconCenter(extent, extent);</a>
+<a name="ln950"> </a>
+<a name="ln951">      painter.translate(rect.center() - iconCenter); // change coordinates</a>
+<a name="ln952">      icon-&gt;draw(&amp;painter);</a>
+<a name="ln953">      painter.restore(); // restore coordinates</a>
+<a name="ln954">      }</a>
+<a name="ln955"> </a>
+<a name="ln956">//---------------------------------------------------------</a>
+<a name="ln957">//   paintPaletteElement</a>
+<a name="ln958">/// Function object for use with Element::scanElements() to</a>
+<a name="ln959">/// paint an element and its child elements.</a>
+<a name="ln960">//---------------------------------------------------------</a>
+<a name="ln961"> </a>
+<a name="ln962">static void paintPaletteElement(void* data, Element* e)</a>
+<a name="ln963">      {</a>
+<a name="ln964">      QPainter* p = static_cast&lt;QPainter*&gt;(data);</a>
+<a name="ln965">      p-&gt;save();</a>
+<a name="ln966">      p-&gt;translate(e-&gt;pos()); // necessary for drawing child elements</a>
+<a name="ln967">      e-&gt;draw(p);</a>
+<a name="ln968">      p-&gt;restore();</a>
+<a name="ln969">      }</a>
+<a name="ln970"> </a>
+<a name="ln971">//---------------------------------------------------------</a>
+<a name="ln972">//   paintScoreElement</a>
+<a name="ln973">/// Paint a non-icon element centered at the origin of the</a>
+<a name="ln974">/// painter's coordinate system. If alignToStaff is true then</a>
+<a name="ln975">/// the element is only centered horizontally; i.e. vertical</a>
+<a name="ln976">/// alignment is unchanged from the default so that item will</a>
+<a name="ln977">/// appear at the correct height on the staff.</a>
+<a name="ln978">//---------------------------------------------------------</a>
+<a name="ln979"> </a>
+<a name="ln980">static void paintScoreElement(QPainter&amp; p, Element* e, qreal spatium, bool alignToStaff)</a>
+<a name="ln981">      {</a>
+<a name="ln982">      Q_ASSERT(e &amp;&amp; !e-&gt;isIcon());</a>
+<a name="ln983">      p.save(); // so we can restore painter after we are done using it</a>
+<a name="ln984"> </a>
+<a name="ln985">      const qreal sizeRatio = spatium / gscore-&gt;spatium();</a>
+<a name="ln986">      p.scale(sizeRatio, sizeRatio); // scale coordinates so element is drawn at correct size</a>
+<a name="ln987"> </a>
+<a name="ln988">      e-&gt;layout(); // calculate bbox</a>
+<a name="ln989">      QPointF origin = e-&gt;bbox().center();</a>
+<a name="ln990"> </a>
+<a name="ln991">      if (alignToStaff) {</a>
+<a name="ln992">            origin.setY(0.0); // y = 0 is position of the element's parent.</a>
+<a name="ln993">            // If the parent is the staff (or a segment on the staff) then</a>
+<a name="ln994">            // y = 0 corresponds to the position of the top staff line.</a>
+<a name="ln995">            }</a>
+<a name="ln996"> </a>
+<a name="ln997">      p.translate(-1.0 * origin); // shift coordinates so element is drawn at correct position</a>
+<a name="ln998"> </a>
+<a name="ln999">      e-&gt;scanElements(&amp;p, paintPaletteElement);</a>
+<a name="ln1000">      p.restore(); // return painter to saved initial state</a>
+<a name="ln1001">      }</a>
+<a name="ln1002"> </a>
+<a name="ln1003">//---------------------------------------------------------</a>
+<a name="ln1004">//   paintStaff</a>
+<a name="ln1005">/// Paint a 5 line staff centered within a QRect and return the</a>
+<a name="ln1006">/// distance from the top of the QRect to the uppermost staff line.</a>
+<a name="ln1007">//---------------------------------------------------------</a>
+<a name="ln1008"> </a>
+<a name="ln1009">static qreal paintStaff(QPainter&amp; p, const QRect&amp; rect, qreal spatium)</a>
+<a name="ln1010">      {</a>
+<a name="ln1011">      p.save(); // so we can restore painter after we are done using it</a>
+<a name="ln1012">      QPen pen(Qt::black);</a>
+<a name="ln1013">      pen.setWidthF(MScore::defaultStyle().value(Sid::staffLineWidth).toDouble() * spatium);</a>
+<a name="ln1014">      p.setPen(pen);</a>
+<a name="ln1015"> </a>
+<a name="ln1016">      constexpr int numStaffLines = 5;</a>
+<a name="ln1017">      const qreal staffHeight = spatium * (numStaffLines - 1);</a>
+<a name="ln1018">      const qreal topLineDist = rect.center().y() - (staffHeight / 2.0);</a>
+<a name="ln1019"> </a>
+<a name="ln1020">      // lines bounded horizontally by edge of target (with small margin)</a>
+<a name="ln1021">      constexpr qreal margin = 3.0;</a>
+<a name="ln1022">      const qreal x1 = rect.left() + margin;</a>
+<a name="ln1023">      const qreal x2 = rect.right() - margin;</a>
+<a name="ln1024"> </a>
+<a name="ln1025">      // draw staff lines with middle line centered vertically on target</a>
+<a name="ln1026">      qreal y = topLineDist;</a>
+<a name="ln1027">      for (int i = 0; i &lt; numStaffLines; ++i) {</a>
+<a name="ln1028">            p.drawLine(QLineF(x1, y, x2, y));</a>
+<a name="ln1029">            y += spatium;</a>
+<a name="ln1030">            }</a>
+<a name="ln1031"> </a>
+<a name="ln1032">      p.restore(); // return painter to saved initial state</a>
+<a name="ln1033">      return topLineDist;</a>
+<a name="ln1034">      }</a>
+<a name="ln1035"> </a>
+<a name="ln1036">//---------------------------------------------------------</a>
+<a name="ln1037">//   paintBackground</a>
+<a name="ln1038">//---------------------------------------------------------</a>
+<a name="ln1039"> </a>
+<a name="ln1040">static void paintBackground(QPainter&amp; p, const QRect&amp; r, bool selected, bool current)</a>
+<a name="ln1041">      {</a>
+<a name="ln1042">      QColor c(MScore::selectColor[0]);</a>
+<a name="ln1043">      if (current || selected) {</a>
+<a name="ln1044">            c.setAlpha(selected ? 100 : 60);</a>
+<a name="ln1045">            p.fillRect(r, c);</a>
+<a name="ln1046">            }</a>
+<a name="ln1047">      }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">//---------------------------------------------------------</a>
+<a name="ln1050">//   paintTag</a>
+<a name="ln1051">//---------------------------------------------------------</a>
+<a name="ln1052"> </a>
+<a name="ln1053">static void paintTag(QPainter&amp; painter, const QRect&amp; rect, QString tag)</a>
+<a name="ln1054">      {</a>
+<a name="ln1055">      if (tag.isEmpty())</a>
+<a name="ln1056">            return;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">      painter.save(); // so we can restore it after we are done using it</a>
+<a name="ln1059">      painter.setPen(Qt::darkGray);</a>
+<a name="ln1060">      QFont f(painter.font());</a>
+<a name="ln1061">      f.setPointSize(12);</a>
+<a name="ln1062">      painter.setFont(f);</a>
+<a name="ln1063"> </a>
+<a name="ln1064">      if (tag == &quot;ShowMore&quot;)</a>
+<a name="ln1065">            painter.drawText(rect, Qt::AlignCenter, &quot;???&quot;);</a>
+<a name="ln1066">      else</a>
+<a name="ln1067">            painter.drawText(rect, Qt::AlignLeft | Qt::AlignTop, tag);</a>
+<a name="ln1068"> </a>
+<a name="ln1069">      painter.restore(); // return to saved initial state (undo pen and font changes, etc.)</a>
+<a name="ln1070">      }</a>
+<a name="ln1071"> </a>
+<a name="ln1072">//---------------------------------------------------------</a>
+<a name="ln1073">//   elementColor</a>
+<a name="ln1074">//---------------------------------------------------------</a>
+<a name="ln1075"> </a>
+<a name="ln1076">static QColor elementColor(Element* el, bool selected)</a>
+<a name="ln1077">      {</a>
+<a name="ln1078">      Q_ASSERT(el);</a>
+<a name="ln1079"> </a>
+<a name="ln1080">      if (selected)</a>
+<a name="ln1081">            return QApplication::palette(mscore).color(QPalette::Normal, QPalette::HighlightedText);</a>
+<a name="ln1082"> </a>
+<a name="ln1083">      if (el-&gt;isChord()) {</a>
+<a name="ln1084">            return el-&gt;curColor(); // Show voice colors for notes.</a>
+<a name="ln1085">            // This is used in the &quot;drumtools&quot; palette that appears</a>
+<a name="ln1086">            // when entering notes on an unpitched percussion staff.</a>
+<a name="ln1087">            }</a>
+<a name="ln1088"> </a>
+<a name="ln1089">      return QApplication::palette(mscore).color(QPalette::Normal, QPalette::Text);</a>
+<a name="ln1090">      }</a>
+<a name="ln1091"> </a>
+<a name="ln1092">//---------------------------------------------------------</a>
+<a name="ln1093">//   PaletteCellIconEngine::paintCell</a>
+<a name="ln1094">//---------------------------------------------------------</a>
+<a name="ln1095"> </a>
+<a name="ln1096">void PaletteCellIconEngine::paintCell(QPainter&amp; p, const QRect&amp; r, bool selected, bool current) const</a>
+<a name="ln1097">      {</a>
+<a name="ln1098">      const qreal _yOffset = 0.0; // TODO</a>
+<a name="ln1099"> </a>
+<a name="ln1100">      paintBackground(p, r, selected, current);</a>
+<a name="ln1101"> </a>
+<a name="ln1102">      if (!_cell)</a>
+<a name="ln1103">            return;</a>
+<a name="ln1104"> </a>
+<a name="ln1105">      paintTag(p, r, _cell-&gt;tag);</a>
+<a name="ln1106"> </a>
+<a name="ln1107">      Element* el = _cell-&gt;element.get();</a>
+<a name="ln1108">      if (!el)</a>
+<a name="ln1109">            return;</a>
+<a name="ln1110"> </a>
+<a name="ln1111">      if (el-&gt;isIcon()) {</a>
+<a name="ln1112">            paintIconElement(p, r, el);</a>
+<a name="ln1113">            return; // never draw staff for icon elements</a>
+<a name="ln1114">            }</a>
+<a name="ln1115"> </a>
+<a name="ln1116">      const bool drawStaff = _cell-&gt;drawStaff;</a>
+<a name="ln1117">      const qreal spatium = PALETTE_SPATIUM * _extraMag * _cell-&gt;mag;</a>
+<a name="ln1118"> </a>
+<a name="ln1119">      QPointF origin = r.center(); // draw element at center of cell by default</a>
+<a name="ln1120">      p.translate(0, _yOffset * spatium); // offset both element and staff</a>
+<a name="ln1121"> </a>
+<a name="ln1122">      if (drawStaff) {</a>
+<a name="ln1123">            const qreal topLinePos = paintStaff(p, r, spatium); // draw dummy staff lines onto rect.</a>
+<a name="ln1124">            origin.setY(topLinePos); // vertical position relative to staff instead of cell center.</a>
+<a name="ln1125">            }</a>
+<a name="ln1126"> </a>
+<a name="ln1127">      p.translate(origin);</a>
+<a name="ln1128">      p.translate(_cell-&gt;xoffset * spatium, _cell-&gt;yoffset * spatium); // additional offset for element only</a>
+<a name="ln1129"> </a>
+<a name="ln1130">      QColor color(elementColor(el, selected));</a>
+<a name="ln1131">      p.setPen(QPen(color));</a>
+<a name="ln1132"> </a>
+<a name="ln1133">      paintScoreElement(p, el, spatium, drawStaff);</a>
+<a name="ln1134">      }</a>
+<a name="ln1135"> </a>
+<a name="ln1136">//---------------------------------------------------------</a>
+<a name="ln1137">//   PaletteCellIconEngine::paint</a>
+<a name="ln1138">//---------------------------------------------------------</a>
+<a name="ln1139"> </a>
+<a name="ln1140">void PaletteCellIconEngine::paint(QPainter* painter, const QRect&amp; r, QIcon::Mode mode, QIcon::State state)</a>
+<a name="ln1141">      {</a>
+<a name="ln1142">      QPainter&amp; p = *painter;</a>
+<a name="ln1143">      p.save(); // so we can restore it later</a>
+<a name="ln1144">      p.setRenderHint(QPainter::Antialiasing, true);</a>
+<a name="ln1145">      paintCell(p, r, mode == QIcon::Selected, state == QIcon::On);</a>
+<a name="ln1146">      p.restore(); // return painter to saved initial state (undo any changes to pen, coordinates, font, etc.)</a>
+<a name="ln1147">      }</a>
+<a name="ln1148"> </a>
+<a name="ln1149">} // namespace Ms</a>
+
+</code></pre>
+<div class="balloon" rel="563"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="606"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

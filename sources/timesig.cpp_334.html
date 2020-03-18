@@ -1,0 +1,625 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>timesig.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2017 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;timesig.h&quot;</a>
+<a name="ln14">#include &quot;xml.h&quot;</a>
+<a name="ln15">#include &quot;score.h&quot;</a>
+<a name="ln16">#include &quot;style.h&quot;</a>
+<a name="ln17">#include &quot;sym.h&quot;</a>
+<a name="ln18">#include &quot;symbol.h&quot;</a>
+<a name="ln19">#include &quot;staff.h&quot;</a>
+<a name="ln20">#include &quot;stafftype.h&quot;</a>
+<a name="ln21">#include &quot;segment.h&quot;</a>
+<a name="ln22">#include &quot;utils.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">namespace Ms {</a>
+<a name="ln25"> </a>
+<a name="ln26">static const ElementStyle timesigStyle {</a>
+<a name="ln27">      { Sid::timesigScale,                       Pid::SCALE                   },</a>
+<a name="ln28">      };</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   TimeSig</a>
+<a name="ln32">//    Constructs an invalid time signature element.</a>
+<a name="ln33">//    After construction first call setTrack() then</a>
+<a name="ln34">//    call setSig().</a>
+<a name="ln35">//    Layout() is static and called in setSig().</a>
+<a name="ln36">//---------------------------------------------------------</a>
+<a name="ln37"> </a>
+<a name="ln38">TimeSig::TimeSig(Score* s)</a>
+<a name="ln39">  : Element(s, ElementFlag::ON_STAFF | ElementFlag::MOVABLE)</a>
+<a name="ln40">      {</a>
+<a name="ln41">      initElementStyle(&amp;timesigStyle);</a>
+<a name="ln42"> </a>
+<a name="ln43">      _showCourtesySig = true;</a>
+<a name="ln44">      _stretch.set(1, 1);</a>
+<a name="ln45">      _sig.set(0, 1);               // initialize to invalid</a>
+<a name="ln46">      _timeSigType      = TimeSigType::NORMAL;</a>
+<a name="ln47">      _largeParentheses = false;</a>
+<a name="ln48">      }</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   mag</a>
+<a name="ln52">//---------------------------------------------------------</a>
+<a name="ln53"> </a>
+<a name="ln54">qreal TimeSig::mag() const</a>
+<a name="ln55">      {</a>
+<a name="ln56">      return staff() ? staff()-&gt;mag(tick()) : 1.0;</a>
+<a name="ln57">      }</a>
+<a name="ln58"> </a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60">//   setSig</a>
+<a name="ln61">//    custom text has to be set after setSig()</a>
+<a name="ln62">//---------------------------------------------------------</a>
+<a name="ln63"> </a>
+<a name="ln64">void TimeSig::setSig(const Fraction&amp; f, TimeSigType st)</a>
+<a name="ln65">      {</a>
+<a name="ln66">      _sig              = f;</a>
+<a name="ln67">      _timeSigType      = st;</a>
+<a name="ln68">      _largeParentheses = false;</a>
+<a name="ln69">      _numeratorString.clear();</a>
+<a name="ln70">      _denominatorString.clear();</a>
+<a name="ln71">      }</a>
+<a name="ln72"> </a>
+<a name="ln73">//---------------------------------------------------------</a>
+<a name="ln74">//   acceptDrop</a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76"> </a>
+<a name="ln77">bool TimeSig::acceptDrop(EditData&amp; data) const</a>
+<a name="ln78">      {</a>
+<a name="ln79">      return data.dropElement-&gt;isTimeSig();</a>
+<a name="ln80">      }</a>
+<a name="ln81"> </a>
+<a name="ln82">//---------------------------------------------------------</a>
+<a name="ln83">//   drop</a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85"> </a>
+<a name="ln86">Element* TimeSig::drop(EditData&amp; data)</a>
+<a name="ln87">      {</a>
+<a name="ln88">      Element* e = data.dropElement;</a>
+<a name="ln89">      if (e-&gt;isTimeSig()) {</a>
+<a name="ln90">            // change timesig applies to all staves, can't simply set subtype</a>
+<a name="ln91">            // for this one only</a>
+<a name="ln92">            // ownership of e is transferred to cmdAddTimeSig</a>
+<a name="ln93">            score()-&gt;cmdAddTimeSig(measure(), staffIdx(), toTimeSig(e), false);</a>
+<a name="ln94">            return 0;</a>
+<a name="ln95">            }</a>
+<a name="ln96">      delete e;</a>
+<a name="ln97">      return 0;</a>
+<a name="ln98">      }</a>
+<a name="ln99"> </a>
+<a name="ln100">//---------------------------------------------------------</a>
+<a name="ln101">//   setNumeratorString</a>
+<a name="ln102">//    setSig() has to be called first</a>
+<a name="ln103">//---------------------------------------------------------</a>
+<a name="ln104"> </a>
+<a name="ln105">void TimeSig::setNumeratorString(const QString&amp; a)</a>
+<a name="ln106">      {</a>
+<a name="ln107">      if (_timeSigType == TimeSigType::NORMAL)</a>
+<a name="ln108">            _numeratorString = a;</a>
+<a name="ln109">      }</a>
+<a name="ln110"> </a>
+<a name="ln111">//---------------------------------------------------------</a>
+<a name="ln112">//   setDenominatorString</a>
+<a name="ln113">//    setSig() has to be called first</a>
+<a name="ln114">//---------------------------------------------------------</a>
+<a name="ln115"> </a>
+<a name="ln116">void TimeSig::setDenominatorString(const QString&amp; a)</a>
+<a name="ln117">      {</a>
+<a name="ln118">      if (_timeSigType ==  TimeSigType::NORMAL)</a>
+<a name="ln119">            _denominatorString = a;</a>
+<a name="ln120">      }</a>
+<a name="ln121"> </a>
+<a name="ln122">//---------------------------------------------------------</a>
+<a name="ln123">//   write TimeSig</a>
+<a name="ln124">//---------------------------------------------------------</a>
+<a name="ln125"> </a>
+<a name="ln126">void TimeSig::write(XmlWriter&amp; xml) const</a>
+<a name="ln127">      {</a>
+<a name="ln128">      xml.stag(this);</a>
+<a name="ln129">      writeProperty(xml, Pid::TIMESIG_TYPE);</a>
+<a name="ln130">      Element::writeProperties(xml);</a>
+<a name="ln131"> </a>
+<a name="ln132">      xml.tag(&quot;sigN&quot;,  _sig.numerator());</a>
+<a name="ln133">      xml.tag(&quot;sigD&quot;,  _sig.denominator());</a>
+<a name="ln134">      if (stretch() != Fraction(1,1)) {</a>
+<a name="ln135">            xml.tag(&quot;stretchN&quot;, stretch().numerator());</a>
+<a name="ln136">            xml.tag(&quot;stretchD&quot;, stretch().denominator());</a>
+<a name="ln137">            }</a>
+<a name="ln138">      writeProperty(xml, Pid::NUMERATOR_STRING);</a>
+<a name="ln139">      writeProperty(xml, Pid::DENOMINATOR_STRING);</a>
+<a name="ln140">      if (!_groups.empty())</a>
+<a name="ln141">            _groups.write(xml);</a>
+<a name="ln142">      writeProperty(xml, Pid::SHOW_COURTESY);</a>
+<a name="ln143">      writeProperty(xml, Pid::SCALE);</a>
+<a name="ln144"> </a>
+<a name="ln145">      xml.etag();</a>
+<a name="ln146">      }</a>
+<a name="ln147"> </a>
+<a name="ln148">//---------------------------------------------------------</a>
+<a name="ln149">//   TimeSig::read</a>
+<a name="ln150">//---------------------------------------------------------</a>
+<a name="ln151"> </a>
+<a name="ln152">void TimeSig::read(XmlReader&amp; e)</a>
+<a name="ln153">      {</a>
+<a name="ln154">      int n=0, z1=0, z2=0, z3=0, z4=0;</a>
+<a name="ln155">      bool old = false;</a>
+<a name="ln156"> </a>
+<a name="ln157">      while (e.readNextStartElement()) {</a>
+<a name="ln158">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln159"> </a>
+<a name="ln160">            if (tag == &quot;den&quot;) {</a>
+<a name="ln161">                  old = true;</a>
+<a name="ln162">                  n = e.readInt();</a>
+<a name="ln163">                  }</a>
+<a name="ln164">            else if (tag == &quot;nom1&quot;) {</a>
+<a name="ln165">                  old = true;</a>
+<a name="ln166">                  z1 = e.readInt();</a>
+<a name="ln167">                  }</a>
+<a name="ln168">            else if (tag == &quot;nom2&quot;) {</a>
+<a name="ln169">                  old = true;</a>
+<a name="ln170">                  z2 = e.readInt();</a>
+<a name="ln171">                  }</a>
+<a name="ln172">            else if (tag == &quot;nom3&quot;) {</a>
+<a name="ln173">                  old = true;</a>
+<a name="ln174">                  z3 = e.readInt();</a>
+<a name="ln175">                  }</a>
+<a name="ln176">            else if (tag == &quot;nom4&quot;) {</a>
+<a name="ln177">                  old = true;</a>
+<a name="ln178">                  z4 = e.readInt();</a>
+<a name="ln179">                  }</a>
+<a name="ln180">            else if (tag == &quot;subtype&quot;) {</a>
+<a name="ln181">                  int i = e.readInt();</a>
+<a name="ln182">                  if (score()-&gt;mscVersion() &lt;= 114) {</a>
+<a name="ln183">                        if (i == 0x40000104)</a>
+<a name="ln184">                              _timeSigType = TimeSigType::FOUR_FOUR;</a>
+<a name="ln185">                        else if (i == 0x40002084)</a>
+<a name="ln186">                              _timeSigType = TimeSigType::ALLA_BREVE;</a>
+<a name="ln187">                        else</a>
+<a name="ln188">                              _timeSigType = TimeSigType::NORMAL;</a>
+<a name="ln189">                        }</a>
+<a name="ln190">                  else</a>
+<a name="ln191">                        _timeSigType = TimeSigType(i);</a>
+<a name="ln192">                  }</a>
+<a name="ln193">            else if (tag == &quot;showCourtesySig&quot;)</a>
+<a name="ln194">                  _showCourtesySig = e.readInt();</a>
+<a name="ln195">            else if (tag == &quot;sigN&quot;)</a>
+<a name="ln196">                  _sig.setNumerator(e.readInt());</a>
+<a name="ln197">            else if (tag == &quot;sigD&quot;)</a>
+<a name="ln198">                  _sig.setDenominator(e.readInt());</a>
+<a name="ln199">            else if (tag == &quot;stretchN&quot;)</a>
+<a name="ln200">                  _stretch.setNumerator(e.readInt());</a>
+<a name="ln201">            else if (tag == &quot;stretchD&quot;)</a>
+<a name="ln202">                  _stretch.setDenominator(e.readInt());</a>
+<a name="ln203">            else if (tag == &quot;textN&quot;)</a>
+<a name="ln204">                  setNumeratorString(e.readElementText());</a>
+<a name="ln205">            else if (tag == &quot;textD&quot;)</a>
+<a name="ln206">                  setDenominatorString(e.readElementText());</a>
+<a name="ln207">            else if (tag == &quot;Groups&quot;)</a>
+<a name="ln208">                  _groups.read(e);</a>
+<a name="ln209">            else if (readStyledProperty(e, tag))</a>
+<a name="ln210">                  ;</a>
+<a name="ln211">            else if (!Element::readProperties(e))</a>
+<a name="ln212">                  e.unknown();</a>
+<a name="ln213">            }</a>
+<a name="ln214">      if (old) {</a>
+<a name="ln215">            _sig.set(z1+z2+z3+z4, n);</a>
+<a name="ln216">            }</a>
+<a name="ln217">      _stretch.reduce();</a>
+<a name="ln218">      }</a>
+<a name="ln219"> </a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221">//   propertyId</a>
+<a name="ln222">//---------------------------------------------------------</a>
+<a name="ln223"> </a>
+<a name="ln224">Pid TimeSig::propertyId(const QStringRef&amp; name) const</a>
+<a name="ln225">      {</a>
+<a name="ln226">      if (name == &quot;subtype&quot;)</a>
+<a name="ln227">            return Pid::TIMESIG_TYPE;</a>
+<a name="ln228">      if (name == &quot;sigN&quot; || name == &quot;sigD&quot;)</a>
+<a name="ln229">            return Pid::TIMESIG;</a>
+<a name="ln230">      if (name == &quot;stretchN&quot; || name == &quot;stretchD&quot;)</a>
+<a name="ln231">            return Pid::TIMESIG_STRETCH;</a>
+<a name="ln232">      if (name == &quot;Groups&quot;)</a>
+<a name="ln233">            return Pid::GROUPS;</a>
+<a name="ln234">      return Element::propertyId(name);</a>
+<a name="ln235">      }</a>
+<a name="ln236"> </a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238">//   layout</a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240"> </a>
+<a name="ln241">void TimeSig::layout()</a>
+<a name="ln242">      {</a>
+<a name="ln243">      setPos(0.0, 0.0);</a>
+<a name="ln244">      qreal _spatium = spatium();</a>
+<a name="ln245"> </a>
+<a name="ln246">      setbbox(QRectF());                  // prepare for an empty time signature</a>
+<a name="ln247">      pointLargeLeftParen = QPointF();</a>
+<a name="ln248">      pz = QPointF();</a>
+<a name="ln249">      pn = QPointF();</a>
+<a name="ln250">      pointLargeRightParen = QPointF();</a>
+<a name="ln251"> </a>
+<a name="ln252">      qreal lineDist;</a>
+<a name="ln253">      int   numOfLines;</a>
+<a name="ln254">      TimeSigType sigType = timeSigType();</a>
+<a name="ln255">      const Staff* _staff       = staff();</a>
+<a name="ln256"> </a>
+<a name="ln257">      if (_staff) {</a>
+<a name="ln258">            // if staff is without time sig, format as if no text at all</a>
+<a name="ln259">            if (!_staff-&gt;staffType(tick())-&gt;genTimesig() ) {</a>
+<a name="ln260">                  // reset position and box sizes to 0</a>
+<a name="ln261">                  // qDebug(&quot;staff: no time sig&quot;);</a>
+<a name="ln262">                  pointLargeLeftParen.rx() = 0.0;</a>
+<a name="ln263">                  pn.rx() = 0.0;</a>
+<a name="ln264">                  pz.rx() = 0.0;</a>
+<a name="ln265">                  pointLargeRightParen.rx() = 0.0;</a>
+<a name="ln266">                  setbbox(QRectF());</a>
+<a name="ln267">                  // leave everything else as it is:</a>
+<a name="ln268">                  // draw() will anyway skip any drawing if staff type has no time sigs</a>
+<a name="ln269">                  return;</a>
+<a name="ln270">                  }</a>
+<a name="ln271">            numOfLines  = _staff-&gt;lines(tick());</a>
+<a name="ln272">            lineDist    = _staff-&gt;lineDistance(tick());</a>
+<a name="ln273">            }</a>
+<a name="ln274">      else {</a>
+<a name="ln275">            // assume dimensions of a standard staff</a>
+<a name="ln276">            lineDist = 1.0;</a>
+<a name="ln277">            numOfLines = 5;</a>
+<a name="ln278">            }</a>
+<a name="ln279"> </a>
+<a name="ln280">      // if some symbol</a>
+<a name="ln281">      // compute vert. displacement to center in the staff height</a>
+<a name="ln282">      // determine middle staff position:</a>
+<a name="ln283"> </a>
+<a name="ln284">      qreal yoff = _spatium * (numOfLines-1) *.5 * lineDist;</a>
+<a name="ln285"> </a>
+<a name="ln286">      // C and Ccut are placed at the middle of the staff: use yoff directly</a>
+<a name="ln287">      if (sigType ==  TimeSigType::FOUR_FOUR) {</a>
+<a name="ln288">            pz = QPointF(0.0, yoff);</a>
+<a name="ln289">            setbbox(symBbox(SymId::timeSigCommon).translated(pz));</a>
+<a name="ln290">            ns.clear();</a>
+<a name="ln291">            ns.push_back(SymId::timeSigCommon);</a>
+<a name="ln292">            ds.clear();</a>
+<a name="ln293">            }</a>
+<a name="ln294">      else if (sigType == TimeSigType::ALLA_BREVE) {</a>
+<a name="ln295">            pz = QPointF(0.0, yoff);</a>
+<a name="ln296">            setbbox(symBbox(SymId::timeSigCutCommon).translated(pz));</a>
+<a name="ln297">            ns.clear();</a>
+<a name="ln298">            ns.push_back(SymId::timeSigCutCommon);</a>
+<a name="ln299">            ds.clear();</a>
+<a name="ln300">            }</a>
+<a name="ln301">      else {</a>
+<a name="ln302">            ns = toTimeSigString(_numeratorString.isEmpty()   ? QString::number(_sig.numerator())   : _numeratorString);</a>
+<a name="ln303">            ds = toTimeSigString(_denominatorString.isEmpty() ? QString::number(_sig.denominator()) : _denominatorString);</a>
+<a name="ln304"> </a>
+<a name="ln305">            ScoreFont* font = score()-&gt;scoreFont();</a>
+<a name="ln306">            QSizeF mag(magS() * _scale);</a>
+<a name="ln307"> </a>
+<a name="ln308">            QRectF numRect = font-&gt;bbox(ns, mag);</a>
+<a name="ln309">            QRectF denRect = font-&gt;bbox(ds, mag);</a>
+<a name="ln310"> </a>
+<a name="ln311">            // position numerator and denominator; vertical displacement:</a>
+<a name="ln312">            // number of lines is odd: 0.0 (strings are directly above and below the middle line)</a>
+<a name="ln313">            // number of lines even:   0.05 (strings are moved up/down to leave 1/10sp between them)</a>
+<a name="ln314"> </a>
+<a name="ln315">            qreal displ = (numOfLines &amp; 1) ? 0.0 : (0.05 * _spatium);</a>
+<a name="ln316"> </a>
+<a name="ln317">            //align on the wider</a>
+<a name="ln318">            qreal pzY = yoff - (denRect.width() &lt; 0.01 ? 0.0 : (displ + numRect.height() * .5));</a>
+<a name="ln319">            qreal pnY = yoff + displ + denRect.height() * .5;</a>
+<a name="ln320"> </a>
+<a name="ln321">            if (numRect.width() &gt;= denRect.width()) {</a>
+<a name="ln322">                  // numerator: one space above centre line, unless denomin. is empty (if so, directly centre in the middle)</a>
+<a name="ln323">                  pz = QPointF(0.0, pzY);</a>
+<a name="ln324">                  // denominator: horiz: centred around centre of numerator | vert: one space below centre line</a>
+<a name="ln325">                  pn = QPointF((numRect.width() - denRect.width())*.5, pnY);</a>
+<a name="ln326">                  }</a>
+<a name="ln327">            else {</a>
+<a name="ln328">                  // numerator: one space above centre line, unless denomin. is empty (if so, directly centre in the middle)</a>
+<a name="ln329">                  pz = QPointF((denRect.width() - numRect.width())*.5, pzY);</a>
+<a name="ln330">                  // denominator: horiz: centred around centre of numerator | vert: one space below centre line</a>
+<a name="ln331">                  pn = QPointF(0.0, pnY);</a>
+<a name="ln332">                  }</a>
+<a name="ln333"> </a>
+<a name="ln334">            // centering of parenthesis so the middle of the parenthesis is at the divisor marking level</a>
+<a name="ln335">            int centerY = yoff/2 + _spatium;</a>
+<a name="ln336">            int widestPortion = numRect.width() &gt; denRect.width() ? numRect.width() : denRect.width();</a>
+<a name="ln337">            pointLargeLeftParen = QPointF(-_spatium, centerY);</a>
+<a name="ln338">            pointLargeRightParen = QPointF(widestPortion + _spatium, centerY);</a>
+<a name="ln339"> </a>
+<a name="ln340">            setbbox(numRect.translated(pz));   // translate bounding boxes to actual string positions</a>
+<a name="ln341">            addbbox(denRect.translated(pn));</a>
+<a name="ln342">            if (_largeParentheses) {</a>
+<a name="ln343">                  addbbox(QRect(pointLargeLeftParen.x(), pointLargeLeftParen.y() - denRect.height(), _spatium / 2, numRect.height() + denRect.height()));</a>
+<a name="ln344">                  addbbox(QRect(pointLargeRightParen.x(), pointLargeRightParen.y() - denRect.height(),  _spatium / 2, numRect.height() + denRect.height()));</a>
+<a name="ln345">                  }</a>
+<a name="ln346">            }</a>
+<a name="ln347">      }</a>
+<a name="ln348"> </a>
+<a name="ln349">//---------------------------------------------------------</a>
+<a name="ln350">//   shape</a>
+<a name="ln351">//---------------------------------------------------------</a>
+<a name="ln352"> </a>
+<a name="ln353">Shape TimeSig::shape() const</a>
+<a name="ln354">      {</a>
+<a name="ln355">      QRectF box(bbox());</a>
+<a name="ln356">      const Staff* st = staff();</a>
+<a name="ln357">      if (st &amp;&amp; addToSkyline()) {</a>
+<a name="ln358">            // Extend time signature shape up and down to</a>
+<a name="ln359">            // the first ledger line height to ensure that</a>
+<a name="ln360">            // no notes will be too close to the timesig.</a>
+<a name="ln361">            const qreal sp = spatium();</a>
+<a name="ln362">            const qreal y = pos().y();</a>
+<a name="ln363">            box.setTop(std::min(-sp - y, box.top()));</a>
+<a name="ln364">            box.setBottom(std::max(st-&gt;height() - y + sp, box.bottom()));</a>
+<a name="ln365">            }</a>
+<a name="ln366">      return Shape(box);</a>
+<a name="ln367">      }</a>
+<a name="ln368"> </a>
+<a name="ln369">//---------------------------------------------------------</a>
+<a name="ln370">//   draw</a>
+<a name="ln371">//---------------------------------------------------------</a>
+<a name="ln372"> </a>
+<a name="ln373">void TimeSig::draw(QPainter* painter) const</a>
+<a name="ln374">      {</a>
+<a name="ln375">      if (staff() &amp;&amp; !const_cast&lt;const Staff*&gt;(staff())-&gt;staffType(tick())-&gt;genTimesig())</a>
+<a name="ln376">            return;</a>
+<a name="ln377">      painter-&gt;setPen(curColor());</a>
+<a name="ln378"> </a>
+<a name="ln379">      drawSymbols(ns, painter, pz, _scale);</a>
+<a name="ln380">      drawSymbols(ds, painter, pn, _scale);</a>
+<a name="ln381"> </a>
+<a name="ln382">      if (_largeParentheses) {</a>
+<a name="ln383">            drawSymbol(SymId::timeSigParensLeft,  painter, pointLargeLeftParen,  _scale.width());</a>
+<a name="ln384">            drawSymbol(SymId::timeSigParensRight, painter, pointLargeRightParen, _scale.width());</a>
+<a name="ln385">            }</a>
+<a name="ln386">      }</a>
+<a name="ln387"> </a>
+<a name="ln388">//---------------------------------------------------------</a>
+<a name="ln389">//   setFrom</a>
+<a name="ln390">//---------------------------------------------------------</a>
+<a name="ln391"> </a>
+<a name="ln392">void TimeSig::setFrom(const TimeSig* ts)</a>
+<a name="ln393">      {</a>
+<a name="ln394">      _timeSigType       = ts-&gt;timeSigType();</a>
+<a name="ln395">      _numeratorString   = ts-&gt;_numeratorString;</a>
+<a name="ln396">      _denominatorString = ts-&gt;_denominatorString;</a>
+<a name="ln397">      _sig               = ts-&gt;_sig;</a>
+<a name="ln398">      _stretch           = ts-&gt;_stretch;</a>
+<a name="ln399">      }</a>
+<a name="ln400"> </a>
+<a name="ln401">//---------------------------------------------------------</a>
+<a name="ln402">//   ssig</a>
+<a name="ln403">//---------------------------------------------------------</a>
+<a name="ln404"> </a>
+<a name="ln405">QString TimeSig::ssig() const</a>
+<a name="ln406">      {</a>
+<a name="ln407">      return QString(&quot;%1/%2&quot;).arg(_sig.numerator()).arg(_sig.denominator());</a>
+<a name="ln408">      }</a>
+<a name="ln409"> </a>
+<a name="ln410">//---------------------------------------------------------</a>
+<a name="ln411">//   setSSig</a>
+<a name="ln412">//---------------------------------------------------------</a>
+<a name="ln413"> </a>
+<a name="ln414">void TimeSig::setSSig(const QString&amp; s)</a>
+<a name="ln415">      {</a>
+<a name="ln416">      QStringList sl = s.split(&quot;/&quot;);</a>
+<a name="ln417">      if (sl.size() == 2) {</a>
+<a name="ln418">            _sig.setNumerator(sl[0].toInt());</a>
+<a name="ln419">            _sig.setDenominator(sl[1].toInt());</a>
+<a name="ln420">            }</a>
+<a name="ln421">      }</a>
+<a name="ln422"> </a>
+<a name="ln423">//---------------------------------------------------------</a>
+<a name="ln424">//   getProperty</a>
+<a name="ln425">//---------------------------------------------------------</a>
+<a name="ln426"> </a>
+<a name="ln427">QVariant TimeSig::getProperty(Pid propertyId) const</a>
+<a name="ln428">      {</a>
+<a name="ln429">      switch (propertyId) {</a>
+<a name="ln430">            case Pid::SHOW_COURTESY:</a>
+<a name="ln431">                  return int(showCourtesySig());</a>
+<a name="ln432">            case Pid::NUMERATOR_STRING:</a>
+<a name="ln433">                  return numeratorString();</a>
+<a name="ln434">            case Pid::DENOMINATOR_STRING:</a>
+<a name="ln435">                  return denominatorString();</a>
+<a name="ln436">            case Pid::GROUPS:</a>
+<a name="ln437">                  return QVariant::fromValue(groups());</a>
+<a name="ln438">            case Pid::TIMESIG:</a>
+<a name="ln439">                  return QVariant::fromValue(_sig);</a>
+<a name="ln440">            case Pid::TIMESIG_GLOBAL:</a>
+<a name="ln441">                  return QVariant::fromValue(globalSig());</a>
+<a name="ln442">            case Pid::TIMESIG_STRETCH:</a>
+<a name="ln443">                  return QVariant::fromValue(stretch());</a>
+<a name="ln444">            case Pid::TIMESIG_TYPE:</a>
+<a name="ln445">                  return int(_timeSigType);</a>
+<a name="ln446">            case Pid::SCALE:</a>
+<a name="ln447">                  return _scale;</a>
+<a name="ln448">            default:</a>
+<a name="ln449">                  return Element::getProperty(propertyId);</a>
+<a name="ln450">            }</a>
+<a name="ln451">      }</a>
+<a name="ln452"> </a>
+<a name="ln453">//---------------------------------------------------------</a>
+<a name="ln454">//   setProperty</a>
+<a name="ln455">//---------------------------------------------------------</a>
+<a name="ln456"> </a>
+<a name="ln457">bool TimeSig::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln458">      {</a>
+<a name="ln459">      switch (propertyId) {</a>
+<a name="ln460">            case Pid::SHOW_COURTESY:</a>
+<a name="ln461">                  if (generated())</a>
+<a name="ln462">                        return false;</a>
+<a name="ln463">                  setShowCourtesySig(v.toBool());</a>
+<a name="ln464">                  break;</a>
+<a name="ln465">            case Pid::NUMERATOR_STRING:</a>
+<a name="ln466">                  setNumeratorString(v.toString());</a>
+<a name="ln467">                  break;</a>
+<a name="ln468">            case Pid::DENOMINATOR_STRING:</a>
+<a name="ln469">                  setDenominatorString(v.toString());</a>
+<a name="ln470">                  break;</a>
+<a name="ln471">            case Pid::GROUPS:</a>
+<a name="ln472">                  setGroups(v.value&lt;Groups&gt;());</a>
+<a name="ln473">                  break;</a>
+<a name="ln474">            case Pid::TIMESIG:</a>
+<a name="ln475">                  setSig(v.value&lt;Fraction&gt;());</a>
+<a name="ln476">                  break;</a>
+<a name="ln477">            case Pid::TIMESIG_GLOBAL:</a>
+<a name="ln478">                  setGlobalSig(v.value&lt;Fraction&gt;());</a>
+<a name="ln479">                  break;</a>
+<a name="ln480">            case Pid::TIMESIG_STRETCH:</a>
+<a name="ln481">                  setStretch(v.value&lt;Fraction&gt;());</a>
+<a name="ln482">                  break;</a>
+<a name="ln483">            case Pid::TIMESIG_TYPE:</a>
+<a name="ln484">                  _timeSigType = (TimeSigType)(v.toInt());</a>
+<a name="ln485">                  break;</a>
+<a name="ln486">            case Pid::SCALE:</a>
+<a name="ln487">                  _scale = v.toSizeF();</a>
+<a name="ln488">                  break;</a>
+<a name="ln489">            default:</a>
+<a name="ln490">                  if (!Element::setProperty(propertyId, v))</a>
+<a name="ln491">                        return false;</a>
+<a name="ln492">                  break;</a>
+<a name="ln493">            }</a>
+<a name="ln494">      triggerLayoutAll();      // TODO</a>
+<a name="ln495">      setGenerated(false);</a>
+<a name="ln496">      return true;</a>
+<a name="ln497">      }</a>
+<a name="ln498"> </a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500">//   propertyDefault</a>
+<a name="ln501">//---------------------------------------------------------</a>
+<a name="ln502"> </a>
+<a name="ln503">QVariant TimeSig::propertyDefault(Pid id) const</a>
+<a name="ln504">      {</a>
+<a name="ln505">      switch (id) {</a>
+<a name="ln506">            case Pid::SHOW_COURTESY:</a>
+<a name="ln507">                  return true;</a>
+<a name="ln508">            case Pid::NUMERATOR_STRING:</a>
+<a name="ln509">                  return QString();</a>
+<a name="ln510">            case Pid::DENOMINATOR_STRING:</a>
+<a name="ln511">                  return QString();</a>
+<a name="ln512">            case Pid::TIMESIG:</a>
+<a name="ln513">                  return QVariant::fromValue(Fraction(4,4));</a>
+<a name="ln514">            case Pid::TIMESIG_GLOBAL:</a>
+<a name="ln515">                  return QVariant::fromValue(Fraction(1,1));</a>
+<a name="ln516">            case Pid::TIMESIG_TYPE:</a>
+<a name="ln517">                  return int(TimeSigType::NORMAL);</a>
+<a name="ln518">            case Pid::SCALE:</a>
+<a name="ln519">                  return score()-&gt;styleV(Sid::timesigScale);</a>
+<a name="ln520">            default:</a>
+<a name="ln521">                  return Element::propertyDefault(id);</a>
+<a name="ln522">            }</a>
+<a name="ln523">      }</a>
+<a name="ln524"> </a>
+<a name="ln525">//---------------------------------------------------------</a>
+<a name="ln526">//   nextSegmentElement</a>
+<a name="ln527">//---------------------------------------------------------</a>
+<a name="ln528"> </a>
+<a name="ln529">Element* TimeSig::nextSegmentElement()</a>
+<a name="ln530">      {</a>
+<a name="ln531">      return segment()-&gt;firstInNextSegments(staffIdx());</a>
+<a name="ln532">      }</a>
+<a name="ln533"> </a>
+<a name="ln534">//---------------------------------------------------------</a>
+<a name="ln535">//   prevSegmentElement</a>
+<a name="ln536">//---------------------------------------------------------</a>
+<a name="ln537"> </a>
+<a name="ln538">Element* TimeSig::prevSegmentElement()</a>
+<a name="ln539">      {</a>
+<a name="ln540">      return segment()-&gt;lastInPrevSegments(staffIdx());</a>
+<a name="ln541">      }</a>
+<a name="ln542"> </a>
+<a name="ln543">//---------------------------------------------------------</a>
+<a name="ln544">//   accessibleInfo</a>
+<a name="ln545">//---------------------------------------------------------</a>
+<a name="ln546"> </a>
+<a name="ln547">QString TimeSig::accessibleInfo() const</a>
+<a name="ln548">      {</a>
+<a name="ln549">      QString timeSigString;</a>
+<a name="ln550">      switch (timeSigType()) {</a>
+<a name="ln551">            case TimeSigType::FOUR_FOUR:</a>
+<a name="ln552">                  timeSigString = QObject::tr(&quot;Common time&quot;);</a>
+<a name="ln553">                  break;</a>
+<a name="ln554">            case TimeSigType::ALLA_BREVE:</a>
+<a name="ln555">                  timeSigString = QObject::tr(&quot;Cut time&quot;);</a>
+<a name="ln556">                  break;</a>
+<a name="ln557">            default:</a>
+<a name="ln558">                  timeSigString = QObject::tr(&quot;%1/%2 time&quot;).arg(QString::number(numerator())).arg(QString::number(denominator()));</a>
+<a name="ln559">            }</a>
+<a name="ln560">      return QString(&quot;%1: %2&quot;).arg(Element::accessibleInfo()).arg(timeSigString);</a>
+<a name="ln561">      }</a>
+<a name="ln562"> </a>
+<a name="ln563">//---------------------------------------------------------</a>
+<a name="ln564">//   operator==</a>
+<a name="ln565">//---------------------------------------------------------</a>
+<a name="ln566"> </a>
+<a name="ln567">bool TimeSig::operator==(const TimeSig&amp; ts) const</a>
+<a name="ln568">      {</a>
+<a name="ln569">      return (timeSigType() == ts.timeSigType())</a>
+<a name="ln570">         &amp;&amp; (sig().identical(ts.sig()))</a>
+<a name="ln571">         &amp;&amp; (stretch() == ts.stretch())</a>
+<a name="ln572">         &amp;&amp; (groups() == ts.groups())</a>
+<a name="ln573">         &amp;&amp; (_numeratorString == ts._numeratorString)</a>
+<a name="ln574">         &amp;&amp; (_denominatorString == ts._denominatorString)</a>
+<a name="ln575">         ;</a>
+<a name="ln576">      }</a>
+<a name="ln577"> </a>
+<a name="ln578">}</a>
+<a name="ln579"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,886 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>repeatlist.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2009-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;repeatlist.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;measure.h&quot;</a>
+<a name="ln16">#include &quot;tempo.h&quot;</a>
+<a name="ln17">#include &quot;volta.h&quot;</a>
+<a name="ln18">#include &quot;segment.h&quot;</a>
+<a name="ln19">#include &quot;marker.h&quot;</a>
+<a name="ln20">#include &quot;jump.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">namespace Ms {</a>
+<a name="ln23"> </a>
+<a name="ln24">//---------------------------------------------------------</a>
+<a name="ln25">//   searchLabel</a>
+<a name="ln26">//    @param startMeasure From this measure, if nullptr from firstMeasure</a>
+<a name="ln27">//    @param endMeasure   Up to and including this measure, if nullptr till end of score</a>
+<a name="ln28">//---------------------------------------------------------</a>
+<a name="ln29"> </a>
+<a name="ln30">Measure* Score::searchLabel(const QString&amp; s, Measure* startMeasure, Measure* endMeasure)</a>
+<a name="ln31">      {</a>
+<a name="ln32">      if (nullptr == startMeasure)</a>
+<a name="ln33">            startMeasure = firstMeasure();</a>
+<a name="ln34">      if (nullptr == endMeasure)</a>
+<a name="ln35">            endMeasure = lastMeasure();</a>
+<a name="ln36"> </a>
+<a name="ln37">      if (s == &quot;start&quot;)</a>
+<a name="ln38">            return startMeasure;</a>
+<a name="ln39">      else if (s == &quot;end&quot;)</a>
+<a name="ln40">            return endMeasure;</a>
+<a name="ln41"> </a>
+<a name="ln42">      endMeasure = endMeasure-&gt;nextMeasure(); // stop comparison needs measure one past the last one to check</a>
+<a name="ln43">      for (Measure* m = startMeasure; m &amp;&amp; (m != endMeasure); m = m-&gt;nextMeasure()) {</a>
+<a name="ln44">            for (auto e : m-&gt;el()) {</a>
+<a name="ln45">                  if (   (e-&gt;isMarker())</a>
+<a name="ln46">                      &amp;&amp; (toMarker(e)-&gt;label() == s)) {</a>
+<a name="ln47">                        return m;</a>
+<a name="ln48">                        }</a>
+<a name="ln49">                  }</a>
+<a name="ln50">            }</a>
+<a name="ln51">      return nullptr;</a>
+<a name="ln52">      }</a>
+<a name="ln53"> </a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55">//   searchLabelWithinSectionFirst</a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57"> </a>
+<a name="ln58">Measure* Score::searchLabelWithinSectionFirst(const QString&amp; s, Measure* sectionStartMeasure, Measure* sectionEndMeasure)</a>
+<a name="ln59">      {</a>
+<a name="ln60">      Measure* result = searchLabel(s, sectionStartMeasure, sectionEndMeasure);</a>
+<a name="ln61">      if ((nullptr == result) &amp;&amp; (sectionStartMeasure != firstMeasure())) { // not found, expand to the front</a>
+<a name="ln62">            result = searchLabel(s, nullptr, sectionStartMeasure-&gt;prevMeasure());</a>
+<a name="ln63">            }</a>
+<a name="ln64">      if ((nullptr == result) &amp;&amp; (sectionEndMeasure != lastMeasure())) { // not found, expand to the end</a>
+<a name="ln65">            result = searchLabel(s, sectionEndMeasure-&gt;nextMeasure(), nullptr);</a>
+<a name="ln66">            }</a>
+<a name="ln67">      return result;</a>
+<a name="ln68">      }</a>
+<a name="ln69"> </a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71">//   RepeatSegment</a>
+<a name="ln72">//---------------------------------------------------------</a>
+<a name="ln73"> </a>
+<a name="ln74">RepeatSegment::RepeatSegment()</a>
+<a name="ln75">      {</a>
+<a name="ln76">      tick       = 0;</a>
+<a name="ln77">      utick      = 0;</a>
+<a name="ln78">      utime      = 0.0;</a>
+<a name="ln79">      timeOffset = 0.0;</a>
+<a name="ln80">      }</a>
+<a name="ln81"> </a>
+<a name="ln82">RepeatSegment::RepeatSegment(RepeatSegment * const rs, Measure * const fromMeasure, Measure * const untilMeasure)</a>
+<a name="ln83">      {</a>
+<a name="ln84">      tick       = 0;</a>
+<a name="ln85">      utick      = 0;</a>
+<a name="ln86">      utime      = 0.0;</a>
+<a name="ln87">      timeOffset = 0.0;</a>
+<a name="ln88">      //copy the measure list</a>
+<a name="ln89">      auto it = rs-&gt;measureList.cbegin();</a>
+<a name="ln90">      if (nullptr != fromMeasure) {</a>
+<a name="ln91">            //skip until fromMeasure</a>
+<a name="ln92">            while ((it-&gt;first != fromMeasure) &amp;&amp; ((++it) != rs-&gt;measureList.cend()));</a>
+<a name="ln93">            }</a>
+<a name="ln94">      while (it != rs-&gt;measureList.cend()) {</a>
+<a name="ln95">            if ((nullptr != untilMeasure) &amp;&amp; (it-&gt;first-&gt;no() &gt; untilMeasure-&gt;no())) {</a>
+<a name="ln96">                  break;</a>
+<a name="ln97">                  }</a>
+<a name="ln98">            measureList.push_back(std::make_pair(it-&gt;first, it-&gt;second));</a>
+<a name="ln99">            ++it;</a>
+<a name="ln100">            }</a>
+<a name="ln101">      if (!measureList.empty()) {</a>
+<a name="ln102">            tick = measureList.cbegin()-&gt;first-&gt;tick().ticks();</a>
+<a name="ln103">            }</a>
+<a name="ln104">      }</a>
+<a name="ln105"> </a>
+<a name="ln106">void RepeatSegment::addMeasure(Measure * const m)</a>
+<a name="ln107">      {</a>
+<a name="ln108">      Q_ASSERT(measureList.empty() || measureList.back().first-&gt;nextMeasure() == m);</a>
+<a name="ln109">      if (measureList.empty()) {</a>
+<a name="ln110">            tick = m-&gt;tick().ticks();</a>
+<a name="ln111">            }</a>
+<a name="ln112">      measureList.push_back(std::make_pair(m, m-&gt;playbackCount()));</a>
+<a name="ln113">      }</a>
+<a name="ln114"> </a>
+<a name="ln115">bool RepeatSegment::containsMeasure(Measure const * const m) const</a>
+<a name="ln116">      {</a>
+<a name="ln117">      for (std::pair&lt;Measure*, int&gt; measure : measureList)</a>
+<a name="ln118">            {</a>
+<a name="ln119">            if (measure.first == m)</a>
+<a name="ln120">                  return true;</a>
+<a name="ln121">            }</a>
+<a name="ln122">      return false;</a>
+<a name="ln123">      }</a>
+<a name="ln124"> </a>
+<a name="ln125">int RepeatSegment::len() const</a>
+<a name="ln126">      {</a>
+<a name="ln127">      return (measureList.empty()) ? 0 : (measureList.last().first-&gt;endTick().ticks() - tick);</a>
+<a name="ln128">      }</a>
+<a name="ln129"> </a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131">//   playbackCount</a>
+<a name="ln132">//    returns the playbackCount of this measure at the time it was inserted into the repeatSegment</a>
+<a name="ln133">//    returns 0 if the measure is not part of this repeatSegment</a>
+<a name="ln134">//---------------------------------------------------------</a>
+<a name="ln135"> </a>
+<a name="ln136">int RepeatSegment::playbackCount(Measure * const m) const</a>
+<a name="ln137">      {</a>
+<a name="ln138">      for (std::pair&lt;Measure*, int&gt; measure : measureList)</a>
+<a name="ln139">            {</a>
+<a name="ln140">            if (measure.first == m)</a>
+<a name="ln141">                  return measure.second;</a>
+<a name="ln142">            }</a>
+<a name="ln143">      return 0;</a>
+<a name="ln144">      }</a>
+<a name="ln145"> </a>
+<a name="ln146">//---------------------------------------------------------</a>
+<a name="ln147">//   RepeatList</a>
+<a name="ln148">//---------------------------------------------------------</a>
+<a name="ln149"> </a>
+<a name="ln150">RepeatList::RepeatList(Score* s)</a>
+<a name="ln151">      {</a>
+<a name="ln152">      _score = s;</a>
+<a name="ln153">      idx1  = 0;</a>
+<a name="ln154">      idx2  = 0;</a>
+<a name="ln155">      }</a>
+<a name="ln156"> </a>
+<a name="ln157">//---------------------------------------------------------</a>
+<a name="ln158">//   ~RepeatList</a>
+<a name="ln159">//---------------------------------------------------------</a>
+<a name="ln160"> </a>
+<a name="ln161">RepeatList::~RepeatList()</a>
+<a name="ln162">      {</a>
+<a name="ln163">      qDeleteAll(*this);</a>
+<a name="ln164">      }</a>
+<a name="ln165"> </a>
+<a name="ln166">//---------------------------------------------------------</a>
+<a name="ln167">//   ticks</a>
+<a name="ln168">//---------------------------------------------------------</a>
+<a name="ln169"> </a>
+<a name="ln170">int RepeatList::ticks() const</a>
+<a name="ln171">      {</a>
+<a name="ln172">      if (length() &gt; 0) {</a>
+<a name="ln173">            const RepeatSegment* s = last();</a>
+<a name="ln174">            return s-&gt;utick + s-&gt;len();</a>
+<a name="ln175">            }</a>
+<a name="ln176">      return 0;</a>
+<a name="ln177">      }</a>
+<a name="ln178"> </a>
+<a name="ln179">//---------------------------------------------------------</a>
+<a name="ln180">//   update</a>
+<a name="ln181">//---------------------------------------------------------</a>
+<a name="ln182"> </a>
+<a name="ln183">void RepeatList::update(bool expand)</a>
+<a name="ln184">      {</a>
+<a name="ln185">      if (!_scoreChanged &amp;&amp; expand == _expanded)</a>
+<a name="ln186">            return;</a>
+<a name="ln187"> </a>
+<a name="ln188">      if (expand)</a>
+<a name="ln189">            unwind();</a>
+<a name="ln190">      else</a>
+<a name="ln191">            flatten();</a>
+<a name="ln192"> </a>
+<a name="ln193">      _scoreChanged = false;</a>
+<a name="ln194">      }</a>
+<a name="ln195"> </a>
+<a name="ln196">//---------------------------------------------------------</a>
+<a name="ln197">//   updateTempo</a>
+<a name="ln198">//---------------------------------------------------------</a>
+<a name="ln199"> </a>
+<a name="ln200">void RepeatList::updateTempo()</a>
+<a name="ln201">      {</a>
+<a name="ln202">      const TempoMap* tl = _score-&gt;tempomap();</a>
+<a name="ln203"> </a>
+<a name="ln204">      int utick = 0;</a>
+<a name="ln205">      qreal t  = 0;</a>
+<a name="ln206"> </a>
+<a name="ln207">      for(RepeatSegment* s : *this) {</a>
+<a name="ln208">            s-&gt;utick      = utick;</a>
+<a name="ln209">            s-&gt;utime      = t;</a>
+<a name="ln210">            qreal ct      = tl-&gt;tick2time(s-&gt;tick);</a>
+<a name="ln211">            s-&gt;timeOffset = t - ct;</a>
+<a name="ln212">            utick        += s-&gt;len();</a>
+<a name="ln213">            t            += tl-&gt;tick2time(s-&gt;tick + s-&gt;len()) - ct;</a>
+<a name="ln214">            }</a>
+<a name="ln215">      }</a>
+<a name="ln216"> </a>
+<a name="ln217">//---------------------------------------------------------</a>
+<a name="ln218">//   utick2tick</a>
+<a name="ln219">//---------------------------------------------------------</a>
+<a name="ln220"> </a>
+<a name="ln221">int RepeatList::utick2tick(int tick) const</a>
+<a name="ln222">      {</a>
+<a name="ln223">      unsigned n = size();</a>
+<a name="ln224">      if (n == 0)</a>
+<a name="ln225">            return tick;</a>
+<a name="ln226">      if (tick &lt; 0)</a>
+<a name="ln227">            return 0;</a>
+<a name="ln228">      unsigned ii = (idx1 &lt; n) &amp;&amp; (tick &gt;= at(idx1)-&gt;utick) ? idx1 : 0;</a>
+<a name="ln229">      for (unsigned i = ii; i &lt; n; ++i) {</a>
+<a name="ln230">            if ((tick &gt;= at(i)-&gt;utick) &amp;&amp; ((i + 1 == n) || (tick &lt; at(i+1)-&gt;utick))) {</a>
+<a name="ln231">                  idx1 = i;</a>
+<a name="ln232">                  return tick - (at(i)-&gt;utick - at(i)-&gt;tick);</a>
+<a name="ln233">                  }</a>
+<a name="ln234">            }</a>
+<a name="ln235">      if (MScore::debugMode) {</a>
+<a name="ln236">            qFatal(&quot;tick %d not found in RepeatList&quot;, tick);</a>
+<a name="ln237">            }</a>
+<a name="ln238">      return 0;</a>
+<a name="ln239">      }</a>
+<a name="ln240"> </a>
+<a name="ln241">//---------------------------------------------------------</a>
+<a name="ln242">//   tick2utick</a>
+<a name="ln243">//---------------------------------------------------------</a>
+<a name="ln244"> </a>
+<a name="ln245">int RepeatList::tick2utick(int tick) const</a>
+<a name="ln246">      {</a>
+<a name="ln247">      if (empty())</a>
+<a name="ln248">            return 0;</a>
+<a name="ln249">      for (const RepeatSegment* s : *this) {</a>
+<a name="ln250">            if (tick &gt;= s-&gt;tick &amp;&amp; tick &lt; (s-&gt;tick + s-&gt;len() ))</a>
+<a name="ln251">                  return s-&gt;utick + (tick - s-&gt;tick);</a>
+<a name="ln252">            }</a>
+<a name="ln253">      return last()-&gt;utick + (tick - last()-&gt;tick);</a>
+<a name="ln254">      }</a>
+<a name="ln255"> </a>
+<a name="ln256">//---------------------------------------------------------</a>
+<a name="ln257">//   utick2utime</a>
+<a name="ln258">//---------------------------------------------------------</a>
+<a name="ln259"> </a>
+<a name="ln260">qreal RepeatList::utick2utime(int tick) const</a>
+<a name="ln261">      {</a>
+<a name="ln262">      unsigned n = size();</a>
+<a name="ln263">      unsigned ii = (idx1 &lt; n) &amp;&amp; (tick &gt;= at(idx1)-&gt;utick) ? idx1 : 0;</a>
+<a name="ln264">      for (unsigned i = ii; i &lt; n; ++i) {</a>
+<a name="ln265">            if ((tick &gt;= at(i)-&gt;utick) &amp;&amp; ((i + 1 == n) || (tick &lt; at(i+1)-&gt;utick))) {</a>
+<a name="ln266">                  int t     = tick - (at(i)-&gt;utick - at(i)-&gt;tick);</a>
+<a name="ln267">                  qreal tt = _score-&gt;tempomap()-&gt;tick2time(t) + at(i)-&gt;timeOffset;</a>
+<a name="ln268">                  return tt;</a>
+<a name="ln269">                  }</a>
+<a name="ln270">            }</a>
+<a name="ln271">      return 0.0;</a>
+<a name="ln272">      }</a>
+<a name="ln273"> </a>
+<a name="ln274">//---------------------------------------------------------</a>
+<a name="ln275">//   utime2utick</a>
+<a name="ln276">//---------------------------------------------------------</a>
+<a name="ln277"> </a>
+<a name="ln278">int RepeatList::utime2utick(qreal t) const</a>
+<a name="ln279">      {</a>
+<a name="ln280">      unsigned n = size();</a>
+<a name="ln281">      unsigned ii = (idx2 &lt; n) &amp;&amp; (t &gt;= at(idx2)-&gt;utime) ? idx2 : 0;</a>
+<a name="ln282">      for (unsigned i = ii; i &lt; n; ++i) {</a>
+<a name="ln283">            if ((t &gt;= at(i)-&gt;utime) &amp;&amp; ((i + 1 == n) || (t &lt; at(i+1)-&gt;utime))) {</a>
+<a name="ln284">                  idx2 = i;</a>
+<a name="ln285">                  return _score-&gt;tempomap()-&gt;time2tick(t - at(i)-&gt;timeOffset) + (at(i)-&gt;utick - at(i)-&gt;tick);</a>
+<a name="ln286">                  }</a>
+<a name="ln287">            }</a>
+<a name="ln288">      if (MScore::debugMode) {</a>
+<a name="ln289">            qFatal(&quot;time %f not found in RepeatList&quot;, t);</a>
+<a name="ln290">            }</a>
+<a name="ln291">      return 0;</a>
+<a name="ln292">      }</a>
+<a name="ln293"> </a>
+<a name="ln294">//---------------------------------------------------------</a>
+<a name="ln295">//   dump</a>
+<a name="ln296">//---------------------------------------------------------</a>
+<a name="ln297"> </a>
+<a name="ln298">void RepeatList::dump() const</a>
+<a name="ln299">      {</a>
+<a name="ln300">#if 0</a>
+<a name="ln301">      qDebug(&quot;==Dump Repeat List:==&quot;);</a>
+<a name="ln302">      for (const RepeatSegment* s : *this) {</a>
+<a name="ln303">            qDebug(&quot;%p  tick: %3d(%d) %3d(%d) len %d(%d) beats  %f + %f&quot;, s,</a>
+<a name="ln304">               s-&gt;utick / MScore::division,</a>
+<a name="ln305">               s-&gt;utick / MScore::division / 4,</a>
+<a name="ln306">               s-&gt;tick / MScore::division,</a>
+<a name="ln307">               s-&gt;tick / MScore::division / 4,</a>
+<a name="ln308">               s-&gt;len() / MScore::division,</a>
+<a name="ln309">               s-&gt;len() / MScore::division / 4,</a>
+<a name="ln310">               s-&gt;utime, s-&gt;timeOffset);</a>
+<a name="ln311">            }</a>
+<a name="ln312">#endif</a>
+<a name="ln313">      }</a>
+<a name="ln314"> </a>
+<a name="ln315">//---------------------------------------------------------</a>
+<a name="ln316">//   flatten</a>
+<a name="ln317">///   Make this repeat list flat (don't expand repeats)</a>
+<a name="ln318">//---------------------------------------------------------</a>
+<a name="ln319"> </a>
+<a name="ln320">void RepeatList::flatten()</a>
+<a name="ln321">      {</a>
+<a name="ln322">      qDeleteAll(*this);</a>
+<a name="ln323">      clear();</a>
+<a name="ln324"> </a>
+<a name="ln325">      Measure* m = _score-&gt;firstMeasure();</a>
+<a name="ln326">      if (!m)</a>
+<a name="ln327">            return;</a>
+<a name="ln328"> </a>
+<a name="ln329">      RepeatSegment* s = new RepeatSegment;</a>
+<a name="ln330">      s-&gt;tick  = 0;</a>
+<a name="ln331">      s-&gt;utick = 0;</a>
+<a name="ln332">      s-&gt;utime = 0.0;</a>
+<a name="ln333">      s-&gt;timeOffset = 0.0;</a>
+<a name="ln334">      do {</a>
+<a name="ln335">            s-&gt;addMeasure(m);</a>
+<a name="ln336">            m = m-&gt;nextMeasure();</a>
+<a name="ln337">            }</a>
+<a name="ln338">      while (m);</a>
+<a name="ln339">      push_back(s);</a>
+<a name="ln340"> </a>
+<a name="ln341">      _expanded = false;</a>
+<a name="ln342">      }</a>
+<a name="ln343"> </a>
+<a name="ln344">//---------------------------------------------------------</a>
+<a name="ln345">//   unwind</a>
+<a name="ln346">//    implements:</a>
+<a name="ln347">//          - repeats</a>
+<a name="ln348">//          - volta</a>
+<a name="ln349">//          - d.c. al fine</a>
+<a name="ln350">//          - d.s. al fine</a>
+<a name="ln351">//          - d.s. al coda</a>
+<a name="ln352">//---------------------------------------------------------</a>
+<a name="ln353"> </a>
+<a name="ln354">void RepeatList::unwind()</a>
+<a name="ln355">      {</a>
+<a name="ln356">      qDeleteAll(*this);</a>
+<a name="ln357">      clear();</a>
+<a name="ln358">      _voltaRanges.clear();</a>
+<a name="ln359">      _jumpsTaken.clear();</a>
+<a name="ln360">      Measure* fm = _score-&gt;firstMeasure();</a>
+<a name="ln361">      if (!fm)</a>
+<a name="ln362">            return;</a>
+<a name="ln363"> </a>
+<a name="ln364"> //qDebug(&quot;unwind===================&quot;);</a>
+<a name="ln365"> </a>
+<a name="ln366">      for (Measure* m = fm; m; m = m-&gt;nextMeasure())</a>
+<a name="ln367">            m-&gt;setPlaybackCount(0);</a>
+<a name="ln368"> </a>
+<a name="ln369">      preProcessVoltas();</a>
+<a name="ln370"> </a>
+<a name="ln371">      MeasureBase* sectionStartMeasureBase = NULL; // NULL indicates haven't discovered starting Measure of section</a>
+<a name="ln372">      MeasureBase* sectionEndMeasureBase = NULL;</a>
+<a name="ln373"> </a>
+<a name="ln374">      // partition score by section breaks and unwind individual sections separately</a>
+<a name="ln375">      // note: section breaks may occur on non-Measure frames, so must search list of all MeasureBases</a>
+<a name="ln376">      for (MeasureBase* mb = _score-&gt;first(); mb; mb = mb-&gt;next()) {</a>
+<a name="ln377"> </a>
+<a name="ln378">            // unwindSection only deals with real Measures, so sectionEndMeasureBase and sectionStartMeasureBase will only point to real Measures</a>
+<a name="ln379">            if (mb-&gt;isMeasure()) {</a>
+<a name="ln380">                  sectionEndMeasureBase = mb; // ending measure of section is the most recently encountered actual Measure</a>
+<a name="ln381"> </a>
+<a name="ln382">                  // starting measure of section will be the first non-NULL actual Measure encountered</a>
+<a name="ln383">                  if (sectionStartMeasureBase == NULL)</a>
+<a name="ln384">                        sectionStartMeasureBase = mb;</a>
+<a name="ln385">                  }</a>
+<a name="ln386"> </a>
+<a name="ln387">            // if found section break or reached final MeasureBase of score, then unwind</a>
+<a name="ln388">            if (mb-&gt;sectionBreak() || !mb-&gt;nextMeasure()) {</a>
+<a name="ln389"> </a>
+<a name="ln390">                  // only unwind if section starts and ends with actual real measure</a>
+<a name="ln391">                  if (sectionStartMeasureBase &amp;&amp; sectionEndMeasureBase) {</a>
+<a name="ln392">                        unwindSection(reinterpret_cast&lt;Measure*&gt;(sectionStartMeasureBase), reinterpret_cast&lt;Measure*&gt;(sectionEndMeasureBase));</a>
+<a name="ln393">                        sectionStartMeasureBase = 0; // reset to NULL to indicate that don't know starting Measure of next section after starting new section</a>
+<a name="ln394">                        sectionEndMeasureBase   = 0;</a>
+<a name="ln395">                        }</a>
+<a name="ln396">                  else {</a>
+<a name="ln397">                        qDebug( &quot;Will not unroll a section that doesn't start or end with an actual measure. sectionStartMeasureBase = %p, sectionEndMeasureBase = %p&quot;,</a>
+<a name="ln398">                                    sectionStartMeasureBase, sectionEndMeasureBase);</a>
+<a name="ln399">                        }</a>
+<a name="ln400">                  }</a>
+<a name="ln401">            }</a>
+<a name="ln402"> </a>
+<a name="ln403">      updateTempo();</a>
+<a name="ln404">      _expanded = true;</a>
+<a name="ln405">      dump();</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">//---------------------------------------------------------</a>
+<a name="ln409">//   preProcessVoltas</a>
+<a name="ln410">//    determine the real effective endpoint of voltas</a>
+<a name="ln411">//    because an open volta doesn't necessarily end on its end anchorpoint</a>
+<a name="ln412">//    MUST be called before unwinding(Section) logic!</a>
+<a name="ln413">//---------------------------------------------------------</a>
+<a name="ln414"> </a>
+<a name="ln415">void RepeatList::preProcessVoltas()</a>
+<a name="ln416">      {</a>
+<a name="ln417">      Volta* nextVolta = nullptr; //work backwards as a volta can end because the next one starts</a>
+<a name="ln418">      for (auto rit = _score-&gt;spanner().crbegin(); rit != _score-&gt;spanner().crend(); ++rit)</a>
+<a name="ln419">            {</a>
+<a name="ln420">            Spanner* s = (*rit).second;</a>
+<a name="ln421">            if (!s-&gt;isVolta())</a>
+<a name="ln422">                  continue;</a>
+<a name="ln423">            Volta* volta = toVolta(s);</a>
+<a name="ln424">            if (volta) {</a>
+<a name="ln425">                  if (_voltaRanges.find(volta) == _voltaRanges.end()) { // not yet determined the real endpoint, should always be true</a>
+<a name="ln426">                        // start by assuming the end of the spanner == the end of this volta (closed volta)</a>
+<a name="ln427">                        Measure* voltaEndMeasure = volta-&gt;endMeasure();</a>
+<a name="ln428">                        // open volta may end past its spanner</a>
+<a name="ln429">                        if (volta-&gt;getProperty(Pid::END_HOOK_TYPE).value&lt;HookType&gt;() == HookType::NONE) {</a>
+<a name="ln430">                              Measure* nextMeasureToInspect = voltaEndMeasure-&gt;nextMeasure();</a>
+<a name="ln431">                              // open volta ends:</a>
+<a name="ln432">                              while (  (nextMeasureToInspect)     // end of score</a>
+<a name="ln433">                                    &amp;&amp; (!voltaEndMeasure-&gt;sectionBreak()) // or end of section</a>
+<a name="ln434">                                    &amp;&amp; (!voltaEndMeasure-&gt;repeatEnd())    // hitting an endRepeat</a>
+<a name="ln435">                                    &amp;&amp; (!nextMeasureToInspect-&gt;repeatStart()) // or starting a new repeat</a>
+<a name="ln436">                                    &amp;&amp; (!nextVolta || (nextMeasureToInspect != nextVolta-&gt;startMeasure()))  // or if another volta starts</a>
+<a name="ln437">                                    &amp;&amp; (!voltaEndMeasure-&gt;repeatJump()) //or hitting a jump, otherwise the part after the jump might be considered under this volta as well…</a>
+<a name="ln438">                                    ) { // nextMeasureToInspect is still part of this volta</a>
+<a name="ln439">                                    voltaEndMeasure = nextMeasureToInspect;</a>
+<a name="ln440">                                    nextMeasureToInspect = voltaEndMeasure-&gt;nextMeasure();</a>
+<a name="ln441">                                    }</a>
+<a name="ln442">                              }</a>
+<a name="ln443">                        // found the real ending of this volta, store it to minimize search efforts</a>
+<a name="ln444">                        _voltaRanges.insert(std::pair&lt;Volta*, Measure*&gt;(volta, voltaEndMeasure));</a>
+<a name="ln445">                        nextVolta = volta; // this volta might indicate the end of the previous one</a>
+<a name="ln446">                        }</a>
+<a name="ln447">                  else {</a>
+<a name="ln448">                        qDebug(&quot;Found same volta twice in the spannermap&quot;);</a>
+<a name="ln449">                        }</a>
+<a name="ln450">                  }</a>
+<a name="ln451">            } // end spannerloop</a>
+<a name="ln452">      }</a>
+<a name="ln453"> </a>
+<a name="ln454">//---------------------------------------------------------</a>
+<a name="ln455">//   searchVolta</a>
+<a name="ln456">//    return the iterator in _voltaRanges for the volta spanning the given measure</a>
+<a name="ln457">//---------------------------------------------------------</a>
+<a name="ln458"> </a>
+<a name="ln459">std::map&lt;Volta*, Measure*&gt;::const_iterator RepeatList::searchVolta(Measure * const measure) const</a>
+<a name="ln460">      {</a>
+<a name="ln461">      std::map&lt;Volta*, Measure*&gt;::const_iterator voltaRange;</a>
+<a name="ln462">      for (voltaRange = _voltaRanges.cbegin(); voltaRange != _voltaRanges.cend(); ++voltaRange) {</a>
+<a name="ln463">            if (   (voltaRange-&gt;first-&gt;startMeasure()-&gt;tick() &lt;= measure-&gt;tick())</a>
+<a name="ln464">                &amp;&amp; (measure-&gt;tick() &lt;= voltaRange-&gt;second-&gt;tick())</a>
+<a name="ln465">                ) {</a>
+<a name="ln466">                  break;</a>
+<a name="ln467">                  }</a>
+<a name="ln468">            }</a>
+<a name="ln469">      return voltaRange;</a>
+<a name="ln470">      }</a>
+<a name="ln471"> </a>
+<a name="ln472">//---------------------------------------------------------</a>
+<a name="ln473">//   unwindSection</a>
+<a name="ln474">//    unwinds from sectionStartMeasure through sectionEndMeasure</a>
+<a name="ln475">//---------------------------------------------------------</a>
+<a name="ln476"> </a>
+<a name="ln477">void RepeatList::unwindSection(Measure* const sectionStartMeasure, Measure* const sectionEndMeasure)</a>
+<a name="ln478">      {</a>
+<a name="ln479">//      qDebug(&quot;unwind %d-measure section starting %p through %p&quot;, sectionEndMeasure-&gt;no()+1, sectionStartMeasure, sectionEndMeasure);</a>
+<a name="ln480"> </a>
+<a name="ln481">      if (!sectionStartMeasure || !sectionEndMeasure) {</a>
+<a name="ln482">            qDebug(&quot;invalid section start/end&quot;);</a>
+<a name="ln483">            return;</a>
+<a name="ln484">            }</a>
+<a name="ln485"> </a>
+<a name="ln486">      RepeatSegment* rs = nullptr; // no measures to be played yet</a>
+<a name="ln487"> </a>
+<a name="ln488">      Measure* prevMeasure = nullptr; // the last processed measure that is part of this RepeatSegment</a>
+<a name="ln489">      Measure* currentMeasure = sectionStartMeasure; // the measure to be processed/evaluated</a>
+<a name="ln490"> </a>
+<a name="ln491">      Measure* startFrom = sectionStartMeasure; //the last StartRepeat encountered in this loop; we should return here upon hitting a repeat</a>
+<a name="ln492">      int startFromRepeatStartCount = findStartFromRepeatCount(startFrom);</a>
+<a name="ln493"> </a>
+<a name="ln494">      std::map&lt;Volta*, Measure*&gt;::const_iterator voltaRange = _voltaRanges.cend();</a>
+<a name="ln495"> </a>
+<a name="ln496">      Measure* playUntilMeasure = nullptr;      // used during jumping</a>
+<a name="ln497">      Measure* continueAtMeasure = nullptr;     // used during jumping</a>
+<a name="ln498"> </a>
+<a name="ln499">      while (currentMeasure &amp;&amp; (currentMeasure != sectionEndMeasure-&gt;nextMeasure())) {</a>
+<a name="ln500">            if (   (voltaRange != _voltaRanges.cend())</a>
+<a name="ln501">                &amp;&amp; (currentMeasure == voltaRange-&gt;second-&gt;nextMeasure())</a>
+<a name="ln502">                ) { // volta was active -&gt; not anymore</a>
+<a name="ln503">                  voltaRange = _voltaRanges.cend();</a>
+<a name="ln504">                  }</a>
+<a name="ln505">            // Should we play or skip this measure: --&gt; look for volta</a>
+<a name="ln506">            if (voltaRange == _voltaRanges.cend()) {</a>
+<a name="ln507">                  voltaRange = searchVolta(currentMeasure);</a>
+<a name="ln508">                  if (   (voltaRange != _voltaRanges.cend())</a>
+<a name="ln509">                      &amp;&amp; !voltaRange-&gt;first-&gt;hasEnding(startFrom-&gt;playbackCount())</a>
+<a name="ln510">                      ) {</a>
+<a name="ln511">                        // volta does not apply for expected playbackCount --&gt; skip it</a>
+<a name="ln512">                        // but first finalize the current RepeatSegment</a>
+<a name="ln513">                        if (rs) {</a>
+<a name="ln514">                              push_back(rs);</a>
+<a name="ln515">                              rs = nullptr;</a>
+<a name="ln516">                              }</a>
+<a name="ln517"> </a>
+<a name="ln518">                        // now skip the volta</a>
+<a name="ln519">                        currentMeasure = voltaRange-&gt;second-&gt;nextMeasure();</a>
+<a name="ln520">                        voltaRange = _voltaRanges.cend();</a>
+<a name="ln521"> </a>
+<a name="ln522">                        // restart processing for the new measure</a>
+<a name="ln523">                        prevMeasure = nullptr;</a>
+<a name="ln524">                        continue;</a>
+<a name="ln525">                        }</a>
+<a name="ln526">                  }</a>
+<a name="ln527"> </a>
+<a name="ln528">            // include this measure into the current RepeatSegment</a>
+<a name="ln529">            currentMeasure-&gt;setPlaybackCount(currentMeasure-&gt;playbackCount() + 1);</a>
+<a name="ln530">            if (nullptr == rs) {</a>
+<a name="ln531">                  rs = new RepeatSegment();</a>
+<a name="ln532">                  }</a>
+<a name="ln533">            rs-&gt;addMeasure(currentMeasure);</a>
+<a name="ln534">            prevMeasure = currentMeasure;</a>
+<a name="ln535"> </a>
+<a name="ln536">            if (currentMeasure-&gt;repeatStart()) {</a>
+<a name="ln537">                   // always start from the last encountered repeat</a>
+<a name="ln538">                  startFrom = currentMeasure;</a>
+<a name="ln539">                  startFromRepeatStartCount = findStartFromRepeatCount(startFrom);</a>
+<a name="ln540">                  }</a>
+<a name="ln541"> </a>
+<a name="ln542">            if (    (currentMeasure-&gt;repeatEnd())</a>
+<a name="ln543">                 &amp;&amp; (currentMeasure-&gt;playbackCount() &lt; currentMeasure-&gt;repeatCount())    // not yet exhausted our number of repeats</a>
+<a name="ln544">                 ) {</a>
+<a name="ln545">                  // finalize this RepeatSegment</a>
+<a name="ln546">                  push_back(rs);</a>
+<a name="ln547">                  rs = nullptr;</a>
+<a name="ln548">                  // we already know where to start from now, so continue right away with the new reference</a>
+<a name="ln549">                  currentMeasure = startFrom;</a>
+<a name="ln550">                  prevMeasure = nullptr;</a>
+<a name="ln551">                  voltaRange = _voltaRanges.cend();</a>
+<a name="ln552">                  continue;</a>
+<a name="ln553">                  }</a>
+<a name="ln554"> </a>
+<a name="ln555">            // we will now check for jumps, these should only be followed upon the last pass through a measure</a>
+<a name="ln556">            if (   (startFrom-&gt;playbackCount() == startFromRepeatStartCount) // means last pass through this set of repeats</a>
+<a name="ln557">                || (   (voltaRange != _voltaRanges.cend())</a>
+<a name="ln558">                    &amp;&amp; (startFrom-&gt;playbackCount() == voltaRange-&gt;first-&gt;lastEnding()) // or last pass through this volta</a>
+<a name="ln559">                    )</a>
+<a name="ln560">                ) {</a>
+<a name="ln561">                  if (currentMeasure-&gt;repeatJump()) { // found a jump, should we follow it?</a>
+<a name="ln562">                        // fetch the jump</a>
+<a name="ln563">                        Jump* jump = nullptr;</a>
+<a name="ln564">                        for (Element* e : currentMeasure-&gt;el()) {</a>
+<a name="ln565">                              if (e-&gt;isJump()) {</a>
+<a name="ln566">                                    jump = toJump(e);</a>
+<a name="ln567">                                    break;</a>
+<a name="ln568">                                    }</a>
+<a name="ln569">                              }</a>
+<a name="ln570">                        // have we processed it already?</a>
+<a name="ln571">                        if (_jumpsTaken.find(jump) == _jumpsTaken.end()) { // not yet processed</a>
+<a name="ln572">                              // processing it now</a>
+<a name="ln573">                              _jumpsTaken.insert(jump);</a>
+<a name="ln574">                              // validate the jump</a>
+<a name="ln575">                              Measure* jumpToMeasure = _score-&gt;searchLabelWithinSectionFirst(jump-&gt;jumpTo(), sectionStartMeasure, sectionEndMeasure);</a>
+<a name="ln576">                              playUntilMeasure  = _score-&gt;searchLabelWithinSectionFirst(jump-&gt;playUntil(), sectionStartMeasure, sectionEndMeasure);</a>
+<a name="ln577">                              continueAtMeasure = _score-&gt;searchLabelWithinSectionFirst(jump-&gt;continueAt(), sectionStartMeasure, sectionEndMeasure);</a>
+<a name="ln578">                              if (jumpToMeasure &amp;&amp; playUntilMeasure &amp;&amp; (continueAtMeasure || jump-&gt;continueAt().isEmpty())) {</a>
+<a name="ln579">                                    // we will jump, but first finalize the current RepeatSegment</a>
+<a name="ln580">                                    push_back(rs);</a>
+<a name="ln581">                                    rs = nullptr;</a>
+<a name="ln582">                                    // now jump</a>
+<a name="ln583">                                    // basically, replay the score from jumpToMeasure all the way up the to last occurrence of playUntilMeasure</a>
+<a name="ln584">                                    // this replay lookup uses mostly indexes over iterators as push_back of new segments might invalidate an iterator</a>
+<a name="ln585">                                    // step 1: find the last occurrence of playUntilMeasure</a>
+<a name="ln586">                                    Measure* copyUntilMeasure = playUntilMeasure; // assume we can rewind back to the playUntilMeasure</a>
+<a name="ln587">                                    int copyUntilIdx = this-&gt;size() - 1; // assume we will find the copyUntilMeasure in the (currently) last repeatSegment</a>
+<a name="ln588">                                    int playUntilIdx = this-&gt;size();</a>
+<a name="ln589">                                    do {</a>
+<a name="ln590">                                          --playUntilIdx;</a>
+<a name="ln591">                                          }</a>
+<a name="ln592">                                    while (   (!(this-&gt;at(playUntilIdx)-&gt;containsMeasure(playUntilMeasure)))</a>
+<a name="ln593">                                           &amp;&amp; (playUntilIdx &gt; 0)</a>
+<a name="ln594">                                           );</a>
+<a name="ln595">                                    if (isFinalPlaythrough(playUntilMeasure, (this-&gt;cbegin() + playUntilIdx))) {</a>
+<a name="ln596">                                          copyUntilIdx = playUntilIdx;</a>
+<a name="ln597">                                          }</a>
+<a name="ln598">                                    else { // not found or not final playthrough</a>
+<a name="ln599">                                          // -&gt; currentMeasure is the most recent parsed measure that should be included into the replay</a>
+<a name="ln600">                                          copyUntilMeasure = currentMeasure;</a>
+<a name="ln601">                                          }</a>
+<a name="ln602"> </a>
+<a name="ln603">                                    // step 2: find jumpToMeasure</a>
+<a name="ln604">                                    auto copyFromIdx = -1;</a>
+<a name="ln605">                                    Measure * copyFromMeasure = jumpToMeasure;</a>
+<a name="ln606">                                    if (jump-&gt;playRepeats()) {</a>
+<a name="ln607">                                          // we want to replay as much from the score as possible</a>
+<a name="ln608">                                          // =&gt; find most recent occurrence of first playBack of jumpToMeasure #270332</a>
+<a name="ln609">                                          for (int jumpToIdx = playUntilIdx; jumpToIdx &gt;= 0; --jumpToIdx) {</a>
+<a name="ln610">                                                if (this-&gt;at(jumpToIdx)-&gt;playbackCount(jumpToMeasure) == 1) {</a>
+<a name="ln611">                                                      copyFromIdx = jumpToIdx;</a>
+<a name="ln612">                                                      break;</a>
+<a name="ln613">                                                      }</a>
+<a name="ln614">                                                }</a>
+<a name="ln615">                                          }</a>
+<a name="ln616">                                    else { // no repeats upon jumping =&gt; find final occurrence of jumpToMeasure</a>
+<a name="ln617">                                          int jumpToIdx = this-&gt;size();</a>
+<a name="ln618">                                          do {</a>
+<a name="ln619">                                                --jumpToIdx;</a>
+<a name="ln620">                                                }</a>
+<a name="ln621">                                          while (   (!(this-&gt;at(jumpToIdx)-&gt;containsMeasure(jumpToMeasure)))</a>
+<a name="ln622">                                                 &amp;&amp; (jumpToIdx &gt; 0)</a>
+<a name="ln623">                                                 );</a>
+<a name="ln624">                                          if (isFinalPlaythrough(jumpToMeasure, (this-&gt;cbegin() + jumpToIdx))) {</a>
+<a name="ln625">                                                copyFromIdx = jumpToIdx;</a>
+<a name="ln626">                                                }</a>
+<a name="ln627">                                          }</a>
+<a name="ln628"> </a>
+<a name="ln629">                                    // step 3 : duplicate the part we would otherwise have to rewind</a>
+<a name="ln630">                                    if (copyFromIdx != -1) {</a>
+<a name="ln631">                                          if (jump-&gt;playRepeats()) {</a>
+<a name="ln632">                                                // all should be replayed, simply copy over</a>
+<a name="ln633">                                                for (int idx = copyFromIdx; idx &lt;= copyUntilIdx; ++idx) {</a>
+<a name="ln634">                                                      this-&gt;push_back(new RepeatSegment(</a>
+<a name="ln635">                                                                            this-&gt;at(idx),</a>
+<a name="ln636">                                                                            (idx == copyFromIdx) ? copyFromMeasure : nullptr,</a>
+<a name="ln637">                                                                            (idx == copyUntilIdx) ? copyUntilMeasure : nullptr</a>
+<a name="ln638">                                                                            )</a>
+<a name="ln639">                                                                      );</a>
+<a name="ln640">                                                      }</a>
+<a name="ln641">                                                }</a>
+<a name="ln642">                                          else { // only most recent passes should be played</a>
+<a name="ln643">                                                // so we have to inspect each measure to be it's most recent playthrough</a>
+<a name="ln644">                                                int idx = copyFromIdx;</a>
+<a name="ln645">                                                while (idx &lt;= copyUntilIdx) {</a>
+<a name="ln646">                                                      RepeatSegment* referenceSegment = this-&gt;at(idx);</a>
+<a name="ln647">                                                      auto referenceIt = referenceSegment-&gt;measureList.cbegin();</a>
+<a name="ln648">                                                      bool forwardToMoreRecentPlaythrough = false;</a>
+<a name="ln649">                                                      if (idx == copyFromIdx) {</a>
+<a name="ln650">                                                            // skip start of segment</a>
+<a name="ln651">                                                            while ((referenceIt-&gt;first != copyFromMeasure) &amp;&amp; ((++referenceIt) != referenceSegment-&gt;measureList.cend()));</a>
+<a name="ln652">                                                            }</a>
+<a name="ln653">                                                      // start copy</a>
+<a name="ln654">                                                      while (   ((referenceIt != referenceSegment-&gt;measureList.cend()) &amp;&amp; !forwardToMoreRecentPlaythrough)</a>
+<a name="ln655">                                                             &amp;&amp; ((idx != copyUntilIdx) || (referenceIt-&gt;first-&gt;no() &lt;= copyUntilMeasure-&gt;no()))</a>
+<a name="ln656">                                                             ) {</a>
+<a name="ln657">                                                            // find most recent occurrence of this measure</a>
+<a name="ln658">                                                            auto mostRecentRepeatSegmentIdx = copyUntilIdx; // look backwards to find to most recent first</a>
+<a name="ln659">                                                            while ((mostRecentRepeatSegmentIdx &gt; idx) &amp;&amp; !forwardToMoreRecentPlaythrough) {</a>
+<a name="ln660">                                                                  RepeatSegment * mostRecentSegment = this-&gt;at(mostRecentRepeatSegmentIdx);</a>
+<a name="ln661">                                                                  if (   (mostRecentSegment-&gt;playbackCount(referenceIt-&gt;first) &gt;= referenceIt-&gt;second)</a>
+<a name="ln662">                                                                      &amp;&amp; (referenceIt-&gt;first-&gt;no() &lt;= copyUntilMeasure-&gt;no())</a>
+<a name="ln663">                                                                      ) {</a>
+<a name="ln664">                                                                        // found a more recent playthrough =&gt; continue our copy from there</a>
+<a name="ln665">                                                                        forwardToMoreRecentPlaythrough = true;</a>
+<a name="ln666">                                                                        // save continueCopyPosition</a>
+<a name="ln667">                                                                        copyFromMeasure = referenceIt-&gt;first;</a>
+<a name="ln668">                                                                        idx = mostRecentRepeatSegmentIdx;</a>
+<a name="ln669">                                                                        continue;</a>
+<a name="ln670">                                                                        }</a>
+<a name="ln671">                                                                  --mostRecentRepeatSegmentIdx;</a>
+<a name="ln672">                                                                  }</a>
+<a name="ln673">                                                            if (!forwardToMoreRecentPlaythrough) {</a>
+<a name="ln674">                                                                  // this is the most recent playthrough of this measure -&gt; copy it</a>
+<a name="ln675">                                                                  if (nullptr == rs) {</a>
+<a name="ln676">                                                                        rs = new RepeatSegment();</a>
+<a name="ln677">                                                                        rs-&gt;tick = referenceIt-&gt;first-&gt;tick().ticks();</a>
+<a name="ln678">                                                                        }</a>
+<a name="ln679">                                                                  rs-&gt;measureList.push_back(std::make_pair(referenceIt-&gt;first, referenceIt-&gt;second));</a>
+<a name="ln680">                                                                  }</a>
+<a name="ln681">                                                            // test &amp; copy next measure</a>
+<a name="ln682">                                                            ++referenceIt;</a>
+<a name="ln683">                                                            }</a>
+<a name="ln684">                                                      // store what we've copied from this repeatSegment</a>
+<a name="ln685">                                                      if (rs) {</a>
+<a name="ln686">                                                            push_back(rs);</a>
+<a name="ln687">                                                            rs = nullptr;</a>
+<a name="ln688">                                                            }</a>
+<a name="ln689">                                                      // move to the next repeatSegment</a>
+<a name="ln690">                                                      if (!forwardToMoreRecentPlaythrough) {</a>
+<a name="ln691">                                                            ++idx;</a>
+<a name="ln692">                                                            }</a>
+<a name="ln693">                                                      }</a>
+<a name="ln694">                                                }</a>
+<a name="ln695">                                          }</a>
+<a name="ln696"> </a>
+<a name="ln697">                                    // step 4 : determine the next measure to evaluate</a>
+<a name="ln698">                                    if (copyFromIdx == -1) {</a>
+<a name="ln699">                                          // still everything to process, because we couldn't copy from the jumpToMeasure yet</a>
+<a name="ln700">                                          currentMeasure = jumpToMeasure; // so start there now</a>
+<a name="ln701">                                          }</a>
+<a name="ln702">                                    else {</a>
+<a name="ln703">                                          if (copyUntilMeasure == playUntilMeasure) {</a>
+<a name="ln704">                                                // fully processed this jump, we know where to continue, so jump there</a>
+<a name="ln705">                                                currentMeasure = continueAtMeasure;</a>
+<a name="ln706">                                                // end of processing this jump</a>
+<a name="ln707">                                                playUntilMeasure = nullptr;</a>
+<a name="ln708">                                                continueAtMeasure = nullptr;</a>
+<a name="ln709">                                                }</a>
+<a name="ln710">                                          else {</a>
+<a name="ln711">                                                // we have copied stuff, but not yet all of it</a>
+<a name="ln712">                                                currentMeasure = copyUntilMeasure-&gt;nextMeasure();</a>
+<a name="ln713">                                                }</a>
+<a name="ln714">                                          }</a>
+<a name="ln715">                                    if (currentMeasure) {</a>
+<a name="ln716">                                          startFrom = findStartRepeat(currentMeasure); // not yet happy with these, but not worse than before</a>
+<a name="ln717">                                          startFromRepeatStartCount = findStartFromRepeatCount(startFrom);</a>
+<a name="ln718">                                          }</a>
+<a name="ln719"> </a>
+<a name="ln720">                                    // restart processing</a>
+<a name="ln721">                                    prevMeasure = nullptr;</a>
+<a name="ln722">                                    voltaRange = _voltaRanges.cend();</a>
+<a name="ln723">                                    continue;</a>
+<a name="ln724">                                    }</a>
+<a name="ln725">                              }</a>
+<a name="ln726">                        }</a>
+<a name="ln727"> </a>
+<a name="ln728">                  if (currentMeasure == playUntilMeasure) {</a>
+<a name="ln729">                        // end of processing this jump</a>
+<a name="ln730">                        playUntilMeasure = nullptr;</a>
+<a name="ln731">                        // finalize the current RepeatSegment</a>
+<a name="ln732">                        push_back(rs);</a>
+<a name="ln733">                        rs = nullptr;</a>
+<a name="ln734">                        // we know where to continue, so jump there</a>
+<a name="ln735">                        currentMeasure = continueAtMeasure;</a>
+<a name="ln736">                        continueAtMeasure = nullptr;</a>
+<a name="ln737">                        // restart processing</a>
+<a name="ln738">                        prevMeasure = nullptr;</a>
+<a name="ln739">                        voltaRange = _voltaRanges.cend();</a>
+<a name="ln740">                        continue;</a>
+<a name="ln741">                        }</a>
+<a name="ln742">                  }</a>
+<a name="ln743"> </a>
+<a name="ln744">            // keep looping until reach end of score or end of the section</a>
+<a name="ln745">            currentMeasure = currentMeasure-&gt;nextMeasure();</a>
+<a name="ln746">            }</a>
+<a name="ln747"> </a>
+<a name="ln748">      // append the final repeat segment of that section</a>
+<a name="ln749">      if (rs) {</a>
+<a name="ln750">            if (prevMeasure) {</a>
+<a name="ln751">                  if (rs-&gt;len()) {</a>
+<a name="ln752">                        push_back(rs);</a>
+<a name="ln753">                        rs = nullptr;</a>
+<a name="ln754">                        }</a>
+<a name="ln755">                  else</a>
+<a name="ln756">                        delete rs;</a>
+<a name="ln757">                  }</a>
+<a name="ln758">            else // not even a single measure included in the segment -&gt; it is empty</a>
+<a name="ln759">                  delete rs;</a>
+<a name="ln760">            }</a>
+<a name="ln761">      }</a>
+<a name="ln762"> </a>
+<a name="ln763">//---------------------------------------------------------</a>
+<a name="ln764">//   findStartRepeat</a>
+<a name="ln765">//    search backwards starting at a given measure to find a repeatStart</a>
+<a name="ln766">//    @return the measure having the repeatStart or start of section</a>
+<a name="ln767">//---------------------------------------------------------</a>
+<a name="ln768"> </a>
+<a name="ln769">Measure* RepeatList::findStartRepeat(Measure * const measure) const</a>
+<a name="ln770">      {</a>
+<a name="ln771">      Measure* m = measure;</a>
+<a name="ln772">      while ((!m-&gt;repeatStart())</a>
+<a name="ln773">          &amp;&amp; (m != _score-&gt;firstMeasure())</a>
+<a name="ln774">          &amp;&amp; (!m-&gt;prevMeasure()-&gt;sectionBreak()))</a>
+<a name="ln775">            {</a>
+<a name="ln776">            m = m-&gt;prevMeasure();</a>
+<a name="ln777">            }</a>
+<a name="ln778">      return m;</a>
+<a name="ln779">      }</a>
+<a name="ln780"> </a>
+<a name="ln781">//---------------------------------------------------------</a>
+<a name="ln782">//   findStartFromRepeatCount</a>
+<a name="ln783">//    @param startFrom starting measure for this repeat subsection</a>
+<a name="ln784">//    @return number of times playback passes the start repeat barline (not accounting for jumps)</a>
+<a name="ln785">//---------------------------------------------------------</a>
+<a name="ln786"> </a>
+<a name="ln787">int RepeatList::findStartFromRepeatCount(Measure * const startFrom) const</a>
+<a name="ln788">      {</a>
+<a name="ln789">      Measure * m = startFrom;</a>
+<a name="ln790">      int startFromRepeatCount = (m-&gt;repeatEnd())? (m-&gt;repeatCount()) : 1;</a>
+<a name="ln791">      m = m-&gt;nextMeasure();</a>
+<a name="ln792">      while (m &amp;&amp; !m-&gt;repeatStart()) {</a>
+<a name="ln793">            if (m-&gt;repeatEnd()) {</a>
+<a name="ln794">                  startFromRepeatCount += m-&gt;repeatCount() - 1;</a>
+<a name="ln795">                  }</a>
+<a name="ln796">            m = (m-&gt;sectionBreak()) ? nullptr : m-&gt;nextMeasure();</a>
+<a name="ln797">            }</a>
+<a name="ln798">      return startFromRepeatCount;</a>
+<a name="ln799">      }</a>
+<a name="ln800"> </a>
+<a name="ln801">//---------------------------------------------------------</a>
+<a name="ln802">//   isFinalPlaythrough</a>
+<a name="ln803">//    @param measure the measure to verify</a>
+<a name="ln804">//    @param repeatSegment consider measure with its playbackCount in this specific RepeatSegment</a>
+<a name="ln805">//    @return true if that measure has its final playthrough in the given repeatSegment</a>
+<a name="ln806">//---------------------------------------------------------</a>
+<a name="ln807"> </a>
+<a name="ln808">bool RepeatList::isFinalPlaythrough(Measure * const measure, QList&lt;RepeatSegment*&gt;::const_iterator repeatSegmentIt) const</a>
+<a name="ln809">      {</a>
+<a name="ln810">      bool finalPlaythrough = false;</a>
+<a name="ln811"> </a>
+<a name="ln812">      if (   (repeatSegmentIt != this-&gt;cend())</a>
+<a name="ln813">          &amp;&amp; ((*repeatSegmentIt)-&gt;containsMeasure(measure))</a>
+<a name="ln814">          ) {</a>
+<a name="ln815">            // step 1 : so go and look back for the relevant startRepeatMeasure</a>
+<a name="ln816">            Measure * startRepeatMeasure = findStartRepeat(measure);</a>
+<a name="ln817">            auto startRepeatIt = repeatSegmentIt;</a>
+<a name="ln818">            while (  (startRepeatIt != this-&gt;cbegin())</a>
+<a name="ln819">                  &amp;&amp; (!(*startRepeatIt)-&gt;containsMeasure(startRepeatMeasure))</a>
+<a name="ln820">                  ){</a>
+<a name="ln821">                  --startRepeatIt;</a>
+<a name="ln822">                  }</a>
+<a name="ln823">            int startRepeatPlaybackCount = (*startRepeatIt)-&gt;playbackCount(startRepeatMeasure);</a>
+<a name="ln824">            // step 2 :  does this measure belong to a volta?</a>
+<a name="ln825">            auto voltaRange = searchVolta(measure);</a>
+<a name="ln826">            // step 3 : is it the final playThrough of this measure?</a>
+<a name="ln827">            if (   (startRepeatPlaybackCount == findStartFromRepeatCount(startRepeatMeasure))</a>
+<a name="ln828">                || (   (voltaRange != _voltaRanges.cend())</a>
+<a name="ln829">                    &amp;&amp; (startRepeatPlaybackCount == voltaRange-&gt;first-&gt;lastEnding())</a>
+<a name="ln830">                    )</a>
+<a name="ln831">                ) {</a>
+<a name="ln832">                  finalPlaythrough = true;</a>
+<a name="ln833">                  }</a>
+<a name="ln834">            //else: found, but not yet final playthrough -&gt; nothing to do</a>
+<a name="ln835">            }</a>
+<a name="ln836">      //else: measure not found == not part of this RepeatSegment -&gt; nothing to do</a>
+<a name="ln837"> </a>
+<a name="ln838">      return finalPlaythrough;</a>
+<a name="ln839">      }</a>
+<a name="ln840">}</a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

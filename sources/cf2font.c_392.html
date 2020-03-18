@@ -1,0 +1,559 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>cf2font.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  cf2font.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Adobe's code for font instances (body).                              */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2007-2014 Adobe Systems Incorporated.                        */</a>
+<a name="ln8">/*                                                                         */</a>
+<a name="ln9">/*  This software, and all works of authorship, whether in source or       */</a>
+<a name="ln10">/*  object code form as indicated by the copyright notice(s) included      */</a>
+<a name="ln11">/*  herein (collectively, the &quot;Work&quot;) is made available, and may only be   */</a>
+<a name="ln12">/*  used, modified, and distributed under the FreeType Project License,    */</a>
+<a name="ln13">/*  LICENSE.TXT.  Additionally, subject to the terms and conditions of the */</a>
+<a name="ln14">/*  FreeType Project License, each contributor to the Work hereby grants   */</a>
+<a name="ln15">/*  to any individual or legal entity exercising permissions granted by    */</a>
+<a name="ln16">/*  the FreeType Project License and this section (hereafter, &quot;You&quot; or     */</a>
+<a name="ln17">/*  &quot;Your&quot;) a perpetual, worldwide, non-exclusive, no-charge,              */</a>
+<a name="ln18">/*  royalty-free, irrevocable (except as stated in this section) patent    */</a>
+<a name="ln19">/*  license to make, have made, use, offer to sell, sell, import, and      */</a>
+<a name="ln20">/*  otherwise transfer the Work, where such license applies only to those  */</a>
+<a name="ln21">/*  patent claims licensable by such contributor that are necessarily      */</a>
+<a name="ln22">/*  infringed by their contribution(s) alone or by combination of their    */</a>
+<a name="ln23">/*  contribution(s) with the Work to which such contribution(s) was        */</a>
+<a name="ln24">/*  submitted.  If You institute patent litigation against any entity      */</a>
+<a name="ln25">/*  (including a cross-claim or counterclaim in a lawsuit) alleging that   */</a>
+<a name="ln26">/*  the Work or a contribution incorporated within the Work constitutes    */</a>
+<a name="ln27">/*  direct or contributory patent infringement, then any patent licenses   */</a>
+<a name="ln28">/*  granted to You under this License for that Work shall terminate as of  */</a>
+<a name="ln29">/*  the date such litigation is filed.                                     */</a>
+<a name="ln30">/*                                                                         */</a>
+<a name="ln31">/*  By using, modifying, or distributing the Work you indicate that you    */</a>
+<a name="ln32">/*  have read and understood the terms and conditions of the               */</a>
+<a name="ln33">/*  FreeType Project License as well as those provided in this section,    */</a>
+<a name="ln34">/*  and you accept them fully.                                             */</a>
+<a name="ln35">/*                                                                         */</a>
+<a name="ln36">/***************************************************************************/</a>
+<a name="ln37"> </a>
+<a name="ln38"> </a>
+<a name="ln39">#include &lt;ft2build.h&gt;</a>
+<a name="ln40">#include FT_INTERNAL_CALC_H</a>
+<a name="ln41"> </a>
+<a name="ln42">#include &quot;cf2ft.h&quot;</a>
+<a name="ln43"> </a>
+<a name="ln44">#include &quot;cf2glue.h&quot;</a>
+<a name="ln45">#include &quot;cf2font.h&quot;</a>
+<a name="ln46">#include &quot;cf2error.h&quot;</a>
+<a name="ln47">#include &quot;cf2intrp.h&quot;</a>
+<a name="ln48"> </a>
+<a name="ln49"> </a>
+<a name="ln50">  /* Compute a stem darkening amount in character space. */</a>
+<a name="ln51">  static void</a>
+<a name="ln52">  cf2_computeDarkening( CF2_Fixed   emRatio,</a>
+<a name="ln53">                        CF2_Fixed   ppem,</a>
+<a name="ln54">                        CF2_Fixed   stemWidth,</a>
+<a name="ln55">                        CF2_Fixed*  darkenAmount,</a>
+<a name="ln56">                        CF2_Fixed   boldenAmount,</a>
+<a name="ln57">                        FT_Bool     stemDarkened,</a>
+<a name="ln58">                        FT_Int*     darkenParams )</a>
+<a name="ln59">  {</a>
+<a name="ln60">    /*</a>
+<a name="ln61">     * Total darkening amount is computed in 1000 unit character space</a>
+<a name="ln62">     * using the modified 5 part curve as Adobe's Avalon rasterizer.</a>
+<a name="ln63">     * The darkening amount is smaller for thicker stems.</a>
+<a name="ln64">     * It becomes zero when the stem is thicker than 2.333 pixels.</a>
+<a name="ln65">     *</a>
+<a name="ln66">     * By default, we use</a>
+<a name="ln67">     *</a>
+<a name="ln68">     *   darkenAmount = 0.4 pixels   if scaledStem &lt;= 0.5 pixels,</a>
+<a name="ln69">     *   darkenAmount = 0.275 pixels if 1 &lt;= scaledStem &lt;= 1.667 pixels,</a>
+<a name="ln70">     *   darkenAmount = 0 pixel      if scaledStem &gt;= 2.333 pixels,</a>
+<a name="ln71">     *</a>
+<a name="ln72">     * and piecewise linear in-between:</a>
+<a name="ln73">     *</a>
+<a name="ln74">     *</a>
+<a name="ln75">     *   darkening</a>
+<a name="ln76">     *       ^</a>
+<a name="ln77">     *       |</a>
+<a name="ln78">     *       |      (x1,y1)</a>
+<a name="ln79">     *       |--------+</a>
+<a name="ln80">     *       |         \</a>
+<a name="ln81">     *       |          \</a>
+<a name="ln82">     *       |           \          (x3,y3)</a>
+<a name="ln83">     *       |            +----------+</a>
+<a name="ln84">     *       |        (x2,y2)         \</a>
+<a name="ln85">     *       |                         \</a>
+<a name="ln86">     *       |                          \</a>
+<a name="ln87">     *       |                           +-----------------</a>
+<a name="ln88">     *       |                         (x4,y4)</a>
+<a name="ln89">     *       +---------------------------------------------&gt;   stem</a>
+<a name="ln90">     *                                                       thickness</a>
+<a name="ln91">     *</a>
+<a name="ln92">     *</a>
+<a name="ln93">     * This corresponds to the following values for the</a>
+<a name="ln94">     * `darkening-parameters' property:</a>
+<a name="ln95">     *</a>
+<a name="ln96">     *   (x1, y1) = (500, 400)</a>
+<a name="ln97">     *   (x2, y2) = (1000, 275)</a>
+<a name="ln98">     *   (x3, y3) = (1667, 275)</a>
+<a name="ln99">     *   (x4, y4) = (2333, 0)</a>
+<a name="ln100">     *</a>
+<a name="ln101">     */</a>
+<a name="ln102"> </a>
+<a name="ln103">    /* Internal calculations are done in units per thousand for */</a>
+<a name="ln104">    /* convenience. The x axis is scaled stem width in          */</a>
+<a name="ln105">    /* thousandths of a pixel. That is, 1000 is 1 pixel.        */</a>
+<a name="ln106">    /* The y axis is darkening amount in thousandths of a pixel.*/</a>
+<a name="ln107">    /* In the code, below, dividing by ppem and                 */</a>
+<a name="ln108">    /* adjusting for emRatio converts darkenAmount to character */</a>
+<a name="ln109">    /* space (font units).                                      */</a>
+<a name="ln110">    CF2_Fixed  stemWidthPer1000, scaledStem;</a>
+<a name="ln111">    FT_Int     logBase2;</a>
+<a name="ln112"> </a>
+<a name="ln113"> </a>
+<a name="ln114">    *darkenAmount = 0;</a>
+<a name="ln115"> </a>
+<a name="ln116">    if ( boldenAmount == 0 &amp;&amp; !stemDarkened )</a>
+<a name="ln117">      return;</a>
+<a name="ln118"> </a>
+<a name="ln119">    /* protect against range problems and divide by zero */</a>
+<a name="ln120">    if ( emRatio &lt; cf2_floatToFixed( .01 ) )</a>
+<a name="ln121">      return;</a>
+<a name="ln122"> </a>
+<a name="ln123">    if ( stemDarkened )</a>
+<a name="ln124">    {</a>
+<a name="ln125">      FT_Int  x1 = darkenParams[0];</a>
+<a name="ln126">      FT_Int  y1 = darkenParams[1];</a>
+<a name="ln127">      FT_Int  x2 = darkenParams[2];</a>
+<a name="ln128">      FT_Int  y2 = darkenParams[3];</a>
+<a name="ln129">      FT_Int  x3 = darkenParams[4];</a>
+<a name="ln130">      FT_Int  y3 = darkenParams[5];</a>
+<a name="ln131">      FT_Int  x4 = darkenParams[6];</a>
+<a name="ln132">      FT_Int  y4 = darkenParams[7];</a>
+<a name="ln133"> </a>
+<a name="ln134"> </a>
+<a name="ln135">      /* convert from true character space to 1000 unit character space; */</a>
+<a name="ln136">      /* add synthetic emboldening effect                                */</a>
+<a name="ln137"> </a>
+<a name="ln138">      /* `stemWidthPer1000' will not overflow for a legitimate font      */</a>
+<a name="ln139"> </a>
+<a name="ln140">      stemWidthPer1000 = FT_MulFix( stemWidth + boldenAmount, emRatio );</a>
+<a name="ln141"> </a>
+<a name="ln142">      /* `scaledStem' can easily overflow, so we must clamp its maximum  */</a>
+<a name="ln143">      /* value; the test doesn't need to be precise, but must be         */</a>
+<a name="ln144">      /* conservative.  The clamp value (default 2333) where             */</a>
+<a name="ln145">      /* `darkenAmount' is zero is well below the overflow value of      */</a>
+<a name="ln146">      /* 32767.                                                          */</a>
+<a name="ln147">      /*                                                                 */</a>
+<a name="ln148">      /* FT_MSB computes the integer part of the base 2 logarithm.  The  */</a>
+<a name="ln149">      /* number of bits for the product is 1 or 2 more than the sum of   */</a>
+<a name="ln150">      /* logarithms; remembering that the 16 lowest bits of the fraction */</a>
+<a name="ln151">      /* are dropped this is correct to within a factor of almost 4.     */</a>
+<a name="ln152">      /* For example, 0x80.0000 * 0x80.0000 = 0x4000.0000 is 23+23 and   */</a>
+<a name="ln153">      /* is flagged as possible overflow because 0xFF.FFFF * 0xFF.FFFF = */</a>
+<a name="ln154">      /* 0xFFFF.FE00 is also 23+23.                                      */</a>
+<a name="ln155"> </a>
+<a name="ln156">      logBase2 = FT_MSB( (FT_UInt32)stemWidthPer1000 ) +</a>
+<a name="ln157">                   FT_MSB( (FT_UInt32)ppem );</a>
+<a name="ln158"> </a>
+<a name="ln159">      if ( logBase2 &gt;= 46 )</a>
+<a name="ln160">        /* possible overflow */</a>
+<a name="ln161">        scaledStem = cf2_intToFixed( x4 );</a>
+<a name="ln162">      else</a>
+<a name="ln163">        scaledStem = FT_MulFix( stemWidthPer1000, ppem );</a>
+<a name="ln164"> </a>
+<a name="ln165">      /* now apply the darkening parameters */</a>
+<a name="ln166"> </a>
+<a name="ln167">      if ( scaledStem &lt; cf2_intToFixed( x1 ) )</a>
+<a name="ln168">        *darkenAmount = FT_DivFix( cf2_intToFixed( y1 ), ppem );</a>
+<a name="ln169"> </a>
+<a name="ln170">      else if ( scaledStem &lt; cf2_intToFixed( x2 ) )</a>
+<a name="ln171">      {</a>
+<a name="ln172">        FT_Int  xdelta = x2 - x1;</a>
+<a name="ln173">        FT_Int  ydelta = y2 - y1;</a>
+<a name="ln174">        FT_Int  x      = stemWidthPer1000 -</a>
+<a name="ln175">                           FT_DivFix( cf2_intToFixed( x1 ), ppem );</a>
+<a name="ln176"> </a>
+<a name="ln177"> </a>
+<a name="ln178">        if ( !xdelta )</a>
+<a name="ln179">          goto Try_x3;</a>
+<a name="ln180"> </a>
+<a name="ln181">        *darkenAmount = FT_MulDiv( x, ydelta, xdelta ) +</a>
+<a name="ln182">                          FT_DivFix( cf2_intToFixed( y1 ), ppem );</a>
+<a name="ln183">      }</a>
+<a name="ln184"> </a>
+<a name="ln185">      else if ( scaledStem &lt; cf2_intToFixed( x3 ) )</a>
+<a name="ln186">      {</a>
+<a name="ln187">      Try_x3:</a>
+<a name="ln188">        {</a>
+<a name="ln189">          FT_Int  xdelta = x3 - x2;</a>
+<a name="ln190">          FT_Int  ydelta = y3 - y2;</a>
+<a name="ln191">          FT_Int  x      = stemWidthPer1000 -</a>
+<a name="ln192">                             FT_DivFix( cf2_intToFixed( x2 ), ppem );</a>
+<a name="ln193"> </a>
+<a name="ln194"> </a>
+<a name="ln195">          if ( !xdelta )</a>
+<a name="ln196">            goto Try_x4;</a>
+<a name="ln197"> </a>
+<a name="ln198">          *darkenAmount = FT_MulDiv( x, ydelta, xdelta ) +</a>
+<a name="ln199">                            FT_DivFix( cf2_intToFixed( y2 ), ppem );</a>
+<a name="ln200">        }</a>
+<a name="ln201">      }</a>
+<a name="ln202"> </a>
+<a name="ln203">      else if ( scaledStem &lt; cf2_intToFixed( x4 ) )</a>
+<a name="ln204">      {</a>
+<a name="ln205">      Try_x4:</a>
+<a name="ln206">        {</a>
+<a name="ln207">          FT_Int  xdelta = x4 - x3;</a>
+<a name="ln208">          FT_Int  ydelta = y4 - y3;</a>
+<a name="ln209">          FT_Int  x      = stemWidthPer1000 -</a>
+<a name="ln210">                             FT_DivFix( cf2_intToFixed( x3 ), ppem );</a>
+<a name="ln211"> </a>
+<a name="ln212"> </a>
+<a name="ln213">          if ( !xdelta )</a>
+<a name="ln214">            goto Use_y4;</a>
+<a name="ln215"> </a>
+<a name="ln216">          *darkenAmount = FT_MulDiv( x, ydelta, xdelta ) +</a>
+<a name="ln217">                            FT_DivFix( cf2_intToFixed( y3 ), ppem );</a>
+<a name="ln218">        }</a>
+<a name="ln219">      }</a>
+<a name="ln220"> </a>
+<a name="ln221">      else</a>
+<a name="ln222">      {</a>
+<a name="ln223">      Use_y4:</a>
+<a name="ln224">        *darkenAmount = FT_DivFix( cf2_intToFixed( y4 ), ppem );</a>
+<a name="ln225">      }</a>
+<a name="ln226"> </a>
+<a name="ln227">      /* use half the amount on each side and convert back to true */</a>
+<a name="ln228">      /* character space                                           */</a>
+<a name="ln229">      *darkenAmount = FT_DivFix( *darkenAmount, 2 * emRatio );</a>
+<a name="ln230">    }</a>
+<a name="ln231"> </a>
+<a name="ln232">    /* add synthetic emboldening effect in character space */</a>
+<a name="ln233">    *darkenAmount += boldenAmount / 2;</a>
+<a name="ln234">  }</a>
+<a name="ln235"> </a>
+<a name="ln236"> </a>
+<a name="ln237">  /* set up values for the current FontDict and matrix */</a>
+<a name="ln238"> </a>
+<a name="ln239">  /* caller's transform is adjusted for subpixel positioning */</a>
+<a name="ln240">  static void</a>
+<a name="ln241">  cf2_font_setup( CF2_Font           font,</a>
+<a name="ln242">                  const CF2_Matrix*  transform )</a>
+<a name="ln243">  {</a>
+<a name="ln244">    /* pointer to parsed font object */</a>
+<a name="ln245">    CFF_Decoder*  decoder = font-&gt;decoder;</a>
+<a name="ln246"> </a>
+<a name="ln247">    FT_Bool  needExtraSetup = FALSE;</a>
+<a name="ln248"> </a>
+<a name="ln249">    /* character space units */</a>
+<a name="ln250">    CF2_Fixed  boldenX = font-&gt;syntheticEmboldeningAmountX;</a>
+<a name="ln251">    CF2_Fixed  boldenY = font-&gt;syntheticEmboldeningAmountY;</a>
+<a name="ln252"> </a>
+<a name="ln253">    CFF_SubFont  subFont;</a>
+<a name="ln254">    CF2_Fixed    ppem;</a>
+<a name="ln255"> </a>
+<a name="ln256"> </a>
+<a name="ln257">    /* clear previous error */</a>
+<a name="ln258">    font-&gt;error = FT_Err_Ok;</a>
+<a name="ln259"> </a>
+<a name="ln260">    /* if a CID fontDict has changed, we need to recompute some cached */</a>
+<a name="ln261">    /* data                                                            */</a>
+<a name="ln262">    subFont = cf2_getSubfont( decoder );</a>
+<a name="ln263">    if ( font-&gt;lastSubfont != subFont )</a>
+<a name="ln264">    {</a>
+<a name="ln265">      font-&gt;lastSubfont = subFont;</a>
+<a name="ln266">      needExtraSetup    = TRUE;</a>
+<a name="ln267">    }</a>
+<a name="ln268"> </a>
+<a name="ln269">    /* if ppem has changed, we need to recompute some cached data         */</a>
+<a name="ln270">    /* note: because of CID font matrix concatenation, ppem and transform */</a>
+<a name="ln271">    /*       do not necessarily track.                                    */</a>
+<a name="ln272">    ppem = cf2_getPpemY( decoder );</a>
+<a name="ln273">    if ( font-&gt;ppem != ppem )</a>
+<a name="ln274">    {</a>
+<a name="ln275">      font-&gt;ppem     = ppem;</a>
+<a name="ln276">      needExtraSetup = TRUE;</a>
+<a name="ln277">    }</a>
+<a name="ln278"> </a>
+<a name="ln279">    /* copy hinted flag on each call */</a>
+<a name="ln280">    font-&gt;hinted = (FT_Bool)( font-&gt;renderingFlags &amp; CF2_FlagsHinted );</a>
+<a name="ln281"> </a>
+<a name="ln282">    /* determine if transform has changed;       */</a>
+<a name="ln283">    /* include Fontmatrix but ignore translation */</a>
+<a name="ln284">    if ( ft_memcmp( transform,</a>
+<a name="ln285">                    &amp;font-&gt;currentTransform,</a>
+<a name="ln286">                    4 * sizeof ( CF2_Fixed ) ) != 0 )</a>
+<a name="ln287">    {</a>
+<a name="ln288">      /* save `key' information for `cache of one' matrix data; */</a>
+<a name="ln289">      /* save client transform, without the translation         */</a>
+<a name="ln290">      font-&gt;currentTransform    = *transform;</a>
+<a name="ln291">      font-&gt;currentTransform.tx =</a>
+<a name="ln292">      font-&gt;currentTransform.ty = cf2_intToFixed( 0 );</a>
+<a name="ln293"> </a>
+<a name="ln294">      /* TODO: FreeType transform is simple scalar; for now, use identity */</a>
+<a name="ln295">      /*       for outer                                                  */</a>
+<a name="ln296">      font-&gt;innerTransform   = *transform;</a>
+<a name="ln297">      font-&gt;outerTransform.a =</a>
+<a name="ln298">      font-&gt;outerTransform.d = cf2_intToFixed( 1 );</a>
+<a name="ln299">      font-&gt;outerTransform.b =</a>
+<a name="ln300">      font-&gt;outerTransform.c = cf2_intToFixed( 0 );</a>
+<a name="ln301"> </a>
+<a name="ln302">      needExtraSetup = TRUE;</a>
+<a name="ln303">    }</a>
+<a name="ln304"> </a>
+<a name="ln305">    /*</a>
+<a name="ln306">     * font-&gt;darkened is set to true if there is a stem darkening request or</a>
+<a name="ln307">     * the font is synthetic emboldened.</a>
+<a name="ln308">     * font-&gt;darkened controls whether to adjust blue zones, winding order,</a>
+<a name="ln309">     * and hinting.</a>
+<a name="ln310">     *</a>
+<a name="ln311">     */</a>
+<a name="ln312">    if ( font-&gt;stemDarkened != ( font-&gt;renderingFlags &amp; CF2_FlagsDarkened ) )</a>
+<a name="ln313">    {</a>
+<a name="ln314">      font-&gt;stemDarkened =</a>
+<a name="ln315">        (FT_Bool)( font-&gt;renderingFlags &amp; CF2_FlagsDarkened );</a>
+<a name="ln316"> </a>
+<a name="ln317">      /* blue zones depend on darkened flag */</a>
+<a name="ln318">      needExtraSetup = TRUE;</a>
+<a name="ln319">    }</a>
+<a name="ln320"> </a>
+<a name="ln321">    /* recompute variables that are dependent on transform or FontDict or */</a>
+<a name="ln322">    /* darken flag                                                        */</a>
+<a name="ln323">    if ( needExtraSetup )</a>
+<a name="ln324">    {</a>
+<a name="ln325">      /* StdVW is found in the private dictionary;                       */</a>
+<a name="ln326">      /* recompute darkening amounts whenever private dictionary or      */</a>
+<a name="ln327">      /* transform change                                                */</a>
+<a name="ln328">      /* Note: a rendering flag turns darkening on or off, so we want to */</a>
+<a name="ln329">      /*       store the `on' amounts;                                   */</a>
+<a name="ln330">      /*       darkening amount is computed in character space           */</a>
+<a name="ln331">      /* TODO: testing size-dependent darkening here;                    */</a>
+<a name="ln332">      /*       what to do for rotations?                                 */</a>
+<a name="ln333"> </a>
+<a name="ln334">      CF2_Fixed  emRatio;</a>
+<a name="ln335">      CF2_Fixed  stdHW;</a>
+<a name="ln336">      CF2_Int    unitsPerEm = font-&gt;unitsPerEm;</a>
+<a name="ln337"> </a>
+<a name="ln338"> </a>
+<a name="ln339">      if ( unitsPerEm == 0 )</a>
+<a name="ln340">        unitsPerEm = 1000;</a>
+<a name="ln341"> </a>
+<a name="ln342">      ppem = FT_MAX( cf2_intToFixed( 4 ),</a>
+<a name="ln343">                     font-&gt;ppem ); /* use minimum ppem of 4 */</a>
+<a name="ln344"> </a>
+<a name="ln345">#if 0</a>
+<a name="ln346">      /* since vstem is measured in the x-direction, we use the `a' member */</a>
+<a name="ln347">      /* of the fontMatrix                                                 */</a>
+<a name="ln348">      emRatio = cf2_fixedFracMul( cf2_intToFixed( 1000 ), fontMatrix-&gt;a );</a>
+<a name="ln349">#endif</a>
+<a name="ln350"> </a>
+<a name="ln351">      /* Freetype does not preserve the fontMatrix when parsing; use */</a>
+<a name="ln352">      /* unitsPerEm instead.                                         */</a>
+<a name="ln353">      /* TODO: check precision of this                               */</a>
+<a name="ln354">      emRatio     = cf2_intToFixed( 1000 ) / unitsPerEm;</a>
+<a name="ln355">      font-&gt;stdVW = cf2_getStdVW( decoder );</a>
+<a name="ln356"> </a>
+<a name="ln357">      if ( font-&gt;stdVW &lt;= 0 )</a>
+<a name="ln358">        font-&gt;stdVW = FT_DivFix( cf2_intToFixed( 75 ), emRatio );</a>
+<a name="ln359"> </a>
+<a name="ln360">      if ( boldenX &gt; 0 )</a>
+<a name="ln361">      {</a>
+<a name="ln362">        /* Ensure that boldenX is at least 1 pixel for synthetic bold font */</a>
+<a name="ln363">        /* (similar to what Avalon does)                                   */</a>
+<a name="ln364">        boldenX = FT_MAX( boldenX,</a>
+<a name="ln365">                          FT_DivFix( cf2_intToFixed( unitsPerEm ), ppem ) );</a>
+<a name="ln366"> </a>
+<a name="ln367">        /* Synthetic emboldening adds at least 1 pixel to darkenX, while */</a>
+<a name="ln368">        /* stem darkening adds at most half pixel.  Since the purpose of */</a>
+<a name="ln369">        /* stem darkening (readability at small sizes) is met with       */</a>
+<a name="ln370">        /* synthetic emboldening, no need to add stem darkening for a    */</a>
+<a name="ln371">        /* synthetic bold font.                                          */</a>
+<a name="ln372">        cf2_computeDarkening( emRatio,</a>
+<a name="ln373">                              ppem,</a>
+<a name="ln374">                              font-&gt;stdVW,</a>
+<a name="ln375">                              &amp;font-&gt;darkenX,</a>
+<a name="ln376">                              boldenX,</a>
+<a name="ln377">                              FALSE,</a>
+<a name="ln378">                              font-&gt;darkenParams );</a>
+<a name="ln379">      }</a>
+<a name="ln380">      else</a>
+<a name="ln381">        cf2_computeDarkening( emRatio,</a>
+<a name="ln382">                              ppem,</a>
+<a name="ln383">                              font-&gt;stdVW,</a>
+<a name="ln384">                              &amp;font-&gt;darkenX,</a>
+<a name="ln385">                              0,</a>
+<a name="ln386">                              font-&gt;stemDarkened,</a>
+<a name="ln387">                              font-&gt;darkenParams );</a>
+<a name="ln388"> </a>
+<a name="ln389">#if 0</a>
+<a name="ln390">      /* since hstem is measured in the y-direction, we use the `d' member */</a>
+<a name="ln391">      /* of the fontMatrix                                                 */</a>
+<a name="ln392">      /* TODO: use the same units per em as above; check this              */</a>
+<a name="ln393">      emRatio = cf2_fixedFracMul( cf2_intToFixed( 1000 ), fontMatrix-&gt;d );</a>
+<a name="ln394">#endif</a>
+<a name="ln395"> </a>
+<a name="ln396">      /* set the default stem width, because it must be the same for all */</a>
+<a name="ln397">      /* family members;                                                 */</a>
+<a name="ln398">      /* choose a constant for StdHW that depends on font contrast       */</a>
+<a name="ln399">      stdHW = cf2_getStdHW( decoder );</a>
+<a name="ln400"> </a>
+<a name="ln401">      if ( stdHW &gt; 0 &amp;&amp; font-&gt;stdVW &gt; 2 * stdHW )</a>
+<a name="ln402">        font-&gt;stdHW = FT_DivFix( cf2_intToFixed( 75 ), emRatio );</a>
+<a name="ln403">      else</a>
+<a name="ln404">      {</a>
+<a name="ln405">        /* low contrast font gets less hstem darkening */</a>
+<a name="ln406">        font-&gt;stdHW = FT_DivFix( cf2_intToFixed( 110 ), emRatio );</a>
+<a name="ln407">      }</a>
+<a name="ln408"> </a>
+<a name="ln409">      cf2_computeDarkening( emRatio,</a>
+<a name="ln410">                            ppem,</a>
+<a name="ln411">                            font-&gt;stdHW,</a>
+<a name="ln412">                            &amp;font-&gt;darkenY,</a>
+<a name="ln413">                            boldenY,</a>
+<a name="ln414">                            font-&gt;stemDarkened,</a>
+<a name="ln415">                            font-&gt;darkenParams );</a>
+<a name="ln416"> </a>
+<a name="ln417">      if ( font-&gt;darkenX != 0 || font-&gt;darkenY != 0 )</a>
+<a name="ln418">        font-&gt;darkened = TRUE;</a>
+<a name="ln419">      else</a>
+<a name="ln420">        font-&gt;darkened = FALSE;</a>
+<a name="ln421"> </a>
+<a name="ln422">      font-&gt;reverseWinding = FALSE; /* initial expectation is CCW */</a>
+<a name="ln423"> </a>
+<a name="ln424">      /* compute blue zones for this instance */</a>
+<a name="ln425">      cf2_blues_init( &amp;font-&gt;blues, font );</a>
+<a name="ln426">    }</a>
+<a name="ln427">  }</a>
+<a name="ln428"> </a>
+<a name="ln429"> </a>
+<a name="ln430">  /* equivalent to AdobeGetOutline */</a>
+<a name="ln431">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln432">  cf2_getGlyphOutline( CF2_Font           font,</a>
+<a name="ln433">                       CF2_Buffer         charstring,</a>
+<a name="ln434">                       const CF2_Matrix*  transform,</a>
+<a name="ln435">                       CF2_F16Dot16*      glyphWidth )</a>
+<a name="ln436">  {</a>
+<a name="ln437">    FT_Error  lastError = FT_Err_Ok;</a>
+<a name="ln438"> </a>
+<a name="ln439">    FT_Vector  translation;</a>
+<a name="ln440"> </a>
+<a name="ln441">#if 0</a>
+<a name="ln442">    FT_Vector  advancePoint;</a>
+<a name="ln443">#endif</a>
+<a name="ln444"> </a>
+<a name="ln445">    CF2_Fixed  advWidth = 0;</a>
+<a name="ln446">    FT_Bool    needWinding;</a>
+<a name="ln447"> </a>
+<a name="ln448"> </a>
+<a name="ln449">    /* Note: use both integer and fraction for outlines.  This allows bbox */</a>
+<a name="ln450">    /*       to come out directly.                                         */</a>
+<a name="ln451"> </a>
+<a name="ln452">    translation.x = transform-&gt;tx;</a>
+<a name="ln453">    translation.y = transform-&gt;ty;</a>
+<a name="ln454"> </a>
+<a name="ln455">    /* set up values based on transform */</a>
+<a name="ln456">    cf2_font_setup( font, transform );</a>
+<a name="ln457">    if ( font-&gt;error )</a>
+<a name="ln458">      goto exit;                      /* setup encountered an error */</a>
+<a name="ln459"> </a>
+<a name="ln460">    /* reset darken direction */</a>
+<a name="ln461">    font-&gt;reverseWinding = FALSE;</a>
+<a name="ln462"> </a>
+<a name="ln463">    /* winding order only affects darkening */</a>
+<a name="ln464">    needWinding = font-&gt;darkened;</a>
+<a name="ln465"> </a>
+<a name="ln466">    while ( 1 )</a>
+<a name="ln467">    {</a>
+<a name="ln468">      /* reset output buffer */</a>
+<a name="ln469">      cf2_outline_reset( &amp;font-&gt;outline );</a>
+<a name="ln470"> </a>
+<a name="ln471">      /* build the outline, passing the full translation */</a>
+<a name="ln472">      cf2_interpT2CharString( font,</a>
+<a name="ln473">                              charstring,</a>
+<a name="ln474">                              (CF2_OutlineCallbacks)&amp;font-&gt;outline,</a>
+<a name="ln475">                              &amp;translation,</a>
+<a name="ln476">                              FALSE,</a>
+<a name="ln477">                              0,</a>
+<a name="ln478">                              0,</a>
+<a name="ln479">                              &amp;advWidth );</a>
+<a name="ln480"> </a>
+<a name="ln481">      if ( font-&gt;error )</a>
+<a name="ln482">        goto exit;</a>
+<a name="ln483"> </a>
+<a name="ln484">      if ( !needWinding )</a>
+<a name="ln485">        break;</a>
+<a name="ln486"> </a>
+<a name="ln487">      /* check winding order */</a>
+<a name="ln488">      if ( font-&gt;outline.root.windingMomentum &gt;= 0 ) /* CFF is CCW */</a>
+<a name="ln489">        break;</a>
+<a name="ln490"> </a>
+<a name="ln491">      /* invert darkening and render again                            */</a>
+<a name="ln492">      /* TODO: this should be a parameter to getOutline-computeOffset */</a>
+<a name="ln493">      font-&gt;reverseWinding = TRUE;</a>
+<a name="ln494"> </a>
+<a name="ln495">      needWinding = FALSE;    /* exit after next iteration */</a>
+<a name="ln496">    }</a>
+<a name="ln497"> </a>
+<a name="ln498">    /* finish storing client outline */</a>
+<a name="ln499">    cf2_outline_close( &amp;font-&gt;outline );</a>
+<a name="ln500"> </a>
+<a name="ln501">  exit:</a>
+<a name="ln502">    /* FreeType just wants the advance width; there is no translation */</a>
+<a name="ln503">    *glyphWidth = advWidth;</a>
+<a name="ln504"> </a>
+<a name="ln505">    /* free resources and collect errors from objects we've used */</a>
+<a name="ln506">    cf2_setError( &amp;font-&gt;error, lastError );</a>
+<a name="ln507"> </a>
+<a name="ln508">    return font-&gt;error;</a>
+<a name="ln509">  }</a>
+<a name="ln510"> </a>
+<a name="ln511"> </a>
+<a name="ln512">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="284"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v512/" target="_blank">V512</a> A call of the 'memcmp' function will lead to underflow of the buffer 'transform'.</p></div>
+<div class="balloon" rel="284"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v512/" target="_blank">V512</a> A call of the 'memcmp' function will lead to underflow of the buffer '& font->currentTransform'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

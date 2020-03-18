@@ -1,0 +1,1059 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pmmacosxcm.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2"> * Platform interface to the MacOS X CoreMIDI framework</a>
+<a name="ln3"> * </a>
+<a name="ln4"> * Jon Parise &lt;jparise at cmu.edu&gt;</a>
+<a name="ln5"> * and subsequent work by Andrew Zeldis and Zico Kolter</a>
+<a name="ln6"> * and Roger B. Dannenberg</a>
+<a name="ln7"> *</a>
+<a name="ln8"> * $Id: pmmacosx.c,v 1.17 2002/01/27 02:40:40 jon Exp $</a>
+<a name="ln9"> */</a>
+<a name="ln10"> </a>
+<a name="ln11">/* Notes:</a>
+<a name="ln12">    since the input and output streams are represented by MIDIEndpointRef</a>
+<a name="ln13">    values and almost no other state, we store the MIDIEndpointRef on</a>
+<a name="ln14">    descriptors[midi-&gt;device_id].descriptor. The only other state we need</a>
+<a name="ln15">    is for errors: we need to know if there is an error and if so, what is</a>
+<a name="ln16">    the error text. We use a structure with two kinds of</a>
+<a name="ln17">    host error: &quot;error&quot; and &quot;callback_error&quot;. That way, asynchronous callbacks</a>
+<a name="ln18">    do not interfere with other error information.</a>
+<a name="ln19">    </a>
+<a name="ln20">    OS X does not seem to have an error-code-to-text function, so we will</a>
+<a name="ln21">    just use text messages instead of error codes.</a>
+<a name="ln22"> */</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &lt;stdlib.h&gt;</a>
+<a name="ln25"> </a>
+<a name="ln26">//#define CM_DEBUG 1</a>
+<a name="ln27"> </a>
+<a name="ln28">#include &quot;portmidi.h&quot;</a>
+<a name="ln29">#include &quot;pmutil.h&quot;</a>
+<a name="ln30">#include &quot;pminternal.h&quot;</a>
+<a name="ln31">#include &quot;porttime.h&quot;</a>
+<a name="ln32">#include &quot;pmmac.h&quot;</a>
+<a name="ln33">#include &quot;pmmacosxcm.h&quot;</a>
+<a name="ln34"> </a>
+<a name="ln35">#include &lt;stdio.h&gt;</a>
+<a name="ln36">#include &lt;string.h&gt;</a>
+<a name="ln37"> </a>
+<a name="ln38">#include &lt;CoreServices/CoreServices.h&gt;</a>
+<a name="ln39">#include &lt;CoreMIDI/MIDIServices.h&gt;</a>
+<a name="ln40">#include &lt;CoreAudio/HostTime.h&gt;</a>
+<a name="ln41">#include &lt;unistd.h&gt;</a>
+<a name="ln42"> </a>
+<a name="ln43">#define PACKET_BUFFER_SIZE 1024</a>
+<a name="ln44">/* maximum overall data rate (OS X limit is 15000 bytes/second) */</a>
+<a name="ln45">#define MAX_BYTES_PER_S 14000</a>
+<a name="ln46"> </a>
+<a name="ln47">/* Apple reports that packets are dropped when the MIDI bytes/sec</a>
+<a name="ln48">   exceeds 15000. This is computed by &quot;tracking the number of MIDI </a>
+<a name="ln49">   bytes scheduled into 1-second buckets over the last six seconds</a>
+<a name="ln50">   and averaging these counts.&quot; </a>
+<a name="ln51"> </a>
+<a name="ln52">   This is apparently based on timestamps, not on real time, so </a>
+<a name="ln53">   we have to avoid constructing packets that schedule high speed</a>
+<a name="ln54">   output even if the actual writes are delayed (which was my first</a>
+<a name="ln55">   solution).</a>
+<a name="ln56"> </a>
+<a name="ln57">   The LIMIT_RATE symbol, if defined, enables code to modify </a>
+<a name="ln58">   timestamps as follows:</a>
+<a name="ln59">     After each packet is formed, the next allowable timestamp is</a>
+<a name="ln60">     computed as this_packet_time + this_packet_len * delay_per_byte</a>
+<a name="ln61"> </a>
+<a name="ln62">     This is the minimum timestamp allowed in the next packet. </a>
+<a name="ln63"> </a>
+<a name="ln64">     Note that this distorts accurate timestamps somewhat.</a>
+<a name="ln65"> */</a>
+<a name="ln66">#define LIMIT_RATE 1</a>
+<a name="ln67"> </a>
+<a name="ln68">#define SYSEX_BUFFER_SIZE 128</a>
+<a name="ln69"> </a>
+<a name="ln70">#define VERBOSE_ON 1</a>
+<a name="ln71">#define VERBOSE if (VERBOSE_ON)</a>
+<a name="ln72"> </a>
+<a name="ln73">#define MIDI_SYSEX      0xf0</a>
+<a name="ln74">#define MIDI_EOX        0xf7</a>
+<a name="ln75">#define MIDI_STATUS_MASK 0x80</a>
+<a name="ln76"> </a>
+<a name="ln77">// &quot;Ref&quot;s are pointers on 32-bit machines and ints on 64 bit machines</a>
+<a name="ln78">// NULL_REF is our representation of either 0 or NULL</a>
+<a name="ln79">#ifdef __LP64__</a>
+<a name="ln80">#define NULL_REF 0</a>
+<a name="ln81">#else</a>
+<a name="ln82">#define NULL_REF NULL</a>
+<a name="ln83">#endif</a>
+<a name="ln84"> </a>
+<a name="ln85">static MIDIClientRef	client = NULL_REF; 	/* Client handle to the MIDI server */</a>
+<a name="ln86">static MIDIPortRef	portIn = NULL_REF;	/* Input port handle */</a>
+<a name="ln87">static MIDIPortRef	portOut = NULL_REF;	/* Output port handle */</a>
+<a name="ln88"> </a>
+<a name="ln89">extern pm_fns_node pm_macosx_in_dictionary;</a>
+<a name="ln90">extern pm_fns_node pm_macosx_out_dictionary;</a>
+<a name="ln91"> </a>
+<a name="ln92">typedef struct midi_macosxcm_struct {</a>
+<a name="ln93">    PmTimestamp sync_time; /* when did we last determine delta? */</a>
+<a name="ln94">    UInt64 delta;	/* difference between stream time and real time in ns */</a>
+<a name="ln95">    UInt64 last_time;	/* last output time in host units*/</a>
+<a name="ln96">    int first_message;  /* tells midi_write to sychronize timestamps */</a>
+<a name="ln97">    int sysex_mode;     /* middle of sending sysex */</a>
+<a name="ln98">    uint32_t sysex_word; /* accumulate data when receiving sysex */</a>
+<a name="ln99">    uint32_t sysex_byte_count; /* count how many received */</a>
+<a name="ln100">    char error[PM_HOST_ERROR_MSG_LEN];</a>
+<a name="ln101">    char callback_error[PM_HOST_ERROR_MSG_LEN];</a>
+<a name="ln102">    Byte packetBuffer[PACKET_BUFFER_SIZE];</a>
+<a name="ln103">    MIDIPacketList *packetList; /* a pointer to packetBuffer */</a>
+<a name="ln104">    MIDIPacket *packet;</a>
+<a name="ln105">    Byte sysex_buffer[SYSEX_BUFFER_SIZE]; /* temp storage for sysex data */</a>
+<a name="ln106">    MIDITimeStamp sysex_timestamp; /* timestamp to use with sysex data */</a>
+<a name="ln107">    /* allow for running status (is running status possible here? -rbd): -cpr */</a>
+<a name="ln108">    unsigned char last_command; </a>
+<a name="ln109">    int32_t last_msg_length;</a>
+<a name="ln110">    /* limit midi data rate (a CoreMidi requirement): */</a>
+<a name="ln111">    UInt64 min_next_time; /* when can the next send take place? */</a>
+<a name="ln112">    int byte_count; /* how many bytes in the next packet list? */</a>
+<a name="ln113">    Float64 us_per_host_tick; /* host clock frequency, units of min_next_time */</a>
+<a name="ln114">    UInt64 host_ticks_per_byte; /* host clock units per byte at maximum rate */</a>
+<a name="ln115">} midi_macosxcm_node, *midi_macosxcm_type;</a>
+<a name="ln116"> </a>
+<a name="ln117">/* private function declarations */</a>
+<a name="ln118">MIDITimeStamp timestamp_pm_to_cm(PmTimestamp timestamp);</a>
+<a name="ln119">PmTimestamp timestamp_cm_to_pm(MIDITimeStamp timestamp);</a>
+<a name="ln120"> </a>
+<a name="ln121">char* cm_get_full_endpoint_name(MIDIEndpointRef endpoint);</a>
+<a name="ln122"> </a>
+<a name="ln123"> </a>
+<a name="ln124">static int</a>
+<a name="ln125">midi_length(int32_t msg)</a>
+<a name="ln126">{</a>
+<a name="ln127">    int status, high, low;</a>
+<a name="ln128">    static int high_lengths[] = {</a>
+<a name="ln129">        1, 1, 1, 1, 1, 1, 1, 1,         /* 0x00 through 0x70 */</a>
+<a name="ln130">        3, 3, 3, 3, 2, 2, 3, 1          /* 0x80 through 0xf0 */</a>
+<a name="ln131">    };</a>
+<a name="ln132">    static int low_lengths[] = {</a>
+<a name="ln133">        1, 2, 3, 2, 1, 1, 1, 1,         /* 0xf0 through 0xf8 */</a>
+<a name="ln134">        1, 1, 1, 1, 1, 1, 1, 1          /* 0xf9 through 0xff */</a>
+<a name="ln135">    };</a>
+<a name="ln136"> </a>
+<a name="ln137">    status = msg &amp; 0xFF;</a>
+<a name="ln138">    high = status &gt;&gt; 4;</a>
+<a name="ln139">    low = status &amp; 15;</a>
+<a name="ln140"> </a>
+<a name="ln141">    return (high != 0xF) ? high_lengths[high] : low_lengths[low];</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">static PmTimestamp midi_synchronize(PmInternal *midi)</a>
+<a name="ln145">{</a>
+<a name="ln146">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln147">    UInt64 pm_stream_time_2 = </a>
+<a name="ln148">            AudioConvertHostTimeToNanos(AudioGetCurrentHostTime());</a>
+<a name="ln149">    PmTimestamp real_time;</a>
+<a name="ln150">    UInt64 pm_stream_time;</a>
+<a name="ln151">    /* if latency is zero and this is an output, there is no </a>
+<a name="ln152">       time reference and midi_synchronize should never be called */</a>
+<a name="ln153">    assert(midi-&gt;time_proc);</a>
+<a name="ln154">    assert(!(midi-&gt;write_flag &amp;&amp; midi-&gt;latency == 0));</a>
+<a name="ln155">    do {</a>
+<a name="ln156">         /* read real_time between two reads of stream time */</a>
+<a name="ln157">         pm_stream_time = pm_stream_time_2;</a>
+<a name="ln158">         real_time = (*midi-&gt;time_proc)(midi-&gt;time_info);</a>
+<a name="ln159">         pm_stream_time_2 = AudioConvertHostTimeToNanos(AudioGetCurrentHostTime());</a>
+<a name="ln160">         /* repeat if more than 0.5 ms has elapsed */</a>
+<a name="ln161">    } while (pm_stream_time_2 &gt; pm_stream_time + 500000);</a>
+<a name="ln162">    m-&gt;delta = pm_stream_time - ((UInt64) real_time * (UInt64) 1000000);</a>
+<a name="ln163">    m-&gt;sync_time = real_time;</a>
+<a name="ln164">    return real_time;</a>
+<a name="ln165">}</a>
+<a name="ln166"> </a>
+<a name="ln167"> </a>
+<a name="ln168">static void</a>
+<a name="ln169">process_packet(MIDIPacket *packet, PmEvent *event, </a>
+<a name="ln170">	       PmInternal *midi, midi_macosxcm_type m)</a>
+<a name="ln171">{</a>
+<a name="ln172">    /* handle a packet of MIDI messages from CoreMIDI */</a>
+<a name="ln173">    /* there may be multiple short messages in one packet (!) */</a>
+<a name="ln174">    unsigned int remaining_length = packet-&gt;length;</a>
+<a name="ln175">    unsigned char *cur_packet_data = packet-&gt;data;</a>
+<a name="ln176">    while (remaining_length &gt; 0) {</a>
+<a name="ln177">        if (cur_packet_data[0] == MIDI_SYSEX ||</a>
+<a name="ln178">            /* are we in the middle of a sysex message? */</a>
+<a name="ln179">            (m-&gt;last_command == 0 &amp;&amp;</a>
+<a name="ln180">             !(cur_packet_data[0] &amp; MIDI_STATUS_MASK))) {</a>
+<a name="ln181">            m-&gt;last_command = 0; /* no running status */</a>
+<a name="ln182">            unsigned int amt = pm_read_bytes(midi, cur_packet_data, </a>
+<a name="ln183">                                             remaining_length, </a>
+<a name="ln184">                                             event-&gt;timestamp);</a>
+<a name="ln185">            remaining_length -= amt;</a>
+<a name="ln186">            cur_packet_data += amt;</a>
+<a name="ln187">        } else if (cur_packet_data[0] == MIDI_EOX) {</a>
+<a name="ln188">            /* this should never happen, because pm_read_bytes should</a>
+<a name="ln189">             * get and read all EOX bytes*/</a>
+<a name="ln190">            midi-&gt;sysex_in_progress = FALSE;</a>
+<a name="ln191">            m-&gt;last_command = 0;</a>
+<a name="ln192">        } else if (cur_packet_data[0] &amp; MIDI_STATUS_MASK) {</a>
+<a name="ln193">            /* compute the length of the next (short) msg in packet */</a>
+<a name="ln194">	    unsigned int cur_message_length = midi_length(cur_packet_data[0]);</a>
+<a name="ln195">            if (cur_message_length &gt; remaining_length) {</a>
+<a name="ln196">#ifdef DEBUG</a>
+<a name="ln197">                printf(&quot;PortMidi debug msg: not enough data&quot;);</a>
+<a name="ln198">#endif</a>
+<a name="ln199">		/* since there's no more data, we're done */</a>
+<a name="ln200">		return;</a>
+<a name="ln201">	    }</a>
+<a name="ln202">	    m-&gt;last_msg_length = cur_message_length;</a>
+<a name="ln203">	    m-&gt;last_command = cur_packet_data[0];</a>
+<a name="ln204">	    switch (cur_message_length) {</a>
+<a name="ln205">	    case 1:</a>
+<a name="ln206">	        event-&gt;message = Pm_Message(cur_packet_data[0], 0, 0);</a>
+<a name="ln207">		break; </a>
+<a name="ln208">	    case 2:</a>
+<a name="ln209">	        event-&gt;message = Pm_Message(cur_packet_data[0], </a>
+<a name="ln210">					    cur_packet_data[1], 0);</a>
+<a name="ln211">		break;</a>
+<a name="ln212">	    case 3:</a>
+<a name="ln213">	        event-&gt;message = Pm_Message(cur_packet_data[0],</a>
+<a name="ln214">					    cur_packet_data[1], </a>
+<a name="ln215">					    cur_packet_data[2]);</a>
+<a name="ln216">		break;</a>
+<a name="ln217">	    default:</a>
+<a name="ln218">                /* PortMIDI internal error; should never happen */</a>
+<a name="ln219">                assert(cur_message_length == 1);</a>
+<a name="ln220">	        return; /* give up on packet if continued after assert */</a>
+<a name="ln221">	    }</a>
+<a name="ln222">	    pm_read_short(midi, event);</a>
+<a name="ln223">	    remaining_length -= m-&gt;last_msg_length;</a>
+<a name="ln224">	    cur_packet_data += m-&gt;last_msg_length;</a>
+<a name="ln225">	} else if (m-&gt;last_msg_length &gt; remaining_length + 1) {</a>
+<a name="ln226">	    /* we have running status, but not enough data */</a>
+<a name="ln227">#ifdef DEBUG</a>
+<a name="ln228">	    printf(&quot;PortMidi debug msg: not enough data in CoreMIDI packet&quot;);</a>
+<a name="ln229">#endif</a>
+<a name="ln230">	    /* since there's no more data, we're done */</a>
+<a name="ln231">	    return;</a>
+<a name="ln232">	} else { /* output message using running status */</a>
+<a name="ln233">	    switch (m-&gt;last_msg_length) {</a>
+<a name="ln234">	    case 1:</a>
+<a name="ln235">	        event-&gt;message = Pm_Message(m-&gt;last_command, 0, 0);</a>
+<a name="ln236">		break;</a>
+<a name="ln237">	    case 2:</a>
+<a name="ln238">	        event-&gt;message = Pm_Message(m-&gt;last_command, </a>
+<a name="ln239">					    cur_packet_data[0], 0);</a>
+<a name="ln240">		break;</a>
+<a name="ln241">	    case 3:</a>
+<a name="ln242">	        event-&gt;message = Pm_Message(m-&gt;last_command, </a>
+<a name="ln243">					    cur_packet_data[0], </a>
+<a name="ln244">					    cur_packet_data[1]);</a>
+<a name="ln245">		break;</a>
+<a name="ln246">	    default:</a>
+<a name="ln247">	        /* last_msg_length is invalid -- internal PortMIDI error */</a>
+<a name="ln248">	        assert(m-&gt;last_msg_length == 1);</a>
+<a name="ln249">	    }</a>
+<a name="ln250">	    pm_read_short(midi, event);</a>
+<a name="ln251">	    remaining_length -= (m-&gt;last_msg_length - 1);</a>
+<a name="ln252">	    cur_packet_data += (m-&gt;last_msg_length - 1);</a>
+<a name="ln253">	}</a>
+<a name="ln254">    }</a>
+<a name="ln255">}</a>
+<a name="ln256"> </a>
+<a name="ln257"> </a>
+<a name="ln258"> </a>
+<a name="ln259">/* called when MIDI packets are received */</a>
+<a name="ln260">static void</a>
+<a name="ln261">readProc(const MIDIPacketList *newPackets, void *refCon, void *connRefCon)</a>
+<a name="ln262">{</a>
+<a name="ln263">    PmInternal *midi;</a>
+<a name="ln264">    midi_macosxcm_type m;</a>
+<a name="ln265">    PmEvent event;</a>
+<a name="ln266">    MIDIPacket *packet;</a>
+<a name="ln267">    unsigned int packetIndex;</a>
+<a name="ln268">    uint32_t now;</a>
+<a name="ln269">    unsigned int status;</a>
+<a name="ln270">    </a>
+<a name="ln271">#ifdef CM_DEBUG</a>
+<a name="ln272">    printf(&quot;readProc: numPackets %d: &quot;, newPackets-&gt;numPackets);</a>
+<a name="ln273">#endif</a>
+<a name="ln274"> </a>
+<a name="ln275">    /* Retrieve the context for this connection */</a>
+<a name="ln276">    midi = (PmInternal *) connRefCon;</a>
+<a name="ln277">    m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln278">    assert(m);</a>
+<a name="ln279">    </a>
+<a name="ln280">    /* synchronize time references every 100ms */</a>
+<a name="ln281">    now = (*midi-&gt;time_proc)(midi-&gt;time_info);</a>
+<a name="ln282">    if (m-&gt;first_message || m-&gt;sync_time + 100 /*ms*/ &lt; now) { </a>
+<a name="ln283">        /* time to resync */</a>
+<a name="ln284">        now = midi_synchronize(midi);</a>
+<a name="ln285">        m-&gt;first_message = FALSE;</a>
+<a name="ln286">    }</a>
+<a name="ln287">    </a>
+<a name="ln288">    packet = (MIDIPacket *) &amp;newPackets-&gt;packet[0];</a>
+<a name="ln289">    /* printf(&quot;readproc packet status %x length %d\n&quot;, packet-&gt;data[0], </a>
+<a name="ln290">               packet-&gt;length); */</a>
+<a name="ln291">    for (packetIndex = 0; packetIndex &lt; newPackets-&gt;numPackets; packetIndex++) {</a>
+<a name="ln292">        /* Set the timestamp and dispatch this message */</a>
+<a name="ln293">        event.timestamp = (PmTimestamp) /* explicit conversion */ (</a>
+<a name="ln294">                (AudioConvertHostTimeToNanos(packet-&gt;timeStamp) - m-&gt;delta) / </a>
+<a name="ln295">                (UInt64) 1000000);</a>
+<a name="ln296">        status = packet-&gt;data[0];</a>
+<a name="ln297">        /* process packet as sysex data if it begins with MIDI_SYSEX, or</a>
+<a name="ln298">           MIDI_EOX or non-status byte with no running status */</a>
+<a name="ln299">#ifdef CM_DEBUG</a>
+<a name="ln300">        printf(&quot; %d&quot;, packet-&gt;length);</a>
+<a name="ln301">#endif</a>
+<a name="ln302">        if (status == MIDI_SYSEX || status == MIDI_EOX || </a>
+<a name="ln303">            ((!(status &amp; MIDI_STATUS_MASK)) &amp;&amp; !m-&gt;last_command)) {</a>
+<a name="ln304">	    /* previously was: !(status &amp; MIDI_STATUS_MASK)) {</a>
+<a name="ln305">             * but this could mistake running status for sysex data</a>
+<a name="ln306">             */</a>
+<a name="ln307">            /* reset running status data -cpr */</a>
+<a name="ln308">	    m-&gt;last_command = 0;</a>
+<a name="ln309">	    m-&gt;last_msg_length = 0;</a>
+<a name="ln310">            /* printf(&quot;sysex packet length: %d\n&quot;, packet-&gt;length); */</a>
+<a name="ln311">            pm_read_bytes(midi, packet-&gt;data, packet-&gt;length, event.timestamp);</a>
+<a name="ln312">        } else {</a>
+<a name="ln313">            process_packet(packet, &amp;event, midi, m);</a>
+<a name="ln314">	}</a>
+<a name="ln315">        packet = MIDIPacketNext(packet);</a>
+<a name="ln316">    }</a>
+<a name="ln317">#ifdef CM_DEBUG</a>
+<a name="ln318">    printf(&quot;\n&quot;);</a>
+<a name="ln319">#endif</a>
+<a name="ln320">}</a>
+<a name="ln321"> </a>
+<a name="ln322">static PmError</a>
+<a name="ln323">midi_in_open(PmInternal *midi, void *driverInfo)</a>
+<a name="ln324">{</a>
+<a name="ln325">    MIDIEndpointRef endpoint;</a>
+<a name="ln326">    midi_macosxcm_type m;</a>
+<a name="ln327">    OSStatus macHostError;</a>
+<a name="ln328">    </a>
+<a name="ln329">    /* insure that we have a time_proc for timing */</a>
+<a name="ln330">    if (midi-&gt;time_proc == NULL) {</a>
+<a name="ln331">        if (!Pt_Started()) </a>
+<a name="ln332">            Pt_Start(1, 0, 0);</a>
+<a name="ln333">        /* time_get does not take a parameter, so coerce */</a>
+<a name="ln334">        midi-&gt;time_proc = (PmTimeProcPtr) Pt_Time;</a>
+<a name="ln335">    }</a>
+<a name="ln336">    endpoint = (MIDIEndpointRef) (long) descriptors[midi-&gt;device_id].descriptor;</a>
+<a name="ln337">    if (endpoint == NULL_REF) {</a>
+<a name="ln338">        return pmInvalidDeviceId;</a>
+<a name="ln339">    }</a>
+<a name="ln340"> </a>
+<a name="ln341">    m = (midi_macosxcm_type) pm_alloc(sizeof(midi_macosxcm_node)); /* create */</a>
+<a name="ln342">    midi-&gt;descriptor = m;</a>
+<a name="ln343">    if (!m) {</a>
+<a name="ln344">        return pmInsufficientMemory;</a>
+<a name="ln345">    }</a>
+<a name="ln346">    m-&gt;error[0] = 0;</a>
+<a name="ln347">    m-&gt;callback_error[0] = 0;</a>
+<a name="ln348">    m-&gt;sync_time = 0;</a>
+<a name="ln349">    m-&gt;delta = 0;</a>
+<a name="ln350">    m-&gt;last_time = 0;</a>
+<a name="ln351">    m-&gt;first_message = TRUE;</a>
+<a name="ln352">    m-&gt;sysex_mode = FALSE;</a>
+<a name="ln353">    m-&gt;sysex_word = 0;</a>
+<a name="ln354">    m-&gt;sysex_byte_count = 0;</a>
+<a name="ln355">    m-&gt;packetList = NULL;</a>
+<a name="ln356">    m-&gt;packet = NULL;</a>
+<a name="ln357">    m-&gt;last_command = 0;</a>
+<a name="ln358">    m-&gt;last_msg_length = 0;</a>
+<a name="ln359"> </a>
+<a name="ln360">    macHostError = MIDIPortConnectSource(portIn, endpoint, midi);</a>
+<a name="ln361">    if (macHostError != noErr) {</a>
+<a name="ln362">        pm_hosterror = macHostError;</a>
+<a name="ln363">        sprintf(pm_hosterror_text, </a>
+<a name="ln364">                &quot;Host error %ld: MIDIPortConnectSource() in midi_in_open()&quot;,</a>
+<a name="ln365">                (long) macHostError);</a>
+<a name="ln366">        midi-&gt;descriptor = NULL;</a>
+<a name="ln367">        pm_free(m);</a>
+<a name="ln368">        return pmHostError;</a>
+<a name="ln369">    }</a>
+<a name="ln370">    </a>
+<a name="ln371">    return pmNoError;</a>
+<a name="ln372">}</a>
+<a name="ln373"> </a>
+<a name="ln374">static PmError</a>
+<a name="ln375">midi_in_close(PmInternal *midi)</a>
+<a name="ln376">{</a>
+<a name="ln377">    MIDIEndpointRef endpoint;</a>
+<a name="ln378">    OSStatus macHostError;</a>
+<a name="ln379">    PmError err = pmNoError;</a>
+<a name="ln380">    </a>
+<a name="ln381">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln382">    </a>
+<a name="ln383">    if (!m) return pmBadPtr;</a>
+<a name="ln384"> </a>
+<a name="ln385">    endpoint = (MIDIEndpointRef) (long) descriptors[midi-&gt;device_id].descriptor;</a>
+<a name="ln386">    if (endpoint == NULL_REF) {</a>
+<a name="ln387">        pm_hosterror = pmBadPtr;</a>
+<a name="ln388">    }</a>
+<a name="ln389">    </a>
+<a name="ln390">    /* shut off the incoming messages before freeing data structures */</a>
+<a name="ln391">    macHostError = MIDIPortDisconnectSource(portIn, endpoint);</a>
+<a name="ln392">    if (macHostError != noErr) {</a>
+<a name="ln393">        pm_hosterror = macHostError;</a>
+<a name="ln394">        sprintf(pm_hosterror_text, </a>
+<a name="ln395">                &quot;Host error %ld: MIDIPortDisconnectSource() in midi_in_close()&quot;,</a>
+<a name="ln396">                (long) macHostError);</a>
+<a name="ln397">        err = pmHostError;</a>
+<a name="ln398">    }</a>
+<a name="ln399">    </a>
+<a name="ln400">    midi-&gt;descriptor = NULL;</a>
+<a name="ln401">    pm_free(midi-&gt;descriptor);</a>
+<a name="ln402">    </a>
+<a name="ln403">    return err;</a>
+<a name="ln404">}</a>
+<a name="ln405"> </a>
+<a name="ln406"> </a>
+<a name="ln407">static PmError</a>
+<a name="ln408">midi_out_open(PmInternal *midi, void *driverInfo)</a>
+<a name="ln409">{</a>
+<a name="ln410">    midi_macosxcm_type m;</a>
+<a name="ln411"> </a>
+<a name="ln412">    m = (midi_macosxcm_type) pm_alloc(sizeof(midi_macosxcm_node)); /* create */</a>
+<a name="ln413">    midi-&gt;descriptor = m;</a>
+<a name="ln414">    if (!m) {</a>
+<a name="ln415">        return pmInsufficientMemory;</a>
+<a name="ln416">    }</a>
+<a name="ln417">    m-&gt;error[0] = 0;</a>
+<a name="ln418">    m-&gt;callback_error[0] = 0;</a>
+<a name="ln419">    m-&gt;sync_time = 0;</a>
+<a name="ln420">    m-&gt;delta = 0;</a>
+<a name="ln421">    m-&gt;last_time = 0;</a>
+<a name="ln422">    m-&gt;first_message = TRUE;</a>
+<a name="ln423">    m-&gt;sysex_mode = FALSE;</a>
+<a name="ln424">    m-&gt;sysex_word = 0;</a>
+<a name="ln425">    m-&gt;sysex_byte_count = 0;</a>
+<a name="ln426">    m-&gt;packetList = (MIDIPacketList *) m-&gt;packetBuffer;</a>
+<a name="ln427">    m-&gt;packet = NULL;</a>
+<a name="ln428">    m-&gt;last_command = 0;</a>
+<a name="ln429">    m-&gt;last_msg_length = 0;</a>
+<a name="ln430">    m-&gt;min_next_time = 0;</a>
+<a name="ln431">    m-&gt;byte_count = 0;</a>
+<a name="ln432">    m-&gt;us_per_host_tick = 1000000.0 / AudioGetHostClockFrequency();</a>
+<a name="ln433">    m-&gt;host_ticks_per_byte = (UInt64) (1000000.0 / </a>
+<a name="ln434">                                       (m-&gt;us_per_host_tick * MAX_BYTES_PER_S));</a>
+<a name="ln435">    return pmNoError;</a>
+<a name="ln436">}</a>
+<a name="ln437"> </a>
+<a name="ln438"> </a>
+<a name="ln439">static PmError</a>
+<a name="ln440">midi_out_close(PmInternal *midi)</a>
+<a name="ln441">{</a>
+<a name="ln442">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln443">    if (!m) return pmBadPtr;</a>
+<a name="ln444">    </a>
+<a name="ln445">    midi-&gt;descriptor = NULL;</a>
+<a name="ln446">    pm_free(midi-&gt;descriptor);</a>
+<a name="ln447">    </a>
+<a name="ln448">    return pmNoError;</a>
+<a name="ln449">}</a>
+<a name="ln450"> </a>
+<a name="ln451">static PmError</a>
+<a name="ln452">midi_abort(PmInternal *midi)</a>
+<a name="ln453">{</a>
+<a name="ln454">    PmError err = pmNoError;</a>
+<a name="ln455">    OSStatus macHostError;</a>
+<a name="ln456">    MIDIEndpointRef endpoint =</a>
+<a name="ln457">            (MIDIEndpointRef) (long) descriptors[midi-&gt;device_id].descriptor;</a>
+<a name="ln458">    macHostError = MIDIFlushOutput(endpoint);</a>
+<a name="ln459">    if (macHostError != noErr) {</a>
+<a name="ln460">        pm_hosterror = macHostError;</a>
+<a name="ln461">        sprintf(pm_hosterror_text,</a>
+<a name="ln462">                &quot;Host error %ld: MIDIFlushOutput()&quot;, (long) macHostError);</a>
+<a name="ln463">        err = pmHostError;</a>
+<a name="ln464">    }</a>
+<a name="ln465">    return err;</a>
+<a name="ln466">}</a>
+<a name="ln467"> </a>
+<a name="ln468"> </a>
+<a name="ln469">static PmError</a>
+<a name="ln470">midi_write_flush(PmInternal *midi, PmTimestamp timestamp)</a>
+<a name="ln471">{</a>
+<a name="ln472">    OSStatus macHostError;</a>
+<a name="ln473">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln474">    MIDIEndpointRef endpoint = </a>
+<a name="ln475">            (MIDIEndpointRef) (long) descriptors[midi-&gt;device_id].descriptor;</a>
+<a name="ln476">    assert(m);</a>
+<a name="ln477">    assert(endpoint);</a>
+<a name="ln478">    if (m-&gt;packet != NULL) {</a>
+<a name="ln479">        /* out of space, send the buffer and start refilling it */</a>
+<a name="ln480">        /* before we can send, maybe delay to limit data rate. OS X allows</a>
+<a name="ln481">         * 15KB/s. */</a>
+<a name="ln482">        UInt64 now = AudioGetCurrentHostTime();</a>
+<a name="ln483">        if (now &lt; m-&gt;min_next_time) {</a>
+<a name="ln484">            usleep((useconds_t) </a>
+<a name="ln485">                   ((m-&gt;min_next_time - now) * m-&gt;us_per_host_tick));</a>
+<a name="ln486">        }</a>
+<a name="ln487">        macHostError = MIDISend(portOut, endpoint, m-&gt;packetList);</a>
+<a name="ln488">        m-&gt;packet = NULL; /* indicate no data in packetList now */</a>
+<a name="ln489">        m-&gt;min_next_time = now + m-&gt;byte_count * m-&gt;host_ticks_per_byte;</a>
+<a name="ln490">        m-&gt;byte_count = 0;</a>
+<a name="ln491">        if (macHostError != noErr) goto send_packet_error;</a>
+<a name="ln492">    }</a>
+<a name="ln493">    return pmNoError;</a>
+<a name="ln494">    </a>
+<a name="ln495">send_packet_error:</a>
+<a name="ln496">    pm_hosterror = macHostError;</a>
+<a name="ln497">    sprintf(pm_hosterror_text, </a>
+<a name="ln498">            &quot;Host error %ld: MIDISend() in midi_write()&quot;,</a>
+<a name="ln499">            (long) macHostError);</a>
+<a name="ln500">    return pmHostError;</a>
+<a name="ln501"> </a>
+<a name="ln502">}</a>
+<a name="ln503"> </a>
+<a name="ln504"> </a>
+<a name="ln505">static PmError</a>
+<a name="ln506">send_packet(PmInternal *midi, Byte *message, unsigned int messageLength, </a>
+<a name="ln507">            MIDITimeStamp timestamp)</a>
+<a name="ln508">{</a>
+<a name="ln509">    PmError err;</a>
+<a name="ln510">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln511">    assert(m);</a>
+<a name="ln512">    </a>
+<a name="ln513">    /* printf(&quot;add %d to packet %p len %d\n&quot;, message[0], m-&gt;packet, messageLength); */</a>
+<a name="ln514">    m-&gt;packet = MIDIPacketListAdd(m-&gt;packetList, sizeof(m-&gt;packetBuffer), </a>
+<a name="ln515">                                  m-&gt;packet, timestamp, messageLength, </a>
+<a name="ln516">                                  message);</a>
+<a name="ln517">    m-&gt;byte_count += messageLength;</a>
+<a name="ln518">    if (m-&gt;packet == NULL) {</a>
+<a name="ln519">        /* out of space, send the buffer and start refilling it */</a>
+<a name="ln520">        /* make midi-&gt;packet non-null to fool midi_write_flush into sending */</a>
+<a name="ln521">        m-&gt;packet = (MIDIPacket *) 4; </a>
+<a name="ln522">        /* timestamp is 0 because midi_write_flush ignores timestamp since</a>
+<a name="ln523">         * timestamps are already in packets. The timestamp parameter is here</a>
+<a name="ln524">         * because other API's need it. midi_write_flush can be called </a>
+<a name="ln525">         * from system-independent code that must be cross-API.</a>
+<a name="ln526">         */</a>
+<a name="ln527">        if ((err = midi_write_flush(midi, 0)) != pmNoError) return err;</a>
+<a name="ln528">        m-&gt;packet = MIDIPacketListInit(m-&gt;packetList);</a>
+<a name="ln529">        assert(m-&gt;packet); /* if this fails, it's a programming error */</a>
+<a name="ln530">        m-&gt;packet = MIDIPacketListAdd(m-&gt;packetList, sizeof(m-&gt;packetBuffer),</a>
+<a name="ln531">                                      m-&gt;packet, timestamp, messageLength, </a>
+<a name="ln532">                                      message);</a>
+<a name="ln533">        assert(m-&gt;packet); /* can't run out of space on first message */           </a>
+<a name="ln534">    }</a>
+<a name="ln535">    return pmNoError;</a>
+<a name="ln536">}    </a>
+<a name="ln537"> </a>
+<a name="ln538"> </a>
+<a name="ln539">static PmError</a>
+<a name="ln540">midi_write_short(PmInternal *midi, PmEvent *event)</a>
+<a name="ln541">{</a>
+<a name="ln542">    PmTimestamp when = event-&gt;timestamp;</a>
+<a name="ln543">    PmMessage what = event-&gt;message;</a>
+<a name="ln544">    MIDITimeStamp timestamp;</a>
+<a name="ln545">    UInt64 when_ns;</a>
+<a name="ln546">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln547">    Byte message[4];</a>
+<a name="ln548">    unsigned int messageLength;</a>
+<a name="ln549"> </a>
+<a name="ln550">    if (m-&gt;packet == NULL) {</a>
+<a name="ln551">        m-&gt;packet = MIDIPacketListInit(m-&gt;packetList);</a>
+<a name="ln552">        /* this can never fail, right? failure would indicate something </a>
+<a name="ln553">           unrecoverable */</a>
+<a name="ln554">        assert(m-&gt;packet);</a>
+<a name="ln555">    }</a>
+<a name="ln556">    </a>
+<a name="ln557">    /* compute timestamp */</a>
+<a name="ln558">    if (when == 0) when = midi-&gt;now;</a>
+<a name="ln559">    /* if latency == 0, midi-&gt;now is not valid. We will just set it to zero */</a>
+<a name="ln560">    if (midi-&gt;latency == 0) when = 0;</a>
+<a name="ln561">    when_ns = ((UInt64) (when + midi-&gt;latency) * (UInt64) 1000000) + m-&gt;delta;</a>
+<a name="ln562">    timestamp = (MIDITimeStamp) AudioConvertNanosToHostTime(when_ns);</a>
+<a name="ln563"> </a>
+<a name="ln564">    message[0] = Pm_MessageStatus(what);</a>
+<a name="ln565">    message[1] = Pm_MessageData1(what);</a>
+<a name="ln566">    message[2] = Pm_MessageData2(what);</a>
+<a name="ln567">    messageLength = midi_length(what);</a>
+<a name="ln568">        </a>
+<a name="ln569">    /* make sure we go foreward in time */</a>
+<a name="ln570">    if (timestamp &lt; m-&gt;min_next_time) timestamp = m-&gt;min_next_time;</a>
+<a name="ln571"> </a>
+<a name="ln572">    #ifdef LIMIT_RATE</a>
+<a name="ln573">        if (timestamp &lt; m-&gt;last_time)</a>
+<a name="ln574">            timestamp = m-&gt;last_time;</a>
+<a name="ln575">	m-&gt;last_time = timestamp + messageLength * m-&gt;host_ticks_per_byte;</a>
+<a name="ln576">    #endif</a>
+<a name="ln577"> </a>
+<a name="ln578">    /* Add this message to the packet list */</a>
+<a name="ln579">    return send_packet(midi, message, messageLength, timestamp);</a>
+<a name="ln580">}</a>
+<a name="ln581"> </a>
+<a name="ln582"> </a>
+<a name="ln583">static PmError </a>
+<a name="ln584">midi_begin_sysex(PmInternal *midi, PmTimestamp when)</a>
+<a name="ln585">{</a>
+<a name="ln586">    UInt64 when_ns;</a>
+<a name="ln587">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln588">    assert(m);</a>
+<a name="ln589">    m-&gt;sysex_byte_count = 0;</a>
+<a name="ln590">    </a>
+<a name="ln591">    /* compute timestamp */</a>
+<a name="ln592">    if (when == 0) when = midi-&gt;now;</a>
+<a name="ln593">    /* if latency == 0, midi-&gt;now is not valid. We will just set it to zero */</a>
+<a name="ln594">    if (midi-&gt;latency == 0) when = 0;</a>
+<a name="ln595">    when_ns = ((UInt64) (when + midi-&gt;latency) * (UInt64) 1000000) + m-&gt;delta;</a>
+<a name="ln596">    m-&gt;sysex_timestamp = (MIDITimeStamp) AudioConvertNanosToHostTime(when_ns);</a>
+<a name="ln597"> </a>
+<a name="ln598">    if (m-&gt;packet == NULL) {</a>
+<a name="ln599">        m-&gt;packet = MIDIPacketListInit(m-&gt;packetList);</a>
+<a name="ln600">        /* this can never fail, right? failure would indicate something </a>
+<a name="ln601">           unrecoverable */</a>
+<a name="ln602">        assert(m-&gt;packet);</a>
+<a name="ln603">    }</a>
+<a name="ln604">    return pmNoError;</a>
+<a name="ln605">}</a>
+<a name="ln606"> </a>
+<a name="ln607"> </a>
+<a name="ln608">static PmError</a>
+<a name="ln609">midi_end_sysex(PmInternal *midi, PmTimestamp when)</a>
+<a name="ln610">{</a>
+<a name="ln611">    PmError err;</a>
+<a name="ln612">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln613">    assert(m);</a>
+<a name="ln614">    </a>
+<a name="ln615">    /* make sure we go foreward in time */</a>
+<a name="ln616">    if (m-&gt;sysex_timestamp &lt; m-&gt;min_next_time) </a>
+<a name="ln617">        m-&gt;sysex_timestamp = m-&gt;min_next_time;</a>
+<a name="ln618"> </a>
+<a name="ln619">    #ifdef LIMIT_RATE</a>
+<a name="ln620">        if (m-&gt;sysex_timestamp &lt; m-&gt;last_time) </a>
+<a name="ln621">            m-&gt;sysex_timestamp = m-&gt;last_time;</a>
+<a name="ln622">        m-&gt;last_time = m-&gt;sysex_timestamp + m-&gt;sysex_byte_count *</a>
+<a name="ln623">                                            m-&gt;host_ticks_per_byte;</a>
+<a name="ln624">    #endif</a>
+<a name="ln625">    </a>
+<a name="ln626">    /* now send what's in the buffer */</a>
+<a name="ln627">    err = send_packet(midi, m-&gt;sysex_buffer, m-&gt;sysex_byte_count,</a>
+<a name="ln628">                      m-&gt;sysex_timestamp);</a>
+<a name="ln629">    m-&gt;sysex_byte_count = 0;</a>
+<a name="ln630">    if (err != pmNoError) {</a>
+<a name="ln631">        m-&gt;packet = NULL; /* flush everything in the packet list */</a>
+<a name="ln632">        return err;</a>
+<a name="ln633">    }</a>
+<a name="ln634">    return pmNoError;</a>
+<a name="ln635">}</a>
+<a name="ln636"> </a>
+<a name="ln637"> </a>
+<a name="ln638">static PmError</a>
+<a name="ln639">midi_write_byte(PmInternal *midi, unsigned char byte, PmTimestamp timestamp)</a>
+<a name="ln640">{</a>
+<a name="ln641">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln642">    assert(m);</a>
+<a name="ln643">    if (m-&gt;sysex_byte_count &gt;= SYSEX_BUFFER_SIZE) {</a>
+<a name="ln644">        PmError err = midi_end_sysex(midi, timestamp);</a>
+<a name="ln645">        if (err != pmNoError) return err;</a>
+<a name="ln646">    }</a>
+<a name="ln647">    m-&gt;sysex_buffer[m-&gt;sysex_byte_count++] = byte;</a>
+<a name="ln648">    return pmNoError;</a>
+<a name="ln649">}</a>
+<a name="ln650"> </a>
+<a name="ln651"> </a>
+<a name="ln652">static PmError</a>
+<a name="ln653">midi_write_realtime(PmInternal *midi, PmEvent *event)</a>
+<a name="ln654">{</a>
+<a name="ln655">    /* to send a realtime message during a sysex message, first</a>
+<a name="ln656">       flush all pending sysex bytes into packet list */</a>
+<a name="ln657">    PmError err = midi_end_sysex(midi, 0);</a>
+<a name="ln658">    if (err != pmNoError) return err;</a>
+<a name="ln659">    /* then we can just do a normal midi_write_short */</a>
+<a name="ln660">    return midi_write_short(midi, event);</a>
+<a name="ln661">}</a>
+<a name="ln662"> </a>
+<a name="ln663">static unsigned int midi_has_host_error(PmInternal *midi)</a>
+<a name="ln664">{</a>
+<a name="ln665">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln666">    return (m-&gt;callback_error[0] != 0) || (m-&gt;error[0] != 0);</a>
+<a name="ln667">}</a>
+<a name="ln668"> </a>
+<a name="ln669"> </a>
+<a name="ln670">static void midi_get_host_error(PmInternal *midi, char *msg, unsigned int len)</a>
+<a name="ln671">{</a>
+<a name="ln672">    midi_macosxcm_type m = (midi_macosxcm_type) midi-&gt;descriptor;</a>
+<a name="ln673">    msg[0] = 0; /* initialize to empty string */</a>
+<a name="ln674">    if (m) { /* make sure there is an open device to examine */</a>
+<a name="ln675">        if (m-&gt;error[0]) {</a>
+<a name="ln676">            strncpy(msg, m-&gt;error, len);</a>
+<a name="ln677">            m-&gt;error[0] = 0; /* clear the error */</a>
+<a name="ln678">        } else if (m-&gt;callback_error[0]) {</a>
+<a name="ln679">            strncpy(msg, m-&gt;callback_error, len);</a>
+<a name="ln680">            m-&gt;callback_error[0] = 0; /* clear the error */</a>
+<a name="ln681">        }</a>
+<a name="ln682">        msg[len - 1] = 0; /* make sure string is terminated */</a>
+<a name="ln683">    }</a>
+<a name="ln684">}</a>
+<a name="ln685"> </a>
+<a name="ln686"> </a>
+<a name="ln687">MIDITimeStamp timestamp_pm_to_cm(PmTimestamp timestamp)</a>
+<a name="ln688">{</a>
+<a name="ln689">    UInt64 nanos;</a>
+<a name="ln690">    if (timestamp &lt;= 0) {</a>
+<a name="ln691">        return (MIDITimeStamp)0;</a>
+<a name="ln692">    } else {</a>
+<a name="ln693">        nanos = (UInt64)timestamp * (UInt64)1000000;</a>
+<a name="ln694">        return (MIDITimeStamp)AudioConvertNanosToHostTime(nanos);</a>
+<a name="ln695">    }</a>
+<a name="ln696">}</a>
+<a name="ln697"> </a>
+<a name="ln698">PmTimestamp timestamp_cm_to_pm(MIDITimeStamp timestamp)</a>
+<a name="ln699">{</a>
+<a name="ln700">    UInt64 nanos;</a>
+<a name="ln701">    nanos = AudioConvertHostTimeToNanos(timestamp);</a>
+<a name="ln702">    return (PmTimestamp)(nanos / (UInt64)1000000);</a>
+<a name="ln703">}</a>
+<a name="ln704"> </a>
+<a name="ln705"> </a>
+<a name="ln706">//</a>
+<a name="ln707">// Code taken from http://developer.apple.com/qa/qa2004/qa1374.html</a>
+<a name="ln708">//////////////////////////////////////</a>
+<a name="ln709">// Obtain the name of an endpoint without regard for whether it has connections.</a>
+<a name="ln710">// The result should be released by the caller.</a>
+<a name="ln711">CFStringRef EndpointName(MIDIEndpointRef endpoint, bool isExternal)</a>
+<a name="ln712">{</a>
+<a name="ln713">  CFMutableStringRef result = CFStringCreateMutable(NULL, 0);</a>
+<a name="ln714">  CFStringRef str;</a>
+<a name="ln715">  </a>
+<a name="ln716">  // begin with the endpoint's name</a>
+<a name="ln717">  str = NULL;</a>
+<a name="ln718">  MIDIObjectGetStringProperty(endpoint, kMIDIPropertyName, &amp;str);</a>
+<a name="ln719">  if (str != NULL) {</a>
+<a name="ln720">    CFStringAppend(result, str);</a>
+<a name="ln721">    CFRelease(str);</a>
+<a name="ln722">  }</a>
+<a name="ln723">  </a>
+<a name="ln724">  MIDIEntityRef entity = NULL_REF;</a>
+<a name="ln725">  MIDIEndpointGetEntity(endpoint, &amp;entity);</a>
+<a name="ln726">  if (entity == NULL_REF)</a>
+<a name="ln727">    // probably virtual</a>
+<a name="ln728">    return result;</a>
+<a name="ln729">  </a>
+<a name="ln730">  if (CFStringGetLength(result) == 0) {</a>
+<a name="ln731">    // endpoint name has zero length -- try the entity</a>
+<a name="ln732">    str = NULL;</a>
+<a name="ln733">    MIDIObjectGetStringProperty(entity, kMIDIPropertyName, &amp;str);</a>
+<a name="ln734">    if (str != NULL) {</a>
+<a name="ln735">      CFStringAppend(result, str);</a>
+<a name="ln736">      CFRelease(str);</a>
+<a name="ln737">    }</a>
+<a name="ln738">  }</a>
+<a name="ln739">  // now consider the device's name</a>
+<a name="ln740">  MIDIDeviceRef device = NULL_REF;</a>
+<a name="ln741">  MIDIEntityGetDevice(entity, &amp;device);</a>
+<a name="ln742">  if (device == NULL_REF)</a>
+<a name="ln743">    return result;</a>
+<a name="ln744">  </a>
+<a name="ln745">  str = NULL;</a>
+<a name="ln746">  MIDIObjectGetStringProperty(device, kMIDIPropertyName, &amp;str);</a>
+<a name="ln747">  if (CFStringGetLength(result) == 0) {</a>
+<a name="ln748">      CFRelease(result);</a>
+<a name="ln749">      return str;</a>
+<a name="ln750">  }</a>
+<a name="ln751">  if (str != NULL) {</a>
+<a name="ln752">    // if an external device has only one entity, throw away</a>
+<a name="ln753">    // the endpoint name and just use the device name</a>
+<a name="ln754">    if (isExternal &amp;&amp; MIDIDeviceGetNumberOfEntities(device) &lt; 2) {</a>
+<a name="ln755">      CFRelease(result);</a>
+<a name="ln756">      return str;</a>
+<a name="ln757">    } else {</a>
+<a name="ln758">      if (CFStringGetLength(str) == 0) {</a>
+<a name="ln759">        CFRelease(str);</a>
+<a name="ln760">        return result;</a>
+<a name="ln761">      }</a>
+<a name="ln762">      // does the entity name already start with the device name?</a>
+<a name="ln763">      // (some drivers do this though they shouldn't)</a>
+<a name="ln764">      // if so, do not prepend</a>
+<a name="ln765">        if (CFStringCompareWithOptions( result, /* endpoint name */</a>
+<a name="ln766">             str /* device name */,</a>
+<a name="ln767">             CFRangeMake(0, CFStringGetLength(str)), 0) != kCFCompareEqualTo) {</a>
+<a name="ln768">        // prepend the device name to the entity name</a>
+<a name="ln769">        if (CFStringGetLength(result) &gt; 0)</a>
+<a name="ln770">          CFStringInsert(result, 0, CFSTR(&quot; &quot;));</a>
+<a name="ln771">        CFStringInsert(result, 0, str);</a>
+<a name="ln772">      }</a>
+<a name="ln773">      CFRelease(str);</a>
+<a name="ln774">    }</a>
+<a name="ln775">  }</a>
+<a name="ln776">  return result;</a>
+<a name="ln777">}</a>
+<a name="ln778"> </a>
+<a name="ln779"> </a>
+<a name="ln780">// Obtain the name of an endpoint, following connections.</a>
+<a name="ln781">// The result should be released by the caller.</a>
+<a name="ln782">static CFStringRef ConnectedEndpointName(MIDIEndpointRef endpoint)</a>
+<a name="ln783">{</a>
+<a name="ln784">  CFMutableStringRef result = CFStringCreateMutable(NULL, 0);</a>
+<a name="ln785">  CFStringRef str;</a>
+<a name="ln786">  OSStatus err;</a>
+<a name="ln787">  long i;</a>
+<a name="ln788">  </a>
+<a name="ln789">  // Does the endpoint have connections?</a>
+<a name="ln790">  CFDataRef connections = NULL;</a>
+<a name="ln791">  long nConnected = 0;</a>
+<a name="ln792">  bool anyStrings = false;</a>
+<a name="ln793">  err = MIDIObjectGetDataProperty(endpoint, kMIDIPropertyConnectionUniqueID, &amp;connections);</a>
+<a name="ln794">  if (connections != NULL) {</a>
+<a name="ln795">    // It has connections, follow them</a>
+<a name="ln796">    // Concatenate the names of all connected devices</a>
+<a name="ln797">    nConnected = CFDataGetLength(connections) / (int32_t) sizeof(MIDIUniqueID);</a>
+<a name="ln798">    if (nConnected) {</a>
+<a name="ln799">      const SInt32 *pid = (const SInt32 *)(CFDataGetBytePtr(connections));</a>
+<a name="ln800">      for (i = 0; i &lt; nConnected; ++i, ++pid) {</a>
+<a name="ln801">        MIDIUniqueID id = EndianS32_BtoN(*pid);</a>
+<a name="ln802">        MIDIObjectRef connObject;</a>
+<a name="ln803">        MIDIObjectType connObjectType;</a>
+<a name="ln804">        err = MIDIObjectFindByUniqueID(id, &amp;connObject, &amp;connObjectType);</a>
+<a name="ln805">        if (err == noErr) {</a>
+<a name="ln806">          if (connObjectType == kMIDIObjectType_ExternalSource  ||</a>
+<a name="ln807">              connObjectType == kMIDIObjectType_ExternalDestination) {</a>
+<a name="ln808">            // Connected to an external device's endpoint (10.3 and later).</a>
+<a name="ln809">            str = EndpointName((MIDIEndpointRef)(connObject), true);</a>
+<a name="ln810">          } else {</a>
+<a name="ln811">            // Connected to an external device (10.2) (or something else, catch-all)</a>
+<a name="ln812">            str = NULL;</a>
+<a name="ln813">            MIDIObjectGetStringProperty(connObject, kMIDIPropertyName, &amp;str);</a>
+<a name="ln814">          }</a>
+<a name="ln815">          if (str != NULL) {</a>
+<a name="ln816">            if (anyStrings)</a>
+<a name="ln817">              CFStringAppend(result, CFSTR(&quot;, &quot;));</a>
+<a name="ln818">            else anyStrings = true;</a>
+<a name="ln819">            CFStringAppend(result, str);</a>
+<a name="ln820">            CFRelease(str);</a>
+<a name="ln821">          }</a>
+<a name="ln822">        }</a>
+<a name="ln823">      }</a>
+<a name="ln824">    }</a>
+<a name="ln825">    CFRelease(connections);</a>
+<a name="ln826">  }</a>
+<a name="ln827">  if (anyStrings)</a>
+<a name="ln828">    return result; // caller should release result</a>
+<a name="ln829"> </a>
+<a name="ln830">  CFRelease(result);</a>
+<a name="ln831"> </a>
+<a name="ln832">  // Here, either the endpoint had no connections, or we failed to obtain names for any of them.</a>
+<a name="ln833">  return EndpointName(endpoint, false);</a>
+<a name="ln834">}</a>
+<a name="ln835"> </a>
+<a name="ln836"> </a>
+<a name="ln837">char* cm_get_full_endpoint_name(MIDIEndpointRef endpoint)</a>
+<a name="ln838">{</a>
+<a name="ln839">#ifdef OLDCODE</a>
+<a name="ln840">    MIDIEntityRef entity;</a>
+<a name="ln841">    MIDIDeviceRef device;</a>
+<a name="ln842"> </a>
+<a name="ln843">    CFStringRef endpointName = NULL;</a>
+<a name="ln844">    CFStringRef deviceName = NULL;</a>
+<a name="ln845">#endif</a>
+<a name="ln846">    CFStringRef fullName = NULL;</a>
+<a name="ln847">    CFStringEncoding defaultEncoding;</a>
+<a name="ln848">    char* newName;</a>
+<a name="ln849"> </a>
+<a name="ln850">    /* get the default string encoding */</a>
+<a name="ln851">    defaultEncoding = CFStringGetSystemEncoding();</a>
+<a name="ln852"> </a>
+<a name="ln853">    fullName = ConnectedEndpointName(endpoint);</a>
+<a name="ln854">    </a>
+<a name="ln855">#ifdef OLDCODE</a>
+<a name="ln856">    /* get the entity and device info */</a>
+<a name="ln857">    MIDIEndpointGetEntity(endpoint, &amp;entity);</a>
+<a name="ln858">    MIDIEntityGetDevice(entity, &amp;device);</a>
+<a name="ln859"> </a>
+<a name="ln860">    /* create the nicely formated name */</a>
+<a name="ln861">    MIDIObjectGetStringProperty(endpoint, kMIDIPropertyName, &amp;endpointName);</a>
+<a name="ln862">    MIDIObjectGetStringProperty(device, kMIDIPropertyName, &amp;deviceName);</a>
+<a name="ln863">    if (deviceName != NULL) {</a>
+<a name="ln864">        fullName = CFStringCreateWithFormat(NULL, NULL, CFSTR(&quot;%@: %@&quot;),</a>
+<a name="ln865">                                            deviceName, endpointName);</a>
+<a name="ln866">    } else {</a>
+<a name="ln867">        fullName = endpointName;</a>
+<a name="ln868">    }</a>
+<a name="ln869">#endif    </a>
+<a name="ln870">    /* copy the string into our buffer */</a>
+<a name="ln871">    newName = (char *) malloc(CFStringGetLength(fullName) + 1);</a>
+<a name="ln872">    CFStringGetCString(fullName, newName, CFStringGetLength(fullName) + 1,</a>
+<a name="ln873">                       defaultEncoding);</a>
+<a name="ln874"> </a>
+<a name="ln875">    /* clean up */</a>
+<a name="ln876">#ifdef OLDCODE</a>
+<a name="ln877">    if (endpointName) CFRelease(endpointName);</a>
+<a name="ln878">    if (deviceName) CFRelease(deviceName);</a>
+<a name="ln879">#endif</a>
+<a name="ln880">    if (fullName) CFRelease(fullName);</a>
+<a name="ln881"> </a>
+<a name="ln882">    return newName;</a>
+<a name="ln883">}</a>
+<a name="ln884"> </a>
+<a name="ln885"> </a>
+<a name="ln886"> </a>
+<a name="ln887">pm_fns_node pm_macosx_in_dictionary = {</a>
+<a name="ln888">    none_write_short,</a>
+<a name="ln889">    none_sysex,</a>
+<a name="ln890">    none_sysex,</a>
+<a name="ln891">    none_write_byte,</a>
+<a name="ln892">    none_write_short,</a>
+<a name="ln893">    none_write_flush,</a>
+<a name="ln894">    none_synchronize,</a>
+<a name="ln895">    midi_in_open,</a>
+<a name="ln896">    midi_abort,</a>
+<a name="ln897">    midi_in_close,</a>
+<a name="ln898">    success_poll,</a>
+<a name="ln899">    midi_has_host_error,</a>
+<a name="ln900">    midi_get_host_error,</a>
+<a name="ln901">};</a>
+<a name="ln902"> </a>
+<a name="ln903">pm_fns_node pm_macosx_out_dictionary = {</a>
+<a name="ln904">    midi_write_short,</a>
+<a name="ln905">    midi_begin_sysex,</a>
+<a name="ln906">    midi_end_sysex,</a>
+<a name="ln907">    midi_write_byte,</a>
+<a name="ln908">    midi_write_realtime,</a>
+<a name="ln909">    midi_write_flush,</a>
+<a name="ln910">    midi_synchronize,</a>
+<a name="ln911">    midi_out_open,</a>
+<a name="ln912">    midi_abort,</a>
+<a name="ln913">    midi_out_close,</a>
+<a name="ln914">    success_poll,</a>
+<a name="ln915">    midi_has_host_error,</a>
+<a name="ln916">    midi_get_host_error,</a>
+<a name="ln917">};</a>
+<a name="ln918"> </a>
+<a name="ln919"> </a>
+<a name="ln920">PmError pm_macosxcm_init(void)</a>
+<a name="ln921">{</a>
+<a name="ln922">    ItemCount numInputs, numOutputs, numDevices;</a>
+<a name="ln923">    MIDIEndpointRef endpoint;</a>
+<a name="ln924">    int i;</a>
+<a name="ln925">    OSStatus macHostError;</a>
+<a name="ln926">    char *error_text;</a>
+<a name="ln927"> </a>
+<a name="ln928">    /* Determine the number of MIDI devices on the system */</a>
+<a name="ln929">    numDevices = MIDIGetNumberOfDevices();</a>
+<a name="ln930">    numInputs = MIDIGetNumberOfSources();</a>
+<a name="ln931">    numOutputs = MIDIGetNumberOfDestinations();</a>
+<a name="ln932"> </a>
+<a name="ln933">    /* Return prematurely if no devices exist on the system</a>
+<a name="ln934">       Note that this is not an error. There may be no devices.</a>
+<a name="ln935">       Pm_CountDevices() will return zero, which is correct and</a>
+<a name="ln936">       useful information</a>
+<a name="ln937">     */</a>
+<a name="ln938">    if (numDevices &lt;= 0) {</a>
+<a name="ln939">        return pmNoError;</a>
+<a name="ln940">    }</a>
+<a name="ln941"> </a>
+<a name="ln942"> </a>
+<a name="ln943">    /* Initialize the client handle */</a>
+<a name="ln944">    macHostError = MIDIClientCreate(CFSTR(&quot;PortMidi&quot;), NULL, NULL, &amp;client);</a>
+<a name="ln945">    if (macHostError != noErr) {</a>
+<a name="ln946">        error_text = &quot;MIDIClientCreate() in pm_macosxcm_init()&quot;;</a>
+<a name="ln947">        goto error_return;</a>
+<a name="ln948">    }</a>
+<a name="ln949"> </a>
+<a name="ln950">    /* Create the input port */</a>
+<a name="ln951">    macHostError = MIDIInputPortCreate(client, CFSTR(&quot;Input port&quot;), readProc,</a>
+<a name="ln952">                                          NULL, &amp;portIn);</a>
+<a name="ln953">    if (macHostError != noErr) {</a>
+<a name="ln954">        error_text = &quot;MIDIInputPortCreate() in pm_macosxcm_init()&quot;;</a>
+<a name="ln955">        goto error_return;</a>
+<a name="ln956">    }</a>
+<a name="ln957">        </a>
+<a name="ln958">    /* Create the output port */</a>
+<a name="ln959">    macHostError = MIDIOutputPortCreate(client, CFSTR(&quot;Output port&quot;), &amp;portOut);</a>
+<a name="ln960">    if (macHostError != noErr) {</a>
+<a name="ln961">        error_text = &quot;MIDIOutputPortCreate() in pm_macosxcm_init()&quot;;</a>
+<a name="ln962">        goto error_return;</a>
+<a name="ln963">    }</a>
+<a name="ln964"> </a>
+<a name="ln965">    /* Iterate over the MIDI input devices */</a>
+<a name="ln966">    for (i = 0; i &lt; numInputs; i++) {</a>
+<a name="ln967">        endpoint = MIDIGetSource(i);</a>
+<a name="ln968">        if (endpoint == NULL_REF) {</a>
+<a name="ln969">            continue;</a>
+<a name="ln970">        }</a>
+<a name="ln971"> </a>
+<a name="ln972">        /* set the first input we see to the default */</a>
+<a name="ln973">        if (pm_default_input_device_id == -1)</a>
+<a name="ln974">            pm_default_input_device_id = pm_descriptor_index;</a>
+<a name="ln975">        </a>
+<a name="ln976">        /* Register this device with PortMidi */</a>
+<a name="ln977">        pm_add_device(&quot;CoreMIDI&quot;, cm_get_full_endpoint_name(endpoint),</a>
+<a name="ln978">                      TRUE, (void *) (long) endpoint, &amp;pm_macosx_in_dictionary);</a>
+<a name="ln979">    }</a>
+<a name="ln980"> </a>
+<a name="ln981">    /* Iterate over the MIDI output devices */</a>
+<a name="ln982">    for (i = 0; i &lt; numOutputs; i++) {</a>
+<a name="ln983">        endpoint = MIDIGetDestination(i);</a>
+<a name="ln984">        if (endpoint == NULL_REF) {</a>
+<a name="ln985">            continue;</a>
+<a name="ln986">        }</a>
+<a name="ln987"> </a>
+<a name="ln988">        /* set the first output we see to the default */</a>
+<a name="ln989">        if (pm_default_output_device_id == -1)</a>
+<a name="ln990">            pm_default_output_device_id = pm_descriptor_index;</a>
+<a name="ln991"> </a>
+<a name="ln992">        /* Register this device with PortMidi */</a>
+<a name="ln993">        pm_add_device(&quot;CoreMIDI&quot;, cm_get_full_endpoint_name(endpoint),</a>
+<a name="ln994">                      FALSE, (void *) (long) endpoint,</a>
+<a name="ln995">                      &amp;pm_macosx_out_dictionary);</a>
+<a name="ln996">    }</a>
+<a name="ln997">    return pmNoError;</a>
+<a name="ln998">    </a>
+<a name="ln999">error_return:</a>
+<a name="ln1000">    pm_hosterror = macHostError;</a>
+<a name="ln1001">    sprintf(pm_hosterror_text, &quot;Host error %ld: %s\n&quot;, (long) macHostError, </a>
+<a name="ln1002">            error_text);</a>
+<a name="ln1003">    pm_macosxcm_term(); /* clear out any opened ports */</a>
+<a name="ln1004">    return pmHostError;</a>
+<a name="ln1005">}</a>
+<a name="ln1006"> </a>
+<a name="ln1007">void pm_macosxcm_term(void)</a>
+<a name="ln1008">{</a>
+<a name="ln1009">    if (client != NULL_REF) MIDIClientDispose(client);</a>
+<a name="ln1010">    if (portIn != NULL_REF) MIDIPortDispose(portIn);</a>
+<a name="ln1011">    if (portOut != NULL_REF) MIDIPortDispose(portOut);</a>
+<a name="ln1012">}</a>
+
+</code></pre>
+<div class="balloon" rel="561"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'when + midi->latency' operator to the 'UInt64' type, not the result.</p></div>
+<div class="balloon" rel="595"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'when + midi->latency' operator to the 'UInt64' type, not the result.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

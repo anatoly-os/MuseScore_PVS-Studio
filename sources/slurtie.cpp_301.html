@@ -1,0 +1,635 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>slurtie.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2016 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;measure.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;system.h&quot;</a>
+<a name="ln16">#include &quot;undo.h&quot;</a>
+<a name="ln17">#include &quot;slurtie.h&quot;</a>
+<a name="ln18">#include &quot;tie.h&quot;</a>
+<a name="ln19">#include &quot;chord.h&quot;</a>
+<a name="ln20"> </a>
+<a name="ln21">namespace Ms {</a>
+<a name="ln22"> </a>
+<a name="ln23">//---------------------------------------------------------</a>
+<a name="ln24">//   SlurTieSegment</a>
+<a name="ln25">//---------------------------------------------------------</a>
+<a name="ln26"> </a>
+<a name="ln27">SlurTieSegment::SlurTieSegment(Score* score)</a>
+<a name="ln28">   : SpannerSegment(score)</a>
+<a name="ln29">      {</a>
+<a name="ln30">      setFlag(ElementFlag::ON_STAFF, true);</a>
+<a name="ln31">      }</a>
+<a name="ln32"> </a>
+<a name="ln33">SlurTieSegment::SlurTieSegment(const SlurTieSegment&amp; b)</a>
+<a name="ln34">   : SpannerSegment(b)</a>
+<a name="ln35">      {</a>
+<a name="ln36">      for (int i = 0; i &lt; int(Grip::GRIPS); ++i) {</a>
+<a name="ln37">            _ups[i]   = b._ups[i];</a>
+<a name="ln38">            _ups[i].p = QPointF();</a>
+<a name="ln39">            }</a>
+<a name="ln40">      path = b.path;</a>
+<a name="ln41">      }</a>
+<a name="ln42"> </a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44">//   gripAnchor</a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46"> </a>
+<a name="ln47">QPointF SlurTieSegment::gripAnchor(Grip grip) const</a>
+<a name="ln48">      {</a>
+<a name="ln49">      if (!system() || (grip != Grip::START &amp;&amp; grip != Grip::END))</a>
+<a name="ln50">            return QPointF();</a>
+<a name="ln51"> </a>
+<a name="ln52">      QPointF sp(system()-&gt;pagePos());</a>
+<a name="ln53">      QPointF pp(pagePos());</a>
+<a name="ln54">      QPointF p1(ups(Grip::START).p + pp);</a>
+<a name="ln55">      QPointF p2(ups(Grip::END).p + pp);</a>
+<a name="ln56"> </a>
+<a name="ln57">      switch (spannerSegmentType()) {</a>
+<a name="ln58">            case SpannerSegmentType::SINGLE:</a>
+<a name="ln59">                  return grip == Grip::START ? p1 : p2;</a>
+<a name="ln60"> </a>
+<a name="ln61">            case SpannerSegmentType::BEGIN:</a>
+<a name="ln62">                  return grip == Grip::START ? p1 : system()-&gt;abbox().topRight();</a>
+<a name="ln63"> </a>
+<a name="ln64">            case SpannerSegmentType::MIDDLE:</a>
+<a name="ln65">                  return grip == Grip::START ? sp : system()-&gt;abbox().topRight();</a>
+<a name="ln66"> </a>
+<a name="ln67">            case SpannerSegmentType::END:</a>
+<a name="ln68">                  return grip == Grip::START ? sp : p2;</a>
+<a name="ln69">            }</a>
+<a name="ln70">      return QPointF();</a>
+<a name="ln71">      }</a>
+<a name="ln72"> </a>
+<a name="ln73">//---------------------------------------------------------</a>
+<a name="ln74">//   move</a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76"> </a>
+<a name="ln77">void SlurTieSegment::move(const QPointF&amp; s)</a>
+<a name="ln78">      {</a>
+<a name="ln79">      Element::move(s);</a>
+<a name="ln80">      for (int k = 0; k &lt; int(Grip::GRIPS); ++k)</a>
+<a name="ln81">            _ups[k].p += s;</a>
+<a name="ln82">      }</a>
+<a name="ln83"> </a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85">//   spatiumChanged</a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87"> </a>
+<a name="ln88">void SlurTieSegment::spatiumChanged(qreal oldValue, qreal newValue)</a>
+<a name="ln89">      {</a>
+<a name="ln90">      qreal diff = newValue / oldValue;</a>
+<a name="ln91">      for (UP&amp; u : _ups)</a>
+<a name="ln92">            u.off *= diff;</a>
+<a name="ln93">      }</a>
+<a name="ln94"> </a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96">//   gripsPositions</a>
+<a name="ln97">//---------------------------------------------------------</a>
+<a name="ln98"> </a>
+<a name="ln99">std::vector&lt;QPointF&gt; SlurTieSegment::gripsPositions(const EditData&amp;) const</a>
+<a name="ln100">      {</a>
+<a name="ln101">      const int ngrips = gripsCount();</a>
+<a name="ln102">      std::vector&lt;QPointF&gt; grips(ngrips);</a>
+<a name="ln103"> </a>
+<a name="ln104">      const QPointF p(pagePos());</a>
+<a name="ln105">      for (int i = 0; i &lt; ngrips; ++i)</a>
+<a name="ln106">            grips[i] = _ups[i].p + _ups[i].off + p;</a>
+<a name="ln107"> </a>
+<a name="ln108">      return grips;</a>
+<a name="ln109">      }</a>
+<a name="ln110"> </a>
+<a name="ln111">//---------------------------------------------------------</a>
+<a name="ln112">//   startEditDrag</a>
+<a name="ln113">//---------------------------------------------------------</a>
+<a name="ln114"> </a>
+<a name="ln115">void SlurTieSegment::startEditDrag(EditData&amp; ed)</a>
+<a name="ln116">      {</a>
+<a name="ln117">      ElementEditData* eed = ed.getData(this);</a>
+<a name="ln118">      for (auto i : { Pid::SLUR_UOFF1, Pid::SLUR_UOFF2, Pid::SLUR_UOFF3, Pid::SLUR_UOFF4, Pid::OFFSET })</a>
+<a name="ln119">            eed-&gt;pushProperty(i);</a>
+<a name="ln120">      }</a>
+<a name="ln121"> </a>
+<a name="ln122">//---------------------------------------------------------</a>
+<a name="ln123">//   endEditDrag</a>
+<a name="ln124">//---------------------------------------------------------</a>
+<a name="ln125"> </a>
+<a name="ln126">void SlurTieSegment::endEditDrag(EditData&amp; ed)</a>
+<a name="ln127">      {</a>
+<a name="ln128">      Element::endEditDrag(ed);</a>
+<a name="ln129">      triggerLayout();</a>
+<a name="ln130">      }</a>
+<a name="ln131"> </a>
+<a name="ln132">//---------------------------------------------------------</a>
+<a name="ln133">//   editDrag</a>
+<a name="ln134">//---------------------------------------------------------</a>
+<a name="ln135"> </a>
+<a name="ln136">void SlurTieSegment::editDrag(EditData&amp; ed)</a>
+<a name="ln137">      {</a>
+<a name="ln138">      Grip g     = ed.curGrip;</a>
+<a name="ln139">      ups(g).off += ed.delta;</a>
+<a name="ln140"> </a>
+<a name="ln141">      QPointF delta;</a>
+<a name="ln142"> </a>
+<a name="ln143">      switch (g) {</a>
+<a name="ln144">            case Grip::START:</a>
+<a name="ln145">            case Grip::END:</a>
+<a name="ln146">                  //</a>
+<a name="ln147">                  // move anchor for slurs/ties</a>
+<a name="ln148">                  //</a>
+<a name="ln149">                  if ((g == Grip::START &amp;&amp; isSingleBeginType()) || (g == Grip::END &amp;&amp; isSingleEndType())) {</a>
+<a name="ln150">                        Spanner* spanner = slurTie();</a>
+<a name="ln151">                        Qt::KeyboardModifiers km = qApp-&gt;keyboardModifiers();</a>
+<a name="ln152">                        Element* e = ed.view-&gt;elementNear(ed.pos);</a>
+<a name="ln153">                        if (e &amp;&amp; e-&gt;isNote()) {</a>
+<a name="ln154">                              Note* note = toNote(e);</a>
+<a name="ln155">                              Fraction tick = note-&gt;chord()-&gt;tick();</a>
+<a name="ln156">                              if ((g == Grip::END &amp;&amp; tick &gt; slurTie()-&gt;tick()) || (g == Grip::START &amp;&amp; tick &lt; slurTie()-&gt;tick2())) {</a>
+<a name="ln157">                                    if (km != (Qt::ShiftModifier | Qt::ControlModifier)) {</a>
+<a name="ln158">                                          Chord* c = note-&gt;chord();</a>
+<a name="ln159">                                          ed.view-&gt;setDropTarget(note);</a>
+<a name="ln160">                                          if (c-&gt;part() == spanner-&gt;part() &amp;&amp; c != spanner-&gt;endCR())</a>
+<a name="ln161">                                                changeAnchor(ed, c);</a>
+<a name="ln162">                                          }</a>
+<a name="ln163">                                    }</a>
+<a name="ln164">                              }</a>
+<a name="ln165">                        else</a>
+<a name="ln166">                              ed.view-&gt;setDropTarget(0);</a>
+<a name="ln167">                        }</a>
+<a name="ln168">                  break;</a>
+<a name="ln169">            case Grip::BEZIER1:</a>
+<a name="ln170">                  break;</a>
+<a name="ln171">            case Grip::BEZIER2:</a>
+<a name="ln172">                  break;</a>
+<a name="ln173">            case Grip::SHOULDER:</a>
+<a name="ln174">                  ups(g).off = QPointF();</a>
+<a name="ln175">                  delta = ed.delta;</a>
+<a name="ln176">                  break;</a>
+<a name="ln177">            case Grip::DRAG:</a>
+<a name="ln178">                  ups(g).off = QPointF();</a>
+<a name="ln179">                  setOffset(offset() + ed.delta);</a>
+<a name="ln180">                  break;</a>
+<a name="ln181">            case Grip::NO_GRIP:</a>
+<a name="ln182">            case Grip::GRIPS:</a>
+<a name="ln183">                  break;</a>
+<a name="ln184">            }</a>
+<a name="ln185">      computeBezier(delta);</a>
+<a name="ln186">      }</a>
+<a name="ln187"> </a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189">//   getProperty</a>
+<a name="ln190">//---------------------------------------------------------</a>
+<a name="ln191"> </a>
+<a name="ln192">QVariant SlurTieSegment::getProperty(Pid propertyId) const</a>
+<a name="ln193">      {</a>
+<a name="ln194">      switch (propertyId) {</a>
+<a name="ln195">            case Pid::LINE_TYPE:</a>
+<a name="ln196">            case Pid::SLUR_DIRECTION:</a>
+<a name="ln197">                  return slurTie()-&gt;getProperty(propertyId);</a>
+<a name="ln198">            case Pid::SLUR_UOFF1:</a>
+<a name="ln199">                  return ups(Grip::START).off;</a>
+<a name="ln200">            case Pid::SLUR_UOFF2:</a>
+<a name="ln201">                  return ups(Grip::BEZIER1).off;</a>
+<a name="ln202">            case Pid::SLUR_UOFF3:</a>
+<a name="ln203">                  return ups(Grip::BEZIER2).off;</a>
+<a name="ln204">            case Pid::SLUR_UOFF4:</a>
+<a name="ln205">                  return ups(Grip::END).off;</a>
+<a name="ln206">            default:</a>
+<a name="ln207">                  return SpannerSegment::getProperty(propertyId);</a>
+<a name="ln208">            }</a>
+<a name="ln209">      }</a>
+<a name="ln210"> </a>
+<a name="ln211">//---------------------------------------------------------</a>
+<a name="ln212">//   setProperty</a>
+<a name="ln213">//---------------------------------------------------------</a>
+<a name="ln214"> </a>
+<a name="ln215">bool SlurTieSegment::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln216">      {</a>
+<a name="ln217">      switch(propertyId) {</a>
+<a name="ln218">            case Pid::LINE_TYPE:</a>
+<a name="ln219">            case Pid::SLUR_DIRECTION:</a>
+<a name="ln220">                  return slurTie()-&gt;setProperty(propertyId, v);</a>
+<a name="ln221">            case Pid::SLUR_UOFF1:</a>
+<a name="ln222">                  ups(Grip::START).off = v.toPointF();</a>
+<a name="ln223">                  break;</a>
+<a name="ln224">            case Pid::SLUR_UOFF2:</a>
+<a name="ln225">                  ups(Grip::BEZIER1).off = v.toPointF();</a>
+<a name="ln226">                  break;</a>
+<a name="ln227">            case Pid::SLUR_UOFF3:</a>
+<a name="ln228">                  ups(Grip::BEZIER2).off = v.toPointF();</a>
+<a name="ln229">                  break;</a>
+<a name="ln230">            case Pid::SLUR_UOFF4:</a>
+<a name="ln231">                  ups(Grip::END).off = v.toPointF();</a>
+<a name="ln232">                  break;</a>
+<a name="ln233">            default:</a>
+<a name="ln234">                  return SpannerSegment::setProperty(propertyId, v);</a>
+<a name="ln235">            }</a>
+<a name="ln236">      triggerLayoutAll();</a>
+<a name="ln237">      return true;</a>
+<a name="ln238">      }</a>
+<a name="ln239"> </a>
+<a name="ln240">//---------------------------------------------------------</a>
+<a name="ln241">//   propertyDefault</a>
+<a name="ln242">//---------------------------------------------------------</a>
+<a name="ln243"> </a>
+<a name="ln244">QVariant SlurTieSegment::propertyDefault(Pid id) const</a>
+<a name="ln245">      {</a>
+<a name="ln246">      switch (id) {</a>
+<a name="ln247">            case Pid::LINE_TYPE:</a>
+<a name="ln248">            case Pid::SLUR_DIRECTION:</a>
+<a name="ln249">                  return slurTie()-&gt;propertyDefault(id);</a>
+<a name="ln250">            case Pid::SLUR_UOFF1:</a>
+<a name="ln251">            case Pid::SLUR_UOFF2:</a>
+<a name="ln252">            case Pid::SLUR_UOFF3:</a>
+<a name="ln253">            case Pid::SLUR_UOFF4:</a>
+<a name="ln254">                  return QPointF();</a>
+<a name="ln255">            default:</a>
+<a name="ln256">                  return SpannerSegment::propertyDefault(id);</a>
+<a name="ln257">            }</a>
+<a name="ln258">      }</a>
+<a name="ln259"> </a>
+<a name="ln260">//---------------------------------------------------------</a>
+<a name="ln261">//   reset</a>
+<a name="ln262">//---------------------------------------------------------</a>
+<a name="ln263"> </a>
+<a name="ln264">void SlurTieSegment::reset()</a>
+<a name="ln265">      {</a>
+<a name="ln266">      Element::reset();</a>
+<a name="ln267">      undoResetProperty(Pid::SLUR_UOFF1);</a>
+<a name="ln268">      undoResetProperty(Pid::SLUR_UOFF2);</a>
+<a name="ln269">      undoResetProperty(Pid::SLUR_UOFF3);</a>
+<a name="ln270">      undoResetProperty(Pid::SLUR_UOFF4);</a>
+<a name="ln271">      slurTie()-&gt;reset();</a>
+<a name="ln272">      }</a>
+<a name="ln273"> </a>
+<a name="ln274">//---------------------------------------------------------</a>
+<a name="ln275">//   undoChangeProperty</a>
+<a name="ln276">//---------------------------------------------------------</a>
+<a name="ln277"> </a>
+<a name="ln278">void SlurTieSegment::undoChangeProperty(Pid pid, const QVariant&amp; val, PropertyFlags ps)</a>
+<a name="ln279">      {</a>
+<a name="ln280">      if (pid == Pid::AUTOPLACE &amp;&amp; (val.toBool() == true &amp;&amp; !autoplace())) {</a>
+<a name="ln281">            // Switching autoplacement on. Save user-defined</a>
+<a name="ln282">            // placement properties to undo stack.</a>
+<a name="ln283">            undoPushProperty(Pid::SLUR_UOFF1);</a>
+<a name="ln284">            undoPushProperty(Pid::SLUR_UOFF2);</a>
+<a name="ln285">            undoPushProperty(Pid::SLUR_UOFF3);</a>
+<a name="ln286">            undoPushProperty(Pid::SLUR_UOFF4);</a>
+<a name="ln287">            // other will be saved in base classes.</a>
+<a name="ln288">            }</a>
+<a name="ln289">      SpannerSegment::undoChangeProperty(pid, val, ps);</a>
+<a name="ln290">      }</a>
+<a name="ln291"> </a>
+<a name="ln292">//---------------------------------------------------------</a>
+<a name="ln293">//   writeProperties</a>
+<a name="ln294">//---------------------------------------------------------</a>
+<a name="ln295"> </a>
+<a name="ln296">void SlurTieSegment::writeSlur(XmlWriter&amp; xml, int no) const</a>
+<a name="ln297">      {</a>
+<a name="ln298">      if (visible() &amp;&amp; autoplace()</a>
+<a name="ln299">         &amp;&amp; (color() == Qt::black)</a>
+<a name="ln300">         &amp;&amp; offset().isNull()</a>
+<a name="ln301">         &amp;&amp; ups(Grip::START).off.isNull()</a>
+<a name="ln302">         &amp;&amp; ups(Grip::BEZIER1).off.isNull()</a>
+<a name="ln303">         &amp;&amp; ups(Grip::BEZIER2).off.isNull()</a>
+<a name="ln304">         &amp;&amp; ups(Grip::END).off.isNull()</a>
+<a name="ln305">         )</a>
+<a name="ln306">            return;</a>
+<a name="ln307"> </a>
+<a name="ln308">      xml.stag(this, QString(&quot;no=\&quot;%1\&quot;&quot;).arg(no));</a>
+<a name="ln309"> </a>
+<a name="ln310">      qreal _spatium = score()-&gt;spatium();</a>
+<a name="ln311">      if (!ups(Grip::START).off.isNull())</a>
+<a name="ln312">            xml.tag(&quot;o1&quot;, ups(Grip::START).off / _spatium);</a>
+<a name="ln313">      if (!ups(Grip::BEZIER1).off.isNull())</a>
+<a name="ln314">            xml.tag(&quot;o2&quot;, ups(Grip::BEZIER1).off / _spatium);</a>
+<a name="ln315">      if (!ups(Grip::BEZIER2).off.isNull())</a>
+<a name="ln316">            xml.tag(&quot;o3&quot;, ups(Grip::BEZIER2).off / _spatium);</a>
+<a name="ln317">      if (!ups(Grip::END).off.isNull())</a>
+<a name="ln318">            xml.tag(&quot;o4&quot;, ups(Grip::END).off / _spatium);</a>
+<a name="ln319">      Element::writeProperties(xml);</a>
+<a name="ln320">      xml.etag();</a>
+<a name="ln321">      }</a>
+<a name="ln322"> </a>
+<a name="ln323">//---------------------------------------------------------</a>
+<a name="ln324">//   readSegment</a>
+<a name="ln325">//---------------------------------------------------------</a>
+<a name="ln326"> </a>
+<a name="ln327">void SlurTieSegment::read(XmlReader&amp; e)</a>
+<a name="ln328">      {</a>
+<a name="ln329">      qreal _spatium = score()-&gt;spatium();</a>
+<a name="ln330">      while (e.readNextStartElement()) {</a>
+<a name="ln331">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln332">            if (tag == &quot;o1&quot;)</a>
+<a name="ln333">                  ups(Grip::START).off = e.readPoint() * _spatium;</a>
+<a name="ln334">            else if (tag == &quot;o2&quot;)</a>
+<a name="ln335">                  ups(Grip::BEZIER1).off = e.readPoint() * _spatium;</a>
+<a name="ln336">            else if (tag == &quot;o3&quot;)</a>
+<a name="ln337">                  ups(Grip::BEZIER2).off = e.readPoint() * _spatium;</a>
+<a name="ln338">            else if (tag == &quot;o4&quot;)</a>
+<a name="ln339">                  ups(Grip::END).off = e.readPoint() * _spatium;</a>
+<a name="ln340">            else if (!Element::readProperties(e))</a>
+<a name="ln341">                  e.unknown();</a>
+<a name="ln342">            }</a>
+<a name="ln343">      }</a>
+<a name="ln344"> </a>
+<a name="ln345">//---------------------------------------------------------</a>
+<a name="ln346">//   drawEditMode</a>
+<a name="ln347">//---------------------------------------------------------</a>
+<a name="ln348"> </a>
+<a name="ln349">void SlurTieSegment::drawEditMode(QPainter* p, EditData&amp; ed)</a>
+<a name="ln350">      {</a>
+<a name="ln351">      QPolygonF polygon(7);</a>
+<a name="ln352">      polygon[0] = QPointF(ed.grip[int(Grip::START)].center());</a>
+<a name="ln353">      polygon[1] = QPointF(ed.grip[int(Grip::BEZIER1)].center());</a>
+<a name="ln354">      polygon[2] = QPointF(ed.grip[int(Grip::SHOULDER)].center());</a>
+<a name="ln355">      polygon[3] = QPointF(ed.grip[int(Grip::BEZIER2)].center());</a>
+<a name="ln356">      polygon[4] = QPointF(ed.grip[int(Grip::END)].center());</a>
+<a name="ln357">      polygon[5] = QPointF(ed.grip[int(Grip::DRAG)].center());</a>
+<a name="ln358">      polygon[6] = QPointF(ed.grip[int(Grip::START)].center());</a>
+<a name="ln359">      p-&gt;setPen(QPen(MScore::frameMarginColor, 0.0));</a>
+<a name="ln360">      p-&gt;drawPolyline(polygon);</a>
+<a name="ln361"> </a>
+<a name="ln362">      p-&gt;setPen(QPen(MScore::defaultColor, 0.0));</a>
+<a name="ln363">      for (int i = 0; i &lt; ed.grips; ++i) {</a>
+<a name="ln364">            // This must be done with an if-else statement rather than a ternary operator.</a>
+<a name="ln365">            // This is because there are two setBrush methods that take different types</a>
+<a name="ln366">            // of argument, either a Qt::BrushStyle or a QBrush. Since a QBrush can be</a>
+<a name="ln367">            // constructed from a QColour, passing Mscore::frameMarginColor works.</a>
+<a name="ln368">            // Qt::NoBrush is a Qt::BrushStyle, however, so if it is passed in a ternary</a>
+<a name="ln369">            // operator with a QColor, a new QColor will be created from it, and from that</a>
+<a name="ln370">            // a QBrush. Instead, what we really want to do is pass Qt::NoBrush as a</a>
+<a name="ln371">            // Qt::BrushStyle, therefore this requires two separate function calls:</a>
+<a name="ln372">            if (Grip(i) == ed.curGrip)</a>
+<a name="ln373">                  p-&gt;setBrush(MScore::frameMarginColor);</a>
+<a name="ln374">            else</a>
+<a name="ln375">                  p-&gt;setBrush(Qt::NoBrush);</a>
+<a name="ln376">            p-&gt;drawRect(ed.grip[i]);</a>
+<a name="ln377">            }</a>
+<a name="ln378">      }</a>
+<a name="ln379"> </a>
+<a name="ln380">//---------------------------------------------------------</a>
+<a name="ln381">//   SlurTie</a>
+<a name="ln382">//---------------------------------------------------------</a>
+<a name="ln383"> </a>
+<a name="ln384">SlurTie::SlurTie(Score* s)</a>
+<a name="ln385">   : Spanner(s)</a>
+<a name="ln386">      {</a>
+<a name="ln387">      _slurDirection = Direction::AUTO;</a>
+<a name="ln388">      _up            = true;</a>
+<a name="ln389">      _lineType      = 0;     // default is solid</a>
+<a name="ln390">      }</a>
+<a name="ln391"> </a>
+<a name="ln392">SlurTie::SlurTie(const SlurTie&amp; t)</a>
+<a name="ln393">   : Spanner(t)</a>
+<a name="ln394">      {</a>
+<a name="ln395">      _up            = t._up;</a>
+<a name="ln396">      _slurDirection = t._slurDirection;</a>
+<a name="ln397">      _lineType      = t._lineType;</a>
+<a name="ln398">      }</a>
+<a name="ln399"> </a>
+<a name="ln400">//---------------------------------------------------------</a>
+<a name="ln401">//   SlurTie</a>
+<a name="ln402">//---------------------------------------------------------</a>
+<a name="ln403"> </a>
+<a name="ln404">SlurTie::~SlurTie()</a>
+<a name="ln405">      {</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">//---------------------------------------------------------</a>
+<a name="ln409">//   writeProperties</a>
+<a name="ln410">//---------------------------------------------------------</a>
+<a name="ln411"> </a>
+<a name="ln412">void SlurTie::writeProperties(XmlWriter&amp; xml) const</a>
+<a name="ln413">      {</a>
+<a name="ln414">      Element::writeProperties(xml);</a>
+<a name="ln415">      int idx = 0;</a>
+<a name="ln416">      for (const SpannerSegment* ss : spannerSegments())</a>
+<a name="ln417">            ((SlurTieSegment*)ss)-&gt;writeSlur(xml, idx++);</a>
+<a name="ln418">      writeProperty(xml, Pid::SLUR_DIRECTION);</a>
+<a name="ln419">      writeProperty(xml, Pid::LINE_TYPE);</a>
+<a name="ln420">      }</a>
+<a name="ln421"> </a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423">//   readProperties</a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425"> </a>
+<a name="ln426">bool SlurTie::readProperties(XmlReader&amp; e)</a>
+<a name="ln427">      {</a>
+<a name="ln428">      const QStringRef&amp; tag(e.name());</a>
+<a name="ln429"> </a>
+<a name="ln430">      if (readProperty(tag, e, Pid::SLUR_DIRECTION))</a>
+<a name="ln431">            ;</a>
+<a name="ln432">      else if (tag == &quot;lineType&quot;)</a>
+<a name="ln433">            _lineType = e.readInt();</a>
+<a name="ln434">      else if (tag == &quot;SlurSegment&quot; || tag == &quot;TieSegment&quot;) {</a>
+<a name="ln435">            const int idx = e.intAttribute(&quot;no&quot;, 0);</a>
+<a name="ln436">            const int n = int(spannerSegments().size());</a>
+<a name="ln437">            for (int i = n; i &lt; idx; ++i)</a>
+<a name="ln438">                  add(newSlurTieSegment());</a>
+<a name="ln439">            SlurTieSegment* s = newSlurTieSegment();</a>
+<a name="ln440">            s-&gt;read(e);</a>
+<a name="ln441">            add(s);</a>
+<a name="ln442">            }</a>
+<a name="ln443">      else if (!Element::readProperties(e))</a>
+<a name="ln444">            return false;</a>
+<a name="ln445">      return true;</a>
+<a name="ln446">      }</a>
+<a name="ln447"> </a>
+<a name="ln448">//---------------------------------------------------------</a>
+<a name="ln449">//   read</a>
+<a name="ln450">//---------------------------------------------------------</a>
+<a name="ln451"> </a>
+<a name="ln452">void SlurTie::read(XmlReader&amp; e)</a>
+<a name="ln453">      {</a>
+<a name="ln454">      while (e.readNextStartElement()) {</a>
+<a name="ln455">            if (!SlurTie::readProperties(e))</a>
+<a name="ln456">                  e.unknown();</a>
+<a name="ln457">            }</a>
+<a name="ln458">      }</a>
+<a name="ln459"> </a>
+<a name="ln460">//---------------------------------------------------------</a>
+<a name="ln461">//   undoSetLineType</a>
+<a name="ln462">//---------------------------------------------------------</a>
+<a name="ln463"> </a>
+<a name="ln464">void SlurTie::undoSetLineType(int t)</a>
+<a name="ln465">      {</a>
+<a name="ln466">      undoChangeProperty(Pid::LINE_TYPE, t);</a>
+<a name="ln467">      }</a>
+<a name="ln468"> </a>
+<a name="ln469">//---------------------------------------------------------</a>
+<a name="ln470">//   undoSetSlurDirection</a>
+<a name="ln471">//---------------------------------------------------------</a>
+<a name="ln472"> </a>
+<a name="ln473">void SlurTie::undoSetSlurDirection(Direction d)</a>
+<a name="ln474">      {</a>
+<a name="ln475">      undoChangeProperty(Pid::SLUR_DIRECTION, QVariant::fromValue&lt;Direction&gt;(d));</a>
+<a name="ln476">      }</a>
+<a name="ln477"> </a>
+<a name="ln478">//---------------------------------------------------------</a>
+<a name="ln479">//   getProperty</a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481"> </a>
+<a name="ln482">QVariant SlurTie::getProperty(Pid propertyId) const</a>
+<a name="ln483">      {</a>
+<a name="ln484">      switch (propertyId) {</a>
+<a name="ln485">            case Pid::LINE_TYPE:</a>
+<a name="ln486">                  return lineType();</a>
+<a name="ln487">            case Pid::SLUR_DIRECTION:</a>
+<a name="ln488">                  return QVariant::fromValue&lt;Direction&gt;(slurDirection());</a>
+<a name="ln489">            default:</a>
+<a name="ln490">                  return Spanner::getProperty(propertyId);</a>
+<a name="ln491">            }</a>
+<a name="ln492">      }</a>
+<a name="ln493"> </a>
+<a name="ln494">//---------------------------------------------------------</a>
+<a name="ln495">//   setProperty</a>
+<a name="ln496">//---------------------------------------------------------</a>
+<a name="ln497"> </a>
+<a name="ln498">bool SlurTie::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln499">      {</a>
+<a name="ln500">      switch (propertyId) {</a>
+<a name="ln501">            case Pid::LINE_TYPE:</a>
+<a name="ln502">                  setLineType(v.toInt());</a>
+<a name="ln503">                  break;</a>
+<a name="ln504">            case Pid::SLUR_DIRECTION:</a>
+<a name="ln505">                  setSlurDirection(v.value&lt;Direction&gt;());</a>
+<a name="ln506">                  break;</a>
+<a name="ln507">            default:</a>
+<a name="ln508">                  return Spanner::setProperty(propertyId, v);</a>
+<a name="ln509">            }</a>
+<a name="ln510">      triggerLayoutAll();</a>
+<a name="ln511">      return true;</a>
+<a name="ln512">      }</a>
+<a name="ln513"> </a>
+<a name="ln514">//---------------------------------------------------------</a>
+<a name="ln515">//   propertyDefault</a>
+<a name="ln516">//---------------------------------------------------------</a>
+<a name="ln517"> </a>
+<a name="ln518">QVariant SlurTie::propertyDefault(Pid id) const</a>
+<a name="ln519">      {</a>
+<a name="ln520">      switch (id) {</a>
+<a name="ln521">            case Pid::LINE_TYPE:</a>
+<a name="ln522">                  return 0;</a>
+<a name="ln523">            case Pid::SLUR_DIRECTION:</a>
+<a name="ln524">                  return QVariant::fromValue&lt;Direction&gt;(Direction::AUTO);</a>
+<a name="ln525">            default:</a>
+<a name="ln526">                  return Spanner::propertyDefault(id);</a>
+<a name="ln527">            }</a>
+<a name="ln528">      }</a>
+<a name="ln529"> </a>
+<a name="ln530">//---------------------------------------------------------</a>
+<a name="ln531">//   firstNoteRestSegmentX</a>
+<a name="ln532">//    in System() coordinates</a>
+<a name="ln533">//    returns the position just after the last non-chordrest segment</a>
+<a name="ln534">//---------------------------------------------------------</a>
+<a name="ln535"> </a>
+<a name="ln536">qreal SlurTie::firstNoteRestSegmentX(System* system)</a>
+<a name="ln537">      {</a>
+<a name="ln538">      for (const MeasureBase* mb : system-&gt;measures()) {</a>
+<a name="ln539">            if (mb-&gt;isMeasure()) {</a>
+<a name="ln540">                  const Measure* measure = static_cast&lt;const Measure*&gt;(mb);</a>
+<a name="ln541">                  for (const Segment* seg = measure-&gt;first(); seg; seg = seg-&gt;next()) {</a>
+<a name="ln542">                        if (seg-&gt;isChordRestType()) {</a>
+<a name="ln543">                              // first CR found; back up to previous segment</a>
+<a name="ln544">                              seg = seg-&gt;prev();</a>
+<a name="ln545">                              if (seg) {</a>
+<a name="ln546">                                    // find maximum width</a>
+<a name="ln547">                                    qreal width = 0.0;</a>
+<a name="ln548">                                    int n = score()-&gt;nstaves();</a>
+<a name="ln549">                                    for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln550">                                          if (!system-&gt;staff(i)-&gt;show())</a>
+<a name="ln551">                                                continue;</a>
+<a name="ln552">                                          Element* e = seg-&gt;element(i * VOICES);</a>
+<a name="ln553">                                          if (e)</a>
+<a name="ln554">                                                width = qMax(width, e-&gt;width());</a>
+<a name="ln555">                                          }</a>
+<a name="ln556">                                    return seg-&gt;measure()-&gt;pos().x() + seg-&gt;pos().x() + width;</a>
+<a name="ln557">                                    }</a>
+<a name="ln558">                              else</a>
+<a name="ln559">                                    return 0.0;</a>
+<a name="ln560">                              }</a>
+<a name="ln561">                        }</a>
+<a name="ln562">                  }</a>
+<a name="ln563">            }</a>
+<a name="ln564">      qDebug(&quot;firstNoteRestSegmentX: did not find segment&quot;);</a>
+<a name="ln565">      return 0.0;</a>
+<a name="ln566">      }</a>
+<a name="ln567"> </a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569">//   fixupSegments</a>
+<a name="ln570">//---------------------------------------------------------</a>
+<a name="ln571"> </a>
+<a name="ln572">void SlurTie::fixupSegments(unsigned nsegs)</a>
+<a name="ln573">      {</a>
+<a name="ln574">      Spanner::fixupSegments(nsegs, [this]() { return newSlurTieSegment(); });</a>
+<a name="ln575">      }</a>
+<a name="ln576"> </a>
+<a name="ln577">//---------------------------------------------------------</a>
+<a name="ln578">//   reset</a>
+<a name="ln579">//---------------------------------------------------------</a>
+<a name="ln580"> </a>
+<a name="ln581">void SlurTie::reset()</a>
+<a name="ln582">      {</a>
+<a name="ln583">      Element::reset();</a>
+<a name="ln584">      undoResetProperty(Pid::SLUR_DIRECTION);</a>
+<a name="ln585">      undoResetProperty(Pid::LINE_TYPE);</a>
+<a name="ln586">      }</a>
+<a name="ln587"> </a>
+<a name="ln588">}</a>
+<a name="ln589"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

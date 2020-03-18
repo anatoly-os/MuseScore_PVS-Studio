@@ -1,0 +1,634 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>rtf2html.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*  This is RTF to HTML converter, implemented as a text filter, generally.</a>
+<a name="ln2">    Copyright (C) 2003 Valentin Lavrinenko, vlavrinenko@users.sourceforge.net</a>
+<a name="ln3"> </a>
+<a name="ln4">    This library is free software; you can redistribute it and/or</a>
+<a name="ln5">    modify it under the terms of the GNU Lesser General Public</a>
+<a name="ln6">    License as published by the Free Software Foundation; either</a>
+<a name="ln7">    version 2.1 of the License, or (at your option) any later version.</a>
+<a name="ln8"> </a>
+<a name="ln9">    This library is distributed in the hope that it will be useful,</a>
+<a name="ln10">    but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln11">    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU</a>
+<a name="ln12">    Lesser General Public License for more details.</a>
+<a name="ln13"> </a>
+<a name="ln14">    You should have received a copy of the GNU Lesser General Public</a>
+<a name="ln15">    License along with this library; if not, write to the Free Software</a>
+<a name="ln16">    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA</a>
+<a name="ln17">*/</a>
+<a name="ln18"> </a>
+<a name="ln19"> </a>
+<a name="ln20">/*  Это конвертер RTF в HTML, реализованный, в принципе, как текстовый фильтр.</a>
+<a name="ln21">    Copyright (C) 2003 Валентин Лавриненко, vlavrinenko@users.sourceforge.net</a>
+<a name="ln22"> </a>
+<a name="ln23">    Данная библиотека является свободным программным обеспечением. Вы</a>
+<a name="ln24">    вправе распространять ее и/или модифицировать в соответствии с условиями</a>
+<a name="ln25">    версии 2.1 либо по вашему выбору с условиями более поздней версии</a>
+<a name="ln26">    Стандартной Общественной Лицензии Ограниченного Применения GNU,</a>
+<a name="ln27">    опубликованной Free Software Foundation.</a>
+<a name="ln28"> </a>
+<a name="ln29">    Мы распространяем эту библиотеку в надежде на то, что она будет вам</a>
+<a name="ln30">    полезной, однако НЕ ПРЕДОСТАВЛЯЕМ НА НЕЕ НИКАКИХ ГАРАНТИЙ, в том числе</a>
+<a name="ln31">    ГАРАНТИИ ТОВАРНОГО СОСТОЯНИЯ ПРИ ПРОДАЖЕ и ПРИГОДНОСТИ ДЛЯ ИСПОЛЬЗОВАНИЯ</a>
+<a name="ln32">    В КОНКРЕТНЫХ ЦЕЛЯХ. Для получения более подробной информации ознакомьтесь</a>
+<a name="ln33">    со Стандартной Общественной Лицензией Ограниченного Применений GNU.</a>
+<a name="ln34"> </a>
+<a name="ln35">    Вместе с данной библиотекой вы должны были получить экземпляр Стандартной</a>
+<a name="ln36">    Общественной Лицензии Ограниченного Применения GNU. Если вы его не</a>
+<a name="ln37">    получили, сообщите об этом во Free Software Foundation, Inc., 59 Temple</a>
+<a name="ln38">    Place - Suite 330, Boston, MA 02111-1307, USA.</a>
+<a name="ln39">*/</a>
+<a name="ln40"> </a>
+<a name="ln41">#include &quot;config.h&quot;</a>
+<a name="ln42">#include &quot;rtf_table.h&quot;</a>
+<a name="ln43">#include &quot;rtf_tools.h&quot;</a>
+<a name="ln44">#include &quot;rtf_keyword.h&quot;</a>
+<a name="ln45">#include &quot;fmt_opts.h&quot;</a>
+<a name="ln46">#include &lt;cstdlib&gt;</a>
+<a name="ln47">#include &lt;stdexcept&gt;</a>
+<a name="ln48">#include &lt;fstream&gt;</a>
+<a name="ln49">#include &lt;string&gt;</a>
+<a name="ln50"> </a>
+<a name="ln51">QString rtf2html(const QString&amp; iString)</a>
+<a name="ln52">      {</a>
+<a name="ln53">      QString oString;</a>
+<a name="ln54">      try {</a>
+<a name="ln55">            std::string str_in = iString.toUtf8().constData();</a>
+<a name="ln56"> </a>
+<a name="ln57">            std::string::iterator buf_in=str_in.begin(), buf_in_end=str_in.end();</a>
+<a name="ln58">            colorvect colortbl;</a>
+<a name="ln59">            fontmap fonttbl;</a>
+<a name="ln60">            std::string title;</a>
+<a name="ln61"> </a>
+<a name="ln62">            bool bAsterisk=false;</a>
+<a name="ln63">            fo_stack foStack;</a>
+<a name="ln64">            formatting_options cur_options;</a>
+<a name="ln65">            std::string html;</a>
+<a name="ln66">            html_text par_html(cur_options);</a>
+<a name="ln67"> </a>
+<a name="ln68">   /* CellDefs in rtf are really queer. We'll keep a list of them in main()</a>
+<a name="ln69">      and will give an iterator into this list to a row */</a>
+<a name="ln70">   table_cell_defs_list CellDefsList;</a>
+<a name="ln71">   table_cell_defs_list::iterator CurCellDefs;</a>
+<a name="ln72">   table_cell_def *tcdCurCellDef=new table_cell_def;</a>
+<a name="ln73">   table_cell *tcCurCell=new table_cell;</a>
+<a name="ln74">   table_row *trCurRow=new table_row;</a>
+<a name="ln75">   table *tblCurTable=new table;</a>
+<a name="ln76">   int iLastRowLeft=0, iLastRowHeight=0;</a>
+<a name="ln77">   std::string t_str;</a>
+<a name="ln78"> </a>
+<a name="ln79">   bool bInTable=false;</a>
+<a name="ln80">   int iDocWidth=12240;</a>
+<a name="ln81">   int iMarginLeft=1800;</a>
+<a name="ln82">   while(buf_in!=buf_in_end)</a>
+<a name="ln83">   {</a>
+<a name="ln84">      switch (*buf_in)</a>
+<a name="ln85">      {</a>
+<a name="ln86">      case '\\':</a>
+<a name="ln87">      {</a>
+<a name="ln88">         rtf_keyword kw(++buf_in);</a>
+<a name="ln89">         if (kw.is_control_char())</a>
+<a name="ln90">         {</a>
+<a name="ln91">            switch (kw.control_char())</a>
+<a name="ln92">            {</a>
+<a name="ln93">            case '\\': case '{': case '}':</a>
+<a name="ln94">               par_html.write(kw.control_char());</a>
+<a name="ln95">               break;</a>
+<a name="ln96">            case '\'':</a>
+<a name="ln97">               par_html.write(char_by_code(buf_in));</a>
+<a name="ln98">               break;</a>
+<a name="ln99">            case '*':</a>
+<a name="ln100">               bAsterisk=true;</a>
+<a name="ln101">               break;</a>
+<a name="ln102">            case '~':</a>
+<a name="ln103">               par_html.write(&quot;&amp;nbsp;&quot;);</a>
+<a name="ln104">               break;</a>
+<a name="ln105">            }</a>
+<a name="ln106">         }</a>
+<a name="ln107">         else //kw.is_control_char</a>
+<a name="ln108">         {</a>
+<a name="ln109">            if (bAsterisk)</a>
+<a name="ln110">            {</a>
+<a name="ln111">               bAsterisk=false;</a>
+<a name="ln112">               skip_group(buf_in);</a>
+<a name="ln113">               cur_options=foStack.top();</a>
+<a name="ln114">               foStack.pop();</a>
+<a name="ln115">            }</a>
+<a name="ln116">            else</a>
+<a name="ln117">            {</a>
+<a name="ln118">               switch (kw.keyword())</a>
+<a name="ln119">               {</a>
+<a name="ln120">               case rtf_keyword::rkw_unicode:</a>
+<a name="ln121">               {</a>
+<a name="ln122">                   char buf[128];</a>
+<a name="ln123">                   sprintf(buf,&quot;&amp;#%d;&quot;,kw.parameter());</a>
+<a name="ln124">                   par_html.write(buf);</a>
+<a name="ln125">                   break;</a>
+<a name="ln126">               }</a>
+<a name="ln127">               case rtf_keyword::rkw_filetbl: </a>
+<a name="ln128">               case rtf_keyword::rkw_stylesheet:</a>
+<a name="ln129">               case rtf_keyword::rkw_header: </a>
+<a name="ln130">               case rtf_keyword::rkw_footer: case rtf_keyword::rkw_headerf: </a>
+<a name="ln131">               case rtf_keyword::rkw_footerf: case rtf_keyword::rkw_pict:</a>
+<a name="ln132">               case rtf_keyword::rkw_object:</a>
+<a name="ln133">                  // we'll skip such groups</a>
+<a name="ln134">                  skip_group(buf_in);</a>
+<a name="ln135">                  break;</a>
+<a name="ln136">               // document title</a>
+<a name="ln137">               case rtf_keyword::rkw_info: </a>
+<a name="ln138">               {</a>
+<a name="ln139">                  int depth=1;</a>
+<a name="ln140">                  bool in_title=false;</a>
+<a name="ln141">                  while (depth&gt;0)</a>
+<a name="ln142">                  {</a>
+<a name="ln143">//                     std::cout&lt;&lt;std::string(buf_in).substr(0,20)&lt;&lt;&quot;\t&quot;&lt;&lt;depth&lt;&lt;std::endl;</a>
+<a name="ln144">                     switch (*buf_in)</a>
+<a name="ln145">                     {</a>
+<a name="ln146">                     case '\\':</a>
+<a name="ln147">                     {</a>
+<a name="ln148">                        rtf_keyword kw1(++buf_in);</a>
+<a name="ln149">                        if (in_title &amp;&amp; kw1.is_control_char() &amp;&amp; kw1.control_char() == '\'')</a>
+<a name="ln150">                           title += char_by_code(buf_in);</a>
+<a name="ln151">                        else if (kw1.keyword()==rtf_keyword::rkw_title)</a>
+<a name="ln152">                           in_title=true;</a>
+<a name="ln153">                        break;</a>
+<a name="ln154">                     }</a>
+<a name="ln155">                     case '{': </a>
+<a name="ln156">                        ++depth; ++buf_in;</a>
+<a name="ln157">                        break;</a>
+<a name="ln158">                     case '}':</a>
+<a name="ln159">                        --depth; ++buf_in; </a>
+<a name="ln160">                        in_title=false;</a>
+<a name="ln161">                        break;</a>
+<a name="ln162">                     default:</a>
+<a name="ln163">                        if (in_title)</a>
+<a name="ln164">                            title += *buf_in;</a>
+<a name="ln165">                        ++buf_in;</a>
+<a name="ln166">                        break;</a>
+<a name="ln167">                     }</a>
+<a name="ln168">                  }</a>
+<a name="ln169">                  break;</a>
+<a name="ln170">               }</a>
+<a name="ln171">               // color table</a>
+<a name="ln172">               case rtf_keyword::rkw_colortbl:</a>
+<a name="ln173">               {</a>
+<a name="ln174">                  color clr;</a>
+<a name="ln175">                  while (*buf_in!='}')</a>
+<a name="ln176">                  {</a>
+<a name="ln177">                     switch (*buf_in)</a>
+<a name="ln178">                     {</a>
+<a name="ln179">                     case '\\':</a>
+<a name="ln180">                     {</a>
+<a name="ln181">                        rtf_keyword kw1(++buf_in);</a>
+<a name="ln182">                        switch (kw1.keyword())</a>
+<a name="ln183">                        {</a>
+<a name="ln184">                        case rtf_keyword::rkw_red:</a>
+<a name="ln185">                           clr.r=kw1.parameter();</a>
+<a name="ln186">                           break;</a>
+<a name="ln187">                        case rtf_keyword::rkw_green:</a>
+<a name="ln188">                           clr.g=kw1.parameter();</a>
+<a name="ln189">                           break;</a>
+<a name="ln190">                        case rtf_keyword::rkw_blue:</a>
+<a name="ln191">                           clr.b=kw1.parameter();</a>
+<a name="ln192">                           break;</a>
+<a name="ln193">                        default:</a>
+<a name="ln194">                           break;</a>
+<a name="ln195">                        }</a>
+<a name="ln196">                        break;</a>
+<a name="ln197">                     }</a>
+<a name="ln198">                     case ';':</a>
+<a name="ln199">                        colortbl.push_back(clr);</a>
+<a name="ln200">                        ++buf_in;</a>
+<a name="ln201">                        break;</a>
+<a name="ln202">                     default:</a>
+<a name="ln203">                        ++buf_in;</a>
+<a name="ln204">                        break;</a>
+<a name="ln205">                     }</a>
+<a name="ln206">                  }</a>
+<a name="ln207">                  ++buf_in;</a>
+<a name="ln208">                  break;</a>
+<a name="ln209">               }</a>
+<a name="ln210">               // font table</a>
+<a name="ln211">               case rtf_keyword::rkw_fonttbl: </a>
+<a name="ln212">               {</a>
+<a name="ln213">                    font fnt;</a>
+<a name="ln214">                  int font_num;</a>
+<a name="ln215">                  bool full_name=false;</a>
+<a name="ln216">                  bool in_font=false;</a>
+<a name="ln217">                  while (! (*buf_in=='}' &amp;&amp; !in_font))</a>
+<a name="ln218">                  {</a>
+<a name="ln219">                     switch (*buf_in)</a>
+<a name="ln220">                     {</a>
+<a name="ln221">                     case '\\':</a>
+<a name="ln222">                     {</a>
+<a name="ln223">                        rtf_keyword kw1(++buf_in);</a>
+<a name="ln224">                        if (kw1.is_control_char() &amp;&amp; kw1.control_char()=='*')</a>
+<a name="ln225">                           skip_group(buf_in);</a>
+<a name="ln226">                        else</a>
+<a name="ln227">                           switch (kw1.keyword())</a>
+<a name="ln228">                           {</a>
+<a name="ln229">                           case rtf_keyword::rkw_f:</a>
+<a name="ln230">                              font_num=kw1.parameter();</a>
+<a name="ln231">                              break;</a>
+<a name="ln232">                           case rtf_keyword::rkw_fprq:</a>
+<a name="ln233">                              fnt.pitch=kw1.parameter();</a>
+<a name="ln234">                              break;</a>
+<a name="ln235">                           case rtf_keyword::rkw_fcharset:</a>
+<a name="ln236">                              fnt.charset=kw1.parameter();</a>
+<a name="ln237">                              break;</a>
+<a name="ln238">                           case rtf_keyword::rkw_fnil:</a>
+<a name="ln239">                              fnt.family=font::ff_none;</a>
+<a name="ln240">                              break;</a>
+<a name="ln241">                           case rtf_keyword::rkw_froman:</a>
+<a name="ln242">                              fnt.family=font::ff_serif;</a>
+<a name="ln243">                              break;</a>
+<a name="ln244">                           case rtf_keyword::rkw_fswiss:</a>
+<a name="ln245">                              fnt.family=font::ff_sans_serif;</a>
+<a name="ln246">                              break;</a>
+<a name="ln247">                           case rtf_keyword::rkw_fmodern:</a>
+<a name="ln248">                              fnt.family=font::ff_monospace;</a>
+<a name="ln249">                              break;</a>
+<a name="ln250">                           case rtf_keyword::rkw_fscript:</a>
+<a name="ln251">                              fnt.family=font::ff_cursive;</a>
+<a name="ln252">                              break;</a>
+<a name="ln253">                           case rtf_keyword::rkw_fdecor:</a>
+<a name="ln254">                              fnt.family=font::ff_fantasy;</a>
+<a name="ln255">                              break;</a>
+<a name="ln256">                           default:</a>
+<a name="ln257">                              break;</a>
+<a name="ln258">                           }</a>
+<a name="ln259">                        break;</a>
+<a name="ln260">                     }</a>
+<a name="ln261">                     case '{':</a>
+<a name="ln262">                        in_font=true;</a>
+<a name="ln263">                        ++buf_in;</a>
+<a name="ln264">                        break;</a>
+<a name="ln265">                     case '}':</a>
+<a name="ln266">                        in_font=false;</a>
+<a name="ln267">                        fonttbl.insert(std::make_pair(font_num, fnt));</a>
+<a name="ln268">                        fnt=font();</a>
+<a name="ln269">                        full_name=false;</a>
+<a name="ln270">                        ++buf_in;</a>
+<a name="ln271">                        break;</a>
+<a name="ln272">                     case ';':</a>
+<a name="ln273">                        full_name=true;</a>
+<a name="ln274">                        ++buf_in;</a>
+<a name="ln275">                        break;</a>
+<a name="ln276">                     default:</a>
+<a name="ln277">                        if (!full_name &amp;&amp; in_font)</a>
+<a name="ln278">                           fnt.name+=*buf_in;</a>
+<a name="ln279">                        ++buf_in;</a>
+<a name="ln280">                        break;</a>
+<a name="ln281">                     }</a>
+<a name="ln282">                  }</a>
+<a name="ln283">                  ++buf_in;</a>
+<a name="ln284">                  break;</a>
+<a name="ln285">               }</a>
+<a name="ln286">               // special characters</a>
+<a name="ln287">               case rtf_keyword::rkw_line: case rtf_keyword::rkw_softline:</a>
+<a name="ln288">                  par_html.write(&quot;&lt;br&gt;&quot;);</a>
+<a name="ln289">                  break;</a>
+<a name="ln290">               case rtf_keyword::rkw_tab:</a>
+<a name="ln291">                  par_html.write(&quot;&amp;nbsp;&amp;nbsp;&quot;);  // maybe, this can be done better</a>
+<a name="ln292">                  break;</a>
+<a name="ln293">               case rtf_keyword::rkw_enspace: case rtf_keyword::rkw_emspace:</a>
+<a name="ln294">                  par_html.write(&quot;&amp;nbsp;&quot;);</a>
+<a name="ln295">                  break;</a>
+<a name="ln296">               case rtf_keyword::rkw_qmspace:</a>
+<a name="ln297">                  par_html.write(&quot;&amp;thinsp;&quot;);</a>
+<a name="ln298">                  break;</a>
+<a name="ln299">               case rtf_keyword::rkw_endash:</a>
+<a name="ln300">                  par_html.write(&quot;&amp;ndash;&quot;);</a>
+<a name="ln301">                  break;</a>
+<a name="ln302">               case rtf_keyword::rkw_emdash:</a>
+<a name="ln303">                  par_html.write(&quot;&amp;mdash;&quot;);</a>
+<a name="ln304">                  break;</a>
+<a name="ln305">               case rtf_keyword::rkw_bullet:</a>
+<a name="ln306">                  par_html.write(&quot;&amp;bull;&quot;);</a>
+<a name="ln307">                  break;</a>
+<a name="ln308">               case rtf_keyword::rkw_lquote:</a>
+<a name="ln309">                  par_html.write(&quot;&amp;lsquo;&quot;);</a>
+<a name="ln310">                  break;</a>
+<a name="ln311">               case rtf_keyword::rkw_rquote:</a>
+<a name="ln312">                  par_html.write(&quot;&amp;rsquo;&quot;);</a>
+<a name="ln313">                  break;</a>
+<a name="ln314">               case rtf_keyword::rkw_ldblquote:</a>
+<a name="ln315">                  par_html.write(&quot;&amp;ldquo;&quot;);</a>
+<a name="ln316">                  break;</a>
+<a name="ln317">               case rtf_keyword::rkw_rdblquote:</a>
+<a name="ln318">                  par_html.write(&quot;&amp;rdquo;&quot;);</a>
+<a name="ln319">                  break;</a>
+<a name="ln320">               // paragraph formatting </a>
+<a name="ln321">               case rtf_keyword::rkw_ql:</a>
+<a name="ln322">                  cur_options.papAlign=formatting_options::align_left;</a>
+<a name="ln323">                  break;</a>
+<a name="ln324">               case rtf_keyword::rkw_qr:</a>
+<a name="ln325">                  cur_options.papAlign=formatting_options::align_right;</a>
+<a name="ln326">                  break;</a>
+<a name="ln327">               case rtf_keyword::rkw_qc:</a>
+<a name="ln328">                  cur_options.papAlign=formatting_options::align_center;</a>
+<a name="ln329">                  break;</a>
+<a name="ln330">               case rtf_keyword::rkw_qj:</a>
+<a name="ln331">                  cur_options.papAlign=formatting_options::align_justify;</a>
+<a name="ln332">                  break;</a>
+<a name="ln333">               case rtf_keyword::rkw_fi:</a>
+<a name="ln334">                  cur_options.papFirst=(int)rint(kw.parameter()/20);</a>
+<a name="ln335">                  break;</a>
+<a name="ln336">               case rtf_keyword::rkw_li:</a>
+<a name="ln337">                  cur_options.papLeft=(int)rint(kw.parameter()/20);</a>
+<a name="ln338">                  break;</a>
+<a name="ln339">               case rtf_keyword::rkw_ri:</a>
+<a name="ln340">                  cur_options.papRight=(int)rint(kw.parameter()/20);</a>
+<a name="ln341">                  break;</a>
+<a name="ln342">               case rtf_keyword::rkw_sb:</a>
+<a name="ln343">                  cur_options.papBefore=(int)rint(kw.parameter()/20);</a>
+<a name="ln344">                  break;</a>
+<a name="ln345">               case rtf_keyword::rkw_sa:</a>
+<a name="ln346">                  cur_options.papAfter=(int)rint(kw.parameter()/20);</a>
+<a name="ln347">                  break;</a>
+<a name="ln348">               case rtf_keyword::rkw_pard:</a>
+<a name="ln349">                  cur_options.papBefore=cur_options.papAfter=0;</a>
+<a name="ln350">                  cur_options.papLeft=cur_options.papRight=0;</a>
+<a name="ln351">                  cur_options.papFirst=0;</a>
+<a name="ln352">                  cur_options.papAlign=formatting_options::align_left;</a>
+<a name="ln353">                  cur_options.papInTbl=false;</a>
+<a name="ln354">                  break;</a>
+<a name="ln355">               case rtf_keyword::rkw_par: case rtf_keyword::rkw_sect:</a>
+<a name="ln356">                  t_str=cur_options.get_par_str()+par_html.str()</a>
+<a name="ln357">                        +&quot;&amp;nbsp;&quot;+par_html.close()+&quot;&lt;/p&gt;\n&quot;;</a>
+<a name="ln358">                  if (!bInTable)</a>
+<a name="ln359">                  {</a>
+<a name="ln360">                     html+=t_str;</a>
+<a name="ln361">                  }</a>
+<a name="ln362">                  else </a>
+<a name="ln363">                  {</a>
+<a name="ln364">                     if (cur_options.papInTbl)</a>
+<a name="ln365">                     {</a>
+<a name="ln366">                        tcCurCell-&gt;Text+=t_str;</a>
+<a name="ln367">                     }</a>
+<a name="ln368">                     else</a>
+<a name="ln369">                     {</a>
+<a name="ln370">                        html+=tblCurTable-&gt;make()+t_str;</a>
+<a name="ln371">                        bInTable=false;</a>
+<a name="ln372">                        delete tblCurTable;</a>
+<a name="ln373">                        tblCurTable=new table;</a>
+<a name="ln374">                     }</a>
+<a name="ln375">                  }</a>
+<a name="ln376">                  par_html.clear();</a>
+<a name="ln377">                  break;</a>
+<a name="ln378">               // character formatting</a>
+<a name="ln379">               case rtf_keyword::rkw_super:</a>
+<a name="ln380">                  cur_options.chpVAlign=</a>
+<a name="ln381">                     kw.parameter()==0?formatting_options::va_normal</a>
+<a name="ln382">                                      :formatting_options::va_sup;</a>
+<a name="ln383">                  break;</a>
+<a name="ln384">               case rtf_keyword::rkw_sub:</a>
+<a name="ln385">                  cur_options.chpVAlign=</a>
+<a name="ln386">                     kw.parameter()==0?formatting_options::va_normal</a>
+<a name="ln387">                                      :formatting_options::va_sub;</a>
+<a name="ln388">                  break;</a>
+<a name="ln389">               case rtf_keyword::rkw_b:</a>
+<a name="ln390">                  cur_options.chpBold=!(kw.parameter()==0);</a>
+<a name="ln391">                  break;</a>
+<a name="ln392">               case rtf_keyword::rkw_caps:</a>
+<a name="ln393">                  cur_options.chpAllCaps=!(kw.parameter()==0);</a>
+<a name="ln394">                  break;</a>
+<a name="ln395">               case rtf_keyword::rkw_i:</a>
+<a name="ln396">                  cur_options.chpItalic=!(kw.parameter()==0);</a>
+<a name="ln397">                  break;</a>
+<a name="ln398">               case rtf_keyword::rkw_ul:</a>
+<a name="ln399">                  cur_options.chpUnderline=!(kw.parameter()==0);</a>
+<a name="ln400">                  break;</a>
+<a name="ln401">               case rtf_keyword::rkw_ulnone:</a>
+<a name="ln402">                  cur_options.chpUnderline=false;</a>
+<a name="ln403">                  break;</a>
+<a name="ln404">               case rtf_keyword::rkw_fs:</a>
+<a name="ln405">                  cur_options.chpFontSize=kw.parameter();</a>
+<a name="ln406">                  break;</a>
+<a name="ln407">               case rtf_keyword::rkw_dn:</a>
+<a name="ln408">                  cur_options.chpVShift = kw.parameter() == -1 ? 6 : kw.parameter();</a>
+<a name="ln409">                  break;</a>
+<a name="ln410">               case rtf_keyword::rkw_up:</a>
+<a name="ln411">                  cur_options.chpVShift = kw.parameter() == -1 ? -6 : -kw.parameter();</a>
+<a name="ln412">                  break;</a>
+<a name="ln413">               case rtf_keyword::rkw_cf:</a>
+<a name="ln414">                  cur_options.chpFColor=colortbl[kw.parameter()];</a>
+<a name="ln415">                  break;</a>
+<a name="ln416">               case rtf_keyword::rkw_cb:</a>
+<a name="ln417">                  cur_options.chpBColor=colortbl[kw.parameter()];</a>
+<a name="ln418">                  break;</a>
+<a name="ln419">               case rtf_keyword::rkw_highlight:</a>
+<a name="ln420">                  cur_options.chpHighlight=kw.parameter();</a>
+<a name="ln421">                  break;</a>
+<a name="ln422">               case rtf_keyword::rkw_f:</a>
+<a name="ln423">                  cur_options.chpFont=fonttbl[kw.parameter()];</a>
+<a name="ln424">                  break;</a>
+<a name="ln425">               case rtf_keyword::rkw_plain:</a>
+<a name="ln426">                  cur_options.chpBold=cur_options.chpAllCaps</a>
+<a name="ln427">                    =cur_options.chpItalic=cur_options.chpUnderline=false;</a>
+<a name="ln428">                  cur_options.chpVAlign=formatting_options::va_normal;</a>
+<a name="ln429">                  cur_options.chpFontSize=cur_options.chpHighlight=0;</a>
+<a name="ln430">                  cur_options.chpFColor=cur_options.chpBColor=color();</a>
+<a name="ln431">                  cur_options.chpFont=font();</a>
+<a name="ln432">                  break;</a>
+<a name="ln433">               // table formatting</a>
+<a name="ln434">               case rtf_keyword::rkw_intbl:</a>
+<a name="ln435">                  cur_options.papInTbl=true;</a>
+<a name="ln436">                  break;</a>
+<a name="ln437">               case rtf_keyword::rkw_trowd: </a>
+<a name="ln438">                  CurCellDefs=CellDefsList.insert(CellDefsList.end(), </a>
+<a name="ln439">                                                  table_cell_defs());</a>
+<a name="ln440">                  // fall through</a>
+<a name="ln441">               case rtf_keyword::rkw_row:</a>
+<a name="ln442">                  if (!trCurRow-&gt;Cells.empty())</a>
+<a name="ln443">                  {</a>
+<a name="ln444">                     trCurRow-&gt;CellDefs=CurCellDefs;</a>
+<a name="ln445">                     if (trCurRow-&gt;Left==-1000)</a>
+<a name="ln446">                        trCurRow-&gt;Left=iLastRowLeft;</a>
+<a name="ln447">                     if (trCurRow-&gt;Height==-1000)</a>
+<a name="ln448">                        trCurRow-&gt;Height=iLastRowHeight;</a>
+<a name="ln449">                     tblCurTable-&gt;push_back(trCurRow);</a>
+<a name="ln450">                     trCurRow=new table_row;</a>
+<a name="ln451">                  }</a>
+<a name="ln452">                  bInTable=true;</a>
+<a name="ln453">                  break;</a>
+<a name="ln454">               case rtf_keyword::rkw_cell:</a>
+<a name="ln455">                  t_str=cur_options.get_par_str()+par_html.str()</a>
+<a name="ln456">                        +&quot;&amp;nbsp;&quot;+par_html.close()+&quot;&lt;/p&gt;\n&quot;;</a>
+<a name="ln457">                  tcCurCell-&gt;Text+=t_str;</a>
+<a name="ln458">                  par_html.clear();</a>
+<a name="ln459">                  trCurRow-&gt;Cells.push_back(tcCurCell);</a>
+<a name="ln460">                  tcCurCell=new table_cell;</a>
+<a name="ln461">                  break;</a>
+<a name="ln462">               case rtf_keyword::rkw_cellx:</a>
+<a name="ln463">                  tcdCurCellDef-&gt;Right=kw.parameter();</a>
+<a name="ln464">                  CurCellDefs-&gt;push_back(tcdCurCellDef);</a>
+<a name="ln465">                  tcdCurCellDef=new table_cell_def;</a>
+<a name="ln466">                  break;</a>
+<a name="ln467">               case rtf_keyword::rkw_trleft:</a>
+<a name="ln468">                  trCurRow-&gt;Left=kw.parameter();</a>
+<a name="ln469">                  iLastRowLeft=kw.parameter();</a>
+<a name="ln470">                  break;</a>
+<a name="ln471">               case rtf_keyword::rkw_trrh:</a>
+<a name="ln472">                  trCurRow-&gt;Height=kw.parameter();</a>
+<a name="ln473">                  iLastRowHeight=kw.parameter();</a>
+<a name="ln474">                  break;</a>
+<a name="ln475">               case rtf_keyword::rkw_clvmgf:</a>
+<a name="ln476">                  tcdCurCellDef-&gt;FirstMerged=true;</a>
+<a name="ln477">                  break;</a>
+<a name="ln478">               case rtf_keyword::rkw_clvmrg:</a>
+<a name="ln479">                  tcdCurCellDef-&gt;Merged=true;</a>
+<a name="ln480">                  break;</a>
+<a name="ln481">               case rtf_keyword::rkw_clbrdrb:</a>
+<a name="ln482">                  tcdCurCellDef-&gt;BorderBottom=true;</a>
+<a name="ln483">                  tcdCurCellDef-&gt;ActiveBorder=&amp;(tcdCurCellDef-&gt;BorderBottom);</a>
+<a name="ln484">                  break;</a>
+<a name="ln485">               case rtf_keyword::rkw_clbrdrt:</a>
+<a name="ln486">                  tcdCurCellDef-&gt;BorderTop=true;</a>
+<a name="ln487">                  tcdCurCellDef-&gt;ActiveBorder=&amp;(tcdCurCellDef-&gt;BorderTop);</a>
+<a name="ln488">                  break;</a>
+<a name="ln489">               case rtf_keyword::rkw_clbrdrl:</a>
+<a name="ln490">                  tcdCurCellDef-&gt;BorderLeft=true;</a>
+<a name="ln491">                  tcdCurCellDef-&gt;ActiveBorder=&amp;(tcdCurCellDef-&gt;BorderLeft);</a>
+<a name="ln492">                  break;</a>
+<a name="ln493">               case rtf_keyword::rkw_clbrdrr:</a>
+<a name="ln494">                  tcdCurCellDef-&gt;BorderRight=true;</a>
+<a name="ln495">                  tcdCurCellDef-&gt;ActiveBorder=&amp;(tcdCurCellDef-&gt;BorderRight);</a>
+<a name="ln496">                  break;</a>
+<a name="ln497">               case rtf_keyword::rkw_brdrnone:</a>
+<a name="ln498">                  if (tcdCurCellDef-&gt;ActiveBorder!=NULL)</a>
+<a name="ln499">                  {</a>
+<a name="ln500">                     *(tcdCurCellDef-&gt;ActiveBorder)=false;</a>
+<a name="ln501">                  }</a>
+<a name="ln502">                  break;</a>
+<a name="ln503">               case rtf_keyword::rkw_clvertalt:</a>
+<a name="ln504">                  tcdCurCellDef-&gt;VAlign=table_cell_def::valign_top;</a>
+<a name="ln505">                  break;</a>
+<a name="ln506">               case rtf_keyword::rkw_clvertalc:</a>
+<a name="ln507">                  tcdCurCellDef-&gt;VAlign=table_cell_def::valign_center;</a>
+<a name="ln508">                  break;</a>
+<a name="ln509">               case rtf_keyword::rkw_clvertalb:</a>
+<a name="ln510">                  tcdCurCellDef-&gt;VAlign=table_cell_def::valign_bottom;</a>
+<a name="ln511">                  break;</a>
+<a name="ln512">               // page formatting</a>
+<a name="ln513">               case rtf_keyword::rkw_paperw:</a>
+<a name="ln514">                  iDocWidth=kw.parameter();</a>
+<a name="ln515">                  break;</a>
+<a name="ln516">               case rtf_keyword::rkw_margl:</a>
+<a name="ln517">                  iMarginLeft=kw.parameter();</a>
+<a name="ln518">                  break;</a>
+<a name="ln519">               default:</a>
+<a name="ln520">                  break;</a>
+<a name="ln521">               }</a>
+<a name="ln522">            }</a>
+<a name="ln523">         }</a>
+<a name="ln524">         break;</a>
+<a name="ln525">      }</a>
+<a name="ln526">      case '{':</a>
+<a name="ln527">         // perform group opening actions here</a>
+<a name="ln528">         foStack.push(cur_options);</a>
+<a name="ln529">         ++buf_in;</a>
+<a name="ln530">         break;</a>
+<a name="ln531">      case '}':</a>
+<a name="ln532">         // perform group closing actions here</a>
+<a name="ln533">         cur_options=foStack.top();</a>
+<a name="ln534">         foStack.pop();</a>
+<a name="ln535">         ++buf_in;</a>
+<a name="ln536">         break;</a>
+<a name="ln537">      case 13: case 10:</a>
+<a name="ln538">         ++buf_in;</a>
+<a name="ln539">         break;</a>
+<a name="ln540">      case '&lt;':</a>
+<a name="ln541">         par_html.write(&quot;&amp;lt;&quot;);</a>
+<a name="ln542">         ++buf_in;</a>
+<a name="ln543">         break;</a>
+<a name="ln544">      case '&gt;':</a>
+<a name="ln545">         par_html.write(&quot;&amp;gt;&quot;);</a>
+<a name="ln546">         ++buf_in;</a>
+<a name="ln547">         break;</a>
+<a name="ln548">/*      case ' ':</a>
+<a name="ln549">         par_html.write(&quot;&amp;ensp;&quot;);</a>
+<a name="ln550">         ++buf_in;</a>
+<a name="ln551">         break;*/</a>
+<a name="ln552">      default:</a>
+<a name="ln553">         par_html.write(*buf_in++);</a>
+<a name="ln554">      }</a>
+<a name="ln555">   }</a>
+<a name="ln556"> </a>
+<a name="ln557">            QString qTitle(QString::fromUtf8(title.data(), title.size()));</a>
+<a name="ln558">            QString qHtml(QString::fromUtf8(html.data(), html.size()));</a>
+<a name="ln559"> </a>
+<a name="ln560">            oString = QString(&quot;&lt;html&gt;&lt;head&gt;&lt;STYLE type=\&quot;text/css\&quot;&gt;body {padding-left:&quot;</a>
+<a name="ln561">                  &quot;%1&quot;</a>
+<a name="ln562">                  &quot;pt;width: %2&quot;</a>
+<a name="ln563">                  &quot;pt}&quot;</a>
+<a name="ln564">                 &quot; p {margin-top:0pt;margin-bottom:0pt}&lt;/STYLE&gt;&quot;</a>
+<a name="ln565">                 &quot;&lt;title&gt;%3&lt;/title&gt;&lt;/head&gt;\n&quot;</a>
+<a name="ln566">                  &quot;&lt;body&gt;%4&lt;/body&gt;&lt;/html&gt;&quot;</a>
+<a name="ln567">                  )</a>
+<a name="ln568">                 .arg(rint(iMarginLeft/20))</a>
+<a name="ln569">                 .arg(rint((iDocWidth/20)))</a>
+<a name="ln570">                 .arg(qTitle)</a>
+<a name="ln571">                 .arg(qHtml);</a>
+<a name="ln572"> </a>
+<a name="ln573">            delete tcCurCell;</a>
+<a name="ln574">            delete trCurRow;</a>
+<a name="ln575">            delete tblCurTable;</a>
+<a name="ln576">            delete tcdCurCellDef;</a>
+<a name="ln577">            return oString;</a>
+<a name="ln578">            }</a>
+<a name="ln579">      catch (std::exception &amp;e) {</a>
+<a name="ln580">            qDebug()&lt;&lt;&quot;Error: &quot;&lt;&lt;e.what();</a>
+<a name="ln581">            }</a>
+<a name="ln582">      catch (...) {</a>
+<a name="ln583">            qDebug()&lt;&lt;&quot;Something really bad happened!&quot;;</a>
+<a name="ln584">            }</a>
+<a name="ln585">      return &quot;&quot;;</a>
+<a name="ln586">      }</a>
+<a name="ln587"> </a>
+
+</code></pre>
+<div class="balloon" rel="444"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v614/" target="_blank">V614</a> Potentially uninitialized iterator 'CurCellDefs' used.</p></div>
+<div class="balloon" rel="12"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

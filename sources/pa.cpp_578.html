@@ -1,0 +1,457 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pa.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MusE Score</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2010 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;preferences.h&quot;</a>
+<a name="ln21">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln22">#include &quot;seq.h&quot;</a>
+<a name="ln23">#include &quot;pa.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">#ifdef USE_ALSA</a>
+<a name="ln26">#include &quot;alsa.h&quot;</a>
+<a name="ln27">#include &quot;alsamidi.h&quot;</a>
+<a name="ln28">#endif</a>
+<a name="ln29"> </a>
+<a name="ln30">#include &lt;portaudio.h&gt;</a>
+<a name="ln31">#include &quot;mididriver.h&quot;</a>
+<a name="ln32"> </a>
+<a name="ln33">#ifdef USE_PORTMIDI</a>
+<a name="ln34">#include &quot;pm.h&quot;</a>
+<a name="ln35">#endif</a>
+<a name="ln36"> </a>
+<a name="ln37">namespace Ms {</a>
+<a name="ln38"> </a>
+<a name="ln39">static PaStream* stream;</a>
+<a name="ln40"> </a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42">//   paCallback</a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44"> </a>
+<a name="ln45">int paCallback(const void*, void* out, long unsigned frames,</a>
+<a name="ln46">   const PaStreamCallbackTimeInfo*, PaStreamCallbackFlags, void *)</a>
+<a name="ln47">      {</a>
+<a name="ln48">      seq-&gt;setInitialMillisecondTimestampWithLatency();</a>
+<a name="ln49">      seq-&gt;process((unsigned)frames, (float*)out);</a>
+<a name="ln50">      return 0;</a>
+<a name="ln51">      }</a>
+<a name="ln52"> </a>
+<a name="ln53">//---------------------------------------------------------</a>
+<a name="ln54">//   Portaudio</a>
+<a name="ln55">//---------------------------------------------------------</a>
+<a name="ln56"> </a>
+<a name="ln57">Portaudio::Portaudio(Seq* s)</a>
+<a name="ln58">   : Driver(s)</a>
+<a name="ln59">      {</a>
+<a name="ln60">      _sampleRate = 48000;    // will be replaced by device default sample rate</a>
+<a name="ln61">      initialized = false;</a>
+<a name="ln62">      state       = Transport::STOP;</a>
+<a name="ln63">      seekflag    = false;</a>
+<a name="ln64">      midiDriver  = 0;</a>
+<a name="ln65">      }</a>
+<a name="ln66"> </a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68">//   ~Portaudio</a>
+<a name="ln69">//---------------------------------------------------------</a>
+<a name="ln70"> </a>
+<a name="ln71">Portaudio::~Portaudio()</a>
+<a name="ln72">      {</a>
+<a name="ln73">      if (initialized) {</a>
+<a name="ln74">            PaError err = Pa_CloseStream(stream);</a>
+<a name="ln75">            if (err != paNoError)</a>
+<a name="ln76">                  qDebug(&quot;Portaudio close stream failed: %s&quot;, Pa_GetErrorText(err));</a>
+<a name="ln77">            Pa_Terminate();</a>
+<a name="ln78">            if (midiDriver)</a>
+<a name="ln79">                  delete midiDriver;</a>
+<a name="ln80">            }</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84">//   init</a>
+<a name="ln85">//    return false on error</a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87"> </a>
+<a name="ln88">bool Portaudio::init(bool)</a>
+<a name="ln89">      {</a>
+<a name="ln90">      PaError err = Pa_Initialize();</a>
+<a name="ln91">      if (err != paNoError) {</a>
+<a name="ln92">            qDebug(&quot;Portaudio initialize failed: %s&quot;, Pa_GetErrorText(err));</a>
+<a name="ln93">            return false;</a>
+<a name="ln94">            }</a>
+<a name="ln95">      initialized = true;</a>
+<a name="ln96">      if (MScore::debugMode)</a>
+<a name="ln97">            qDebug(&quot;using PortAudio Version: %s&quot;, Pa_GetVersionText());</a>
+<a name="ln98"> </a>
+<a name="ln99">      PaDeviceIndex idx = preferences.getInt(PREF_IO_PORTAUDIO_DEVICE);</a>
+<a name="ln100">      if (idx &lt; 0) {</a>
+<a name="ln101">            idx = Pa_GetDefaultOutputDevice();</a>
+<a name="ln102">            qDebug(&quot;No device selected.  PortAudio detected %d devices.  Will use the default device (index %d).&quot;, Pa_GetDeviceCount(), idx);</a>
+<a name="ln103">            }</a>
+<a name="ln104"> </a>
+<a name="ln105">      const PaDeviceInfo* di = Pa_GetDeviceInfo(idx);</a>
+<a name="ln106"> </a>
+<a name="ln107">      //select default output device if no device or device without output channels have been selected</a>
+<a name="ln108">      if (di == nullptr || di-&gt;maxOutputChannels &lt; 1)</a>
+<a name="ln109">            di = Pa_GetDeviceInfo(Pa_GetDefaultOutputDevice());</a>
+<a name="ln110"> </a>
+<a name="ln111">      if (!di)</a>
+<a name="ln112">            return false;    // Portaudio is not properly initialized; disable audio</a>
+<a name="ln113">      _sampleRate = int(di-&gt;defaultSampleRate);</a>
+<a name="ln114"> </a>
+<a name="ln115">      /* Open an audio I/O stream. */</a>
+<a name="ln116">      struct PaStreamParameters out;</a>
+<a name="ln117">      memset(&amp;out, 0, sizeof(out));</a>
+<a name="ln118"> </a>
+<a name="ln119">      out.device           = idx;</a>
+<a name="ln120">      out.channelCount     = 2;</a>
+<a name="ln121">      out.sampleFormat     = paFloat32;</a>
+<a name="ln122">      out.suggestedLatency = di-&gt;defaultLowOutputLatency;</a>
+<a name="ln123">      out.hostApiSpecificStreamInfo = 0;</a>
+<a name="ln124"> </a>
+<a name="ln125">      err = Pa_OpenStream(&amp;stream, 0, &amp;out, double(_sampleRate), 0, 0, paCallback, (void*)this);</a>
+<a name="ln126">      if (err != paNoError) {</a>
+<a name="ln127">            // fall back to default device:</a>
+<a name="ln128">            out.device = Pa_GetDefaultOutputDevice();</a>
+<a name="ln129">            err = Pa_OpenStream(&amp;stream, 0, &amp;out, double(_sampleRate), 0, 0, paCallback, (void*)this);</a>
+<a name="ln130">            if (err != paNoError) {</a>
+<a name="ln131">                  qDebug(&quot;Portaudio open stream %d failed: %s&quot;, idx, Pa_GetErrorText(err));</a>
+<a name="ln132">                  return false;</a>
+<a name="ln133">                  }</a>
+<a name="ln134">            }</a>
+<a name="ln135">      const PaStreamInfo* si = Pa_GetStreamInfo(stream);</a>
+<a name="ln136">      if (si)</a>
+<a name="ln137">            _sampleRate = int(si-&gt;sampleRate);</a>
+<a name="ln138">#ifdef USE_ALSA</a>
+<a name="ln139">      midiDriver = new AlsaMidiDriver(seq);</a>
+<a name="ln140">#endif</a>
+<a name="ln141">#ifdef USE_PORTMIDI</a>
+<a name="ln142">      midiDriver = new PortMidiDriver(seq);</a>
+<a name="ln143">#endif</a>
+<a name="ln144">      if (midiDriver &amp;&amp; !midiDriver-&gt;init()) {</a>
+<a name="ln145">            qDebug(&quot;Init midi driver failed&quot;);</a>
+<a name="ln146">            delete midiDriver;</a>
+<a name="ln147">            midiDriver = 0;</a>
+<a name="ln148">#ifdef USE_PORTMIDI</a>
+<a name="ln149">            return true;                  // return OK for audio driver; midi is only input</a>
+<a name="ln150">#else</a>
+<a name="ln151">            return false;</a>
+<a name="ln152">#endif</a>
+<a name="ln153">            }</a>
+<a name="ln154">      return true;</a>
+<a name="ln155">      }</a>
+<a name="ln156"> </a>
+<a name="ln157">//---------------------------------------------------------</a>
+<a name="ln158">//   apiList</a>
+<a name="ln159">//---------------------------------------------------------</a>
+<a name="ln160"> </a>
+<a name="ln161">QStringList Portaudio::apiList() const</a>
+<a name="ln162">      {</a>
+<a name="ln163">      QStringList al;</a>
+<a name="ln164"> </a>
+<a name="ln165">      PaHostApiIndex apis = Pa_GetHostApiCount();</a>
+<a name="ln166">      for (PaHostApiIndex i = 0; i &lt; apis; ++i) {</a>
+<a name="ln167">            const PaHostApiInfo* info = Pa_GetHostApiInfo(i);</a>
+<a name="ln168">            if (info)</a>
+<a name="ln169">                  al.append(QString::fromLocal8Bit(info-&gt;name));</a>
+<a name="ln170">            }</a>
+<a name="ln171">      return al;</a>
+<a name="ln172">      }</a>
+<a name="ln173"> </a>
+<a name="ln174">//---------------------------------------------------------</a>
+<a name="ln175">//   deviceList</a>
+<a name="ln176">//---------------------------------------------------------</a>
+<a name="ln177"> </a>
+<a name="ln178">QStringList Portaudio::deviceList(int apiIdx)</a>
+<a name="ln179">      {</a>
+<a name="ln180">      QStringList dl;</a>
+<a name="ln181">      const PaHostApiInfo* info = Pa_GetHostApiInfo(apiIdx);</a>
+<a name="ln182">      if (info) {</a>
+<a name="ln183">            for (int i = 0; i &lt; info-&gt;deviceCount; ++i) {</a>
+<a name="ln184">                  PaDeviceIndex idx = Pa_HostApiDeviceIndexToDeviceIndex(apiIdx, i);</a>
+<a name="ln185">                  const PaDeviceInfo* di = Pa_GetDeviceInfo(idx);</a>
+<a name="ln186">                  if (di)</a>
+<a name="ln187">                        dl.append(QString::fromLocal8Bit(di-&gt;name));</a>
+<a name="ln188">                  }</a>
+<a name="ln189">            }</a>
+<a name="ln190">      return dl;</a>
+<a name="ln191">      }</a>
+<a name="ln192"> </a>
+<a name="ln193">//---------------------------------------------------------</a>
+<a name="ln194">//   deviceIndex</a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196"> </a>
+<a name="ln197">int Portaudio::deviceIndex(int apiIdx, int apiDevIdx)</a>
+<a name="ln198">      {</a>
+<a name="ln199">      return Pa_HostApiDeviceIndexToDeviceIndex(apiIdx, apiDevIdx);</a>
+<a name="ln200">      }</a>
+<a name="ln201"> </a>
+<a name="ln202">//---------------------------------------------------------</a>
+<a name="ln203">//   start</a>
+<a name="ln204">//---------------------------------------------------------</a>
+<a name="ln205"> </a>
+<a name="ln206">bool Portaudio::start(bool)</a>
+<a name="ln207">      {</a>
+<a name="ln208">      PaError err = Pa_StartStream(stream);</a>
+<a name="ln209">      if (err != paNoError) {</a>
+<a name="ln210">            qDebug(&quot;Portaudio: start stream failed: %s&quot;, Pa_GetErrorText(err));</a>
+<a name="ln211">            return false;</a>
+<a name="ln212">            }</a>
+<a name="ln213">      return true;</a>
+<a name="ln214">      }</a>
+<a name="ln215"> </a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217">//   stop</a>
+<a name="ln218">//---------------------------------------------------------</a>
+<a name="ln219"> </a>
+<a name="ln220">bool Portaudio::stop()</a>
+<a name="ln221">      {</a>
+<a name="ln222">      PaError err = Pa_StopStream(stream);      // sometimes the program hangs here on exit</a>
+<a name="ln223">      if (err != paNoError) {</a>
+<a name="ln224">            qDebug(&quot;Portaudio: stop failed: %s&quot;, Pa_GetErrorText(err));</a>
+<a name="ln225">            return false;</a>
+<a name="ln226">            }</a>
+<a name="ln227">      return true;</a>
+<a name="ln228">      }</a>
+<a name="ln229"> </a>
+<a name="ln230">//---------------------------------------------------------</a>
+<a name="ln231">//   framePos</a>
+<a name="ln232">//---------------------------------------------------------</a>
+<a name="ln233"> </a>
+<a name="ln234">int Portaudio::framePos() const</a>
+<a name="ln235">      {</a>
+<a name="ln236">      return 0;</a>
+<a name="ln237">      }</a>
+<a name="ln238"> </a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240">//   startTransport</a>
+<a name="ln241">//---------------------------------------------------------</a>
+<a name="ln242"> </a>
+<a name="ln243">void Portaudio::startTransport()</a>
+<a name="ln244">      {</a>
+<a name="ln245">      state = Transport::PLAY;</a>
+<a name="ln246">      }</a>
+<a name="ln247"> </a>
+<a name="ln248">//---------------------------------------------------------</a>
+<a name="ln249">//   stopTransport</a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251"> </a>
+<a name="ln252">void Portaudio::stopTransport()</a>
+<a name="ln253">      {</a>
+<a name="ln254">      state = Transport::STOP;</a>
+<a name="ln255">      }</a>
+<a name="ln256"> </a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258">//   getState</a>
+<a name="ln259">//---------------------------------------------------------</a>
+<a name="ln260"> </a>
+<a name="ln261">Transport Portaudio::getState()</a>
+<a name="ln262">      {</a>
+<a name="ln263">      return state;</a>
+<a name="ln264">      }</a>
+<a name="ln265"> </a>
+<a name="ln266">//---------------------------------------------------------</a>
+<a name="ln267">//   midiRead</a>
+<a name="ln268">//---------------------------------------------------------</a>
+<a name="ln269"> </a>
+<a name="ln270">void Portaudio::midiRead()</a>
+<a name="ln271">      {</a>
+<a name="ln272">      if (midiDriver)</a>
+<a name="ln273">            midiDriver-&gt;read();</a>
+<a name="ln274">      }</a>
+<a name="ln275"> </a>
+<a name="ln276">//---------------------------------------------------------</a>
+<a name="ln277">//   putEvent</a>
+<a name="ln278">//---------------------------------------------------------</a>
+<a name="ln279"> </a>
+<a name="ln280">#ifdef USE_PORTMIDI</a>
+<a name="ln281"> </a>
+<a name="ln282">// Prevent killing sequencer with wrong data</a>
+<a name="ln283">#define less128(__less) ((__less &gt;=0 &amp;&amp; __less &lt;= 127) ? __less : 0)</a>
+<a name="ln284"> </a>
+<a name="ln285">// TODO: this was copied from Jack version...I'd like to eventually unify these two, so that they handle midi event types in the same manner</a>
+<a name="ln286">void Portaudio::putEvent(const NPlayEvent&amp; e, unsigned framePos)</a>
+<a name="ln287">      {</a>
+<a name="ln288">      PortMidiDriver* portMidiDriver = static_cast&lt;PortMidiDriver*&gt;(midiDriver);</a>
+<a name="ln289">      if (!portMidiDriver || !portMidiDriver-&gt;getOutputStream() || !portMidiDriver-&gt;canOutput())</a>
+<a name="ln290">            return;</a>
+<a name="ln291"> </a>
+<a name="ln292">      int portIdx = seq-&gt;score()-&gt;midiPort(e.channel());</a>
+<a name="ln293">      int chan    = seq-&gt;score()-&gt;midiChannel(e.channel());</a>
+<a name="ln294"> </a>
+<a name="ln295">      if (portIdx &lt; 0 ) {</a>
+<a name="ln296">            qDebug(&quot;Portaudio::putEvent: invalid port %d&quot;, portIdx);</a>
+<a name="ln297">            return;</a>
+<a name="ln298">            }</a>
+<a name="ln299"> </a>
+<a name="ln300">      if (midiOutputTrace) {</a>
+<a name="ln301">            int a     = e.dataA();</a>
+<a name="ln302">            int b     = e.dataB();</a>
+<a name="ln303">            qDebug(&quot;MidiOut&lt;%d&gt;: Portaudio: %02x %02x %02x, chan: %i&quot;, portIdx, e.type(), a, b, chan);</a>
+<a name="ln304">            }</a>
+<a name="ln305"> </a>
+<a name="ln306">      switch(e.type()) {</a>
+<a name="ln307">            case ME_NOTEON:</a>
+<a name="ln308">            case ME_NOTEOFF:</a>
+<a name="ln309">            case ME_POLYAFTER:</a>
+<a name="ln310">            case ME_CONTROLLER:</a>
+<a name="ln311">                  // Catch CTRL_PROGRAM and let other ME_CONTROLLER events to go</a>
+<a name="ln312">                  if (e.dataA() == CTRL_PROGRAM) {</a>
+<a name="ln313">                        // Convert CTRL_PROGRAM event to ME_PROGRAM</a>
+<a name="ln314">                        long msg = Pm_Message(ME_PROGRAM | chan, less128(e.dataB()), 0);</a>
+<a name="ln315">                        PmError error = Pm_WriteShort(portMidiDriver-&gt;getOutputStream(), seq-&gt;getCurrentMillisecondTimestampWithLatency(framePos), msg);</a>
+<a name="ln316">                        if (error != pmNoError) {</a>
+<a name="ln317">                              qDebug(&quot;Portaudio: error %d&quot;, error);</a>
+<a name="ln318">                              return;</a>
+<a name="ln319">                              }</a>
+<a name="ln320">                        break;</a>
+<a name="ln321">                        }</a>
+<a name="ln322">                  // fall through</a>
+<a name="ln323">            case ME_PITCHBEND:</a>
+<a name="ln324">                  {</a>
+<a name="ln325">                  long msg = Pm_Message(e.type() | chan, less128(e.dataA()), less128(e.dataB()));</a>
+<a name="ln326">                  PmError error = Pm_WriteShort(portMidiDriver-&gt;getOutputStream(), seq-&gt;getCurrentMillisecondTimestampWithLatency(framePos), msg);</a>
+<a name="ln327">                  if (error != pmNoError) {</a>
+<a name="ln328">                        qDebug(&quot;Portaudio: error %d&quot;, error);</a>
+<a name="ln329">                        return;</a>
+<a name="ln330">                        }</a>
+<a name="ln331">                  }</a>
+<a name="ln332">                  break;</a>
+<a name="ln333"> </a>
+<a name="ln334">            case ME_PROGRAM:</a>
+<a name="ln335">            case ME_AFTERTOUCH:</a>
+<a name="ln336">                  {</a>
+<a name="ln337">                  long msg = Pm_Message(e.type() | chan, less128(e.dataA()), 0);</a>
+<a name="ln338">                  PmError error = Pm_WriteShort(portMidiDriver-&gt;getOutputStream(), seq-&gt;getCurrentMillisecondTimestampWithLatency(framePos), msg);</a>
+<a name="ln339">                  if (error != pmNoError) {</a>
+<a name="ln340">                        qDebug(&quot;Portaudio: error %d&quot;, error);</a>
+<a name="ln341">                        return;</a>
+<a name="ln342">                        }</a>
+<a name="ln343">                  }</a>
+<a name="ln344">                  break;</a>
+<a name="ln345">            case ME_SONGPOS:</a>
+<a name="ln346">            case ME_CLOCK:</a>
+<a name="ln347">            case ME_START:</a>
+<a name="ln348">            case ME_CONTINUE:</a>
+<a name="ln349">            case ME_STOP:</a>
+<a name="ln350">                  qDebug(&quot;Portaudio: event type %x not supported&quot;, e.type());</a>
+<a name="ln351">                  break;</a>
+<a name="ln352">            }</a>
+<a name="ln353">      }</a>
+<a name="ln354">#endif</a>
+<a name="ln355"> </a>
+<a name="ln356">//---------------------------------------------------------</a>
+<a name="ln357">//   currentApi</a>
+<a name="ln358">//---------------------------------------------------------</a>
+<a name="ln359"> </a>
+<a name="ln360">int Portaudio::currentApi() const</a>
+<a name="ln361">      {</a>
+<a name="ln362">      PaDeviceIndex idx = preferences.getInt(PREF_IO_PORTAUDIO_DEVICE);</a>
+<a name="ln363">      if (idx &lt; 0)</a>
+<a name="ln364">            idx = Pa_GetDefaultOutputDevice();</a>
+<a name="ln365"> </a>
+<a name="ln366">      for (int api = 0; api &lt; Pa_GetHostApiCount(); ++api) {</a>
+<a name="ln367">            const PaHostApiInfo* info = Pa_GetHostApiInfo(api);</a>
+<a name="ln368">            if (info) {</a>
+<a name="ln369">                  for (int k = 0; k &lt; info-&gt;deviceCount; ++k) {</a>
+<a name="ln370">                        PaDeviceIndex i = Pa_HostApiDeviceIndexToDeviceIndex(api, k);</a>
+<a name="ln371">                        if (i == idx)</a>
+<a name="ln372">                              return api;</a>
+<a name="ln373">                        }</a>
+<a name="ln374">                  }</a>
+<a name="ln375">            }</a>
+<a name="ln376">      qDebug(&quot;Portaudio: no current api found for device %d&quot;, idx);</a>
+<a name="ln377">      return -1;</a>
+<a name="ln378">      }</a>
+<a name="ln379"> </a>
+<a name="ln380">//---------------------------------------------------------</a>
+<a name="ln381">//   currentDevice</a>
+<a name="ln382">//---------------------------------------------------------</a>
+<a name="ln383"> </a>
+<a name="ln384">int Portaudio::currentDevice() const</a>
+<a name="ln385">      {</a>
+<a name="ln386">      PaDeviceIndex idx = preferences.getInt(PREF_IO_PORTAUDIO_DEVICE);</a>
+<a name="ln387">      if (idx &lt; 0)</a>
+<a name="ln388">            idx = Pa_GetDefaultOutputDevice();</a>
+<a name="ln389"> </a>
+<a name="ln390">      for (int api = 0; api &lt; Pa_GetHostApiCount(); ++api) {</a>
+<a name="ln391">            const PaHostApiInfo* info = Pa_GetHostApiInfo(api);</a>
+<a name="ln392">            if (info) {</a>
+<a name="ln393">                  for (int k = 0; k &lt; info-&gt;deviceCount; ++k) {</a>
+<a name="ln394">                        PaDeviceIndex i = Pa_HostApiDeviceIndexToDeviceIndex(api, k);</a>
+<a name="ln395">                        if (i == idx)</a>
+<a name="ln396">                              return k;</a>
+<a name="ln397">                        }</a>
+<a name="ln398">                  }</a>
+<a name="ln399">            }</a>
+<a name="ln400">      qDebug(&quot;Portaudio: no current ApiDevice found for device %d&quot;, idx);</a>
+<a name="ln401">      return -1;</a>
+<a name="ln402">      }</a>
+<a name="ln403">}</a>
+<a name="ln404"> </a>
+
+</code></pre>
+<div class="balloon" rel="76"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="92"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="97"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="144"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the 'midiDriver' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+<div class="balloon" rel="210"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="224"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="57"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: pos, startTime.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

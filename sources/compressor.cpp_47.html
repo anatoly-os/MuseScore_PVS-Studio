@@ -1,0 +1,381 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>compressor.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2015 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENSE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &lt;math.h&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;compressor.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">namespace Ms {</a>
+<a name="ln18"> </a>
+<a name="ln19">#define f_round(f) lrintf(f)</a>
+<a name="ln20"> </a>
+<a name="ln21">#define DB_TABLE_SIZE 1024</a>
+<a name="ln22">#define DB_MIN -60.0f</a>
+<a name="ln23">#define DB_MAX 24.0f</a>
+<a name="ln24">#define LIN_TABLE_SIZE 1024</a>
+<a name="ln25">#define LIN_MIN 0.0000000002f</a>
+<a name="ln26">#define LIN_MAX 9.0f</a>
+<a name="ln27"> </a>
+<a name="ln28">enum CompressorParameter {</a>
+<a name="ln29">      RMS_PEAK, ATTACK, RELEASE, THRESHOLD, RATIO, KNEE, GAIN</a>
+<a name="ln30">      };</a>
+<a name="ln31"> </a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33">//   ParDescr</a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35"> </a>
+<a name="ln36">static const std::vector&lt;ParDescr&gt; pd = {</a>
+<a name="ln37">      { RMS_PEAK,  &quot;rms&quot;,       false, 0.0,   1.0,   0.0 },</a>
+<a name="ln38">      { ATTACK,    &quot;attack&quot;,    false, 1.5,   400.0, 1.5 },</a>
+<a name="ln39">      { RELEASE,   &quot;release&quot;,   false, 2.0,   800.0, 2.0 },</a>
+<a name="ln40">      { THRESHOLD, &quot;threshold&quot;, false, -30.0, 0.0,   0.0 },</a>
+<a name="ln41">      { RATIO,     &quot;ratio&quot;,     false, 1.0,   20.0,  1.0 },</a>
+<a name="ln42">      { KNEE,      &quot;knee&quot;,      false, 1.0,   10.0,  1.0 },</a>
+<a name="ln43">      { GAIN,      &quot;gain&quot;,      false, 0.0,   24.0,  0.0 }</a>
+<a name="ln44">      };</a>
+<a name="ln45">#if 0</a>
+<a name="ln46">//---------------------------------------------------------</a>
+<a name="ln47">//   cube_interp</a>
+<a name="ln48">//    Cubic interpolation function</a>
+<a name="ln49">//---------------------------------------------------------</a>
+<a name="ln50"> </a>
+<a name="ln51">static inline float cube_interp(const float fr, const float inm1, const float</a>
+<a name="ln52">   in, const float inp1, const float inp2)</a>
+<a name="ln53">      {</a>
+<a name="ln54">      return in + 0.5f * fr * (inp1 - inm1 +</a>
+<a name="ln55">       fr * (4.0f * inp1 + 2.0f * inm1 - 5.0f * in - inp2 +</a>
+<a name="ln56">       fr * (3.0f * (in - inp1) - inm1 + inp2)));</a>
+<a name="ln57">      }</a>
+<a name="ln58">#endif</a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60">//   f_max</a>
+<a name="ln61">//---------------------------------------------------------</a>
+<a name="ln62"> </a>
+<a name="ln63">static inline float f_max(float x, float a)</a>
+<a name="ln64">      {</a>
+<a name="ln65">      x -= a;</a>
+<a name="ln66">      x += fabs(x);</a>
+<a name="ln67">      x *= 0.5;</a>
+<a name="ln68">      x += a;</a>
+<a name="ln69"> </a>
+<a name="ln70">      return x;</a>
+<a name="ln71">      }</a>
+<a name="ln72"> </a>
+<a name="ln73">//---------------------------------------------------------</a>
+<a name="ln74">//   round_to_zero</a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76"> </a>
+<a name="ln77">static inline void round_to_zero(volatile float *f)</a>
+<a name="ln78">      {</a>
+<a name="ln79">      *f += 1e-18f;</a>
+<a name="ln80">      *f -= 1e-18f;</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">// Linearly interpolate [ = a * (1 - f) + b * f]</a>
+<a name="ln84">#define LIN_INTERP(f,a,b) ((a) + (f) * ((b) - (a)))</a>
+<a name="ln85"> </a>
+<a name="ln86">#ifdef DB_DEFAULT_CUBE</a>
+<a name="ln87">#define db2lin(a) f_db2lin_cube(a)</a>
+<a name="ln88">#define lin2db(a) f_lin2db_cube(a)</a>
+<a name="ln89">#else</a>
+<a name="ln90">#define db2lin(a) f_db2lin_lerp(a)</a>
+<a name="ln91">#define lin2db(a) f_lin2db_lerp(a)</a>
+<a name="ln92">#endif</a>
+<a name="ln93"> </a>
+<a name="ln94">float db_data[DB_TABLE_SIZE];</a>
+<a name="ln95">float lin_data[LIN_TABLE_SIZE];</a>
+<a name="ln96">#if 0</a>
+<a name="ln97">//---------------------------------------------------------</a>
+<a name="ln98">//   f_db2lin_cube</a>
+<a name="ln99">//---------------------------------------------------------</a>
+<a name="ln100"> </a>
+<a name="ln101">static inline float f_db2lin_cube(float db)</a>
+<a name="ln102">      {</a>
+<a name="ln103">      float scale = (db - DB_MIN) * (float)LIN_TABLE_SIZE / (DB_MAX - DB_MIN);</a>
+<a name="ln104">      int base = f_round(scale - 0.5f);</a>
+<a name="ln105">      float ofs = scale - base;</a>
+<a name="ln106"> </a>
+<a name="ln107">      if (base &lt; 1) {</a>
+<a name="ln108">            return 0.0f;</a>
+<a name="ln109">      } else if (base &gt; LIN_TABLE_SIZE - 3) {</a>
+<a name="ln110">            return lin_data[LIN_TABLE_SIZE - 2];</a>
+<a name="ln111">      }</a>
+<a name="ln112">      return cube_interp(ofs, lin_data[base-1], lin_data[base], lin_data[base+1], lin_data[base+2]);</a>
+<a name="ln113">      }</a>
+<a name="ln114">#endif</a>
+<a name="ln115">//---------------------------------------------------------</a>
+<a name="ln116">//   f_db2lin_lerp</a>
+<a name="ln117">//---------------------------------------------------------</a>
+<a name="ln118"> </a>
+<a name="ln119">static inline float f_db2lin_lerp(float db)</a>
+<a name="ln120">      {</a>
+<a name="ln121">      float scale = (db - DB_MIN) * (float)LIN_TABLE_SIZE / (DB_MAX - DB_MIN);</a>
+<a name="ln122">      int base = f_round(scale - 0.5f);</a>
+<a name="ln123">      float ofs = scale - base;</a>
+<a name="ln124"> </a>
+<a name="ln125">      if (base &lt; 1) {</a>
+<a name="ln126">            return 0.0f;</a>
+<a name="ln127">            }</a>
+<a name="ln128">      else if (base &gt; LIN_TABLE_SIZE - 3) {</a>
+<a name="ln129">            return lin_data[LIN_TABLE_SIZE - 2];</a>
+<a name="ln130">            }</a>
+<a name="ln131">      return (1.0f - ofs) * lin_data[base] + ofs * lin_data[base+1];</a>
+<a name="ln132">      }</a>
+<a name="ln133">#if 0</a>
+<a name="ln134">//---------------------------------------------------------</a>
+<a name="ln135">//   f_lin2db_cube</a>
+<a name="ln136">//---------------------------------------------------------</a>
+<a name="ln137"> </a>
+<a name="ln138">static inline float f_lin2db_cube(float lin)</a>
+<a name="ln139">      {</a>
+<a name="ln140">      float scale = (lin - LIN_MIN) * (float)DB_TABLE_SIZE / (LIN_MAX - LIN_MIN);</a>
+<a name="ln141">      int base = f_round(scale - 0.5f);</a>
+<a name="ln142">      float ofs = scale - base;</a>
+<a name="ln143"> </a>
+<a name="ln144">      if (base &lt; 2) {</a>
+<a name="ln145">            return db_data[2] * scale * 0.5f - 23 * (2.0f - scale);</a>
+<a name="ln146">      } else if (base &gt; DB_TABLE_SIZE - 3) {</a>
+<a name="ln147">            return db_data[DB_TABLE_SIZE - 2];</a>
+<a name="ln148">      }</a>
+<a name="ln149">      return cube_interp(ofs, db_data[base-1], db_data[base], db_data[base+1], db_data[base+2]);</a>
+<a name="ln150">      }</a>
+<a name="ln151">#endif</a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153">//   f_lin2db_lerp</a>
+<a name="ln154">//---------------------------------------------------------</a>
+<a name="ln155"> </a>
+<a name="ln156">static inline float f_lin2db_lerp(float lin)</a>
+<a name="ln157">      {</a>
+<a name="ln158">      float scale = (lin - LIN_MIN) * (float)DB_TABLE_SIZE / (LIN_MAX - LIN_MIN);</a>
+<a name="ln159">      int base = f_round(scale - 0.5f);</a>
+<a name="ln160">      float ofs = scale - base;</a>
+<a name="ln161"> </a>
+<a name="ln162">      if (base &lt; 2) {</a>
+<a name="ln163">            return db_data[2] * scale * 0.5f - 23.0f * (2.0f - scale);</a>
+<a name="ln164">      } else if (base &gt; DB_TABLE_SIZE - 2) {</a>
+<a name="ln165">            return db_data[DB_TABLE_SIZE - 1];</a>
+<a name="ln166">      }</a>
+<a name="ln167">      return (1.0f - ofs) * db_data[base] + ofs * db_data[base+1];</a>
+<a name="ln168">      }</a>
+<a name="ln169"> </a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171">//   db_init</a>
+<a name="ln172">//---------------------------------------------------------</a>
+<a name="ln173"> </a>
+<a name="ln174">void db_init()</a>
+<a name="ln175">      {</a>
+<a name="ln176">      for (int i=0; i&lt;LIN_TABLE_SIZE; i++) {</a>
+<a name="ln177">            lin_data[i] = powf(10.0f, ((DB_MAX - DB_MIN) *</a>
+<a name="ln178">                  (float)i/(float)LIN_TABLE_SIZE + DB_MIN) / 20.0f);</a>
+<a name="ln179">            }</a>
+<a name="ln180"> </a>
+<a name="ln181">      for (int i=0; i&lt;DB_TABLE_SIZE; i++) {</a>
+<a name="ln182">            db_data[i] = 20.0f * log10f((LIN_MAX - LIN_MIN) *</a>
+<a name="ln183">                  (float)i/(float)DB_TABLE_SIZE + LIN_MIN);</a>
+<a name="ln184">            }</a>
+<a name="ln185">      }</a>
+<a name="ln186"> </a>
+<a name="ln187">//---------------------------------------------------------</a>
+<a name="ln188">//   init</a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190"> </a>
+<a name="ln191">void Compressor::init(float sr)</a>
+<a name="ln192">      {</a>
+<a name="ln193">      sampleRate = sr;</a>
+<a name="ln194">      sum        = 0.0f;</a>
+<a name="ln195">      amp        = 0.0f;</a>
+<a name="ln196">      gain       = 0.0f;</a>
+<a name="ln197">      gain_t     = 0.0f;</a>
+<a name="ln198">      env        = 0.0f;</a>
+<a name="ln199">      env_rms    = 0.0f;</a>
+<a name="ln200">      env_peak   = 0.0f;</a>
+<a name="ln201">      count      = 0;</a>
+<a name="ln202">      as[0]      = 1.0f;</a>
+<a name="ln203">      for (int i = 0; i &lt; A_TBL; ++i)</a>
+<a name="ln204">            as[i] = expf(-1.0f / (sampleRate * (float)i / (float)A_TBL));</a>
+<a name="ln205">      db_init();</a>
+<a name="ln206">      }</a>
+<a name="ln207"> </a>
+<a name="ln208">//---------------------------------------------------------</a>
+<a name="ln209">//   Compressor::process</a>
+<a name="ln210">//---------------------------------------------------------</a>
+<a name="ln211"> </a>
+<a name="ln212">void Compressor::process(int frames, float* ip, float *op)</a>
+<a name="ln213">      {</a>
+<a name="ln214">      const float ga       = _attack &lt; 2.0f ? 0.0f : as[f_round(_attack * 0.001f * (float)(A_TBL-1))];</a>
+<a name="ln215">      const float gr       = as[f_round(_release * 0.001f * (float)(A_TBL-1))];</a>
+<a name="ln216">      const float rs       = (_ratio - 1.0f) / _ratio;</a>
+<a name="ln217">      const float mug      = db2lin(_makeupGain);</a>
+<a name="ln218">      const float knee_min = db2lin(_threshold - _knee);</a>
+<a name="ln219">      const float knee_max = db2lin(_threshold + _knee);</a>
+<a name="ln220">      const float ef_a     = ga * 0.25f;</a>
+<a name="ln221">      const float ef_ai    = 1.0f - ef_a;</a>
+<a name="ln222"> </a>
+<a name="ln223">      for (int pos = 0; pos &lt; frames; pos++) {</a>
+<a name="ln224">            const float la = fabs(ip[pos * 2]);</a>
+<a name="ln225">            const float ra = fabs(ip[pos * 2 + 1]);</a>
+<a name="ln226">            const float lev_in = f_max(la, ra);</a>
+<a name="ln227"> </a>
+<a name="ln228">            sum += lev_in * lev_in;</a>
+<a name="ln229">            if (amp &gt; env_rms)</a>
+<a name="ln230">                  env_rms = env_rms * ga + amp * (1.0f - ga);</a>
+<a name="ln231">            else</a>
+<a name="ln232">                  env_rms = env_rms * gr + amp * (1.0f - gr);</a>
+<a name="ln233">            round_to_zero(&amp;env_rms);</a>
+<a name="ln234">            if (lev_in &gt; env_peak)</a>
+<a name="ln235">                  env_peak = env_peak * ga + lev_in * (1.0f - ga);</a>
+<a name="ln236">            else</a>
+<a name="ln237">                  env_peak = env_peak * gr + lev_in * (1.0f - gr);</a>
+<a name="ln238">            round_to_zero(&amp;env_peak);</a>
+<a name="ln239">            if ((count++ &amp; 3) == 3) {</a>
+<a name="ln240">                  amp = rms.process(sum * 0.25f);</a>
+<a name="ln241">                  sum = 0.0f;</a>
+<a name="ln242">                  if (qIsNaN(env_rms))     // This can happen sometimes, but I don't know why</a>
+<a name="ln243">                        env_rms = 0.0f;</a>
+<a name="ln244">                  env = LIN_INTERP(rms_peak, env_rms, env_peak);</a>
+<a name="ln245">                  if (env &lt;= knee_min)</a>
+<a name="ln246">                        gain_t = 1.0f;</a>
+<a name="ln247">                  else if (env &lt; knee_max) {</a>
+<a name="ln248">                        const float x = -(_threshold - _knee - lin2db(env)) / _knee;</a>
+<a name="ln249">                        gain_t = db2lin(-_knee * rs * x * x * 0.25f);</a>
+<a name="ln250">                        }</a>
+<a name="ln251">                  else</a>
+<a name="ln252">                        gain_t = db2lin((_threshold - lin2db(env)) * rs);</a>
+<a name="ln253">                  }</a>
+<a name="ln254">            gain          = gain * ef_a + gain_t * ef_ai;</a>
+<a name="ln255">            op[pos * 2]   = ip[pos * 2] * gain * mug;</a>
+<a name="ln256">            op[pos * 2+1] = ip[pos * 2 + 1] * gain * mug;</a>
+<a name="ln257">            }</a>
+<a name="ln258"> </a>
+<a name="ln259">//printf(&quot;gain %f\n&quot;, gain);</a>
+<a name="ln260"> </a>
+<a name="ln261">//      amplitude = lin2db(env);</a>
+<a name="ln262">//      gain_red  = lin2db(gain);</a>
+<a name="ln263">      }</a>
+<a name="ln264"> </a>
+<a name="ln265">//---------------------------------------------------------</a>
+<a name="ln266">//   setNValue</a>
+<a name="ln267">//---------------------------------------------------------</a>
+<a name="ln268"> </a>
+<a name="ln269">void Compressor::setNValue(int idx, double value)</a>
+<a name="ln270">      {</a>
+<a name="ln271">      switch (idx) {</a>
+<a name="ln272">            case RMS_PEAK:  setRmsPeak(value);    break;</a>
+<a name="ln273">            case ATTACK:    setAttack(value);     break;</a>
+<a name="ln274">            case RELEASE:   setRelease(value);    break;</a>
+<a name="ln275">            case THRESHOLD: setThreshold(value);  break;</a>
+<a name="ln276">            case RATIO:     setRatio(value);      break;</a>
+<a name="ln277">            case KNEE:      setKnee(value);       break;</a>
+<a name="ln278">            case GAIN:      setMakeupGain(value); break;</a>
+<a name="ln279">            }</a>
+<a name="ln280">      }</a>
+<a name="ln281"> </a>
+<a name="ln282">//---------------------------------------------------------</a>
+<a name="ln283">//   value</a>
+<a name="ln284">//    return normalized value 0-1.0</a>
+<a name="ln285">//---------------------------------------------------------</a>
+<a name="ln286"> </a>
+<a name="ln287">double Compressor::nvalue(int idx) const</a>
+<a name="ln288">      {</a>
+<a name="ln289">      double v = 0.0;</a>
+<a name="ln290">      switch (idx) {</a>
+<a name="ln291">            case RMS_PEAK:  v = rmsPeak();    break;</a>
+<a name="ln292">            case ATTACK:    v = attack();     break;</a>
+<a name="ln293">            case RELEASE:   v = release();    break;</a>
+<a name="ln294">            case THRESHOLD: v = threshold();  break;</a>
+<a name="ln295">            case RATIO:     v = ratio();      break;</a>
+<a name="ln296">            case KNEE:      v = knee();       break;</a>
+<a name="ln297">            case GAIN:      v = makeupGain(); break;</a>
+<a name="ln298">            }</a>
+<a name="ln299">      return v;</a>
+<a name="ln300">      }</a>
+<a name="ln301"> </a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303">//   parDescr</a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305"> </a>
+<a name="ln306">const std::vector&lt;ParDescr&gt;&amp; Compressor::parDescr() const</a>
+<a name="ln307">      {</a>
+<a name="ln308">      return pd;</a>
+<a name="ln309">      }</a>
+<a name="ln310"> </a>
+<a name="ln311">//---------------------------------------------------------</a>
+<a name="ln312">//   state</a>
+<a name="ln313">//---------------------------------------------------------</a>
+<a name="ln314"> </a>
+<a name="ln315">SynthesizerGroup Compressor::state() const</a>
+<a name="ln316">      {</a>
+<a name="ln317">      SynthesizerGroup g;</a>
+<a name="ln318">      g.setName(name());</a>
+<a name="ln319"> </a>
+<a name="ln320">      for (const ParDescr&amp; d : pd)</a>
+<a name="ln321">            g.push_back(IdValue(d.id, QString(&quot;%1&quot;).arg(value(d.id))));</a>
+<a name="ln322">      return g;</a>
+<a name="ln323">      }</a>
+<a name="ln324"> </a>
+<a name="ln325">//---------------------------------------------------------</a>
+<a name="ln326">//   setState</a>
+<a name="ln327">//---------------------------------------------------------</a>
+<a name="ln328"> </a>
+<a name="ln329">void Compressor::setState(const SynthesizerGroup&amp; g)</a>
+<a name="ln330">      {</a>
+<a name="ln331">      for (const IdValue&amp; v : g)</a>
+<a name="ln332">            setValue(v.id, v.data.toDouble());</a>
+<a name="ln333">      }</a>
+<a name="ln334">}</a>
+<a name="ln335"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

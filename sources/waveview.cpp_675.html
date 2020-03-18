@@ -1,0 +1,344 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>waveview.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;waveview.h&quot;</a>
+<a name="ln14">#include &quot;piano.h&quot;</a>
+<a name="ln15">#include &quot;libmscore/audio.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln17"> </a>
+<a name="ln18">#define OV_EXCLUDE_STATIC_CALLBACKS</a>
+<a name="ln19">#include &lt;vorbis/vorbisfile.h&gt;</a>
+<a name="ln20"> </a>
+<a name="ln21">namespace Ms {</a>
+<a name="ln22"> </a>
+<a name="ln23"> </a>
+<a name="ln24">//---------------------------------------------------------</a>
+<a name="ln25">//   VorbisData</a>
+<a name="ln26">//---------------------------------------------------------</a>
+<a name="ln27"> </a>
+<a name="ln28">struct VorbisData {</a>
+<a name="ln29">      int pos;          // current position in audio-&gt;data()</a>
+<a name="ln30">      QByteArray data;</a>
+<a name="ln31">      };</a>
+<a name="ln32"> </a>
+<a name="ln33">static VorbisData vorbisData;</a>
+<a name="ln34"> </a>
+<a name="ln35">static size_t ovRead(void* ptr, size_t size, size_t nmemb, void* datasource);</a>
+<a name="ln36">static int ovSeek(void* datasource, ogg_int64_t offset, int whence);</a>
+<a name="ln37">static long ovTell(void* datasource);</a>
+<a name="ln38"> </a>
+<a name="ln39">static ov_callbacks ovCallbacks = {</a>
+<a name="ln40">      ovRead, ovSeek, 0, ovTell</a>
+<a name="ln41">      };</a>
+<a name="ln42"> </a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44">//   ovRead</a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46"> </a>
+<a name="ln47">static size_t ovRead(void* ptr, size_t size, size_t nmemb, void* datasource)</a>
+<a name="ln48">      {</a>
+<a name="ln49">      VorbisData* vd = (VorbisData*)datasource;</a>
+<a name="ln50">      size_t n = size * nmemb;</a>
+<a name="ln51">      if (vd-&gt;data.size() &lt; int(vd-&gt;pos + n))</a>
+<a name="ln52">            n = vd-&gt;data.size() - vd-&gt;pos;</a>
+<a name="ln53">      if (n) {</a>
+<a name="ln54">            const char* src = vd-&gt;data.data() + vd-&gt;pos;</a>
+<a name="ln55">            memcpy(ptr, src, n);</a>
+<a name="ln56">            vd-&gt;pos += int(n);</a>
+<a name="ln57">            }</a>
+<a name="ln58">      return n;</a>
+<a name="ln59">      }</a>
+<a name="ln60"> </a>
+<a name="ln61">//---------------------------------------------------------</a>
+<a name="ln62">//   ovSeek</a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64"> </a>
+<a name="ln65">static int ovSeek(void* datasource, ogg_int64_t offset, int whence)</a>
+<a name="ln66">      {</a>
+<a name="ln67">      VorbisData* vd = (VorbisData*)datasource;</a>
+<a name="ln68">      switch(whence) {</a>
+<a name="ln69">            case SEEK_SET:</a>
+<a name="ln70">                  vd-&gt;pos = offset;</a>
+<a name="ln71">                  break;</a>
+<a name="ln72">            case SEEK_CUR:</a>
+<a name="ln73">                  vd-&gt;pos += offset;</a>
+<a name="ln74">                  break;</a>
+<a name="ln75">            case SEEK_END:</a>
+<a name="ln76">                  vd-&gt;pos = vd-&gt;data.size() - offset;</a>
+<a name="ln77">                  break;</a>
+<a name="ln78">            }</a>
+<a name="ln79">      return 0;</a>
+<a name="ln80">      }</a>
+<a name="ln81"> </a>
+<a name="ln82">//---------------------------------------------------------</a>
+<a name="ln83">//   ovTell</a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85"> </a>
+<a name="ln86">static long ovTell(void* datasource)</a>
+<a name="ln87">      {</a>
+<a name="ln88">      VorbisData* vd = (VorbisData*)datasource;</a>
+<a name="ln89">      return vd-&gt;pos;</a>
+<a name="ln90">      }</a>
+<a name="ln91"> </a>
+<a name="ln92"> </a>
+<a name="ln93">//---------------------------------------------------------</a>
+<a name="ln94">//   WaveView</a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96"> </a>
+<a name="ln97">WaveView::WaveView(QWidget* parent)</a>
+<a name="ln98">   : QWidget(parent)</a>
+<a name="ln99">      {</a>
+<a name="ln100">      _xpos   = 0;</a>
+<a name="ln101">      _xmag   = 0.1;</a>
+<a name="ln102">      _timeType = TType::TICKS;      // TType::FRAMES</a>
+<a name="ln103">      setMinimumHeight(50);</a>
+<a name="ln104">      }</a>
+<a name="ln105"> </a>
+<a name="ln106">static const int WSCALE = 10;</a>
+<a name="ln107"> </a>
+<a name="ln108">//---------------------------------------------------------</a>
+<a name="ln109">//   setAudio</a>
+<a name="ln110">//---------------------------------------------------------</a>
+<a name="ln111"> </a>
+<a name="ln112">void WaveView::setAudio(Audio* audio)</a>
+<a name="ln113">      {</a>
+<a name="ln114">      waves.clear();</a>
+<a name="ln115">      OggVorbis_File vf;</a>
+<a name="ln116">      vorbisData.pos  = 0;</a>
+<a name="ln117">      vorbisData.data = audio-&gt;data();</a>
+<a name="ln118">      int rv = ov_open_callbacks(&amp;vorbisData, &amp;vf, 0, 0, ovCallbacks);</a>
+<a name="ln119">      if (rv &lt; 0) {</a>
+<a name="ln120">            qDebug(&quot;ogg open failed: %d&quot;, rv);</a>
+<a name="ln121">            return;</a>
+<a name="ln122">            }</a>
+<a name="ln123">      int rn = 0;</a>
+<a name="ln124">      const int n = 10000 / WSCALE;</a>
+<a name="ln125">      uchar dst[n];</a>
+<a name="ln126">      float* r = 0;</a>
+<a name="ln127">      float* l = 0;</a>
+<a name="ln128">      for (;;) {</a>
+<a name="ln129">            for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln130">                  float val = 0;</a>
+<a name="ln131">                  for (int k = 0; k &lt; WSCALE; ++k) {</a>
+<a name="ln132">                        if (rn == 0) {</a>
+<a name="ln133">                              float** pcm;</a>
+<a name="ln134">                              int section;</a>
+<a name="ln135">                              rn = ov_read_float(&amp;vf, &amp;pcm, 1000, &amp;section);</a>
+<a name="ln136">                              if (rn == 0) {</a>
+<a name="ln137">                                    for (; i &lt; n; ++i)</a>
+<a name="ln138">                                          dst[i] = 0;</a>
+<a name="ln139">                                    waves.append((char*)dst, n);</a>
+<a name="ln140">                                    ov_clear(&amp;vf);</a>
+<a name="ln141">                                    return;</a>
+<a name="ln142">                                    }</a>
+<a name="ln143">                              r = pcm[0];</a>
+<a name="ln144">                              l = pcm[1];</a>
+<a name="ln145">                              }</a>
+<a name="ln146">                        val += fabsf(*r++) + fabsf(*l++);</a>
+<a name="ln147">                        --rn;</a>
+<a name="ln148">                        }</a>
+<a name="ln149">                  unsigned int v = lrint(val * 128);</a>
+<a name="ln150">                  if (v &gt; 255)</a>
+<a name="ln151">                        v = 255;</a>
+<a name="ln152">                  dst[i] = v;</a>
+<a name="ln153">                  }</a>
+<a name="ln154">            waves.append((char*)dst, n);</a>
+<a name="ln155">            }</a>
+<a name="ln156">      }</a>
+<a name="ln157"> </a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159">//   pegel</a>
+<a name="ln160">//---------------------------------------------------------</a>
+<a name="ln161"> </a>
+<a name="ln162">int WaveView::pegel(int frame1, int frame2)</a>
+<a name="ln163">      {</a>
+<a name="ln164">      if (frame1 &lt; 0)</a>
+<a name="ln165">            frame1 = 0;</a>
+<a name="ln166">      if (frame1 &gt; frame2)</a>
+<a name="ln167">            return 0;</a>
+<a name="ln168">      frame1 = (frame1 + WSCALE/2) / WSCALE;</a>
+<a name="ln169">      frame2 = (frame2 + WSCALE/2) / WSCALE;</a>
+<a name="ln170">      if (frame2 &gt;= waves.size())</a>
+<a name="ln171">            frame2 = waves.size()-1;</a>
+<a name="ln172">      int p = 0;</a>
+<a name="ln173">      for (int i = frame1; i &lt;= frame2; ++i)</a>
+<a name="ln174">            p += uchar(waves[i]);</a>
+<a name="ln175">      p /= (frame2 - frame1 + 1);</a>
+<a name="ln176">      return p;</a>
+<a name="ln177">      }</a>
+<a name="ln178"> </a>
+<a name="ln179">//---------------------------------------------------------</a>
+<a name="ln180">//   setXpos</a>
+<a name="ln181">//---------------------------------------------------------</a>
+<a name="ln182"> </a>
+<a name="ln183">void WaveView::setXpos(int val)</a>
+<a name="ln184">      {</a>
+<a name="ln185">      _xpos = val;</a>
+<a name="ln186">      update();</a>
+<a name="ln187">      }</a>
+<a name="ln188"> </a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190">//   setMag</a>
+<a name="ln191">//---------------------------------------------------------</a>
+<a name="ln192"> </a>
+<a name="ln193">void WaveView::setMag(double x, double)</a>
+<a name="ln194">      {</a>
+<a name="ln195">      if (_xmag != x) {</a>
+<a name="ln196">            _xmag = x;</a>
+<a name="ln197">            update();</a>
+<a name="ln198">            }</a>
+<a name="ln199">      }</a>
+<a name="ln200"> </a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202">//   moveLocator</a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204"> </a>
+<a name="ln205">void WaveView::moveLocator(int i)</a>
+<a name="ln206">      {</a>
+<a name="ln207">      if (_locator[i].valid()) {</a>
+<a name="ln208">            update();</a>
+<a name="ln209">            // qreal x = qreal(pos2pix(_locator[i]));</a>
+<a name="ln210">            // locatorLines[i]-&gt;setPos(QPointF(x, 0.0));</a>
+<a name="ln211">            }</a>
+<a name="ln212">      }</a>
+<a name="ln213"> </a>
+<a name="ln214">//---------------------------------------------------------</a>
+<a name="ln215">//   setScore</a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217"> </a>
+<a name="ln218">void WaveView::setScore(Score* s, Pos* lc)</a>
+<a name="ln219">      {</a>
+<a name="ln220">      _score = s;</a>
+<a name="ln221">      _locator = lc;</a>
+<a name="ln222">      _cursor.setContext(s-&gt;tempomap(), s-&gt;sigmap());</a>
+<a name="ln223">      }</a>
+<a name="ln224"> </a>
+<a name="ln225">static const int MAP_OFFSET = 5;</a>
+<a name="ln226"> </a>
+<a name="ln227">//---------------------------------------------------------</a>
+<a name="ln228">//   pos2pix</a>
+<a name="ln229">//---------------------------------------------------------</a>
+<a name="ln230"> </a>
+<a name="ln231">int WaveView::pos2pix(const Pos&amp; p) const</a>
+<a name="ln232">      {</a>
+<a name="ln233">      return lrint((p.time(_timeType) + 480) * _xmag)</a>
+<a name="ln234">         + MAP_OFFSET - _xpos + pianoWidth;</a>
+<a name="ln235">      }</a>
+<a name="ln236"> </a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238">//   pix2pos</a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240"> </a>
+<a name="ln241">Pos WaveView::pix2pos(int x) const</a>
+<a name="ln242">      {</a>
+<a name="ln243">      x -= (pianoWidth + MAP_OFFSET);</a>
+<a name="ln244">      if (x &lt; 0)</a>
+<a name="ln245">            x = 0;</a>
+<a name="ln246">      return Pos(_score-&gt;tempomap(), _score-&gt;sigmap(), ((x + _xpos) / _xmag) - 480, _timeType);</a>
+<a name="ln247">      }</a>
+<a name="ln248"> </a>
+<a name="ln249">//---------------------------------------------------------</a>
+<a name="ln250">//   paintEvent</a>
+<a name="ln251">//---------------------------------------------------------</a>
+<a name="ln252"> </a>
+<a name="ln253">void WaveView::paintEvent(QPaintEvent* event)</a>
+<a name="ln254">      {</a>
+<a name="ln255">      QPainter p(this);</a>
+<a name="ln256">      int xoffset = pianoWidth + MAP_OFFSET;</a>
+<a name="ln257">      QRect rt(0, 0, xoffset, height());</a>
+<a name="ln258">      QRect r(event-&gt;rect());</a>
+<a name="ln259"> </a>
+<a name="ln260">      p.fillRect(r, Qt::gray);</a>
+<a name="ln261">      if (rt.intersects(r.translated(_xpos, 0)))</a>
+<a name="ln262">            p.fillRect(rt.translated(-_xpos, 0), Qt::lightGray);</a>
+<a name="ln263"> </a>
+<a name="ln264">      int x1 = r.x();</a>
+<a name="ln265">      int x2 = x1 + r.width();</a>
+<a name="ln266">      if (x1 &lt; pianoWidth)</a>
+<a name="ln267">            x1 = pianoWidth;</a>
+<a name="ln268">      Pos p1 = pix2pos(x1);</a>
+<a name="ln269">      p.setPen(QPen(Qt::blue, 1));</a>
+<a name="ln270">      for (int i = x1+1; i &lt; x2; ++i) {</a>
+<a name="ln271">            Pos p2 = pix2pos(i);</a>
+<a name="ln272">            int val = height() * pegel(p1.frame(), p2.frame()) / 255;</a>
+<a name="ln273">            p1 = p2;</a>
+<a name="ln274">            int y1 = height() - val;</a>
+<a name="ln275">            int y2 = height();</a>
+<a name="ln276">            p.drawLine(i, y1, i, y2);</a>
+<a name="ln277">            }</a>
+<a name="ln278"> </a>
+<a name="ln279">      p.setPen(QPen(Qt::lightGray, 2));</a>
+<a name="ln280">      int y = height() / 2;</a>
+<a name="ln281">      int x = xoffset - _xpos;</a>
+<a name="ln282">      int w = width() - x;</a>
+<a name="ln283">      if (w &gt; 0)</a>
+<a name="ln284">            p.drawLine(0, y, width(), y);</a>
+<a name="ln285"> </a>
+<a name="ln286">      static const QColor lcColors[3] = { Qt::red, Qt::blue, Qt::blue };</a>
+<a name="ln287">      for (int i = 0; i &lt; 3; ++i) {</a>
+<a name="ln288">            if (!_locator[i].valid())</a>
+<a name="ln289">                  continue;</a>
+<a name="ln290">            QPen pen(lcColors[i], 3);</a>
+<a name="ln291">            p.setPen(pen);</a>
+<a name="ln292">            int xp      = pos2pix(_locator[i]);</a>
+<a name="ln293">            p.drawLine(xp, 0, xp, height());</a>
+<a name="ln294">            }</a>
+<a name="ln295">      }</a>
+<a name="ln296">}</a>
+<a name="ln297"> </a>
+
+</code></pre>
+<div class="balloon" rel="97"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _locator, _score, magStep.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,731 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pianolevels.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MusE Score</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2009 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;pianolevels.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">#include &quot;pianoruler.h&quot;</a>
+<a name="ln23">#include &quot;pianokeyboard.h&quot;</a>
+<a name="ln24">#include &quot;pianoview.h&quot;</a>
+<a name="ln25">#include &quot;pianolevelsfilter.h&quot;</a>
+<a name="ln26">#include &quot;preferences.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln31">#include &quot;libmscore/rest.h&quot;</a>
+<a name="ln32">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln33">#include &quot;libmscore/slur.h&quot;</a>
+<a name="ln34">#include &quot;libmscore/tie.h&quot;</a>
+<a name="ln35">#include &quot;libmscore/tuplet.h&quot;</a>
+<a name="ln36">#include &quot;libmscore/noteevent.h&quot;</a>
+<a name="ln37"> </a>
+<a name="ln38">namespace Ms {</a>
+<a name="ln39"> </a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41">//   PianoLevels</a>
+<a name="ln42">//---------------------------------------------------------</a>
+<a name="ln43"> </a>
+<a name="ln44">PianoLevels::PianoLevels(QWidget *parent)</a>
+<a name="ln45">    : QWidget(parent)</a>
+<a name="ln46">       {</a>
+<a name="ln47">       setMouseTracking(true);</a>
+<a name="ln48">       _xpos   = 0;</a>
+<a name="ln49">       _xZoom = X_ZOOM_INITIAL;</a>
+<a name="ln50">       _tuplet = 1;</a>
+<a name="ln51">       _subdiv = 0;</a>
+<a name="ln52">       _levelsIndex = 0;</a>
+<a name="ln53">       minBeatGap = 20;</a>
+<a name="ln54">       vMargin = 10;</a>
+<a name="ln55">       levelLen = 20;</a>
+<a name="ln56">       mouseDown = false;</a>
+<a name="ln57">       dragging = false;</a>
+<a name="ln58">       }</a>
+<a name="ln59"> </a>
+<a name="ln60">//---------------------------------------------------------</a>
+<a name="ln61">//   ~PianoLevels</a>
+<a name="ln62">//---------------------------------------------------------</a>
+<a name="ln63"> </a>
+<a name="ln64">PianoLevels::~PianoLevels()</a>
+<a name="ln65">      {</a>
+<a name="ln66">      clearNoteData();</a>
+<a name="ln67">      }</a>
+<a name="ln68"> </a>
+<a name="ln69">//---------------------------------------------------------</a>
+<a name="ln70">//   setScore</a>
+<a name="ln71">//---------------------------------------------------------</a>
+<a name="ln72"> </a>
+<a name="ln73">void PianoLevels::setScore(Score* s, Pos* lc)</a>
+<a name="ln74">      {</a>
+<a name="ln75">      _score = s;</a>
+<a name="ln76">      _locator = lc;</a>
+<a name="ln77">      if (_score)</a>
+<a name="ln78">            _cursor.setContext(_score-&gt;tempomap(), _score-&gt;sigmap());</a>
+<a name="ln79">      setEnabled(_score != 0);</a>
+<a name="ln80">      }</a>
+<a name="ln81"> </a>
+<a name="ln82">//---------------------------------------------------------</a>
+<a name="ln83">//   setXpos</a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85"> </a>
+<a name="ln86">void PianoLevels::setXpos(int val)</a>
+<a name="ln87">      {</a>
+<a name="ln88">      _xpos = val;</a>
+<a name="ln89">      update();</a>
+<a name="ln90">      }</a>
+<a name="ln91"> </a>
+<a name="ln92"> </a>
+<a name="ln93">//---------------------------------------------------------</a>
+<a name="ln94">//   pixelXToTick</a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96"> </a>
+<a name="ln97">int PianoLevels::pixelXToTick(int pixX) {</a>
+<a name="ln98">      return static_cast&lt;int&gt;((pixX + _xpos) / _xZoom) - MAP_OFFSET;</a>
+<a name="ln99">      }</a>
+<a name="ln100"> </a>
+<a name="ln101"> </a>
+<a name="ln102">//---------------------------------------------------------</a>
+<a name="ln103">//   tickToPixelX</a>
+<a name="ln104">//---------------------------------------------------------</a>
+<a name="ln105"> </a>
+<a name="ln106">int PianoLevels::tickToPixelX(int tick) {</a>
+<a name="ln107">      return static_cast&lt;int&gt;(tick + MAP_OFFSET) * _xZoom - _xpos;</a>
+<a name="ln108">      }</a>
+<a name="ln109"> </a>
+<a name="ln110"> </a>
+<a name="ln111">//---------------------------------------------------------</a>
+<a name="ln112">//   paintEvent</a>
+<a name="ln113">//---------------------------------------------------------</a>
+<a name="ln114"> </a>
+<a name="ln115">void PianoLevels::paintEvent(QPaintEvent* e)</a>
+<a name="ln116">      {</a>
+<a name="ln117">      QPainter p(this);</a>
+<a name="ln118"> </a>
+<a name="ln119">      QColor colPianoBg;</a>
+<a name="ln120">      QColor noteDeselected;</a>
+<a name="ln121">      QColor noteSelected;</a>
+<a name="ln122"> </a>
+<a name="ln123">      QColor colGridLine;</a>
+<a name="ln124">      QColor colText;</a>
+<a name="ln125"> </a>
+<a name="ln126">      switch (preferences.globalStyle()) {</a>
+<a name="ln127">            case MuseScoreStyleType::DARK_FUSION:</a>
+<a name="ln128">                  colPianoBg = QColor(preferences.getColor(PREF_UI_PIANOROLL_DARK_BG_BASE_COLOR));</a>
+<a name="ln129">                  noteDeselected = QColor(preferences.getColor(PREF_UI_PIANOROLL_DARK_NOTE_UNSEL_COLOR));</a>
+<a name="ln130">                  noteSelected = QColor(preferences.getColor(PREF_UI_PIANOROLL_DARK_NOTE_SEL_COLOR));</a>
+<a name="ln131"> </a>
+<a name="ln132">                  colGridLine = QColor(preferences.getColor(PREF_UI_PIANOROLL_DARK_BG_GRIDLINE_COLOR));</a>
+<a name="ln133">                  colText = QColor(preferences.getColor(PREF_UI_PIANOROLL_DARK_BG_TEXT_COLOR));</a>
+<a name="ln134">                  break;</a>
+<a name="ln135">            default:</a>
+<a name="ln136">                  colPianoBg = QColor(preferences.getColor(PREF_UI_PIANOROLL_LIGHT_BG_BASE_COLOR));</a>
+<a name="ln137">                  noteDeselected = QColor(preferences.getColor(PREF_UI_PIANOROLL_LIGHT_NOTE_UNSEL_COLOR));</a>
+<a name="ln138">                  noteSelected = QColor(preferences.getColor(PREF_UI_PIANOROLL_LIGHT_NOTE_SEL_COLOR));</a>
+<a name="ln139"> </a>
+<a name="ln140">                  colGridLine = QColor(preferences.getColor(PREF_UI_PIANOROLL_LIGHT_BG_GRIDLINE_COLOR));</a>
+<a name="ln141">                  colText = QColor(preferences.getColor(PREF_UI_PIANOROLL_LIGHT_BG_TEXT_COLOR));</a>
+<a name="ln142">                  break;</a>
+<a name="ln143">            }</a>
+<a name="ln144"> </a>
+<a name="ln145"> </a>
+<a name="ln146">      const QPen penLineMajor = QPen(colGridLine, 2.0, Qt::SolidLine);</a>
+<a name="ln147">      const QPen penLineMinor = QPen(colGridLine, 1.0, Qt::SolidLine);</a>
+<a name="ln148">      const QPen penLineSub = QPen(colGridLine, 1.0, Qt::DotLine);</a>
+<a name="ln149"> </a>
+<a name="ln150">      const QRect&amp; r = e-&gt;rect();</a>
+<a name="ln151"> </a>
+<a name="ln152">      p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);</a>
+<a name="ln153"> </a>
+<a name="ln154">      p.setBrush(colPianoBg);</a>
+<a name="ln155">      p.drawRect(0, 0, width(), height());</a>
+<a name="ln156"> </a>
+<a name="ln157">      if (!_score)</a>
+<a name="ln158">            return;</a>
+<a name="ln159"> </a>
+<a name="ln160">      Pos pos1(_score-&gt;tempomap(), _score-&gt;sigmap(), qMax(pixelXToTick(r.x()), 0), TType::TICKS);</a>
+<a name="ln161">      Pos pos2(_score-&gt;tempomap(), _score-&gt;sigmap(), qMax(pixelXToTick(r.x() + r.width()), 0), TType::TICKS);</a>
+<a name="ln162"> </a>
+<a name="ln163">      //draw vert lines</a>
+<a name="ln164">      int bar1, bar2, beat, tick;</a>
+<a name="ln165"> </a>
+<a name="ln166">      pos1.mbt(&amp;bar1, &amp;beat, &amp;tick);</a>
+<a name="ln167">      pos2.mbt(&amp;bar2, &amp;beat, &amp;tick);</a>
+<a name="ln168"> </a>
+<a name="ln169">      //Estimate bar width since changing time signatures can make this inconsistent.</a>
+<a name="ln170">      // Assuming 480 ticks per beat, 4 beats per bar</a>
+<a name="ln171">      qreal pixPerBar = MScore::division * 4 * _xZoom;</a>
+<a name="ln172">      qreal pixPerBeat = MScore::division * _xZoom;</a>
+<a name="ln173"> </a>
+<a name="ln174">      int barSkip = ceil(minBeatGap / pixPerBar);</a>
+<a name="ln175">      barSkip = (int)pow(2, ceil(log(barSkip)/log(2)));</a>
+<a name="ln176"> </a>
+<a name="ln177">      int beatSkip = ceil(minBeatGap / pixPerBeat);</a>
+<a name="ln178">      beatSkip = (int)pow(2, ceil(log(beatSkip)/log(2)));</a>
+<a name="ln179"> </a>
+<a name="ln180">      //Round down to first bar to be a multiple of barSkip</a>
+<a name="ln181">      bar1 = (bar1 / barSkip) * barSkip;</a>
+<a name="ln182"> </a>
+<a name="ln183">//      int subExp = qMin((int)floor(log2(pixPerBeat / minBeatGap)), _subBeats);</a>
+<a name="ln184">//      int numSubBeats = pow(2, subExp);</a>
+<a name="ln185"> </a>
+<a name="ln186">      for (int bar = bar1; bar &lt;= bar2; bar += barSkip) {</a>
+<a name="ln187">            Pos stick(_score-&gt;tempomap(), _score-&gt;sigmap(), bar, 0, 0);</a>
+<a name="ln188"> </a>
+<a name="ln189">            SigEvent sig = stick.timesig();</a>
+<a name="ln190">            int z = sig.timesig().numerator();</a>
+<a name="ln191">            for (int beat1 = 0; beat1 &lt; z; beat1 += beatSkip) {</a>
+<a name="ln192">                  Pos beatPos(_score-&gt;tempomap(), _score-&gt;sigmap(), bar, beat1, 0);</a>
+<a name="ln193">                  double xp = tickToPixelX(beatPos.time(TType::TICKS));</a>
+<a name="ln194">                  if (xp &lt; 0)</a>
+<a name="ln195">                        continue;</a>
+<a name="ln196"> </a>
+<a name="ln197">                  if (beat1 == 0) {</a>
+<a name="ln198">                        p.setPen(penLineMajor);</a>
+<a name="ln199">                        }</a>
+<a name="ln200">                  else {</a>
+<a name="ln201">                        p.setPen(penLineMinor);</a>
+<a name="ln202">                        }</a>
+<a name="ln203"> </a>
+<a name="ln204">                  p.drawLine(xp, 0, xp, height());</a>
+<a name="ln205"> </a>
+<a name="ln206">                  int subbeats = _tuplet * (1 &lt;&lt; _subdiv);</a>
+<a name="ln207"> </a>
+<a name="ln208">                  for (int sub = 1; sub &lt; subbeats; ++sub) {</a>
+<a name="ln209">                        Pos subBeatPos(_score-&gt;tempomap(), _score-&gt;sigmap(), bar, beat1, sub * MScore::division / subbeats);</a>
+<a name="ln210">                        xp = tickToPixelX(subBeatPos.time(TType::TICKS));</a>
+<a name="ln211"> </a>
+<a name="ln212">                        p.setPen(penLineSub);</a>
+<a name="ln213">                        p.drawLine(xp, 0, xp, height());</a>
+<a name="ln214">                        }</a>
+<a name="ln215">                  }</a>
+<a name="ln216">            }</a>
+<a name="ln217"> </a>
+<a name="ln218"> </a>
+<a name="ln219">      //draw horiz lines</a>
+<a name="ln220">      PianoLevelsFilter* filter = PianoLevelsFilter::FILTER_LIST[_levelsIndex];</a>
+<a name="ln221"> </a>
+<a name="ln222">      QFont f(&quot;FreeSans&quot;, 7);</a>
+<a name="ln223">      p.setFont(f);</a>
+<a name="ln224"> </a>
+<a name="ln225">      int div = filter-&gt;divisionGap();</a>
+<a name="ln226">      int minGuide = (int)floor(filter-&gt;minRange() / (qreal)div);</a>
+<a name="ln227">      int maxGuide = (int)ceil(filter-&gt;maxRange() / (qreal)div);</a>
+<a name="ln228"> </a>
+<a name="ln229">      for (int i = minGuide; i &lt;= maxGuide; ++i) {</a>
+<a name="ln230">            p.setPen(i == 0 || i == minGuide || i == maxGuide ? penLineMajor : penLineMinor);</a>
+<a name="ln231"> </a>
+<a name="ln232">            int y = valToPixelY(i * div);</a>
+<a name="ln233">            p.drawLine(0, y, width(), y);</a>
+<a name="ln234"> </a>
+<a name="ln235">            //labels</a>
+<a name="ln236">            QRectF textRect(2, y - 12, width() - 2, 12);</a>
+<a name="ln237">            p.setPen(QPen(colText));</a>
+<a name="ln238">            p.drawText(textRect,</a>
+<a name="ln239">                  Qt::AlignLeft | Qt::AlignBottom, QString::number(i * div));</a>
+<a name="ln240">            }</a>
+<a name="ln241"> </a>
+<a name="ln242"> </a>
+<a name="ln243">      //Note lines</a>
+<a name="ln244">      p.setBrush(Qt::NoBrush);</a>
+<a name="ln245">      int pix0 = valToPixelY(0);</a>
+<a name="ln246"> </a>
+<a name="ln247">      for (int i = 0; i &lt; noteList.size(); ++i) {</a>
+<a name="ln248">            Note* note = noteList[i];</a>
+<a name="ln249">            if (filter-&gt;isPerEvent()) {</a>
+<a name="ln250">                  for (NoteEvent&amp; ne : note-&gt;playEvents()) {</a>
+<a name="ln251">                        int x = tickToPixelX(noteStartTick(note, &amp;ne));</a>
+<a name="ln252"> </a>
+<a name="ln253">                        int val = filter-&gt;value(_staff, note, &amp;ne);</a>
+<a name="ln254">                        p.setPen(QPen(note-&gt;selected() ? noteSelected : noteDeselected, 2));</a>
+<a name="ln255">                        int pixY = valToPixelY(val);</a>
+<a name="ln256">                        p.drawLine(x, pix0, x, pixY);</a>
+<a name="ln257"> </a>
+<a name="ln258">                        //hbar</a>
+<a name="ln259">                        p.setPen(QPen(note-&gt;selected() ? noteSelected : noteDeselected, 2));</a>
+<a name="ln260">                        p.drawLine(x, pixY, x + levelLen, pixY);</a>
+<a name="ln261">                        p.drawEllipse(x - 1, pixY - 1, 3, 3);</a>
+<a name="ln262">                        }</a>
+<a name="ln263"> </a>
+<a name="ln264">                  }</a>
+<a name="ln265">            else {</a>
+<a name="ln266">                  int x = tickToPixelX(noteStartTick(note, 0));</a>
+<a name="ln267"> </a>
+<a name="ln268">                  int val = filter-&gt;value(_staff, note, 0);</a>
+<a name="ln269"> </a>
+<a name="ln270">                  p.setPen(QPen(note-&gt;selected() ? noteSelected : noteDeselected, 2));</a>
+<a name="ln271">                  int pixY = valToPixelY(val);</a>
+<a name="ln272">                  p.drawLine(x, pix0, x, pixY);</a>
+<a name="ln273"> </a>
+<a name="ln274">                  //hbar</a>
+<a name="ln275">                  p.setPen(QPen(note-&gt;selected() ? noteSelected : noteDeselected, 2));</a>
+<a name="ln276">                  p.drawLine(x, pixY, x + levelLen, pixY);</a>
+<a name="ln277">                  p.drawEllipse(x - 1, pixY - 1, 3, 3);</a>
+<a name="ln278">                  }</a>
+<a name="ln279">            }</a>
+<a name="ln280">      }</a>
+<a name="ln281"> </a>
+<a name="ln282"> </a>
+<a name="ln283">//---------------------------------------------------------</a>
+<a name="ln284">//   noteStartTick</a>
+<a name="ln285">//---------------------------------------------------------</a>
+<a name="ln286"> </a>
+<a name="ln287">int PianoLevels::noteStartTick(Note* note, NoteEvent* evt)</a>
+<a name="ln288">      {</a>
+<a name="ln289">      Chord* chord = note-&gt;chord();</a>
+<a name="ln290">      int ticks = chord-&gt;ticks().ticks();</a>
+<a name="ln291"> </a>
+<a name="ln292">      return note-&gt;chord()-&gt;tick().ticks() + (evt ? evt-&gt;ontime() * ticks / 1000 : 0);</a>
+<a name="ln293">      }</a>
+<a name="ln294"> </a>
+<a name="ln295"> </a>
+<a name="ln296">//---------------------------------------------------------</a>
+<a name="ln297">//   valToPixelY</a>
+<a name="ln298">//---------------------------------------------------------</a>
+<a name="ln299"> </a>
+<a name="ln300">int PianoLevels::valToPixelY(int value) {</a>
+<a name="ln301">      PianoLevelsFilter* filter = PianoLevelsFilter::FILTER_LIST[_levelsIndex];</a>
+<a name="ln302"> </a>
+<a name="ln303">      int range = filter-&gt;maxRange() - filter-&gt;minRange();</a>
+<a name="ln304">      qreal frac = (value - filter-&gt;minRange()) / (qreal)range;</a>
+<a name="ln305"> </a>
+<a name="ln306">      return static_cast&lt;int&gt;(height() - vMargin * 2) * (1 - frac) + vMargin;</a>
+<a name="ln307">      }</a>
+<a name="ln308"> </a>
+<a name="ln309"> </a>
+<a name="ln310">//---------------------------------------------------------</a>
+<a name="ln311">//   pixelYToVal</a>
+<a name="ln312">//---------------------------------------------------------</a>
+<a name="ln313"> </a>
+<a name="ln314">int PianoLevels::pixelYToVal(int pix) {</a>
+<a name="ln315">      qreal frac = 1 - (pix - vMargin) / (qreal)(height() - vMargin * 2);</a>
+<a name="ln316"> </a>
+<a name="ln317">      PianoLevelsFilter* filter = PianoLevelsFilter::FILTER_LIST[_levelsIndex];</a>
+<a name="ln318">      int range = filter-&gt;maxRange() - filter-&gt;minRange();</a>
+<a name="ln319">      return static_cast&lt;int&gt;(frac * range + filter-&gt;minRange());</a>
+<a name="ln320">      }</a>
+<a name="ln321"> </a>
+<a name="ln322">//---------------------------------------------------------</a>
+<a name="ln323">//   pickNoteEvent</a>
+<a name="ln324">//---------------------------------------------------------</a>
+<a name="ln325"> </a>
+<a name="ln326">bool PianoLevels::pickNoteEvent(int x, int y, bool selectedOnly, Note*&amp; pickedNote, NoteEvent*&amp; pickedNoteEvent)</a>
+<a name="ln327">      {</a>
+<a name="ln328">      PianoLevelsFilter* filter = PianoLevelsFilter::FILTER_LIST[_levelsIndex];</a>
+<a name="ln329"> </a>
+<a name="ln330">      for (int i = 0; i &lt; noteList.size(); ++i) {</a>
+<a name="ln331">            Note* note = noteList[i];</a>
+<a name="ln332">            if (selectedOnly &amp;&amp; !note-&gt;selected())</a>
+<a name="ln333">                  continue;</a>
+<a name="ln334"> </a>
+<a name="ln335">            if (filter-&gt;isPerEvent()) {</a>
+<a name="ln336">                  for (NoteEvent&amp; e : note-&gt;playEvents()) {</a>
+<a name="ln337">                        int noteX = tickToPixelX(noteStartTick(note, &amp;e));</a>
+<a name="ln338">                        int noteY = valToPixelY(filter-&gt;value(_staff, note, &amp;e));</a>
+<a name="ln339">                        int dx = noteX - x;</a>
+<a name="ln340">                        int dy = noteY - y;</a>
+<a name="ln341"> </a>
+<a name="ln342">                        if (dx * dx + dy * dy &lt; pickRadius * pickRadius) {</a>
+<a name="ln343">                              pickedNote = note;</a>
+<a name="ln344">                              pickedNoteEvent = &amp;e;</a>
+<a name="ln345">                              return true;</a>
+<a name="ln346">                              }</a>
+<a name="ln347">                        }</a>
+<a name="ln348">                  }</a>
+<a name="ln349">            else {</a>
+<a name="ln350">                  int noteX = tickToPixelX(noteStartTick(note, nullptr));</a>
+<a name="ln351">                  int noteY = valToPixelY(filter-&gt;value(_staff, note, nullptr));</a>
+<a name="ln352">                  int dx = noteX - x;</a>
+<a name="ln353">                  int dy = noteY - y;</a>
+<a name="ln354"> </a>
+<a name="ln355">                  if (dx * dx + dy * dy &lt; pickRadius * pickRadius) {</a>
+<a name="ln356">                        pickedNote = note;</a>
+<a name="ln357">                        pickedNoteEvent = nullptr;</a>
+<a name="ln358">                        return true;</a>
+<a name="ln359">                        }</a>
+<a name="ln360">                  }</a>
+<a name="ln361">            }</a>
+<a name="ln362"> </a>
+<a name="ln363">      pickedNote = nullptr;</a>
+<a name="ln364">      pickedNoteEvent = nullptr;</a>
+<a name="ln365">      return false;</a>
+<a name="ln366">      }</a>
+<a name="ln367"> </a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369">//   adjustLevelLerp</a>
+<a name="ln370">//---------------------------------------------------------</a>
+<a name="ln371"> </a>
+<a name="ln372">void PianoLevels::adjustLevel(Note* note, NoteEvent* noteEvt, int value)</a>
+<a name="ln373">      {</a>
+<a name="ln374">      PianoLevelsFilter* filter = PianoLevelsFilter::FILTER_LIST[_levelsIndex];</a>
+<a name="ln375"> </a>
+<a name="ln376">      filter-&gt;setValue(_staff, note, noteEvt, value);</a>
+<a name="ln377"> </a>
+<a name="ln378">      update();</a>
+<a name="ln379">      emit noteLevelsChanged();</a>
+<a name="ln380">      }</a>
+<a name="ln381"> </a>
+<a name="ln382"> </a>
+<a name="ln383">//---------------------------------------------------------</a>
+<a name="ln384">//   adjustLevelLerp</a>
+<a name="ln385">//       For all points between tick0 and tick1, linearly interploate between value0 and value1 and</a>
+<a name="ln386">//       use it to set the value of the level.</a>
+<a name="ln387">//---------------------------------------------------------</a>
+<a name="ln388"> </a>
+<a name="ln389">void PianoLevels::adjustLevelLerp(int tick0, int value0, int tick1, int value1, bool selectedOnly)</a>
+<a name="ln390">      {</a>
+<a name="ln391">      if (tick1 &lt; tick0) {</a>
+<a name="ln392">            std::swap(tick0, tick1);</a>
+<a name="ln393">            std::swap(value0, value1);</a>
+<a name="ln394">            }</a>
+<a name="ln395"> </a>
+<a name="ln396">      PianoLevelsFilter* filter = PianoLevelsFilter::FILTER_LIST[_levelsIndex];</a>
+<a name="ln397">      bool hitNote = false;</a>
+<a name="ln398"> </a>
+<a name="ln399">      for (int i = 0; i &lt; noteList.size(); ++i) {</a>
+<a name="ln400">            Note* note = noteList[i];</a>
+<a name="ln401">            if (selectedOnly &amp;&amp; !note-&gt;selected())</a>
+<a name="ln402">                  continue;</a>
+<a name="ln403"> </a>
+<a name="ln404">            if (filter-&gt;isPerEvent()) {</a>
+<a name="ln405">                  for (NoteEvent&amp; e : note-&gt;playEvents()) {</a>
+<a name="ln406">                        int tick = noteStartTick(note, &amp;e);</a>
+<a name="ln407">                        if (tick0 &lt;= tick &amp;&amp; tick &lt;= tick1) {</a>
+<a name="ln408">                              int value = tick0 == tick1 ? value0</a>
+<a name="ln409">                                    : (value1 - value0) * (tick - tick0) / (tick1 - tick0) + value0;</a>
+<a name="ln410"> </a>
+<a name="ln411">                              filter-&gt;setValue(_staff, note, &amp;e, value);</a>
+<a name="ln412">                              hitNote = true;</a>
+<a name="ln413">                              }</a>
+<a name="ln414">                        }</a>
+<a name="ln415">                  }</a>
+<a name="ln416">            else {</a>
+<a name="ln417">                  int tick = noteStartTick(note, 0);</a>
+<a name="ln418">                  if (tick0 &lt;= tick &amp;&amp; tick &lt;= tick1) {</a>
+<a name="ln419">                        int value = tick0 == tick1 ? value0</a>
+<a name="ln420">                              : (value1 - value0) * (tick - tick0) / (tick1 - tick0) + value0;</a>
+<a name="ln421">                        filter-&gt;setValue(_staff, note, 0, value);</a>
+<a name="ln422">                        hitNote = true;</a>
+<a name="ln423">                        }</a>
+<a name="ln424">                  }</a>
+<a name="ln425">            }</a>
+<a name="ln426"> </a>
+<a name="ln427">      if (hitNote) {</a>
+<a name="ln428">            update();</a>
+<a name="ln429">            emit noteLevelsChanged();</a>
+<a name="ln430">            }</a>
+<a name="ln431"> </a>
+<a name="ln432">      }</a>
+<a name="ln433"> </a>
+<a name="ln434">//---------------------------------------------------------</a>
+<a name="ln435">//   mousePressEvent</a>
+<a name="ln436">//---------------------------------------------------------</a>
+<a name="ln437"> </a>
+<a name="ln438">void PianoLevels::mousePressEvent(QMouseEvent* e)</a>
+<a name="ln439">      {</a>
+<a name="ln440">      if (e-&gt;button() == Qt::LeftButton) {</a>
+<a name="ln441">            mouseDown = true;</a>
+<a name="ln442">            mouseDownPos = e-&gt;pos();</a>
+<a name="ln443">            lastMousePos = mouseDownPos;</a>
+<a name="ln444"> </a>
+<a name="ln445">            if (pickNoteEvent(mouseDownPos.x(), mouseDownPos.y(), true, singleNoteDrag, singleNoteEventDrag)) {</a>
+<a name="ln446">                  dragStyle = DragStyle::OFFSET;</a>
+<a name="ln447">                  }</a>
+<a name="ln448">            else {</a>
+<a name="ln449">                  dragStyle = DragStyle::LERP;</a>
+<a name="ln450">                  }</a>
+<a name="ln451">            }</a>
+<a name="ln452">      }</a>
+<a name="ln453"> </a>
+<a name="ln454"> </a>
+<a name="ln455">//---------------------------------------------------------</a>
+<a name="ln456">//   mouseReleaseEvent</a>
+<a name="ln457">//---------------------------------------------------------</a>
+<a name="ln458"> </a>
+<a name="ln459">void PianoLevels::mouseReleaseEvent(QMouseEvent* e)</a>
+<a name="ln460">      {</a>
+<a name="ln461">      if (e-&gt;button() == Qt::LeftButton) {</a>
+<a name="ln462"> </a>
+<a name="ln463">            if (!dragging) {</a>
+<a name="ln464">                  //Handle click</a>
+<a name="ln465">                  lastMousePos = e-&gt;pos();</a>
+<a name="ln466"> </a>
+<a name="ln467">                  int tick0 = pixelXToTick(lastMousePos.x() - 4);</a>
+<a name="ln468">                  int tick1 = pixelXToTick(lastMousePos.x() + 4);</a>
+<a name="ln469">                  int val = pixelYToVal(lastMousePos.y());</a>
+<a name="ln470">                  adjustLevelLerp(tick0, val, tick1, val);</a>
+<a name="ln471">            }</a>
+<a name="ln472"> </a>
+<a name="ln473">            mouseDown = false;</a>
+<a name="ln474">            dragging = false;</a>
+<a name="ln475">            }</a>
+<a name="ln476">      }</a>
+<a name="ln477"> </a>
+<a name="ln478">//---------------------------------------------------------</a>
+<a name="ln479">//   mouseMoveEvent</a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481"> </a>
+<a name="ln482">void PianoLevels::mouseMoveEvent(QMouseEvent* e)</a>
+<a name="ln483">      {</a>
+<a name="ln484">      int modifiers = QGuiApplication::keyboardModifiers();</a>
+<a name="ln485">      bool bnShift = modifiers &amp; Qt::ShiftModifier;</a>
+<a name="ln486"> </a>
+<a name="ln487">      if (mouseDown) {</a>
+<a name="ln488">            if (!dragging) {</a>
+<a name="ln489">                  int dx = e-&gt;x() - mouseDownPos.x();</a>
+<a name="ln490">                  int dy = e-&gt;y() - mouseDownPos.y();</a>
+<a name="ln491">                  if (dx * dx + dy * dy &gt; pickRadius * pickRadius) {</a>
+<a name="ln492">                        //Start dragging</a>
+<a name="ln493">                        dragging = true;</a>
+<a name="ln494">                        }</a>
+<a name="ln495">                  }</a>
+<a name="ln496"> </a>
+<a name="ln497">            if (dragging) {</a>
+<a name="ln498">                  if (dragStyle == DragStyle::OFFSET) {</a>
+<a name="ln499">                        int val = pixelYToVal(lastMousePos.y());</a>
+<a name="ln500">                        adjustLevel(singleNoteDrag, singleNoteEventDrag, val);</a>
+<a name="ln501">                        }</a>
+<a name="ln502">                  else {</a>
+<a name="ln503">                        int tick0 = pixelXToTick(lastMousePos.x());</a>
+<a name="ln504">                        int tick1 = pixelXToTick(e-&gt;x());</a>
+<a name="ln505"> </a>
+<a name="ln506">                        int val0;</a>
+<a name="ln507">                        int val1;</a>
+<a name="ln508"> </a>
+<a name="ln509">                        if (bnShift) {</a>
+<a name="ln510">                              //If shift is held, set to value at mousedown</a>
+<a name="ln511">                              val0 = pixelYToVal(mouseDownPos.y());</a>
+<a name="ln512">                              val1 = pixelYToVal(mouseDownPos.y());</a>
+<a name="ln513">                              }</a>
+<a name="ln514">                        else {</a>
+<a name="ln515">                              val0 = pixelYToVal(lastMousePos.y());</a>
+<a name="ln516">                              val1 = pixelYToVal(e-&gt;y());</a>
+<a name="ln517">                              }</a>
+<a name="ln518"> </a>
+<a name="ln519">                        adjustLevelLerp(tick0, val0, tick1, val1);</a>
+<a name="ln520">                        }</a>
+<a name="ln521"> </a>
+<a name="ln522">                  lastMousePos = e-&gt;pos();</a>
+<a name="ln523">                  }</a>
+<a name="ln524"> </a>
+<a name="ln525">            }</a>
+<a name="ln526">      }</a>
+<a name="ln527"> </a>
+<a name="ln528">//---------------------------------------------------------</a>
+<a name="ln529">//   moveLocator</a>
+<a name="ln530">//---------------------------------------------------------</a>
+<a name="ln531"> </a>
+<a name="ln532">void PianoLevels::moveLocator(QMouseEvent* e)</a>
+<a name="ln533">      {</a>
+<a name="ln534">      Pos pos(_score-&gt;tempomap(), _score-&gt;sigmap(), qMax(pixelXToTick(e-&gt;pos().x()), 0), TType::TICKS);</a>
+<a name="ln535">      if (e-&gt;buttons() &amp; Qt::LeftButton)</a>
+<a name="ln536">            emit locatorMoved(0, pos);</a>
+<a name="ln537">      else if (e-&gt;buttons() &amp; Qt::MidButton)</a>
+<a name="ln538">            emit locatorMoved(1, pos);</a>
+<a name="ln539">      else if (e-&gt;buttons() &amp; Qt::RightButton)</a>
+<a name="ln540">            emit locatorMoved(2, pos);</a>
+<a name="ln541">      }</a>
+<a name="ln542"> </a>
+<a name="ln543">//---------------------------------------------------------</a>
+<a name="ln544">//   leaveEvent</a>
+<a name="ln545">//---------------------------------------------------------</a>
+<a name="ln546"> </a>
+<a name="ln547">void PianoLevels::leaveEvent(QEvent*)</a>
+<a name="ln548">      {</a>
+<a name="ln549">      _cursor.setInvalid();</a>
+<a name="ln550">      emit posChanged(_cursor);</a>
+<a name="ln551">      update();</a>
+<a name="ln552">      }</a>
+<a name="ln553"> </a>
+<a name="ln554">//---------------------------------------------------------</a>
+<a name="ln555">//   setPos</a>
+<a name="ln556">//---------------------------------------------------------</a>
+<a name="ln557"> </a>
+<a name="ln558">void PianoLevels::setPos(const Pos&amp; pos)</a>
+<a name="ln559">      {</a>
+<a name="ln560">      if (_cursor != pos) {</a>
+<a name="ln561">            _cursor = pos;</a>
+<a name="ln562">            update();</a>
+<a name="ln563">            }</a>
+<a name="ln564">      }</a>
+<a name="ln565"> </a>
+<a name="ln566">//---------------------------------------------------------</a>
+<a name="ln567">//   setXZoom</a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569"> </a>
+<a name="ln570">void PianoLevels::setXZoom(qreal xZoom)</a>
+<a name="ln571">      {</a>
+<a name="ln572">      _xZoom = xZoom;</a>
+<a name="ln573">      update();</a>
+<a name="ln574">      }</a>
+<a name="ln575"> </a>
+<a name="ln576">//---------------------------------------------------------</a>
+<a name="ln577">//   setStaff</a>
+<a name="ln578">//---------------------------------------------------------</a>
+<a name="ln579"> </a>
+<a name="ln580">void PianoLevels::setStaff(Staff* s, Pos* l)</a>
+<a name="ln581">      {</a>
+<a name="ln582">      _locator = l;</a>
+<a name="ln583"> </a>
+<a name="ln584">      if (_staff == s)</a>
+<a name="ln585">            return;</a>
+<a name="ln586"> </a>
+<a name="ln587">      _staff    = s;</a>
+<a name="ln588">      updateNotes();</a>
+<a name="ln589">      }</a>
+<a name="ln590"> </a>
+<a name="ln591"> </a>
+<a name="ln592">//---------------------------------------------------------</a>
+<a name="ln593">//   addChord</a>
+<a name="ln594">//---------------------------------------------------------</a>
+<a name="ln595"> </a>
+<a name="ln596">void PianoLevels::addChord(Chord* chord, int voice)</a>
+<a name="ln597">      {</a>
+<a name="ln598">      for (Chord* c : chord-&gt;graceNotes())</a>
+<a name="ln599">            addChord(c, voice);</a>
+<a name="ln600">      for (Note* note : chord-&gt;notes()) {</a>
+<a name="ln601">            if (note-&gt;tieBack())</a>
+<a name="ln602">                  continue;</a>
+<a name="ln603">            noteList.append(note);</a>
+<a name="ln604">            }</a>
+<a name="ln605">      }</a>
+<a name="ln606"> </a>
+<a name="ln607">//---------------------------------------------------------</a>
+<a name="ln608">//   updateNotes</a>
+<a name="ln609">//---------------------------------------------------------</a>
+<a name="ln610"> </a>
+<a name="ln611">void PianoLevels::updateNotes()</a>
+<a name="ln612">      {</a>
+<a name="ln613">      clearNoteData();</a>
+<a name="ln614"> </a>
+<a name="ln615">      if (!_staff) {</a>
+<a name="ln616">            return;</a>
+<a name="ln617">            }</a>
+<a name="ln618"> </a>
+<a name="ln619">      int staffIdx = _staff-&gt;idx();</a>
+<a name="ln620">      if (staffIdx == -1)</a>
+<a name="ln621">            return;</a>
+<a name="ln622"> </a>
+<a name="ln623">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln624">      for (Segment* s = _staff-&gt;score()-&gt;firstSegment(st); s; s = s-&gt;next1(st)) {</a>
+<a name="ln625">            for (int voice = 0; voice &lt; VOICES; ++voice) {</a>
+<a name="ln626">                  int track = voice + staffIdx * VOICES;</a>
+<a name="ln627">                  Element* e = s-&gt;element(track);</a>
+<a name="ln628">                  if (e &amp;&amp; e-&gt;isChord())</a>
+<a name="ln629">                        addChord(toChord(e), voice);</a>
+<a name="ln630">                  }</a>
+<a name="ln631">            }</a>
+<a name="ln632"> </a>
+<a name="ln633">      update();</a>
+<a name="ln634">      }</a>
+<a name="ln635"> </a>
+<a name="ln636">//---------------------------------------------------------</a>
+<a name="ln637">//   clearNoteData</a>
+<a name="ln638">//---------------------------------------------------------</a>
+<a name="ln639"> </a>
+<a name="ln640">void PianoLevels::clearNoteData()</a>
+<a name="ln641">      {</a>
+<a name="ln642">      noteList.clear();</a>
+<a name="ln643">      }</a>
+<a name="ln644"> </a>
+<a name="ln645">//---------------------------------------------------------</a>
+<a name="ln646">//   setTuplet</a>
+<a name="ln647">//---------------------------------------------------------</a>
+<a name="ln648"> </a>
+<a name="ln649">void PianoLevels::setTuplet(int value)</a>
+<a name="ln650">      {</a>
+<a name="ln651">      if (_tuplet != value) {</a>
+<a name="ln652">            _tuplet = value;</a>
+<a name="ln653">            update();</a>
+<a name="ln654">            emit tupletChanged(_tuplet);</a>
+<a name="ln655">            }</a>
+<a name="ln656">      }</a>
+<a name="ln657"> </a>
+<a name="ln658">//---------------------------------------------------------</a>
+<a name="ln659">//   setSubdiv</a>
+<a name="ln660">//---------------------------------------------------------</a>
+<a name="ln661"> </a>
+<a name="ln662">void PianoLevels::setSubdiv(int value)</a>
+<a name="ln663">      {</a>
+<a name="ln664">      if (_subdiv != value) {</a>
+<a name="ln665">            _subdiv = value;</a>
+<a name="ln666">            update();</a>
+<a name="ln667">            emit subdivChanged(_subdiv);</a>
+<a name="ln668">            }</a>
+<a name="ln669">      }</a>
+<a name="ln670"> </a>
+<a name="ln671">//---------------------------------------------------------</a>
+<a name="ln672">//   setLevelsIndex</a>
+<a name="ln673">//---------------------------------------------------------</a>
+<a name="ln674"> </a>
+<a name="ln675">void PianoLevels::setLevelsIndex(int index)</a>
+<a name="ln676">      {</a>
+<a name="ln677">      if (_levelsIndex != index) {</a>
+<a name="ln678">            _levelsIndex = index;</a>
+<a name="ln679">            update();</a>
+<a name="ln680">            emit levelsIndexChanged(_levelsIndex);</a>
+<a name="ln681">            }</a>
+<a name="ln682">      }</a>
+<a name="ln683"> </a>
+<a name="ln684">}</a>
+
+</code></pre>
+<div class="balloon" rel="44"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _score, _locator, _staff.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

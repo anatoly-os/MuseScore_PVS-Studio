@@ -1,0 +1,2672 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>undo.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2016 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">/**</a>
+<a name="ln14"> \file</a>
+<a name="ln15"> Implementation of undo functions.</a>
+<a name="ln16"> </a>
+<a name="ln17"> The undo system requires calling startUndo() when starting a GUI command</a>
+<a name="ln18"> and calling endUndo() when ending the command. All changes to a score</a>
+<a name="ln19"> in response to a GUI command must be undoable/redoable by executing</a>
+<a name="ln20"> a sequence of low-level undo operations. This sequence is built by the code</a>
+<a name="ln21"> handling the command, by calling one or more undoOp()'s</a>
+<a name="ln22"> between startUndo() and endUndo().</a>
+<a name="ln23">*/</a>
+<a name="ln24"> </a>
+<a name="ln25">#include &quot;undo.h&quot;</a>
+<a name="ln26">#include &quot;element.h&quot;</a>
+<a name="ln27">#include &quot;note.h&quot;</a>
+<a name="ln28">#include &quot;score.h&quot;</a>
+<a name="ln29">#include &quot;segment.h&quot;</a>
+<a name="ln30">#include &quot;measure.h&quot;</a>
+<a name="ln31">#include &quot;system.h&quot;</a>
+<a name="ln32">#include &quot;select.h&quot;</a>
+<a name="ln33">#include &quot;input.h&quot;</a>
+<a name="ln34">#include &quot;slur.h&quot;</a>
+<a name="ln35">#include &quot;tie.h&quot;</a>
+<a name="ln36">#include &quot;clef.h&quot;</a>
+<a name="ln37">#include &quot;staff.h&quot;</a>
+<a name="ln38">#include &quot;chord.h&quot;</a>
+<a name="ln39">#include &quot;sig.h&quot;</a>
+<a name="ln40">#include &quot;key.h&quot;</a>
+<a name="ln41">#include &quot;barline.h&quot;</a>
+<a name="ln42">#include &quot;volta.h&quot;</a>
+<a name="ln43">#include &quot;tuplet.h&quot;</a>
+<a name="ln44">#include &quot;harmony.h&quot;</a>
+<a name="ln45">#include &quot;pitchspelling.h&quot;</a>
+<a name="ln46">#include &quot;part.h&quot;</a>
+<a name="ln47">#include &quot;beam.h&quot;</a>
+<a name="ln48">#include &quot;dynamic.h&quot;</a>
+<a name="ln49">#include &quot;page.h&quot;</a>
+<a name="ln50">#include &quot;keysig.h&quot;</a>
+<a name="ln51">#include &quot;image.h&quot;</a>
+<a name="ln52">#include &quot;hairpin.h&quot;</a>
+<a name="ln53">#include &quot;rest.h&quot;</a>
+<a name="ln54">#include &quot;bend.h&quot;</a>
+<a name="ln55">#include &quot;tremolobar.h&quot;</a>
+<a name="ln56">#include &quot;articulation.h&quot;</a>
+<a name="ln57">#include &quot;noteevent.h&quot;</a>
+<a name="ln58">#include &quot;slur.h&quot;</a>
+<a name="ln59">#include &quot;tempotext.h&quot;</a>
+<a name="ln60">#include &quot;instrchange.h&quot;</a>
+<a name="ln61">#include &quot;box.h&quot;</a>
+<a name="ln62">#include &quot;stafftype.h&quot;</a>
+<a name="ln63">#include &quot;accidental.h&quot;</a>
+<a name="ln64">#include &quot;layoutbreak.h&quot;</a>
+<a name="ln65">#include &quot;spanner.h&quot;</a>
+<a name="ln66">#include &quot;sequencer.h&quot;</a>
+<a name="ln67">#include &quot;breath.h&quot;</a>
+<a name="ln68">#include &quot;fingering.h&quot;</a>
+<a name="ln69">#include &quot;rehearsalmark.h&quot;</a>
+<a name="ln70">#include &quot;excerpt.h&quot;</a>
+<a name="ln71">#include &quot;stafftext.h&quot;</a>
+<a name="ln72">#include &quot;chordline.h&quot;</a>
+<a name="ln73">#include &quot;tremolo.h&quot;</a>
+<a name="ln74">#include &quot;sym.h&quot;</a>
+<a name="ln75">#include &quot;utils.h&quot;</a>
+<a name="ln76">#include &quot;glissando.h&quot;</a>
+<a name="ln77">#include &quot;stafflines.h&quot;</a>
+<a name="ln78">#include &quot;bracket.h&quot;</a>
+<a name="ln79">#include &quot;fret.h&quot;</a>
+<a name="ln80">#include &quot;textedit.h&quot;</a>
+<a name="ln81"> </a>
+<a name="ln82">namespace Ms {</a>
+<a name="ln83"> </a>
+<a name="ln84">extern Measure* tick2measure(int tick);</a>
+<a name="ln85"> </a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87">//   updateNoteLines</a>
+<a name="ln88">//    compute line position of noteheads after</a>
+<a name="ln89">//    clef change</a>
+<a name="ln90">//---------------------------------------------------------</a>
+<a name="ln91"> </a>
+<a name="ln92">void updateNoteLines(Segment* segment, int track)</a>
+<a name="ln93">      {</a>
+<a name="ln94">      Staff* staff = segment-&gt;score()-&gt;staff(track / VOICES);</a>
+<a name="ln95">      if (staff-&gt;isDrumStaff(segment-&gt;tick()) || staff-&gt;isTabStaff(segment-&gt;tick()))</a>
+<a name="ln96">            return;</a>
+<a name="ln97">      for (Segment* s = segment-&gt;next1(); s; s = s-&gt;next1()) {</a>
+<a name="ln98">            if ((s-&gt;segmentType() &amp; (SegmentType::Clef | SegmentType::HeaderClef)) &amp;&amp; s-&gt;element(track) &amp;&amp; !s-&gt;element(track)-&gt;generated())</a>
+<a name="ln99">                  break;</a>
+<a name="ln100">            if (!s-&gt;isChordRestType())</a>
+<a name="ln101">                  continue;</a>
+<a name="ln102">            for (int t = track; t &lt; track + VOICES; ++t) {</a>
+<a name="ln103">                  Element* e = s-&gt;element(t);</a>
+<a name="ln104">                  if (e &amp;&amp; e-&gt;isChord()) {</a>
+<a name="ln105">                        Chord* chord = toChord(e);</a>
+<a name="ln106">                        for (Note* n : chord-&gt;notes())</a>
+<a name="ln107">                              n-&gt;updateLine();</a>
+<a name="ln108">                        chord-&gt;sortNotes();</a>
+<a name="ln109">                        for (Chord* gc : chord-&gt;graceNotes()) {</a>
+<a name="ln110">                              for (Note* gn : gc-&gt;notes())</a>
+<a name="ln111">                                    gn-&gt;updateLine();</a>
+<a name="ln112">                              gc-&gt;sortNotes();</a>
+<a name="ln113">                              }</a>
+<a name="ln114">                        }</a>
+<a name="ln115">                  }</a>
+<a name="ln116">            }</a>
+<a name="ln117">      }</a>
+<a name="ln118"> </a>
+<a name="ln119">//---------------------------------------------------------</a>
+<a name="ln120">//   UndoCommand</a>
+<a name="ln121">//---------------------------------------------------------</a>
+<a name="ln122"> </a>
+<a name="ln123">UndoCommand::~UndoCommand()</a>
+<a name="ln124">      {</a>
+<a name="ln125">      for (auto c : childList)</a>
+<a name="ln126">            delete c;</a>
+<a name="ln127">      }</a>
+<a name="ln128"> </a>
+<a name="ln129">//---------------------------------------------------------</a>
+<a name="ln130">//   UndoCommand::cleanup</a>
+<a name="ln131">//---------------------------------------------------------</a>
+<a name="ln132"> </a>
+<a name="ln133">void UndoCommand::cleanup(bool undo)</a>
+<a name="ln134">      {</a>
+<a name="ln135">      for (auto c : childList)</a>
+<a name="ln136">            c-&gt;cleanup(undo);</a>
+<a name="ln137">      }</a>
+<a name="ln138"> </a>
+<a name="ln139">//---------------------------------------------------------</a>
+<a name="ln140">//   undo</a>
+<a name="ln141">//---------------------------------------------------------</a>
+<a name="ln142"> </a>
+<a name="ln143">void UndoCommand::undo(EditData* ed)</a>
+<a name="ln144">      {</a>
+<a name="ln145">      int n = childList.size();</a>
+<a name="ln146">      for (int i = n-1; i &gt;= 0; --i) {</a>
+<a name="ln147">            qCDebug(undoRedo) &lt;&lt; &quot;&lt;&quot; &lt;&lt; childList[i]-&gt;name() &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln148">            childList[i]-&gt;undo(ed);</a>
+<a name="ln149">            }</a>
+<a name="ln150">      flip(ed);</a>
+<a name="ln151">      }</a>
+<a name="ln152"> </a>
+<a name="ln153">//---------------------------------------------------------</a>
+<a name="ln154">//   redo</a>
+<a name="ln155">//---------------------------------------------------------</a>
+<a name="ln156"> </a>
+<a name="ln157">void UndoCommand::redo(EditData* ed)</a>
+<a name="ln158">      {</a>
+<a name="ln159">      int n = childList.size();</a>
+<a name="ln160">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln161">            qCDebug(undoRedo) &lt;&lt; &quot;&lt;&quot; &lt;&lt; childList[i]-&gt;name() &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln162">            childList[i]-&gt;redo(ed);</a>
+<a name="ln163">            }</a>
+<a name="ln164">      flip(ed);</a>
+<a name="ln165">      }</a>
+<a name="ln166"> </a>
+<a name="ln167">//---------------------------------------------------------</a>
+<a name="ln168">//   appendChildren</a>
+<a name="ln169">///   Append children of \p other into this UndoCommand.</a>
+<a name="ln170">///   Ownership over child commands of \p other is</a>
+<a name="ln171">///   transferred to this UndoCommand.</a>
+<a name="ln172">//---------------------------------------------------------</a>
+<a name="ln173"> </a>
+<a name="ln174">void UndoCommand::appendChildren(UndoCommand* other)</a>
+<a name="ln175">      {</a>
+<a name="ln176">      childList.append(other-&gt;childList);</a>
+<a name="ln177">      other-&gt;childList.clear();</a>
+<a name="ln178">      }</a>
+<a name="ln179"> </a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181">//   hasFilteredChildren</a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183"> </a>
+<a name="ln184">bool UndoCommand::hasFilteredChildren(UndoCommand::Filter f, const Element* target) const</a>
+<a name="ln185">      {</a>
+<a name="ln186">      for (UndoCommand* cmd : childList) {</a>
+<a name="ln187">            if (cmd-&gt;isFiltered(f, target))</a>
+<a name="ln188">                  return true;</a>
+<a name="ln189">            }</a>
+<a name="ln190">      return false;</a>
+<a name="ln191">      }</a>
+<a name="ln192"> </a>
+<a name="ln193">//---------------------------------------------------------</a>
+<a name="ln194">//   hasUnfilteredChildren</a>
+<a name="ln195">//---------------------------------------------------------</a>
+<a name="ln196"> </a>
+<a name="ln197">bool UndoCommand::hasUnfilteredChildren(const std::vector&lt;UndoCommand::Filter&gt;&amp; filters, const Element* target) const</a>
+<a name="ln198">      {</a>
+<a name="ln199">      for (UndoCommand* cmd : childList) {</a>
+<a name="ln200">            bool filtered = false;</a>
+<a name="ln201">            for (UndoCommand::Filter f : filters) {</a>
+<a name="ln202">                  if (cmd-&gt;isFiltered(f, target)) {</a>
+<a name="ln203">                        filtered = true;</a>
+<a name="ln204">                        break;</a>
+<a name="ln205">                        }</a>
+<a name="ln206">                  }</a>
+<a name="ln207">            if (!filtered)</a>
+<a name="ln208">                  return true;</a>
+<a name="ln209">            }</a>
+<a name="ln210">      return false;</a>
+<a name="ln211">      }</a>
+<a name="ln212"> </a>
+<a name="ln213">//---------------------------------------------------------</a>
+<a name="ln214">//   filterChildren</a>
+<a name="ln215">//---------------------------------------------------------</a>
+<a name="ln216"> </a>
+<a name="ln217">void UndoCommand::filterChildren(UndoCommand::Filter f, Element* target)</a>
+<a name="ln218">      {</a>
+<a name="ln219">      QList&lt;UndoCommand*&gt; acceptedList;</a>
+<a name="ln220">      for (UndoCommand* cmd : childList) {</a>
+<a name="ln221">            if (cmd-&gt;isFiltered(f, target))</a>
+<a name="ln222">                  delete cmd;</a>
+<a name="ln223">            else</a>
+<a name="ln224">                  acceptedList.push_back(cmd);</a>
+<a name="ln225">            }</a>
+<a name="ln226">      childList = std::move(acceptedList);</a>
+<a name="ln227">      }</a>
+<a name="ln228"> </a>
+<a name="ln229">//---------------------------------------------------------</a>
+<a name="ln230">//   unwind</a>
+<a name="ln231">//---------------------------------------------------------</a>
+<a name="ln232"> </a>
+<a name="ln233">void UndoCommand::unwind()</a>
+<a name="ln234">      {</a>
+<a name="ln235">      while (!childList.empty()) {</a>
+<a name="ln236">            UndoCommand* c = childList.takeLast();</a>
+<a name="ln237">            qDebug(&quot;unwind &lt;%s&gt;&quot;, c-&gt;name());</a>
+<a name="ln238">            c-&gt;undo(0);</a>
+<a name="ln239">            delete c;</a>
+<a name="ln240">            }</a>
+<a name="ln241">      }</a>
+<a name="ln242"> </a>
+<a name="ln243">//---------------------------------------------------------</a>
+<a name="ln244">//   UndoStack</a>
+<a name="ln245">//---------------------------------------------------------</a>
+<a name="ln246"> </a>
+<a name="ln247">UndoStack::UndoStack()</a>
+<a name="ln248">      {</a>
+<a name="ln249">      curCmd   = 0;</a>
+<a name="ln250">      curIdx   = 0;</a>
+<a name="ln251">      cleanState = 0;</a>
+<a name="ln252">      stateList.push_back(cleanState);</a>
+<a name="ln253">      nextState = 1;</a>
+<a name="ln254">      }</a>
+<a name="ln255"> </a>
+<a name="ln256">//---------------------------------------------------------</a>
+<a name="ln257">//   UndoStack</a>
+<a name="ln258">//---------------------------------------------------------</a>
+<a name="ln259"> </a>
+<a name="ln260">UndoStack::~UndoStack()</a>
+<a name="ln261">      {</a>
+<a name="ln262">      int idx = 0;</a>
+<a name="ln263">      for (auto c : list)</a>
+<a name="ln264">            c-&gt;cleanup(idx++ &lt; curIdx);</a>
+<a name="ln265">      qDeleteAll(list);</a>
+<a name="ln266">      }</a>
+<a name="ln267"> </a>
+<a name="ln268">//---------------------------------------------------------</a>
+<a name="ln269">//   beginMacro</a>
+<a name="ln270">//---------------------------------------------------------</a>
+<a name="ln271"> </a>
+<a name="ln272">void UndoStack::beginMacro(Score* score)</a>
+<a name="ln273">      {</a>
+<a name="ln274">      if (curCmd) {</a>
+<a name="ln275">            qWarning(&quot;already active&quot;);</a>
+<a name="ln276">            return;</a>
+<a name="ln277">            }</a>
+<a name="ln278">      curCmd = new UndoMacro(score);</a>
+<a name="ln279">      }</a>
+<a name="ln280"> </a>
+<a name="ln281">//---------------------------------------------------------</a>
+<a name="ln282">//   push</a>
+<a name="ln283">//---------------------------------------------------------</a>
+<a name="ln284"> </a>
+<a name="ln285">void UndoStack::push(UndoCommand* cmd, EditData* ed)</a>
+<a name="ln286">      {</a>
+<a name="ln287">      if (!curCmd) {</a>
+<a name="ln288">            // this can happen for layout() outside of a command (load)</a>
+<a name="ln289">            if (!ScoreLoad::loading())</a>
+<a name="ln290">                  qDebug(&quot;no active command, UndoStack&quot;);</a>
+<a name="ln291"> </a>
+<a name="ln292">            cmd-&gt;redo(ed);</a>
+<a name="ln293">            delete cmd;</a>
+<a name="ln294">            return;</a>
+<a name="ln295">            }</a>
+<a name="ln296">#ifndef QT_NO_DEBUG</a>
+<a name="ln297">      if (!strcmp(cmd-&gt;name(), &quot;ChangeProperty&quot;)) {</a>
+<a name="ln298">            ChangeProperty* cp = static_cast&lt;ChangeProperty*&gt;(cmd);</a>
+<a name="ln299">            qCDebug(undoRedo, &quot;&lt;%s&gt; id %d %s&quot;, cmd-&gt;name(), int(cp-&gt;getId()), propertyName(cp-&gt;getId()));</a>
+<a name="ln300">            }</a>
+<a name="ln301">      else {</a>
+<a name="ln302">            qCDebug(undoRedo, &quot;&lt;%s&gt;&quot;, cmd-&gt;name());</a>
+<a name="ln303">            }</a>
+<a name="ln304">#endif</a>
+<a name="ln305">      curCmd-&gt;appendChild(cmd);</a>
+<a name="ln306">      cmd-&gt;redo(ed);</a>
+<a name="ln307">      }</a>
+<a name="ln308"> </a>
+<a name="ln309">//---------------------------------------------------------</a>
+<a name="ln310">//   push1</a>
+<a name="ln311">//---------------------------------------------------------</a>
+<a name="ln312"> </a>
+<a name="ln313">void UndoStack::push1(UndoCommand* cmd)</a>
+<a name="ln314">      {</a>
+<a name="ln315">      if (!curCmd) {</a>
+<a name="ln316">            if (!ScoreLoad::loading())</a>
+<a name="ln317">                  qWarning(&quot;no active command, UndoStack %p&quot;, this);</a>
+<a name="ln318">            return;</a>
+<a name="ln319">            }</a>
+<a name="ln320">      curCmd-&gt;appendChild(cmd);</a>
+<a name="ln321">      }</a>
+<a name="ln322"> </a>
+<a name="ln323">//---------------------------------------------------------</a>
+<a name="ln324">//   remove</a>
+<a name="ln325">//---------------------------------------------------------</a>
+<a name="ln326"> </a>
+<a name="ln327">void UndoStack::remove(int idx)</a>
+<a name="ln328">      {</a>
+<a name="ln329">      Q_ASSERT(idx &lt;= curIdx);</a>
+<a name="ln330">      Q_ASSERT(curIdx &gt;= 0);</a>
+<a name="ln331">      // remove redo stack</a>
+<a name="ln332">      while (list.size() &gt; curIdx) {</a>
+<a name="ln333">            UndoCommand* cmd = list.takeLast();</a>
+<a name="ln334">            stateList.pop_back();</a>
+<a name="ln335">            cmd-&gt;cleanup(false);  // delete elements for which UndoCommand() holds ownership</a>
+<a name="ln336">            delete cmd;</a>
+<a name="ln337">//            --curIdx;</a>
+<a name="ln338">            }</a>
+<a name="ln339">      while (list.size() &gt; idx) {</a>
+<a name="ln340">            UndoCommand* cmd = list.takeLast();</a>
+<a name="ln341">            stateList.pop_back();</a>
+<a name="ln342">            cmd-&gt;cleanup(true);</a>
+<a name="ln343">            delete cmd;</a>
+<a name="ln344">            }</a>
+<a name="ln345">      curIdx = idx;</a>
+<a name="ln346">      }</a>
+<a name="ln347"> </a>
+<a name="ln348">//---------------------------------------------------------</a>
+<a name="ln349">//   mergeCommands</a>
+<a name="ln350">//---------------------------------------------------------</a>
+<a name="ln351"> </a>
+<a name="ln352">void UndoStack::mergeCommands(int startIdx)</a>
+<a name="ln353">      {</a>
+<a name="ln354">      Q_ASSERT(startIdx &lt;= curIdx);</a>
+<a name="ln355"> </a>
+<a name="ln356">      if (startIdx &gt;= list.size())</a>
+<a name="ln357">            return;</a>
+<a name="ln358"> </a>
+<a name="ln359">      UndoMacro* startMacro = list[startIdx];</a>
+<a name="ln360"> </a>
+<a name="ln361">      for (int idx = startIdx + 1; idx &lt; curIdx; ++idx)</a>
+<a name="ln362">            startMacro-&gt;append(std::move(*list[idx]));</a>
+<a name="ln363">      remove(startIdx + 1); // TODO: remove from startIdx to curIdx only</a>
+<a name="ln364">      }</a>
+<a name="ln365"> </a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367">//   pop</a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369"> </a>
+<a name="ln370">void UndoStack::pop()</a>
+<a name="ln371">      {</a>
+<a name="ln372">      if (!curCmd) {</a>
+<a name="ln373">            if (!ScoreLoad::loading())</a>
+<a name="ln374">                  qWarning(&quot;no active command&quot;);</a>
+<a name="ln375">            return;</a>
+<a name="ln376">            }</a>
+<a name="ln377">      UndoCommand* cmd = curCmd-&gt;removeChild();</a>
+<a name="ln378">      cmd-&gt;undo(0);</a>
+<a name="ln379">      }</a>
+<a name="ln380"> </a>
+<a name="ln381">//---------------------------------------------------------</a>
+<a name="ln382">//   rollback</a>
+<a name="ln383">//---------------------------------------------------------</a>
+<a name="ln384"> </a>
+<a name="ln385">void UndoStack::rollback()</a>
+<a name="ln386">      {</a>
+<a name="ln387">      qDebug(&quot;==&quot;);</a>
+<a name="ln388">      Q_ASSERT(curCmd == 0);</a>
+<a name="ln389">      Q_ASSERT(curIdx &gt; 0);</a>
+<a name="ln390">      int idx = curIdx - 1;</a>
+<a name="ln391">      list[idx]-&gt;unwind();</a>
+<a name="ln392">      remove(idx);</a>
+<a name="ln393">      }</a>
+<a name="ln394"> </a>
+<a name="ln395">//---------------------------------------------------------</a>
+<a name="ln396">//   endMacro</a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398"> </a>
+<a name="ln399">void UndoStack::endMacro(bool rollback)</a>
+<a name="ln400">      {</a>
+<a name="ln401">      if (curCmd == 0) {</a>
+<a name="ln402">            qWarning(&quot;not active&quot;);</a>
+<a name="ln403">            return;</a>
+<a name="ln404">            }</a>
+<a name="ln405">      if (rollback)</a>
+<a name="ln406">            delete curCmd;</a>
+<a name="ln407">      else {</a>
+<a name="ln408">            // remove redo stack</a>
+<a name="ln409">            while (list.size() &gt; curIdx) {</a>
+<a name="ln410">                  UndoCommand* cmd = list.takeLast();</a>
+<a name="ln411">                  stateList.pop_back();</a>
+<a name="ln412">                  cmd-&gt;cleanup(false);  // delete elements for which UndoCommand() holds ownership</a>
+<a name="ln413">                  delete cmd;</a>
+<a name="ln414">                  }</a>
+<a name="ln415">            list.append(curCmd);</a>
+<a name="ln416">            stateList.push_back(nextState++);</a>
+<a name="ln417">            ++curIdx;</a>
+<a name="ln418">            }</a>
+<a name="ln419">      curCmd = 0;</a>
+<a name="ln420">      }</a>
+<a name="ln421"> </a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423">//   reopen</a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425"> </a>
+<a name="ln426">void UndoStack::reopen()</a>
+<a name="ln427">      {</a>
+<a name="ln428">      qDebug(&quot;curIdx %d size %d&quot;, curIdx, list.size());</a>
+<a name="ln429">      Q_ASSERT(curCmd == 0);</a>
+<a name="ln430">      Q_ASSERT(curIdx &gt; 0);</a>
+<a name="ln431">      --curIdx;</a>
+<a name="ln432">      curCmd = list.takeAt(curIdx);</a>
+<a name="ln433">      stateList.erase(stateList.begin() + curIdx);</a>
+<a name="ln434">      for (auto i : curCmd-&gt;commands()) {</a>
+<a name="ln435">            qDebug(&quot;   &lt;%s&gt;&quot;, i-&gt;name());</a>
+<a name="ln436">            }</a>
+<a name="ln437">      }</a>
+<a name="ln438"> </a>
+<a name="ln439">//---------------------------------------------------------</a>
+<a name="ln440">//   setClean</a>
+<a name="ln441">//---------------------------------------------------------</a>
+<a name="ln442"> </a>
+<a name="ln443">void UndoStack::setClean()</a>
+<a name="ln444">      {</a>
+<a name="ln445">      cleanState = state();</a>
+<a name="ln446">      }</a>
+<a name="ln447"> </a>
+<a name="ln448">//---------------------------------------------------------</a>
+<a name="ln449">//   undo</a>
+<a name="ln450">//---------------------------------------------------------</a>
+<a name="ln451"> </a>
+<a name="ln452">void UndoStack::undo(EditData* ed)</a>
+<a name="ln453">      {</a>
+<a name="ln454">      qCDebug(undoRedo) &lt;&lt; &quot;===&quot;;</a>
+<a name="ln455">      // Are we currently editing text?</a>
+<a name="ln456">      if (ed &amp;&amp; ed-&gt;element &amp;&amp; ed-&gt;element-&gt;isTextBase()) {</a>
+<a name="ln457">            TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed-&gt;getData(ed-&gt;element));</a>
+<a name="ln458">            if (ted &amp;&amp; ted-&gt;startUndoIdx == curIdx)</a>
+<a name="ln459">                  // No edits to undo, so do nothing</a>
+<a name="ln460">                  return;</a>
+<a name="ln461">            }</a>
+<a name="ln462">      if (curIdx) {</a>
+<a name="ln463">            --curIdx;</a>
+<a name="ln464">            Q_ASSERT(curIdx &gt;= 0);</a>
+<a name="ln465">            list[curIdx]-&gt;undo(ed);</a>
+<a name="ln466">            }</a>
+<a name="ln467">      }</a>
+<a name="ln468"> </a>
+<a name="ln469">//---------------------------------------------------------</a>
+<a name="ln470">//   redo</a>
+<a name="ln471">//---------------------------------------------------------</a>
+<a name="ln472"> </a>
+<a name="ln473">void UndoStack::redo(EditData* ed)</a>
+<a name="ln474">      {</a>
+<a name="ln475">      qCDebug(undoRedo) &lt;&lt; &quot;===&quot;;</a>
+<a name="ln476">      if (canRedo())</a>
+<a name="ln477">            list[curIdx++]-&gt;redo(ed);</a>
+<a name="ln478">      }</a>
+<a name="ln479"> </a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481">//   UndoMacro</a>
+<a name="ln482">//---------------------------------------------------------</a>
+<a name="ln483"> </a>
+<a name="ln484">void UndoMacro::fillSelectionInfo(SelectionInfo&amp; info, const Selection&amp; sel)</a>
+<a name="ln485">      {</a>
+<a name="ln486">      info.staffStart = info.staffEnd = -1;</a>
+<a name="ln487">      info.elements.clear();</a>
+<a name="ln488"> </a>
+<a name="ln489">      if (sel.isList()) {</a>
+<a name="ln490">            for (Element* e : sel.elements()) {</a>
+<a name="ln491">                  if (e-&gt;isNote() || e-&gt;isChordRest() || (e-&gt;isTextBase() &amp;&amp; !e-&gt;isInstrumentName()) || e-&gt;isFretDiagram())</a>
+<a name="ln492">                        info.elements.push_back(e);</a>
+<a name="ln493">                  else {</a>
+<a name="ln494">                        // don't remember selection we are unable to restore</a>
+<a name="ln495">                        info.elements.clear();</a>
+<a name="ln496">                        return;</a>
+<a name="ln497">                        }</a>
+<a name="ln498">                  }</a>
+<a name="ln499">            }</a>
+<a name="ln500">      else if (sel.isRange()) {</a>
+<a name="ln501">            info.staffStart = sel.staffStart();</a>
+<a name="ln502">            info.staffEnd = sel.staffEnd();</a>
+<a name="ln503">            info.tickStart = sel.tickStart();</a>
+<a name="ln504">            info.tickEnd = sel.tickEnd();</a>
+<a name="ln505">            }</a>
+<a name="ln506">      }</a>
+<a name="ln507"> </a>
+<a name="ln508">void UndoMacro::applySelectionInfo(const SelectionInfo&amp; info, Selection&amp; sel)</a>
+<a name="ln509">      {</a>
+<a name="ln510">      if (!info.elements.empty()) {</a>
+<a name="ln511">            for (Element* e : info.elements)</a>
+<a name="ln512">                  sel.add(e);</a>
+<a name="ln513">            }</a>
+<a name="ln514">      else if (info.staffStart != -1) {</a>
+<a name="ln515">            sel.setRangeTicks(info.tickStart, info.tickEnd, info.staffStart, info.staffEnd);</a>
+<a name="ln516">            }</a>
+<a name="ln517">      }</a>
+<a name="ln518"> </a>
+<a name="ln519">UndoMacro::UndoMacro(Score* s)</a>
+<a name="ln520">   : undoInputState(s-&gt;inputState()), score(s)</a>
+<a name="ln521">      {</a>
+<a name="ln522">      fillSelectionInfo(undoSelectionInfo, s-&gt;selection());</a>
+<a name="ln523">      }</a>
+<a name="ln524"> </a>
+<a name="ln525">void UndoMacro::undo(EditData* ed)</a>
+<a name="ln526">      {</a>
+<a name="ln527">      redoInputState = score-&gt;inputState();</a>
+<a name="ln528">      fillSelectionInfo(redoSelectionInfo, score-&gt;selection());</a>
+<a name="ln529">      score-&gt;deselectAll();</a>
+<a name="ln530"> </a>
+<a name="ln531">      // Undo for child commands.</a>
+<a name="ln532">      UndoCommand::undo(ed);</a>
+<a name="ln533"> </a>
+<a name="ln534">      score-&gt;setInputState(undoInputState);</a>
+<a name="ln535">      if (undoSelectionInfo.isValid()) {</a>
+<a name="ln536">            score-&gt;deselectAll();</a>
+<a name="ln537">            applySelectionInfo(undoSelectionInfo, score-&gt;selection());</a>
+<a name="ln538">            }</a>
+<a name="ln539">      }</a>
+<a name="ln540"> </a>
+<a name="ln541">void UndoMacro::redo(EditData* ed)</a>
+<a name="ln542">      {</a>
+<a name="ln543">      undoInputState = score-&gt;inputState();</a>
+<a name="ln544">      fillSelectionInfo(undoSelectionInfo, score-&gt;selection());</a>
+<a name="ln545">      score-&gt;deselectAll();</a>
+<a name="ln546"> </a>
+<a name="ln547">      // Redo for child commands.</a>
+<a name="ln548">      UndoCommand::redo(ed);</a>
+<a name="ln549"> </a>
+<a name="ln550">      score-&gt;setInputState(redoInputState);</a>
+<a name="ln551">      if (redoSelectionInfo.isValid()) {</a>
+<a name="ln552">            score-&gt;deselectAll();</a>
+<a name="ln553">            applySelectionInfo(redoSelectionInfo, score-&gt;selection());</a>
+<a name="ln554">            }</a>
+<a name="ln555">      }</a>
+<a name="ln556"> </a>
+<a name="ln557">void UndoMacro::append(UndoMacro&amp;&amp; other)</a>
+<a name="ln558">      {</a>
+<a name="ln559">      appendChildren(&amp;other);</a>
+<a name="ln560">      if (score == other.score) {</a>
+<a name="ln561">            redoInputState = std::move(other.redoInputState);</a>
+<a name="ln562">            redoSelectionInfo = std::move(other.redoSelectionInfo);</a>
+<a name="ln563">            }</a>
+<a name="ln564">      }</a>
+<a name="ln565"> </a>
+<a name="ln566">//---------------------------------------------------------</a>
+<a name="ln567">//   CloneVoice</a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569"> </a>
+<a name="ln570">CloneVoice::CloneVoice(Segment* _sf, const Fraction&amp; _lTick, Segment* _d, int _strack, int _dtrack, int _otrack, bool _linked)</a>
+<a name="ln571">      {</a>
+<a name="ln572">      sf      = _sf;          // first source segment</a>
+<a name="ln573">      lTick   = _lTick;       // last tick to clone</a>
+<a name="ln574">      d       = _d;           // first destination segment</a>
+<a name="ln575">      strack  = _strack;</a>
+<a name="ln576">      dtrack  = _dtrack;</a>
+<a name="ln577">      otrack  = _otrack;      // old source track if -1 delete voice in strack after copy</a>
+<a name="ln578">      linked  = _linked;      // if true  add elements in destination segment only</a>
+<a name="ln579">                              // if false add elements in every linked staff</a>
+<a name="ln580">      }</a>
+<a name="ln581"> </a>
+<a name="ln582">void CloneVoice::undo(EditData*)</a>
+<a name="ln583">      {</a>
+<a name="ln584">      Score* s = d-&gt;score();</a>
+<a name="ln585">      Fraction ticks = d-&gt;tick() + lTick - sf-&gt;tick();</a>
+<a name="ln586">      int sTrack = otrack == -1 ? dtrack : otrack; // use the correct source / destination if deleting the source</a>
+<a name="ln587">      int dTrack = otrack == -1 ? strack : dtrack;</a>
+<a name="ln588"> </a>
+<a name="ln589">      // Clear destination voice (in case of not linked and otrack = -1 we would delete our source</a>
+<a name="ln590">      if (otrack != -1 &amp;&amp; linked)</a>
+<a name="ln591">            for (Segment* seg = d; seg &amp;&amp; seg-&gt;tick() &lt; ticks; seg = seg-&gt;next1()) {</a>
+<a name="ln592">                  Element* el = seg-&gt;element(dTrack);</a>
+<a name="ln593">                  if (el &amp;&amp; el-&gt;isChordRest()) {</a>
+<a name="ln594">                        el-&gt;unlink();</a>
+<a name="ln595">                        seg-&gt;setElement(dTrack, 0);</a>
+<a name="ln596">                        }</a>
+<a name="ln597">                  }</a>
+<a name="ln598"> </a>
+<a name="ln599">      if (otrack == -1 &amp;&amp; !linked) {</a>
+<a name="ln600">            // On the first run get going the undo redo action for adding/deleting elements and slurs</a>
+<a name="ln601">            if (first) {</a>
+<a name="ln602">                  s-&gt;cloneVoice(sTrack, dTrack, sf, ticks, linked);</a>
+<a name="ln603">                  auto spanners = s-&gt;spannerMap().findOverlapping(sf-&gt;tick().ticks(), lTick.ticks());</a>
+<a name="ln604">                  for (auto i = spanners.begin(); i &lt; spanners.end(); i++) {</a>
+<a name="ln605">                        Spanner* sp = i-&gt;value;</a>
+<a name="ln606">                        if (sp-&gt;isSlur() &amp;&amp; (sp-&gt;track() == sTrack || sp-&gt;track2() == sTrack))</a>
+<a name="ln607">                              s-&gt;undoRemoveElement(sp);</a>
+<a name="ln608">                        }</a>
+<a name="ln609">                  for (Segment* seg = d; seg &amp;&amp; seg-&gt;tick() &lt; ticks; seg = seg-&gt;next1()) {</a>
+<a name="ln610">                        Element* el = seg-&gt;element(sTrack);</a>
+<a name="ln611">                        if (el &amp;&amp; el-&gt;isChordRest()) {</a>
+<a name="ln612">                              s-&gt;undoRemoveElement(el);</a>
+<a name="ln613">                              }</a>
+<a name="ln614">                        }</a>
+<a name="ln615">                  }</a>
+<a name="ln616">            // Set rests if first voice in a staff</a>
+<a name="ln617">            if (!(sTrack % VOICES))</a>
+<a name="ln618">                  s-&gt;setRest(d-&gt;tick(), sTrack, ticks, false, 0);</a>
+<a name="ln619">            }</a>
+<a name="ln620">      else {</a>
+<a name="ln621">            s-&gt;cloneVoice(sTrack, dTrack, sf, ticks, linked);</a>
+<a name="ln622">            if (!linked &amp;&amp; !(dTrack % VOICES))</a>
+<a name="ln623">                  s-&gt;setRest(d-&gt;tick(), dTrack, ticks, false, 0);</a>
+<a name="ln624">            }</a>
+<a name="ln625"> </a>
+<a name="ln626">      first = false;</a>
+<a name="ln627">      }</a>
+<a name="ln628"> </a>
+<a name="ln629">void CloneVoice::redo(EditData*)</a>
+<a name="ln630">      {</a>
+<a name="ln631">      Score* s = d-&gt;score();</a>
+<a name="ln632">      Fraction ticks = d-&gt;tick() + lTick - sf-&gt;tick();</a>
+<a name="ln633"> </a>
+<a name="ln634">      // Clear destination voice (in case of not linked and otrack = -1 we would delete our source</a>
+<a name="ln635">      if (otrack != -1 &amp;&amp; linked)</a>
+<a name="ln636">            for (Segment* seg = d; seg &amp;&amp; seg-&gt;tick() &lt; ticks; seg = seg-&gt;next1()) {</a>
+<a name="ln637">                  Element* el = seg-&gt;element(dtrack);</a>
+<a name="ln638">                  if (el &amp;&amp; el-&gt;isChordRest()) {</a>
+<a name="ln639">                        el-&gt;unlink();</a>
+<a name="ln640">                        seg-&gt;setElement(dtrack, 0);</a>
+<a name="ln641">                        }</a>
+<a name="ln642">                  }</a>
+<a name="ln643"> </a>
+<a name="ln644">      if (otrack == -1 &amp;&amp; !linked) {</a>
+<a name="ln645">            // On the first run get going the undo redo action for adding/deleting elements and slurs</a>
+<a name="ln646">            if (first) {</a>
+<a name="ln647">                  s-&gt;cloneVoice(strack, dtrack, sf, ticks, linked);</a>
+<a name="ln648">                  auto spanners = s-&gt;spannerMap().findOverlapping(sf-&gt;tick().ticks(), lTick.ticks());</a>
+<a name="ln649">                  for (auto i = spanners.begin(); i &lt; spanners.end(); i++) {</a>
+<a name="ln650">                        Spanner* sp = i-&gt;value;</a>
+<a name="ln651">                        if (sp-&gt;isSlur() &amp;&amp; (sp-&gt;track() == strack || sp-&gt;track2() == strack))</a>
+<a name="ln652">                              s-&gt;undoRemoveElement(sp);</a>
+<a name="ln653">                        }</a>
+<a name="ln654">                  for (Segment* seg = d; seg &amp;&amp; seg-&gt;tick() &lt; ticks; seg = seg-&gt;next1()) {</a>
+<a name="ln655">                        Element* el = seg-&gt;element(strack);</a>
+<a name="ln656">                        if (el &amp;&amp; el-&gt;isChordRest()) {</a>
+<a name="ln657">                              s-&gt;undoRemoveElement(el);</a>
+<a name="ln658">                              }</a>
+<a name="ln659">                        }</a>
+<a name="ln660">                  }</a>
+<a name="ln661">            // Set rests if first voice in a staff</a>
+<a name="ln662">            if (!(strack % VOICES))</a>
+<a name="ln663">                  s-&gt;setRest(d-&gt;tick(), strack, ticks, false, 0);</a>
+<a name="ln664">            }</a>
+<a name="ln665">      else</a>
+<a name="ln666">            s-&gt;cloneVoice(strack, dtrack, sf, ticks, linked, first);</a>
+<a name="ln667">      }</a>
+<a name="ln668"> </a>
+<a name="ln669">//---------------------------------------------------------</a>
+<a name="ln670">//   AddElement</a>
+<a name="ln671">//---------------------------------------------------------</a>
+<a name="ln672"> </a>
+<a name="ln673">AddElement::AddElement(Element* e)</a>
+<a name="ln674">      {</a>
+<a name="ln675">      element = e;</a>
+<a name="ln676">      }</a>
+<a name="ln677"> </a>
+<a name="ln678">//---------------------------------------------------------</a>
+<a name="ln679">//   AddElement::cleanup</a>
+<a name="ln680">//---------------------------------------------------------</a>
+<a name="ln681"> </a>
+<a name="ln682">void AddElement::cleanup(bool undo)</a>
+<a name="ln683">      {</a>
+<a name="ln684">      if (!undo) {</a>
+<a name="ln685">            delete element;</a>
+<a name="ln686">            element = 0;</a>
+<a name="ln687">            }</a>
+<a name="ln688">      }</a>
+<a name="ln689"> </a>
+<a name="ln690">//---------------------------------------------------------</a>
+<a name="ln691">//   undoRemoveTuplet</a>
+<a name="ln692">//---------------------------------------------------------</a>
+<a name="ln693"> </a>
+<a name="ln694">static void undoRemoveTuplet(DurationElement* cr)</a>
+<a name="ln695">      {</a>
+<a name="ln696">      if (cr-&gt;tuplet()) {</a>
+<a name="ln697">            cr-&gt;tuplet()-&gt;remove(cr);</a>
+<a name="ln698">            if (cr-&gt;tuplet()-&gt;elements().empty())</a>
+<a name="ln699">                  undoRemoveTuplet(cr-&gt;tuplet());</a>
+<a name="ln700">            }</a>
+<a name="ln701">      }</a>
+<a name="ln702"> </a>
+<a name="ln703">//---------------------------------------------------------</a>
+<a name="ln704">//   undoAddTuplet</a>
+<a name="ln705">//---------------------------------------------------------</a>
+<a name="ln706"> </a>
+<a name="ln707">static void undoAddTuplet(DurationElement* cr)</a>
+<a name="ln708">      {</a>
+<a name="ln709">      if (cr-&gt;tuplet()) {</a>
+<a name="ln710">            cr-&gt;tuplet()-&gt;add(cr);</a>
+<a name="ln711">            if (cr-&gt;tuplet()-&gt;elements().size() == 1)</a>
+<a name="ln712">                  undoAddTuplet(cr-&gt;tuplet());</a>
+<a name="ln713">            }</a>
+<a name="ln714">      }</a>
+<a name="ln715"> </a>
+<a name="ln716">//---------------------------------------------------------</a>
+<a name="ln717">//   endUndoRedo</a>
+<a name="ln718">//---------------------------------------------------------</a>
+<a name="ln719"> </a>
+<a name="ln720">void AddElement::endUndoRedo(bool isUndo) const</a>
+<a name="ln721">      {</a>
+<a name="ln722">      if (element-&gt;isChordRest()) {</a>
+<a name="ln723">            if (isUndo)</a>
+<a name="ln724">                  undoRemoveTuplet(toChordRest(element));</a>
+<a name="ln725">            else</a>
+<a name="ln726">                  undoAddTuplet(toChordRest(element));</a>
+<a name="ln727">            }</a>
+<a name="ln728">      else if (element-&gt;isClef()) {</a>
+<a name="ln729">            element-&gt;triggerLayout();</a>
+<a name="ln730">            element-&gt;score()-&gt;setLayout(element-&gt;staff()-&gt;nextClefTick(element-&gt;tick()), element-&gt;staffIdx());</a>
+<a name="ln731">            }</a>
+<a name="ln732">      else if (element-&gt;isKeySig()) {</a>
+<a name="ln733">            element-&gt;triggerLayout();</a>
+<a name="ln734">            element-&gt;score()-&gt;setLayout(element-&gt;staff()-&gt;nextKeyTick(element-&gt;tick()), element-&gt;staffIdx());</a>
+<a name="ln735">            }</a>
+<a name="ln736">      }</a>
+<a name="ln737"> </a>
+<a name="ln738">//---------------------------------------------------------</a>
+<a name="ln739">//   undo</a>
+<a name="ln740">//---------------------------------------------------------</a>
+<a name="ln741"> </a>
+<a name="ln742">void AddElement::undo(EditData*)</a>
+<a name="ln743">      {</a>
+<a name="ln744">      if (!element-&gt;isTuplet())</a>
+<a name="ln745">            element-&gt;score()-&gt;removeElement(element);</a>
+<a name="ln746">      endUndoRedo(true);</a>
+<a name="ln747">      }</a>
+<a name="ln748"> </a>
+<a name="ln749">//---------------------------------------------------------</a>
+<a name="ln750">//   redo</a>
+<a name="ln751">//---------------------------------------------------------</a>
+<a name="ln752"> </a>
+<a name="ln753">void AddElement::redo(EditData*)</a>
+<a name="ln754">      {</a>
+<a name="ln755">      if (!element-&gt;isTuplet())</a>
+<a name="ln756">            element-&gt;score()-&gt;addElement(element);</a>
+<a name="ln757">      endUndoRedo(false);</a>
+<a name="ln758">      }</a>
+<a name="ln759"> </a>
+<a name="ln760">//---------------------------------------------------------</a>
+<a name="ln761">//   name</a>
+<a name="ln762">//---------------------------------------------------------</a>
+<a name="ln763"> </a>
+<a name="ln764">const char* AddElement::name() const</a>
+<a name="ln765">      {</a>
+<a name="ln766">      static char buffer[64];</a>
+<a name="ln767">      if (element-&gt;isTextBase())</a>
+<a name="ln768">            snprintf(buffer, 64, &quot;Add:    %s &lt;%s&gt; %p&quot;, element-&gt;name(),</a>
+<a name="ln769">               qPrintable(toTextBase(element)-&gt;plainText()), element);</a>
+<a name="ln770">      else if (element-&gt;isSegment())</a>
+<a name="ln771">            snprintf(buffer, 64, &quot;Add:    &lt;%s-%s&gt; %p&quot;, element-&gt;name(), toSegment(element)-&gt;subTypeName(), element);</a>
+<a name="ln772">      else</a>
+<a name="ln773">            snprintf(buffer, 64, &quot;Add:    &lt;%s&gt; %p&quot;, element-&gt;name(), element);</a>
+<a name="ln774">      return buffer;</a>
+<a name="ln775">      }</a>
+<a name="ln776"> </a>
+<a name="ln777">//---------------------------------------------------------</a>
+<a name="ln778">//   AddElement::isFiltered</a>
+<a name="ln779">//---------------------------------------------------------</a>
+<a name="ln780"> </a>
+<a name="ln781">bool AddElement::isFiltered(UndoCommand::Filter f, const Element* target) const</a>
+<a name="ln782">      {</a>
+<a name="ln783">      using Filter = UndoCommand::Filter;</a>
+<a name="ln784">      switch (f) {</a>
+<a name="ln785">            case Filter::AddElement:</a>
+<a name="ln786">                  return target == element;</a>
+<a name="ln787">            case Filter::AddElementLinked:</a>
+<a name="ln788">                  return target-&gt;linkList().contains(element);</a>
+<a name="ln789">            default:</a>
+<a name="ln790">                  break;</a>
+<a name="ln791">            }</a>
+<a name="ln792">      return false;</a>
+<a name="ln793">      }</a>
+<a name="ln794"> </a>
+<a name="ln795">//---------------------------------------------------------</a>
+<a name="ln796">//   removeNote</a>
+<a name="ln797">//    Helper function for RemoveElement class</a>
+<a name="ln798">//---------------------------------------------------------</a>
+<a name="ln799"> </a>
+<a name="ln800">static void removeNote(const Note* note)</a>
+<a name="ln801">      {</a>
+<a name="ln802">      Score* score = note-&gt;score();</a>
+<a name="ln803">      if (note-&gt;tieFor() &amp;&amp; note-&gt;tieFor()-&gt;endNote())</a>
+<a name="ln804">            score-&gt;undo(new RemoveElement(note-&gt;tieFor()));</a>
+<a name="ln805">      if (note-&gt;tieBack())</a>
+<a name="ln806">            score-&gt;undo(new RemoveElement(note-&gt;tieBack()));</a>
+<a name="ln807">      for (Spanner* s : note-&gt;spannerBack()) {</a>
+<a name="ln808">            score-&gt;undo(new RemoveElement(s));</a>
+<a name="ln809">            }</a>
+<a name="ln810">      for (Spanner* s : note-&gt;spannerFor()) {</a>
+<a name="ln811">            score-&gt;undo(new RemoveElement(s));</a>
+<a name="ln812">            }</a>
+<a name="ln813">      }</a>
+<a name="ln814"> </a>
+<a name="ln815">//---------------------------------------------------------</a>
+<a name="ln816">//   RemoveElement</a>
+<a name="ln817">//---------------------------------------------------------</a>
+<a name="ln818"> </a>
+<a name="ln819">RemoveElement::RemoveElement(Element* e)</a>
+<a name="ln820">      {</a>
+<a name="ln821">      element = e;</a>
+<a name="ln822"> </a>
+<a name="ln823">      Score* score = element-&gt;score();</a>
+<a name="ln824">      if (element-&gt;isChordRest()) {</a>
+<a name="ln825">            ChordRest* cr = toChordRest(element);</a>
+<a name="ln826">            if (cr-&gt;tuplet() &amp;&amp; cr-&gt;tuplet()-&gt;elements().size() &lt;= 1)</a>
+<a name="ln827">                  score-&gt;undo(new RemoveElement(cr-&gt;tuplet()));</a>
+<a name="ln828">            if (e-&gt;isChord()) {</a>
+<a name="ln829">                  Chord* chord = toChord(e);</a>
+<a name="ln830">                  // remove tremolo between 2 notes</a>
+<a name="ln831">                  if (chord-&gt;tremolo()) {</a>
+<a name="ln832">                        Tremolo* tremolo = chord-&gt;tremolo();</a>
+<a name="ln833">                        if (tremolo-&gt;twoNotes())</a>
+<a name="ln834">                              score-&gt;undo(new RemoveElement(tremolo));</a>
+<a name="ln835">                        }</a>
+<a name="ln836">                  for (const Note* note : chord-&gt;notes()) {</a>
+<a name="ln837">                        removeNote(note);</a>
+<a name="ln838">                        }</a>
+<a name="ln839">                  }</a>
+<a name="ln840">            }</a>
+<a name="ln841">      else if (element-&gt;isNote()) {</a>
+<a name="ln842">            // Removing an individual note within a chord</a>
+<a name="ln843">            const Note* note = toNote(element);</a>
+<a name="ln844">            removeNote(note);</a>
+<a name="ln845">            }</a>
+<a name="ln846">      }</a>
+<a name="ln847"> </a>
+<a name="ln848">//---------------------------------------------------------</a>
+<a name="ln849">//   RemoveElement::cleanup</a>
+<a name="ln850">//---------------------------------------------------------</a>
+<a name="ln851"> </a>
+<a name="ln852">void RemoveElement::cleanup(bool undo)</a>
+<a name="ln853">      {</a>
+<a name="ln854">      if (undo) {</a>
+<a name="ln855">            delete element;</a>
+<a name="ln856">            element = 0;</a>
+<a name="ln857">            }</a>
+<a name="ln858">      }</a>
+<a name="ln859"> </a>
+<a name="ln860">//---------------------------------------------------------</a>
+<a name="ln861">//   undo</a>
+<a name="ln862">//---------------------------------------------------------</a>
+<a name="ln863"> </a>
+<a name="ln864">void RemoveElement::undo(EditData*)</a>
+<a name="ln865">      {</a>
+<a name="ln866">      if (!element-&gt;isTuplet())</a>
+<a name="ln867">            element-&gt;score()-&gt;addElement(element);</a>
+<a name="ln868">      if (element-&gt;isChordRest()) {</a>
+<a name="ln869">            if (element-&gt;isChord()) {</a>
+<a name="ln870">                  Chord* chord = toChord(element);</a>
+<a name="ln871">                  for (Note* note : chord-&gt;notes()) {</a>
+<a name="ln872">                        note-&gt;connectTiedNotes();</a>
+<a name="ln873">                        }</a>
+<a name="ln874">                  }</a>
+<a name="ln875">            undoAddTuplet(toChordRest(element));</a>
+<a name="ln876">            }</a>
+<a name="ln877">      else if (element-&gt;isClef())</a>
+<a name="ln878">            element-&gt;score()-&gt;setLayout(element-&gt;staff()-&gt;nextClefTick(element-&gt;tick()), element-&gt;staffIdx());</a>
+<a name="ln879">      else if (element-&gt;isKeySig())</a>
+<a name="ln880">            element-&gt;score()-&gt;setLayout(element-&gt;staff()-&gt;nextKeyTick(element-&gt;tick()), element-&gt;staffIdx());</a>
+<a name="ln881">      }</a>
+<a name="ln882"> </a>
+<a name="ln883">//---------------------------------------------------------</a>
+<a name="ln884">//   redo</a>
+<a name="ln885">//---------------------------------------------------------</a>
+<a name="ln886"> </a>
+<a name="ln887">void RemoveElement::redo(EditData*)</a>
+<a name="ln888">      {</a>
+<a name="ln889">      if (!element-&gt;isTuplet())</a>
+<a name="ln890">            element-&gt;score()-&gt;removeElement(element);</a>
+<a name="ln891">      if (element-&gt;isChordRest()) {</a>
+<a name="ln892">            undoRemoveTuplet(toChordRest(element));</a>
+<a name="ln893">            if (element-&gt;isChord()) {</a>
+<a name="ln894">                  Chord* chord = toChord(element);</a>
+<a name="ln895">                  for (Note* note : chord-&gt;notes()) {</a>
+<a name="ln896">                        note-&gt;disconnectTiedNotes();</a>
+<a name="ln897">                        }</a>
+<a name="ln898">                  }</a>
+<a name="ln899">            }</a>
+<a name="ln900">      else if (element-&gt;isClef())</a>
+<a name="ln901">            element-&gt;score()-&gt;setLayout(element-&gt;staff()-&gt;nextClefTick(element-&gt;tick()), element-&gt;staffIdx());</a>
+<a name="ln902">      else if (element-&gt;isKeySig())</a>
+<a name="ln903">            element-&gt;score()-&gt;setLayout(element-&gt;staff()-&gt;nextKeyTick(element-&gt;tick()), element-&gt;staffIdx());</a>
+<a name="ln904">      }</a>
+<a name="ln905"> </a>
+<a name="ln906">//---------------------------------------------------------</a>
+<a name="ln907">//   name</a>
+<a name="ln908">//---------------------------------------------------------</a>
+<a name="ln909"> </a>
+<a name="ln910">const char* RemoveElement::name() const</a>
+<a name="ln911">      {</a>
+<a name="ln912">      static char buffer[64];</a>
+<a name="ln913">      if (element-&gt;isTextBase())</a>
+<a name="ln914">            snprintf(buffer, 64, &quot;Remove: %s &lt;%s&gt; %p&quot;, element-&gt;name(),</a>
+<a name="ln915">               qPrintable(toTextBase(element)-&gt;plainText()), element);</a>
+<a name="ln916">      else if (element-&gt;isSegment())</a>
+<a name="ln917">            snprintf(buffer, 64, &quot;Remove: &lt;%s-%s&gt; %p&quot;, element-&gt;name(), toSegment(element)-&gt;subTypeName(), element);</a>
+<a name="ln918">      else</a>
+<a name="ln919">            snprintf(buffer, 64, &quot;Remove: %s %p&quot;, element-&gt;name(), element);</a>
+<a name="ln920">      return buffer;</a>
+<a name="ln921">      }</a>
+<a name="ln922"> </a>
+<a name="ln923">//---------------------------------------------------------</a>
+<a name="ln924">//   RemoveElement::isFiltered</a>
+<a name="ln925">//---------------------------------------------------------</a>
+<a name="ln926"> </a>
+<a name="ln927">bool RemoveElement::isFiltered(UndoCommand::Filter f, const Element* target) const</a>
+<a name="ln928">      {</a>
+<a name="ln929">      using Filter = UndoCommand::Filter;</a>
+<a name="ln930">      switch (f) {</a>
+<a name="ln931">            case Filter::RemoveElement:</a>
+<a name="ln932">                  return target == element;</a>
+<a name="ln933">            case Filter::RemoveElementLinked:</a>
+<a name="ln934">                  return target-&gt;linkList().contains(element);</a>
+<a name="ln935">            default:</a>
+<a name="ln936">                  break;</a>
+<a name="ln937">            }</a>
+<a name="ln938">      return false;</a>
+<a name="ln939">      }</a>
+<a name="ln940"> </a>
+<a name="ln941">//---------------------------------------------------------</a>
+<a name="ln942">//   InsertPart</a>
+<a name="ln943">//---------------------------------------------------------</a>
+<a name="ln944"> </a>
+<a name="ln945">InsertPart::InsertPart(Part* p, int i)</a>
+<a name="ln946">      {</a>
+<a name="ln947">      part = p;</a>
+<a name="ln948">      idx  = i;</a>
+<a name="ln949">      }</a>
+<a name="ln950"> </a>
+<a name="ln951">void InsertPart::undo(EditData*)</a>
+<a name="ln952">      {</a>
+<a name="ln953">      part-&gt;score()-&gt;removePart(part);</a>
+<a name="ln954">      }</a>
+<a name="ln955"> </a>
+<a name="ln956">void InsertPart::redo(EditData*)</a>
+<a name="ln957">      {</a>
+<a name="ln958">      part-&gt;score()-&gt;insertPart(part, idx);</a>
+<a name="ln959">      }</a>
+<a name="ln960"> </a>
+<a name="ln961">//---------------------------------------------------------</a>
+<a name="ln962">//   RemovePart</a>
+<a name="ln963">//---------------------------------------------------------</a>
+<a name="ln964"> </a>
+<a name="ln965">RemovePart::RemovePart(Part* p, int i)</a>
+<a name="ln966">      {</a>
+<a name="ln967">      part = p;</a>
+<a name="ln968">      idx  = i;</a>
+<a name="ln969">      }</a>
+<a name="ln970"> </a>
+<a name="ln971">void RemovePart::undo(EditData*)</a>
+<a name="ln972">      {</a>
+<a name="ln973">      part-&gt;score()-&gt;insertPart(part, idx);</a>
+<a name="ln974">      }</a>
+<a name="ln975"> </a>
+<a name="ln976">void RemovePart::redo(EditData*)</a>
+<a name="ln977">      {</a>
+<a name="ln978">      part-&gt;score()-&gt;removePart(part);</a>
+<a name="ln979">      }</a>
+<a name="ln980"> </a>
+<a name="ln981">//---------------------------------------------------------</a>
+<a name="ln982">//   InsertStaff</a>
+<a name="ln983">//---------------------------------------------------------</a>
+<a name="ln984"> </a>
+<a name="ln985">InsertStaff::InsertStaff(Staff* p, int _ridx)</a>
+<a name="ln986">      {</a>
+<a name="ln987">      staff = p;</a>
+<a name="ln988">      ridx  = _ridx;</a>
+<a name="ln989">      }</a>
+<a name="ln990"> </a>
+<a name="ln991">void InsertStaff::undo(EditData*)</a>
+<a name="ln992">      {</a>
+<a name="ln993">      staff-&gt;score()-&gt;removeStaff(staff);</a>
+<a name="ln994">      }</a>
+<a name="ln995"> </a>
+<a name="ln996">void InsertStaff::redo(EditData*)</a>
+<a name="ln997">      {</a>
+<a name="ln998">      staff-&gt;score()-&gt;insertStaff(staff, ridx);</a>
+<a name="ln999">      }</a>
+<a name="ln1000"> </a>
+<a name="ln1001">//---------------------------------------------------------</a>
+<a name="ln1002">//   RemoveStaff</a>
+<a name="ln1003">//---------------------------------------------------------</a>
+<a name="ln1004"> </a>
+<a name="ln1005">RemoveStaff::RemoveStaff(Staff* p)</a>
+<a name="ln1006">      {</a>
+<a name="ln1007">      staff = p;</a>
+<a name="ln1008">      ridx  = staff-&gt;rstaff();</a>
+<a name="ln1009">      }</a>
+<a name="ln1010"> </a>
+<a name="ln1011">void RemoveStaff::undo(EditData*)</a>
+<a name="ln1012">      {</a>
+<a name="ln1013">      staff-&gt;score()-&gt;insertStaff(staff, ridx);</a>
+<a name="ln1014">      }</a>
+<a name="ln1015"> </a>
+<a name="ln1016">void RemoveStaff::redo(EditData*)</a>
+<a name="ln1017">      {</a>
+<a name="ln1018">      staff-&gt;score()-&gt;removeStaff(staff);</a>
+<a name="ln1019">      }</a>
+<a name="ln1020"> </a>
+<a name="ln1021">//---------------------------------------------------------</a>
+<a name="ln1022">//   InsertMStaff</a>
+<a name="ln1023">//---------------------------------------------------------</a>
+<a name="ln1024"> </a>
+<a name="ln1025">InsertMStaff::InsertMStaff(Measure* m, MStaff* ms, int i)</a>
+<a name="ln1026">      {</a>
+<a name="ln1027">      measure = m;</a>
+<a name="ln1028">      mstaff  = ms;</a>
+<a name="ln1029">      idx     = i;</a>
+<a name="ln1030">      }</a>
+<a name="ln1031"> </a>
+<a name="ln1032">void InsertMStaff::undo(EditData*)</a>
+<a name="ln1033">      {</a>
+<a name="ln1034">      measure-&gt;removeMStaff(mstaff, idx);</a>
+<a name="ln1035">      }</a>
+<a name="ln1036"> </a>
+<a name="ln1037">void InsertMStaff::redo(EditData*)</a>
+<a name="ln1038">      {</a>
+<a name="ln1039">      measure-&gt;insertMStaff(mstaff, idx);</a>
+<a name="ln1040">      }</a>
+<a name="ln1041"> </a>
+<a name="ln1042">//---------------------------------------------------------</a>
+<a name="ln1043">//   RemoveMStaff</a>
+<a name="ln1044">//---------------------------------------------------------</a>
+<a name="ln1045"> </a>
+<a name="ln1046">RemoveMStaff::RemoveMStaff(Measure* m, MStaff* ms, int i)</a>
+<a name="ln1047">      {</a>
+<a name="ln1048">      measure = m;</a>
+<a name="ln1049">      mstaff  = ms;</a>
+<a name="ln1050">      idx     = i;</a>
+<a name="ln1051">      }</a>
+<a name="ln1052"> </a>
+<a name="ln1053">void RemoveMStaff::undo(EditData*)</a>
+<a name="ln1054">      {</a>
+<a name="ln1055">      measure-&gt;insertMStaff(mstaff, idx);</a>
+<a name="ln1056">      }</a>
+<a name="ln1057"> </a>
+<a name="ln1058">void RemoveMStaff::redo(EditData*)</a>
+<a name="ln1059">      {</a>
+<a name="ln1060">      measure-&gt;removeMStaff(mstaff, idx);</a>
+<a name="ln1061">      }</a>
+<a name="ln1062"> </a>
+<a name="ln1063">//---------------------------------------------------------</a>
+<a name="ln1064">//   SortStaves</a>
+<a name="ln1065">//---------------------------------------------------------</a>
+<a name="ln1066"> </a>
+<a name="ln1067">SortStaves::SortStaves(Score* s, QList&lt;int&gt; l)</a>
+<a name="ln1068">      {</a>
+<a name="ln1069">      score = s;</a>
+<a name="ln1070"> </a>
+<a name="ln1071">      for(int i=0 ; i &lt; l.size(); i++) {</a>
+<a name="ln1072">            rlist.append(l.indexOf(i));</a>
+<a name="ln1073">            }</a>
+<a name="ln1074">      list  = l;</a>
+<a name="ln1075">      }</a>
+<a name="ln1076"> </a>
+<a name="ln1077">void SortStaves::redo(EditData*)</a>
+<a name="ln1078">      {</a>
+<a name="ln1079">      score-&gt;sortStaves(list);</a>
+<a name="ln1080">      }</a>
+<a name="ln1081"> </a>
+<a name="ln1082">void SortStaves::undo(EditData*)</a>
+<a name="ln1083">      {</a>
+<a name="ln1084">      score-&gt;sortStaves(rlist);</a>
+<a name="ln1085">      }</a>
+<a name="ln1086"> </a>
+<a name="ln1087">//---------------------------------------------------------</a>
+<a name="ln1088">//   ChangePitch</a>
+<a name="ln1089">//---------------------------------------------------------</a>
+<a name="ln1090"> </a>
+<a name="ln1091">ChangePitch::ChangePitch(Note* _note, int _pitch, int _tpc1, int _tpc2)</a>
+<a name="ln1092">      {</a>
+<a name="ln1093">      note  = _note;</a>
+<a name="ln1094">      pitch = _pitch;</a>
+<a name="ln1095">      tpc1  = _tpc1;</a>
+<a name="ln1096">      tpc2  = _tpc2;</a>
+<a name="ln1097">      }</a>
+<a name="ln1098"> </a>
+<a name="ln1099">void ChangePitch::flip(EditData*)</a>
+<a name="ln1100">      {</a>
+<a name="ln1101">      int f_pitch = note-&gt;pitch();</a>
+<a name="ln1102">      int f_tpc1  = note-&gt;tpc1();</a>
+<a name="ln1103">      int f_tpc2  = note-&gt;tpc2();</a>
+<a name="ln1104">      // do not change unless necessary</a>
+<a name="ln1105">      if (f_pitch == pitch &amp;&amp; f_tpc1 == tpc1 &amp;&amp; f_tpc2 == tpc2)</a>
+<a name="ln1106">            return;</a>
+<a name="ln1107"> </a>
+<a name="ln1108">      note-&gt;setPitch(pitch, tpc1, tpc2);</a>
+<a name="ln1109">      pitch = f_pitch;</a>
+<a name="ln1110">      tpc1  = f_tpc1;</a>
+<a name="ln1111">      tpc2  = f_tpc2;</a>
+<a name="ln1112"> </a>
+<a name="ln1113">      note-&gt;triggerLayout();</a>
+<a name="ln1114">      }</a>
+<a name="ln1115"> </a>
+<a name="ln1116">//---------------------------------------------------------</a>
+<a name="ln1117">//   ChangeFretting</a>
+<a name="ln1118">//</a>
+<a name="ln1119">//    To use with tablatures to force a specific note fretting;</a>
+<a name="ln1120">//    Pitch, string and fret must be changed all together; otherwise,</a>
+<a name="ln1121">//    if they are not consistent among themselves, the refretting algorithm may re-assign</a>
+<a name="ln1122">//    fret and string numbers for (potentially) all the notes of all the chords of a segment.</a>
+<a name="ln1123">//---------------------------------------------------------</a>
+<a name="ln1124"> </a>
+<a name="ln1125">ChangeFretting::ChangeFretting(Note* _note, int _pitch, int _string, int _fret, int _tpc1, int _tpc2)</a>
+<a name="ln1126">      {</a>
+<a name="ln1127">      note  = _note;</a>
+<a name="ln1128">      pitch = _pitch;</a>
+<a name="ln1129">      string= _string;</a>
+<a name="ln1130">      fret  = _fret;</a>
+<a name="ln1131">      tpc1  = _tpc1;</a>
+<a name="ln1132">      tpc2  = _tpc2;</a>
+<a name="ln1133">      }</a>
+<a name="ln1134"> </a>
+<a name="ln1135">void ChangeFretting::flip(EditData*)</a>
+<a name="ln1136">      {</a>
+<a name="ln1137">      int f_pitch = note-&gt;pitch();</a>
+<a name="ln1138">      int f_string= note-&gt;string();</a>
+<a name="ln1139">      int f_fret  = note-&gt;fret();</a>
+<a name="ln1140">      int f_tpc1  = note-&gt;tpc1();</a>
+<a name="ln1141">      int f_tpc2  = note-&gt;tpc2();</a>
+<a name="ln1142">      // do not change unless necessary</a>
+<a name="ln1143">      if (f_pitch == pitch &amp;&amp; f_string == string &amp;&amp; f_fret == fret &amp;&amp; f_tpc1 == tpc1 &amp;&amp; f_tpc2 == tpc2) {</a>
+<a name="ln1144">            return;</a>
+<a name="ln1145">            }</a>
+<a name="ln1146"> </a>
+<a name="ln1147">      note-&gt;setPitch(pitch, tpc1, tpc2);</a>
+<a name="ln1148">      note-&gt;setString(string);</a>
+<a name="ln1149">      note-&gt;setFret(fret);</a>
+<a name="ln1150">      pitch = f_pitch;</a>
+<a name="ln1151">      string= f_string;</a>
+<a name="ln1152">      fret  = f_fret;</a>
+<a name="ln1153">      tpc1  = f_tpc1;</a>
+<a name="ln1154">      tpc2  = f_tpc2;</a>
+<a name="ln1155">      note-&gt;triggerLayout();</a>
+<a name="ln1156">      }</a>
+<a name="ln1157"> </a>
+<a name="ln1158">//---------------------------------------------------------</a>
+<a name="ln1159">//   ChangeElement</a>
+<a name="ln1160">//---------------------------------------------------------</a>
+<a name="ln1161"> </a>
+<a name="ln1162">ChangeElement::ChangeElement(Element* oe, Element* ne)</a>
+<a name="ln1163">      {</a>
+<a name="ln1164">      oldElement = oe;</a>
+<a name="ln1165">      newElement = ne;</a>
+<a name="ln1166">      }</a>
+<a name="ln1167"> </a>
+<a name="ln1168">void ChangeElement::flip(EditData*)</a>
+<a name="ln1169">      {</a>
+<a name="ln1170">      const LinkedElements* links = oldElement-&gt;links();</a>
+<a name="ln1171">      if (links) {</a>
+<a name="ln1172">            newElement-&gt;linkTo(oldElement);</a>
+<a name="ln1173">            oldElement-&gt;unlink();</a>
+<a name="ln1174">            }</a>
+<a name="ln1175"> </a>
+<a name="ln1176">      Score* score = oldElement-&gt;score();</a>
+<a name="ln1177">      if (!score-&gt;selection().isRange()) {</a>
+<a name="ln1178">            if (oldElement-&gt;selected())</a>
+<a name="ln1179">                  score-&gt;deselect(oldElement);</a>
+<a name="ln1180">            if (newElement-&gt;selected())</a>
+<a name="ln1181">                  score-&gt;select(newElement, SelectType::ADD);</a>
+<a name="ln1182">            }</a>
+<a name="ln1183">      if (oldElement-&gt;parent() == 0) {</a>
+<a name="ln1184">            score-&gt;removeElement(oldElement);</a>
+<a name="ln1185">            score-&gt;addElement(newElement);</a>
+<a name="ln1186">            }</a>
+<a name="ln1187">      else {</a>
+<a name="ln1188">            oldElement-&gt;parent()-&gt;change(oldElement, newElement);</a>
+<a name="ln1189">            }</a>
+<a name="ln1190"> </a>
+<a name="ln1191">      if (newElement-&gt;isKeySig()) {</a>
+<a name="ln1192">            KeySig* ks = toKeySig(newElement);</a>
+<a name="ln1193">            if (!ks-&gt;generated())</a>
+<a name="ln1194">                  ks-&gt;staff()-&gt;setKey(ks-&gt;tick(), ks-&gt;keySigEvent());</a>
+<a name="ln1195">            }</a>
+<a name="ln1196">      else if (newElement-&gt;isDynamic())</a>
+<a name="ln1197">            newElement-&gt;score()-&gt;addLayoutFlags(LayoutFlag::FIX_PITCH_VELO);</a>
+<a name="ln1198">      else if (newElement-&gt;isTempoText()) {</a>
+<a name="ln1199">            TempoText* t = toTempoText(oldElement);</a>
+<a name="ln1200">            score-&gt;setTempo(t-&gt;segment(), t-&gt;tempo());</a>
+<a name="ln1201">            }</a>
+<a name="ln1202">//      if (newElement-&gt;isSegmentFlag()) {</a>
+<a name="ln1203">      if (newElement-&gt;isSpannerSegment()) {</a>
+<a name="ln1204">            SpannerSegment* os = toSpannerSegment(oldElement);</a>
+<a name="ln1205">            SpannerSegment* ns = toSpannerSegment(newElement);</a>
+<a name="ln1206">            if (os-&gt;system())</a>
+<a name="ln1207">                  os-&gt;system()-&gt;remove(os);</a>
+<a name="ln1208">            if (ns-&gt;system())</a>
+<a name="ln1209">                  ns-&gt;system()-&gt;add(ns);</a>
+<a name="ln1210">            }</a>
+<a name="ln1211">      qSwap(oldElement, newElement);</a>
+<a name="ln1212">      oldElement-&gt;triggerLayout();</a>
+<a name="ln1213">      newElement-&gt;triggerLayout();</a>
+<a name="ln1214">      // score-&gt;setLayoutAll();</a>
+<a name="ln1215">      }</a>
+<a name="ln1216"> </a>
+<a name="ln1217">//---------------------------------------------------------</a>
+<a name="ln1218">//   InsertStaves</a>
+<a name="ln1219">//---------------------------------------------------------</a>
+<a name="ln1220"> </a>
+<a name="ln1221">InsertStaves::InsertStaves(Measure* m, int _a, int _b)</a>
+<a name="ln1222">      {</a>
+<a name="ln1223">      measure = m;</a>
+<a name="ln1224">      a       = _a;</a>
+<a name="ln1225">      b       = _b;</a>
+<a name="ln1226">      }</a>
+<a name="ln1227"> </a>
+<a name="ln1228">void InsertStaves::undo(EditData*)</a>
+<a name="ln1229">      {</a>
+<a name="ln1230">      measure-&gt;removeStaves(a, b);</a>
+<a name="ln1231">      }</a>
+<a name="ln1232"> </a>
+<a name="ln1233">void InsertStaves::redo(EditData*)</a>
+<a name="ln1234">      {</a>
+<a name="ln1235">      measure-&gt;insertStaves(a, b);</a>
+<a name="ln1236">      }</a>
+<a name="ln1237"> </a>
+<a name="ln1238">//---------------------------------------------------------</a>
+<a name="ln1239">//   RemoveStaves</a>
+<a name="ln1240">//---------------------------------------------------------</a>
+<a name="ln1241"> </a>
+<a name="ln1242">RemoveStaves::RemoveStaves(Measure* m, int _a, int _b)</a>
+<a name="ln1243">      {</a>
+<a name="ln1244">      measure = m;</a>
+<a name="ln1245">      a       = _a;</a>
+<a name="ln1246">      b       = _b;</a>
+<a name="ln1247">      }</a>
+<a name="ln1248"> </a>
+<a name="ln1249">void RemoveStaves::undo(EditData*)</a>
+<a name="ln1250">      {</a>
+<a name="ln1251">      measure-&gt;insertStaves(a, b);</a>
+<a name="ln1252">      }</a>
+<a name="ln1253"> </a>
+<a name="ln1254">void RemoveStaves::redo(EditData*)</a>
+<a name="ln1255">      {</a>
+<a name="ln1256">      measure-&gt;removeStaves(a, b);</a>
+<a name="ln1257">      }</a>
+<a name="ln1258"> </a>
+<a name="ln1259">//---------------------------------------------------------</a>
+<a name="ln1260">//   ChangeKeySig</a>
+<a name="ln1261">//---------------------------------------------------------</a>
+<a name="ln1262"> </a>
+<a name="ln1263">ChangeKeySig::ChangeKeySig(KeySig* k, KeySigEvent newKeySig, bool sc, bool addEvtToStaff)</a>
+<a name="ln1264">   : keysig(k), ks(newKeySig), showCourtesy(sc), evtInStaff(addEvtToStaff)</a>
+<a name="ln1265">      {}</a>
+<a name="ln1266"> </a>
+<a name="ln1267">void ChangeKeySig::flip(EditData*)</a>
+<a name="ln1268">      {</a>
+<a name="ln1269">      Segment* segment = keysig-&gt;segment();</a>
+<a name="ln1270">      Fraction tick = segment-&gt;tick();</a>
+<a name="ln1271">      Staff* staff = keysig-&gt;staff();</a>
+<a name="ln1272"> </a>
+<a name="ln1273">      const bool curEvtInStaff = (staff-&gt;currentKeyTick(tick) == tick);</a>
+<a name="ln1274">      KeySigEvent curKey = keysig-&gt;keySigEvent();</a>
+<a name="ln1275">      const bool curShowCourtesy = keysig-&gt;showCourtesy();</a>
+<a name="ln1276"> </a>
+<a name="ln1277">      keysig-&gt;setKeySigEvent(ks);</a>
+<a name="ln1278">      keysig-&gt;setShowCourtesy(showCourtesy);</a>
+<a name="ln1279"> </a>
+<a name="ln1280">      // Add/remove the corresponding key events, if appropriate.</a>
+<a name="ln1281">      if (evtInStaff)</a>
+<a name="ln1282">            staff-&gt;setKey(tick, ks); // replace</a>
+<a name="ln1283">      else if (curEvtInStaff)</a>
+<a name="ln1284">            staff-&gt;removeKey(tick); // if nothing to add instead, just remove.</a>
+<a name="ln1285"> </a>
+<a name="ln1286">      // If no keysig event corresponds to the key signature then this keysig</a>
+<a name="ln1287">      // is probably generated. Otherwise it is probably added manually.</a>
+<a name="ln1288">      // Set segment flags according to this, layout will change it if needed.</a>
+<a name="ln1289">      segment-&gt;setEnabled(evtInStaff);</a>
+<a name="ln1290">      segment-&gt;setHeader(!evtInStaff &amp;&amp; segment-&gt;rtick() == Fraction(0,1));</a>
+<a name="ln1291"> </a>
+<a name="ln1292">      showCourtesy = curShowCourtesy;</a>
+<a name="ln1293">      ks           = curKey;</a>
+<a name="ln1294">      evtInStaff   = curEvtInStaff;</a>
+<a name="ln1295">      keysig-&gt;triggerLayout();</a>
+<a name="ln1296">      keysig-&gt;score()-&gt;setLayout(keysig-&gt;staff()-&gt;nextKeyTick(tick), keysig-&gt;staffIdx());</a>
+<a name="ln1297">      }</a>
+<a name="ln1298"> </a>
+<a name="ln1299">//---------------------------------------------------------</a>
+<a name="ln1300">//   ChangeMeasureLen</a>
+<a name="ln1301">//---------------------------------------------------------</a>
+<a name="ln1302"> </a>
+<a name="ln1303">ChangeMeasureLen::ChangeMeasureLen(Measure* m, Fraction l)</a>
+<a name="ln1304">      {</a>
+<a name="ln1305">      measure     = m;</a>
+<a name="ln1306">      len         = l;</a>
+<a name="ln1307">      }</a>
+<a name="ln1308"> </a>
+<a name="ln1309">void ChangeMeasureLen::flip(EditData*)</a>
+<a name="ln1310">      {</a>
+<a name="ln1311">      Fraction oLen = measure-&gt;ticks();</a>
+<a name="ln1312"> </a>
+<a name="ln1313">      //</a>
+<a name="ln1314">      // move EndBarLine and TimeSigAnnounce</a>
+<a name="ln1315">      // to end of measure:</a>
+<a name="ln1316">      //</a>
+<a name="ln1317"> </a>
+<a name="ln1318">      std::list&lt;Segment*&gt; sl;</a>
+<a name="ln1319">      for (Segment* s = measure-&gt;first(); s; s = s-&gt;next()) {</a>
+<a name="ln1320">            if (!s-&gt;isEndBarLineType() &amp;&amp; !s-&gt;isTimeSigAnnounceType())</a>
+<a name="ln1321">                  continue;</a>
+<a name="ln1322">            s-&gt;setRtick(len);</a>
+<a name="ln1323">            sl.push_back(s);</a>
+<a name="ln1324">            measure-&gt;remove(s);</a>
+<a name="ln1325">            }</a>
+<a name="ln1326">      measure-&gt;setTicks(len);</a>
+<a name="ln1327">      measure-&gt;score()-&gt;fixTicks();</a>
+<a name="ln1328">      len = oLen;</a>
+<a name="ln1329">      }</a>
+<a name="ln1330"> </a>
+<a name="ln1331">//---------------------------------------------------------</a>
+<a name="ln1332">//   TransposeHarmony</a>
+<a name="ln1333">//---------------------------------------------------------</a>
+<a name="ln1334"> </a>
+<a name="ln1335">TransposeHarmony::TransposeHarmony(Harmony* h, int rtpc, int btpc)</a>
+<a name="ln1336">      {</a>
+<a name="ln1337">      harmony = h;</a>
+<a name="ln1338">      rootTpc = rtpc;</a>
+<a name="ln1339">      baseTpc = btpc;</a>
+<a name="ln1340">      }</a>
+<a name="ln1341"> </a>
+<a name="ln1342">void TransposeHarmony::flip(EditData*)</a>
+<a name="ln1343">      {</a>
+<a name="ln1344">      int baseTpc1 = harmony-&gt;baseTpc();</a>
+<a name="ln1345">      int rootTpc1 = harmony-&gt;rootTpc();</a>
+<a name="ln1346">      harmony-&gt;setBaseTpc(baseTpc);</a>
+<a name="ln1347">      harmony-&gt;setRootTpc(rootTpc);</a>
+<a name="ln1348">      harmony-&gt;setXmlText(harmony-&gt;harmonyName());</a>
+<a name="ln1349">      harmony-&gt;render();</a>
+<a name="ln1350">      rootTpc = rootTpc1;</a>
+<a name="ln1351">      baseTpc = baseTpc1;</a>
+<a name="ln1352">      }</a>
+<a name="ln1353"> </a>
+<a name="ln1354">//---------------------------------------------------------</a>
+<a name="ln1355">//   ExchangeVoice</a>
+<a name="ln1356">//---------------------------------------------------------</a>
+<a name="ln1357"> </a>
+<a name="ln1358">ExchangeVoice::ExchangeVoice(Measure* m, int _val1, int _val2, int _staff)</a>
+<a name="ln1359">      {</a>
+<a name="ln1360">      measure = m;</a>
+<a name="ln1361">      val1    = _val1;</a>
+<a name="ln1362">      val2    = _val2;</a>
+<a name="ln1363">      staff   = _staff;</a>
+<a name="ln1364">      }</a>
+<a name="ln1365"> </a>
+<a name="ln1366">void ExchangeVoice::undo(EditData*)</a>
+<a name="ln1367">      {</a>
+<a name="ln1368">      measure-&gt;exchangeVoice(val2, val1, staff);</a>
+<a name="ln1369">      measure-&gt;checkMultiVoices(staff);</a>
+<a name="ln1370">      }</a>
+<a name="ln1371"> </a>
+<a name="ln1372">void ExchangeVoice::redo(EditData*)</a>
+<a name="ln1373">      {</a>
+<a name="ln1374">      measure-&gt;exchangeVoice(val1, val2, staff);</a>
+<a name="ln1375">      }</a>
+<a name="ln1376"> </a>
+<a name="ln1377">//---------------------------------------------------------</a>
+<a name="ln1378">//   ChangeInstrumentShort</a>
+<a name="ln1379">//---------------------------------------------------------</a>
+<a name="ln1380"> </a>
+<a name="ln1381">ChangeInstrumentShort::ChangeInstrumentShort(const Fraction&amp;_tick, Part* p, QList&lt;StaffName&gt; t)</a>
+<a name="ln1382">      {</a>
+<a name="ln1383">      tick = _tick;</a>
+<a name="ln1384">      part = p;</a>
+<a name="ln1385">      text = t;</a>
+<a name="ln1386">      }</a>
+<a name="ln1387"> </a>
+<a name="ln1388">void ChangeInstrumentShort::flip(EditData*)</a>
+<a name="ln1389">      {</a>
+<a name="ln1390">      QList&lt;StaffName&gt; s = part-&gt;shortNames(tick);</a>
+<a name="ln1391">      part-&gt;setShortNames(text, tick);</a>
+<a name="ln1392">      text = s;</a>
+<a name="ln1393">      part-&gt;score()-&gt;setLayoutAll();</a>
+<a name="ln1394">      }</a>
+<a name="ln1395"> </a>
+<a name="ln1396">//---------------------------------------------------------</a>
+<a name="ln1397">//   ChangeInstrumentLong</a>
+<a name="ln1398">//---------------------------------------------------------</a>
+<a name="ln1399"> </a>
+<a name="ln1400">ChangeInstrumentLong::ChangeInstrumentLong(const Fraction&amp; _tick, Part* p, QList&lt;StaffName&gt; t)</a>
+<a name="ln1401">      {</a>
+<a name="ln1402">      tick = _tick;</a>
+<a name="ln1403">      part = p;</a>
+<a name="ln1404">      text = t;</a>
+<a name="ln1405">      }</a>
+<a name="ln1406"> </a>
+<a name="ln1407">void ChangeInstrumentLong::flip(EditData*)</a>
+<a name="ln1408">      {</a>
+<a name="ln1409">      QList&lt;StaffName&gt; s = part-&gt;longNames(tick);</a>
+<a name="ln1410">      part-&gt;setLongNames(text, tick);</a>
+<a name="ln1411">      text = s;</a>
+<a name="ln1412">      part-&gt;score()-&gt;setLayoutAll();</a>
+<a name="ln1413">      }</a>
+<a name="ln1414"> </a>
+<a name="ln1415">//---------------------------------------------------------</a>
+<a name="ln1416">//   EditText::undo</a>
+<a name="ln1417">//---------------------------------------------------------</a>
+<a name="ln1418"> </a>
+<a name="ln1419">void EditText::undo(EditData*)</a>
+<a name="ln1420">      {</a>
+<a name="ln1421">/*      if (!text-&gt;styled()) {</a>
+<a name="ln1422">            for (int i = 0; i &lt; undoLevel; ++i)</a>
+<a name="ln1423">                  text-&gt;undo();</a>
+<a name="ln1424">            }</a>
+<a name="ln1425">      */</a>
+<a name="ln1426">      undoRedo();</a>
+<a name="ln1427">      }</a>
+<a name="ln1428"> </a>
+<a name="ln1429">//---------------------------------------------------------</a>
+<a name="ln1430">//   EditText::redo</a>
+<a name="ln1431">//---------------------------------------------------------</a>
+<a name="ln1432"> </a>
+<a name="ln1433">void EditText::redo(EditData*)</a>
+<a name="ln1434">      {</a>
+<a name="ln1435">/*</a>
+<a name="ln1436">      if (!text-&gt;styled()) {</a>
+<a name="ln1437">            for (int i = 0; i &lt; undoLevel; ++i)</a>
+<a name="ln1438">                  text-&gt;redo();</a>
+<a name="ln1439">            }</a>
+<a name="ln1440">      */</a>
+<a name="ln1441">      undoRedo();</a>
+<a name="ln1442">      }</a>
+<a name="ln1443"> </a>
+<a name="ln1444">//---------------------------------------------------------</a>
+<a name="ln1445">//   EditText::undoRedo</a>
+<a name="ln1446">//---------------------------------------------------------</a>
+<a name="ln1447"> </a>
+<a name="ln1448">void EditText::undoRedo()</a>
+<a name="ln1449">      {</a>
+<a name="ln1450">      QString s = text-&gt;xmlText();</a>
+<a name="ln1451">      text-&gt;setXmlText(oldText);</a>
+<a name="ln1452">      oldText = s;</a>
+<a name="ln1453">      text-&gt;triggerLayout();</a>
+<a name="ln1454">      }</a>
+<a name="ln1455"> </a>
+<a name="ln1456">//---------------------------------------------------------</a>
+<a name="ln1457">//   ChangePatch</a>
+<a name="ln1458">//---------------------------------------------------------</a>
+<a name="ln1459"> </a>
+<a name="ln1460">void ChangePatch::flip(EditData*)</a>
+<a name="ln1461">      {</a>
+<a name="ln1462">      MidiPatch op;</a>
+<a name="ln1463">      op.prog          = channel-&gt;program();</a>
+<a name="ln1464">      op.bank          = channel-&gt;bank();</a>
+<a name="ln1465">      op.synti         = channel-&gt;synti();</a>
+<a name="ln1466"> </a>
+<a name="ln1467">      channel-&gt;setProgram(patch.prog);</a>
+<a name="ln1468">      channel-&gt;setBank(patch.bank);</a>
+<a name="ln1469">      channel-&gt;setSynti(patch.synti);</a>
+<a name="ln1470"> </a>
+<a name="ln1471">      patch            = op;</a>
+<a name="ln1472"> </a>
+<a name="ln1473">      if (MScore::seq == 0) {</a>
+<a name="ln1474">            qWarning(&quot;no seq&quot;);</a>
+<a name="ln1475">            return;</a>
+<a name="ln1476">            }</a>
+<a name="ln1477"> </a>
+<a name="ln1478">      NPlayEvent event;</a>
+<a name="ln1479">      event.setType(ME_CONTROLLER);</a>
+<a name="ln1480">      event.setChannel(channel-&gt;channel());</a>
+<a name="ln1481"> </a>
+<a name="ln1482">      int hbank = (channel-&gt;bank() &gt;&gt; 7) &amp; 0x7f;</a>
+<a name="ln1483">      int lbank = channel-&gt;bank() &amp; 0x7f;</a>
+<a name="ln1484"> </a>
+<a name="ln1485">      event.setController(CTRL_HBANK);</a>
+<a name="ln1486">      event.setValue(hbank);</a>
+<a name="ln1487">      MScore::seq-&gt;sendEvent(event);</a>
+<a name="ln1488"> </a>
+<a name="ln1489">      event.setController(CTRL_LBANK);</a>
+<a name="ln1490">      event.setValue(lbank);</a>
+<a name="ln1491">      MScore::seq-&gt;sendEvent(event);</a>
+<a name="ln1492"> </a>
+<a name="ln1493">      event.setController(CTRL_PROGRAM);</a>
+<a name="ln1494">      event.setValue(channel-&gt;program());</a>
+<a name="ln1495"> </a>
+<a name="ln1496">      score-&gt;setInstrumentsChanged(true);</a>
+<a name="ln1497"> </a>
+<a name="ln1498">      MScore::seq-&gt;sendEvent(event);</a>
+<a name="ln1499">      }</a>
+<a name="ln1500"> </a>
+<a name="ln1501">//---------------------------------------------------------</a>
+<a name="ln1502">//   SetUserBankController</a>
+<a name="ln1503">//---------------------------------------------------------</a>
+<a name="ln1504"> </a>
+<a name="ln1505">void SetUserBankController::flip(EditData*)</a>
+<a name="ln1506">      {</a>
+<a name="ln1507">      bool oldVal = channel-&gt;userBankController();</a>
+<a name="ln1508">      channel-&gt;setUserBankController(val);</a>
+<a name="ln1509">      val = oldVal;</a>
+<a name="ln1510">      }</a>
+<a name="ln1511"> </a>
+<a name="ln1512">//---------------------------------------------------------</a>
+<a name="ln1513">//   ChangeStaff</a>
+<a name="ln1514">//---------------------------------------------------------</a>
+<a name="ln1515"> </a>
+<a name="ln1516">ChangeStaff::ChangeStaff(Staff* _staff,  bool _invisible, ClefTypeList _clefType,</a>
+<a name="ln1517">   qreal _userDist, Staff::HideMode _hideMode, bool _showIfEmpty, bool _cutaway, bool hide)</a>
+<a name="ln1518">      {</a>
+<a name="ln1519">      staff       = _staff;</a>
+<a name="ln1520">      invisible   = _invisible;</a>
+<a name="ln1521">      clefType    = _clefType;</a>
+<a name="ln1522">      userDist    = _userDist;</a>
+<a name="ln1523">      hideMode    = _hideMode;</a>
+<a name="ln1524">      showIfEmpty = _showIfEmpty;</a>
+<a name="ln1525">      cutaway     = _cutaway;</a>
+<a name="ln1526">      hideSystemBarLine = hide;</a>
+<a name="ln1527">      }</a>
+<a name="ln1528"> </a>
+<a name="ln1529">//---------------------------------------------------------</a>
+<a name="ln1530">//   flip</a>
+<a name="ln1531">//---------------------------------------------------------</a>
+<a name="ln1532"> </a>
+<a name="ln1533">void ChangeStaff::flip(EditData*)</a>
+<a name="ln1534">      {</a>
+<a name="ln1535">      bool invisibleChanged = staff-&gt;invisible() != invisible;</a>
+<a name="ln1536">      ClefTypeList oldClefType = staff-&gt;defaultClefType();</a>
+<a name="ln1537">      bool oldInvisible   = staff-&gt;invisible();</a>
+<a name="ln1538">      qreal oldUserDist   = staff-&gt;userDist();</a>
+<a name="ln1539">      Staff::HideMode oldHideMode    = staff-&gt;hideWhenEmpty();</a>
+<a name="ln1540">      bool oldShowIfEmpty = staff-&gt;showIfEmpty();</a>
+<a name="ln1541">      bool oldCutaway     = staff-&gt;cutaway();</a>
+<a name="ln1542">      bool hide           = staff-&gt;hideSystemBarLine();</a>
+<a name="ln1543"> </a>
+<a name="ln1544">      staff-&gt;setInvisible(invisible);</a>
+<a name="ln1545">      staff-&gt;setDefaultClefType(clefType);</a>
+<a name="ln1546">      staff-&gt;setUserDist(userDist);</a>
+<a name="ln1547">      staff-&gt;setHideWhenEmpty(hideMode);</a>
+<a name="ln1548">      staff-&gt;setShowIfEmpty(showIfEmpty);</a>
+<a name="ln1549">      staff-&gt;setCutaway(cutaway);</a>
+<a name="ln1550">      staff-&gt;setHideSystemBarLine(hideSystemBarLine);</a>
+<a name="ln1551"> </a>
+<a name="ln1552">      invisible   = oldInvisible;</a>
+<a name="ln1553">      clefType    = oldClefType;</a>
+<a name="ln1554">      userDist    = oldUserDist;</a>
+<a name="ln1555">      hideMode    = oldHideMode;</a>
+<a name="ln1556">      showIfEmpty = oldShowIfEmpty;</a>
+<a name="ln1557">      cutaway     = oldCutaway;</a>
+<a name="ln1558">      hideSystemBarLine = hide;</a>
+<a name="ln1559"> </a>
+<a name="ln1560">      Score* score = staff-&gt;score();</a>
+<a name="ln1561">      if (invisibleChanged) {</a>
+<a name="ln1562">            int staffIdx = staff-&gt;idx();</a>
+<a name="ln1563">            for (Measure* m = score-&gt;firstMeasure(); m; m = m-&gt;nextMeasure())</a>
+<a name="ln1564">                  m-&gt;staffLines(staffIdx)-&gt;setVisible(!staff-&gt;invisible());</a>
+<a name="ln1565">            }</a>
+<a name="ln1566">      staff-&gt;triggerLayout();</a>
+<a name="ln1567">      staff-&gt;masterScore()-&gt;rebuildMidiMapping();</a>
+<a name="ln1568">      staff-&gt;score()-&gt;setPlaylistDirty();</a>
+<a name="ln1569">      }</a>
+<a name="ln1570"> </a>
+<a name="ln1571">//---------------------------------------------------------</a>
+<a name="ln1572">//   ChangeStaffType::flip</a>
+<a name="ln1573">//---------------------------------------------------------</a>
+<a name="ln1574"> </a>
+<a name="ln1575">void ChangeStaffType::flip(EditData*)</a>
+<a name="ln1576">      {</a>
+<a name="ln1577">      StaffType st = *staff-&gt;staffType(Fraction(0,1));      // TODO</a>
+<a name="ln1578"> </a>
+<a name="ln1579">      staff-&gt;setStaffType(Fraction(0,1), staffType);</a>
+<a name="ln1580"> </a>
+<a name="ln1581">      staffType = st;</a>
+<a name="ln1582"> </a>
+<a name="ln1583">      staff-&gt;triggerLayout();</a>
+<a name="ln1584">      }</a>
+<a name="ln1585"> </a>
+<a name="ln1586">//---------------------------------------------------------</a>
+<a name="ln1587">//   ChangePart</a>
+<a name="ln1588">//---------------------------------------------------------</a>
+<a name="ln1589"> </a>
+<a name="ln1590">ChangePart::ChangePart(Part* _part, Instrument* i, const QString&amp; s)</a>
+<a name="ln1591">      {</a>
+<a name="ln1592">      instrument = i;</a>
+<a name="ln1593">      part       = _part;</a>
+<a name="ln1594">      partName   = s;</a>
+<a name="ln1595">      }</a>
+<a name="ln1596"> </a>
+<a name="ln1597">//---------------------------------------------------------</a>
+<a name="ln1598">//   flip</a>
+<a name="ln1599">//---------------------------------------------------------</a>
+<a name="ln1600"> </a>
+<a name="ln1601">void ChangePart::flip(EditData*)</a>
+<a name="ln1602">      {</a>
+<a name="ln1603">      Instrument* oi = part-&gt;instrument();</a>
+<a name="ln1604">      QString s      = part-&gt;partName();</a>
+<a name="ln1605">      part-&gt;setInstrument(instrument);</a>
+<a name="ln1606">      part-&gt;setPartName(partName);</a>
+<a name="ln1607"> </a>
+<a name="ln1608">      Score* score = part-&gt;score();</a>
+<a name="ln1609">      score-&gt;masterScore()-&gt;rebuildMidiMapping();</a>
+<a name="ln1610">      score-&gt;setInstrumentsChanged(true);</a>
+<a name="ln1611">      score-&gt;setPlaylistDirty();</a>
+<a name="ln1612"> </a>
+<a name="ln1613">      // check if notes need to be updated</a>
+<a name="ln1614">      // true if changing into or away from TAB or from one TAB type to another</a>
+<a name="ln1615"> </a>
+<a name="ln1616">      score-&gt;setLayoutAll();</a>
+<a name="ln1617"> </a>
+<a name="ln1618">      partName   = s;</a>
+<a name="ln1619">      instrument = oi;</a>
+<a name="ln1620">      }</a>
+<a name="ln1621"> </a>
+<a name="ln1622">//---------------------------------------------------------</a>
+<a name="ln1623">//   ChangeStyle</a>
+<a name="ln1624">//---------------------------------------------------------</a>
+<a name="ln1625"> </a>
+<a name="ln1626">ChangeStyle::ChangeStyle(Score* s, const MStyle&amp; st)</a>
+<a name="ln1627">   : score(s), style(st)</a>
+<a name="ln1628">      {</a>
+<a name="ln1629">      }</a>
+<a name="ln1630"> </a>
+<a name="ln1631">//---------------------------------------------------------</a>
+<a name="ln1632">//   flip</a>
+<a name="ln1633">//---------------------------------------------------------</a>
+<a name="ln1634"> </a>
+<a name="ln1635">void ChangeStyle::flip(EditData*)</a>
+<a name="ln1636">      {</a>
+<a name="ln1637">      MStyle tmp = score-&gt;style();</a>
+<a name="ln1638"> </a>
+<a name="ln1639">      if (score-&gt;styleV(Sid::concertPitch) != style.value(Sid::concertPitch))</a>
+<a name="ln1640">            score-&gt;cmdConcertPitchChanged(style.value(Sid::concertPitch).toBool(), true);</a>
+<a name="ln1641">      if (score-&gt;styleV(Sid::MusicalSymbolFont) != style.value(Sid::MusicalSymbolFont)) {</a>
+<a name="ln1642">            score-&gt;setScoreFont(ScoreFont::fontFactory(style.value(Sid::MusicalSymbolFont).toString()));</a>
+<a name="ln1643">            }</a>
+<a name="ln1644">      score-&gt;setStyle(style);</a>
+<a name="ln1645">      score-&gt;styleChanged();</a>
+<a name="ln1646">      style = tmp;</a>
+<a name="ln1647">      }</a>
+<a name="ln1648"> </a>
+<a name="ln1649">//---------------------------------------------------------</a>
+<a name="ln1650">//   ChangeStyleVal::flip</a>
+<a name="ln1651">//---------------------------------------------------------</a>
+<a name="ln1652"> </a>
+<a name="ln1653">void ChangeStyleVal::flip(EditData*)</a>
+<a name="ln1654">      {</a>
+<a name="ln1655">      QVariant v = score-&gt;styleV(idx);</a>
+<a name="ln1656">      if (v != value) {</a>
+<a name="ln1657">            score-&gt;style().set(idx, value);</a>
+<a name="ln1658">            switch (idx) {</a>
+<a name="ln1659">                  case Sid::chordExtensionMag:</a>
+<a name="ln1660">                  case Sid::chordExtensionAdjust:</a>
+<a name="ln1661">                  case Sid::chordModifierMag:</a>
+<a name="ln1662">                  case Sid::chordModifierAdjust:</a>
+<a name="ln1663">                  case Sid::chordDescriptionFile: {</a>
+<a name="ln1664">                        score-&gt;style().chordList()-&gt;unload();</a>
+<a name="ln1665">                        qreal emag = score-&gt;styleD(Sid::chordExtensionMag);</a>
+<a name="ln1666">                        qreal eadjust = score-&gt;styleD(Sid::chordExtensionAdjust);</a>
+<a name="ln1667">                        qreal mmag = score-&gt;styleD(Sid::chordModifierMag);</a>
+<a name="ln1668">                        qreal madjust = score-&gt;styleD(Sid::chordModifierAdjust);</a>
+<a name="ln1669">                        score-&gt;style().chordList()-&gt;configureAutoAdjust(emag, eadjust, mmag, madjust);</a>
+<a name="ln1670">                        if (score-&gt;styleB(Sid::chordsXmlFile))</a>
+<a name="ln1671">                            score-&gt;style().chordList()-&gt;read(&quot;chords.xml&quot;);</a>
+<a name="ln1672">                        score-&gt;style().chordList()-&gt;read(score-&gt;styleSt(Sid::chordDescriptionFile));</a>
+<a name="ln1673">                        }</a>
+<a name="ln1674">                        break;</a>
+<a name="ln1675">                  default:</a>
+<a name="ln1676">                        break;</a>
+<a name="ln1677">                  }</a>
+<a name="ln1678">            score-&gt;styleChanged();</a>
+<a name="ln1679">            }</a>
+<a name="ln1680">      value = v;</a>
+<a name="ln1681">      }</a>
+<a name="ln1682"> </a>
+<a name="ln1683">//---------------------------------------------------------</a>
+<a name="ln1684">//   ChangePageNumberOffset::flip</a>
+<a name="ln1685">//---------------------------------------------------------</a>
+<a name="ln1686"> </a>
+<a name="ln1687">void ChangePageNumberOffset::flip(EditData*)</a>
+<a name="ln1688">      {</a>
+<a name="ln1689">      int po = score-&gt;pageNumberOffset();</a>
+<a name="ln1690"> </a>
+<a name="ln1691">      score-&gt;setPageNumberOffset(pageOffset);</a>
+<a name="ln1692">      score-&gt;setLayoutAll();</a>
+<a name="ln1693"> </a>
+<a name="ln1694">      pageOffset = po;</a>
+<a name="ln1695">      }</a>
+<a name="ln1696"> </a>
+<a name="ln1697">//---------------------------------------------------------</a>
+<a name="ln1698">//   ChangeChordStaffMove</a>
+<a name="ln1699">//---------------------------------------------------------</a>
+<a name="ln1700"> </a>
+<a name="ln1701">ChangeChordStaffMove::ChangeChordStaffMove(ChordRest* cr, int v)</a>
+<a name="ln1702">   : chordRest(cr), staffMove(v)</a>
+<a name="ln1703">      {</a>
+<a name="ln1704">      }</a>
+<a name="ln1705"> </a>
+<a name="ln1706">void ChangeChordStaffMove::flip(EditData*)</a>
+<a name="ln1707">      {</a>
+<a name="ln1708">      int v = chordRest-&gt;staffMove();</a>
+<a name="ln1709">      for (ScoreElement* e : chordRest-&gt;linkList()) {</a>
+<a name="ln1710">            ChordRest* cr = toChordRest(e);</a>
+<a name="ln1711">            cr-&gt;setStaffMove(staffMove);</a>
+<a name="ln1712">            cr-&gt;triggerLayout();</a>
+<a name="ln1713">            }</a>
+<a name="ln1714">      staffMove = v;</a>
+<a name="ln1715">      }</a>
+<a name="ln1716"> </a>
+<a name="ln1717">//---------------------------------------------------------</a>
+<a name="ln1718">//   ChangeVelocity</a>
+<a name="ln1719">//---------------------------------------------------------</a>
+<a name="ln1720"> </a>
+<a name="ln1721">ChangeVelocity::ChangeVelocity(Note* n, Note::ValueType t, int o)</a>
+<a name="ln1722">   : note(n), veloType(t), veloOffset(o)</a>
+<a name="ln1723">      {</a>
+<a name="ln1724">      }</a>
+<a name="ln1725"> </a>
+<a name="ln1726">void ChangeVelocity::flip(EditData*)</a>
+<a name="ln1727">      {</a>
+<a name="ln1728">      Note::ValueType t = note-&gt;veloType();</a>
+<a name="ln1729">      int o       = note-&gt;veloOffset();</a>
+<a name="ln1730">      note-&gt;setVeloType(veloType);</a>
+<a name="ln1731">      note-&gt;setVeloOffset(veloOffset);</a>
+<a name="ln1732">      veloType   = t;</a>
+<a name="ln1733">      veloOffset = o;</a>
+<a name="ln1734">      }</a>
+<a name="ln1735"> </a>
+<a name="ln1736">//---------------------------------------------------------</a>
+<a name="ln1737">//   ChangeMStaffProperties</a>
+<a name="ln1738">//---------------------------------------------------------</a>
+<a name="ln1739"> </a>
+<a name="ln1740">ChangeMStaffProperties::ChangeMStaffProperties(Measure* m, int i, bool v, bool s)</a>
+<a name="ln1741">   : measure(m), staffIdx(i), visible(v), stemless(s)</a>
+<a name="ln1742">      {</a>
+<a name="ln1743">      }</a>
+<a name="ln1744"> </a>
+<a name="ln1745">//---------------------------------------------------------</a>
+<a name="ln1746">//   flip</a>
+<a name="ln1747">//---------------------------------------------------------</a>
+<a name="ln1748"> </a>
+<a name="ln1749">void ChangeMStaffProperties::flip(EditData*)</a>
+<a name="ln1750">      {</a>
+<a name="ln1751">      bool v = measure-&gt;visible(staffIdx);</a>
+<a name="ln1752">      bool s = measure-&gt;stemless(staffIdx);</a>
+<a name="ln1753">      measure-&gt;setStaffVisible(staffIdx, visible);</a>
+<a name="ln1754">      measure-&gt;setStaffStemless(staffIdx, stemless);</a>
+<a name="ln1755">      visible    = v;</a>
+<a name="ln1756">      stemless = s;</a>
+<a name="ln1757">      }</a>
+<a name="ln1758"> </a>
+<a name="ln1759">//---------------------------------------------------------</a>
+<a name="ln1760">//   getCourtesyClefs</a>
+<a name="ln1761">//    remember clefs at the end of previous measure</a>
+<a name="ln1762">//---------------------------------------------------------</a>
+<a name="ln1763"> </a>
+<a name="ln1764">std::vector&lt;Clef*&gt; InsertRemoveMeasures::getCourtesyClefs(Measure* m)</a>
+<a name="ln1765">      {</a>
+<a name="ln1766">      Score* score = m-&gt;score();</a>
+<a name="ln1767">      std::vector&lt;Clef*&gt; startClefs;</a>
+<a name="ln1768">      if (m-&gt;prev() &amp;&amp; m-&gt;prev()-&gt;isMeasure()) {</a>
+<a name="ln1769">            Measure* prevMeasure = toMeasure(m-&gt;prev());</a>
+<a name="ln1770">            const Segment* clefSeg = prevMeasure-&gt;findSegmentR(SegmentType::Clef | SegmentType::HeaderClef, prevMeasure-&gt;ticks());</a>
+<a name="ln1771">            if (clefSeg) {</a>
+<a name="ln1772">                  for (int st = 0; st &lt; score-&gt;nstaves(); ++st) {</a>
+<a name="ln1773">                        Element* clef = clefSeg-&gt;element(staff2track(st));</a>
+<a name="ln1774">                        if (clef &amp;&amp; clef-&gt;isClef())</a>
+<a name="ln1775">                              startClefs.push_back(toClef(clef));</a>
+<a name="ln1776">                        }</a>
+<a name="ln1777">                  }</a>
+<a name="ln1778">            }</a>
+<a name="ln1779">      return startClefs;</a>
+<a name="ln1780">      }</a>
+<a name="ln1781"> </a>
+<a name="ln1782">//---------------------------------------------------------</a>
+<a name="ln1783">//   insertMeasures</a>
+<a name="ln1784">//---------------------------------------------------------</a>
+<a name="ln1785"> </a>
+<a name="ln1786">void InsertRemoveMeasures::insertMeasures()</a>
+<a name="ln1787">      {</a>
+<a name="ln1788">      Score* score = fm-&gt;score();</a>
+<a name="ln1789">      QList&lt;Clef*&gt; clefs;</a>
+<a name="ln1790">      std::vector&lt;Clef*&gt; prevMeasureClefs;</a>
+<a name="ln1791">      QList&lt;KeySig*&gt; keys;</a>
+<a name="ln1792">      Segment* fs = 0;</a>
+<a name="ln1793">      Segment* ls = 0;</a>
+<a name="ln1794">      if (fm-&gt;isMeasure()) {</a>
+<a name="ln1795">            score-&gt;setPlaylistDirty();</a>
+<a name="ln1796">            fs = toMeasure(fm)-&gt;first();</a>
+<a name="ln1797">            ls = toMeasure(lm)-&gt;last();</a>
+<a name="ln1798">            for (Segment* s = fs; s &amp;&amp; s != ls; s = s-&gt;next1()) {</a>
+<a name="ln1799">                  if (!s-&gt;enabled() || !(s-&gt;segmentType() &amp; (SegmentType::Clef | SegmentType::HeaderClef | SegmentType::KeySig)))</a>
+<a name="ln1800">                        continue;</a>
+<a name="ln1801">                  for (int track = 0; track &lt; score-&gt;ntracks(); track += VOICES) {</a>
+<a name="ln1802">                        Element* e = s-&gt;element(track);</a>
+<a name="ln1803">                        if (!e || e-&gt;generated())</a>
+<a name="ln1804">                              continue;</a>
+<a name="ln1805">                        if (e-&gt;isClef())</a>
+<a name="ln1806">                              clefs.append(toClef(e));</a>
+<a name="ln1807">                        else if (e-&gt;isKeySig())</a>
+<a name="ln1808">                              keys.append(toKeySig(e));</a>
+<a name="ln1809">                        }</a>
+<a name="ln1810">                  }</a>
+<a name="ln1811">            prevMeasureClefs = getCourtesyClefs(toMeasure(fm));</a>
+<a name="ln1812">            }</a>
+<a name="ln1813">      score-&gt;measures()-&gt;insert(fm, lm);</a>
+<a name="ln1814"> </a>
+<a name="ln1815">      if (fm-&gt;isMeasure()) {</a>
+<a name="ln1816">            score-&gt;fixTicks();</a>
+<a name="ln1817">            score-&gt;insertTime(fm-&gt;tick(), lm-&gt;endTick() - fm-&gt;tick());</a>
+<a name="ln1818"> </a>
+<a name="ln1819">            // move ownership of Instrument back to part</a>
+<a name="ln1820">            for (Segment* s = fs; s &amp;&amp; s != ls; s = s-&gt;next1()) {</a>
+<a name="ln1821">                  for (Element* e : s-&gt;annotations()) {</a>
+<a name="ln1822">                        if (e-&gt;isInstrumentChange()) {</a>
+<a name="ln1823">                              e-&gt;part()-&gt;setInstrument(toInstrumentChange(e)-&gt;instrument(), s-&gt;tick());</a>
+<a name="ln1824">                              }</a>
+<a name="ln1825">                        }</a>
+<a name="ln1826">                  }</a>
+<a name="ln1827">            for (Clef* clef : prevMeasureClefs)</a>
+<a name="ln1828">                  clef-&gt;staff()-&gt;setClef(clef);</a>
+<a name="ln1829">            for (Clef* clef : clefs)</a>
+<a name="ln1830">                  clef-&gt;staff()-&gt;setClef(clef);</a>
+<a name="ln1831">            for (KeySig* key : keys)</a>
+<a name="ln1832">                  key-&gt;staff()-&gt;setKey(key-&gt;segment()-&gt;tick(), key-&gt;keySigEvent());</a>
+<a name="ln1833">            }</a>
+<a name="ln1834"> </a>
+<a name="ln1835">      score-&gt;setLayoutAll();</a>
+<a name="ln1836"> </a>
+<a name="ln1837">      //</a>
+<a name="ln1838">      // connect ties</a>
+<a name="ln1839">      //</a>
+<a name="ln1840"> </a>
+<a name="ln1841">      if (!fm-&gt;isMeasure() || !fm-&gt;prevMeasure())</a>
+<a name="ln1842">            return;</a>
+<a name="ln1843">      Measure* m = fm-&gt;prevMeasure();</a>
+<a name="ln1844">      for (Segment* seg = m-&gt;first(); seg; seg = seg-&gt;next()) {</a>
+<a name="ln1845">            for (int track = 0; track &lt; score-&gt;ntracks(); ++track) {</a>
+<a name="ln1846">                  Element* e = seg-&gt;element(track);</a>
+<a name="ln1847">                  if (e == 0 || !e-&gt;isChord())</a>
+<a name="ln1848">                        continue;</a>
+<a name="ln1849">                  Chord* chord = toChord(e);</a>
+<a name="ln1850">                  foreach (Note* n, chord-&gt;notes()) {</a>
+<a name="ln1851">                        Tie* tie = n-&gt;tieFor();</a>
+<a name="ln1852">                        if (!tie)</a>
+<a name="ln1853">                              continue;</a>
+<a name="ln1854">                        if (!tie-&gt;endNote() || tie-&gt;endNote()-&gt;chord()-&gt;segment()-&gt;measure() != m) {</a>
+<a name="ln1855">                              Note* nn = searchTieNote(n);</a>
+<a name="ln1856">                              if (nn) {</a>
+<a name="ln1857">                                    tie-&gt;setEndNote(nn);</a>
+<a name="ln1858">                                    nn-&gt;setTieBack(tie);</a>
+<a name="ln1859">                                    }</a>
+<a name="ln1860">                              }</a>
+<a name="ln1861">                        }</a>
+<a name="ln1862">                  }</a>
+<a name="ln1863">            }</a>
+<a name="ln1864">      }</a>
+<a name="ln1865"> </a>
+<a name="ln1866">//---------------------------------------------------------</a>
+<a name="ln1867">//   removeMeasures</a>
+<a name="ln1868">//---------------------------------------------------------</a>
+<a name="ln1869"> </a>
+<a name="ln1870">void InsertRemoveMeasures::removeMeasures()</a>
+<a name="ln1871">      {</a>
+<a name="ln1872">      Score* score = fm-&gt;score();</a>
+<a name="ln1873"> </a>
+<a name="ln1874">      Fraction tick1 = fm-&gt;tick();</a>
+<a name="ln1875">      Fraction tick2 = lm-&gt;endTick();</a>
+<a name="ln1876"> </a>
+<a name="ln1877">      QList&lt;System*&gt; systemList;</a>
+<a name="ln1878">      for (MeasureBase* mb = lm;; mb = mb-&gt;prev()) {</a>
+<a name="ln1879">            System* system = mb-&gt;system();</a>
+<a name="ln1880">            if (system) {</a>
+<a name="ln1881">                  if (!systemList.contains(system)) {</a>
+<a name="ln1882">                        systemList.push_back(system);</a>
+<a name="ln1883">                        }</a>
+<a name="ln1884">                  system-&gt;removeMeasure(mb);</a>
+<a name="ln1885">                  }</a>
+<a name="ln1886">            if (mb == fm)</a>
+<a name="ln1887">                  break;</a>
+<a name="ln1888">            }</a>
+<a name="ln1889">      score-&gt;measures()-&gt;remove(fm, lm);</a>
+<a name="ln1890"> </a>
+<a name="ln1891">      score-&gt;fixTicks();</a>
+<a name="ln1892">      if (fm-&gt;isMeasure()) {</a>
+<a name="ln1893">            score-&gt;setPlaylistDirty();</a>
+<a name="ln1894"> </a>
+<a name="ln1895">            // check if there is a clef at the end of last measure</a>
+<a name="ln1896">            // remove clef from staff cleflist</a>
+<a name="ln1897"> </a>
+<a name="ln1898">            if (lm-&gt;isMeasure()) {</a>
+<a name="ln1899">                  Measure* m = toMeasure(lm);</a>
+<a name="ln1900">                  Segment* s = m-&gt;findSegment(SegmentType::Clef, tick2);</a>
+<a name="ln1901">                  if (s) {</a>
+<a name="ln1902">                        for (Element* e : s-&gt;elist()) {</a>
+<a name="ln1903">                              Clef* clef = toClef(e);</a>
+<a name="ln1904">                              if (clef)</a>
+<a name="ln1905">                                    score-&gt;staff(clef-&gt;staffIdx())-&gt;removeClef(clef);</a>
+<a name="ln1906">                              }</a>
+<a name="ln1907">                        }</a>
+<a name="ln1908">                  }</a>
+<a name="ln1909"> </a>
+<a name="ln1910">            // remember clefs at the end of previous measure</a>
+<a name="ln1911">            const auto clefs = getCourtesyClefs(toMeasure(fm));</a>
+<a name="ln1912"> </a>
+<a name="ln1913">            if (score-&gt;firstMeasure())</a>
+<a name="ln1914">                  score-&gt;insertTime(tick1, -(tick2 - tick1));</a>
+<a name="ln1915"> </a>
+<a name="ln1916">            // Restore clefs that were backed up. Events for them could be lost</a>
+<a name="ln1917">            // as a result of the recent insertTime() call.</a>
+<a name="ln1918">            for (Clef* clef : clefs)</a>
+<a name="ln1919">                  clef-&gt;staff()-&gt;setClef(clef);</a>
+<a name="ln1920"> </a>
+<a name="ln1921">            for (Spanner* sp : score-&gt;unmanagedSpanners()) {</a>
+<a name="ln1922">                  if ((sp-&gt;tick() &gt;= tick1 &amp;&amp; sp-&gt;tick() &lt; tick2) || (sp-&gt;tick2() &gt;= tick1 &amp;&amp; sp-&gt;tick2() &lt; tick2))</a>
+<a name="ln1923">                        sp-&gt;removeUnmanaged();</a>
+<a name="ln1924">                  }</a>
+<a name="ln1925">            score-&gt;connectTies(true);   // ??</a>
+<a name="ln1926">            }</a>
+<a name="ln1927"> </a>
+<a name="ln1928">      // remove empty systems</a>
+<a name="ln1929"> </a>
+<a name="ln1930">      for (System* s : systemList) {</a>
+<a name="ln1931">            if (s-&gt;measures().empty()) {</a>
+<a name="ln1932">                  Page* page = s-&gt;page();</a>
+<a name="ln1933">                  if (page) {</a>
+<a name="ln1934">                        // erase system from page</a>
+<a name="ln1935">                        QList&lt;System*&gt;&amp; sl = page-&gt;systems();</a>
+<a name="ln1936">                        auto i = std::find(sl.begin(), sl.end(), s);</a>
+<a name="ln1937">                        if (i != sl.end())</a>
+<a name="ln1938">                              sl.erase(i);</a>
+<a name="ln1939">                        // erase system from score</a>
+<a name="ln1940">                        auto k = std::find(score-&gt;systems().begin(), score-&gt;systems().end(), s);</a>
+<a name="ln1941">                        if (k != score-&gt;systems().end())</a>
+<a name="ln1942">                              score-&gt;systems().erase(k);</a>
+<a name="ln1943">                        // finally delete system</a>
+<a name="ln1944">                        score-&gt;deleteLater(s);</a>
+<a name="ln1945">                        }</a>
+<a name="ln1946">                  }</a>
+<a name="ln1947">            }</a>
+<a name="ln1948"> </a>
+<a name="ln1949">      score-&gt;setLayoutAll();</a>
+<a name="ln1950">      }</a>
+<a name="ln1951"> </a>
+<a name="ln1952">//---------------------------------------------------------</a>
+<a name="ln1953">//   AddExcerpt::undo</a>
+<a name="ln1954">//---------------------------------------------------------</a>
+<a name="ln1955"> </a>
+<a name="ln1956">void AddExcerpt::undo(EditData*)</a>
+<a name="ln1957">      {</a>
+<a name="ln1958">      excerpt-&gt;oscore()-&gt;removeExcerpt(excerpt);</a>
+<a name="ln1959">      }</a>
+<a name="ln1960"> </a>
+<a name="ln1961">//---------------------------------------------------------</a>
+<a name="ln1962">//   AddExcerpt::redo</a>
+<a name="ln1963">//---------------------------------------------------------</a>
+<a name="ln1964"> </a>
+<a name="ln1965">void AddExcerpt::redo(EditData*)</a>
+<a name="ln1966">      {</a>
+<a name="ln1967">      excerpt-&gt;oscore()-&gt;addExcerpt(excerpt);</a>
+<a name="ln1968">      }</a>
+<a name="ln1969"> </a>
+<a name="ln1970">//---------------------------------------------------------</a>
+<a name="ln1971">//   RemoveExcerpt::undo()</a>
+<a name="ln1972">//---------------------------------------------------------</a>
+<a name="ln1973"> </a>
+<a name="ln1974">void RemoveExcerpt::undo(EditData*)</a>
+<a name="ln1975">      {</a>
+<a name="ln1976">      excerpt-&gt;oscore()-&gt;addExcerpt(excerpt);</a>
+<a name="ln1977">      }</a>
+<a name="ln1978"> </a>
+<a name="ln1979">//---------------------------------------------------------</a>
+<a name="ln1980">//   RemoveExcerpt::redo()</a>
+<a name="ln1981">//---------------------------------------------------------</a>
+<a name="ln1982"> </a>
+<a name="ln1983">void RemoveExcerpt::redo(EditData*)</a>
+<a name="ln1984">      {</a>
+<a name="ln1985">      excerpt-&gt;oscore()-&gt;removeExcerpt(excerpt);</a>
+<a name="ln1986">      }</a>
+<a name="ln1987"> </a>
+<a name="ln1988">//---------------------------------------------------------</a>
+<a name="ln1989">//   SwapExcerpt::flip</a>
+<a name="ln1990">//---------------------------------------------------------</a>
+<a name="ln1991"> </a>
+<a name="ln1992">void SwapExcerpt::flip(EditData*)</a>
+<a name="ln1993">      {</a>
+<a name="ln1994">      score-&gt;excerpts().swap(pos1, pos2);</a>
+<a name="ln1995">      score-&gt;setExcerptsChanged(true);</a>
+<a name="ln1996">      }</a>
+<a name="ln1997"> </a>
+<a name="ln1998">//---------------------------------------------------------</a>
+<a name="ln1999">//   ChangeExcerptTitle::flip</a>
+<a name="ln2000">//---------------------------------------------------------</a>
+<a name="ln2001"> </a>
+<a name="ln2002">void ChangeExcerptTitle::flip(EditData*)</a>
+<a name="ln2003">      {</a>
+<a name="ln2004">      QString s = title;</a>
+<a name="ln2005">      title = excerpt-&gt;title();</a>
+<a name="ln2006">      excerpt-&gt;setTitle(s);</a>
+<a name="ln2007">      excerpt-&gt;oscore()-&gt;setExcerptsChanged(true);</a>
+<a name="ln2008">      }</a>
+<a name="ln2009"> </a>
+<a name="ln2010">//---------------------------------------------------------</a>
+<a name="ln2011">//   flip</a>
+<a name="ln2012">//---------------------------------------------------------</a>
+<a name="ln2013"> </a>
+<a name="ln2014">void ChangeBend::flip(EditData*)</a>
+<a name="ln2015">      {</a>
+<a name="ln2016">      QList&lt;PitchValue&gt; pv = bend-&gt;points();</a>
+<a name="ln2017">      bend-&gt;score()-&gt;addRefresh(bend-&gt;canvasBoundingRect());</a>
+<a name="ln2018">      bend-&gt;setPoints(points);</a>
+<a name="ln2019">      points = pv;</a>
+<a name="ln2020">      bend-&gt;layout();</a>
+<a name="ln2021">      bend-&gt;score()-&gt;addRefresh(bend-&gt;canvasBoundingRect());</a>
+<a name="ln2022">      }</a>
+<a name="ln2023"> </a>
+<a name="ln2024">//---------------------------------------------------------</a>
+<a name="ln2025">//   flip</a>
+<a name="ln2026">//---------------------------------------------------------</a>
+<a name="ln2027"> </a>
+<a name="ln2028">void ChangeTremoloBar::flip(EditData*)</a>
+<a name="ln2029">      {</a>
+<a name="ln2030">      QList&lt;PitchValue&gt; pv = bend-&gt;points();</a>
+<a name="ln2031">      bend-&gt;setPoints(points);</a>
+<a name="ln2032">      points = pv;</a>
+<a name="ln2033">      }</a>
+<a name="ln2034"> </a>
+<a name="ln2035">//---------------------------------------------------------</a>
+<a name="ln2036">//   ChangeNoteEvents::flip</a>
+<a name="ln2037">//---------------------------------------------------------</a>
+<a name="ln2038"> </a>
+<a name="ln2039">void ChangeNoteEvents::flip(EditData*)</a>
+<a name="ln2040">      {</a>
+<a name="ln2041">/*TODO:      QList&lt;NoteEvent*&gt; e = chord-&gt;playEvents();</a>
+<a name="ln2042">      chord-&gt;setPlayEvents(events);</a>
+<a name="ln2043">      events = e;</a>
+<a name="ln2044">      */</a>
+<a name="ln2045">      }</a>
+<a name="ln2046"> </a>
+<a name="ln2047">//---------------------------------------------------------</a>
+<a name="ln2048">//   ChangeNoteEventList::flip</a>
+<a name="ln2049">//---------------------------------------------------------</a>
+<a name="ln2050"> </a>
+<a name="ln2051">void ChangeNoteEventList::flip(EditData*)</a>
+<a name="ln2052">      {</a>
+<a name="ln2053">      note-&gt;score()-&gt;setPlaylistDirty();</a>
+<a name="ln2054">      // Get copy of current list.</a>
+<a name="ln2055">      NoteEventList nel = note-&gt;playEvents();</a>
+<a name="ln2056">      // Replace current copy with new list.</a>
+<a name="ln2057">      note-&gt;setPlayEvents(newEvents);</a>
+<a name="ln2058">      // Save copy of replaced list.</a>
+<a name="ln2059">      newEvents = nel;</a>
+<a name="ln2060">      // Get a copy of the current playEventType.</a>
+<a name="ln2061">      PlayEventType petval = note-&gt;chord()-&gt;playEventType();</a>
+<a name="ln2062">      // Replace current setting with new setting.</a>
+<a name="ln2063">      note-&gt;chord()-&gt;setPlayEventType(newPetype);</a>
+<a name="ln2064">      // Save copy of old setting.</a>
+<a name="ln2065">      newPetype = petval;</a>
+<a name="ln2066">      }</a>
+<a name="ln2067"> </a>
+<a name="ln2068">//---------------------------------------------------------</a>
+<a name="ln2069">//   ChangeNoteEventList::flip</a>
+<a name="ln2070">//---------------------------------------------------------</a>
+<a name="ln2071"> </a>
+<a name="ln2072">void ChangeChordPlayEventType::flip(EditData*)</a>
+<a name="ln2073">      {</a>
+<a name="ln2074">      chord-&gt;score()-&gt;setPlaylistDirty();</a>
+<a name="ln2075">      // Flips data between NoteEventList's.</a>
+<a name="ln2076">      size_t n = chord-&gt;notes().size();</a>
+<a name="ln2077">      for (size_t i = 0; i &lt; n; ++i) {</a>
+<a name="ln2078">            Note* note = chord-&gt;notes()[i];</a>
+<a name="ln2079">            note-&gt;playEvents().swap(events[int(i)]);</a>
+<a name="ln2080">            }</a>
+<a name="ln2081">      // Flips PlayEventType between chord and undo.</a>
+<a name="ln2082">      PlayEventType curPetype = chord-&gt;playEventType();</a>
+<a name="ln2083">      chord-&gt;setPlayEventType(petype);</a>
+<a name="ln2084">      petype = curPetype;</a>
+<a name="ln2085">      }</a>
+<a name="ln2086"> </a>
+<a name="ln2087">//---------------------------------------------------------</a>
+<a name="ln2088">//   ChangeInstrument::flip</a>
+<a name="ln2089">//---------------------------------------------------------</a>
+<a name="ln2090"> </a>
+<a name="ln2091">void ChangeInstrument::flip(EditData*)</a>
+<a name="ln2092">      {</a>
+<a name="ln2093">      Part* part = is-&gt;staff()-&gt;part();</a>
+<a name="ln2094">      Fraction tickStart = is-&gt;segment()-&gt;tick();</a>
+<a name="ln2095">      Instrument* oi = is-&gt;instrument();  //new Instrument(*is-&gt;instrument());</a>
+<a name="ln2096"> </a>
+<a name="ln2097">      // set instrument in both part and instrument change element</a>
+<a name="ln2098">      is-&gt;setInstrument(instrument);      //*instrument</a>
+<a name="ln2099">      part-&gt;setInstrument(instrument, tickStart);</a>
+<a name="ln2100"> </a>
+<a name="ln2101">      // update score</a>
+<a name="ln2102">      is-&gt;masterScore()-&gt;rebuildMidiMapping();</a>
+<a name="ln2103">      is-&gt;masterScore()-&gt;updateChannel();</a>
+<a name="ln2104">      is-&gt;score()-&gt;setInstrumentsChanged(true);</a>
+<a name="ln2105">      is-&gt;triggerLayoutAll();</a>
+<a name="ln2106"> </a>
+<a name="ln2107">      // remember original instrument</a>
+<a name="ln2108">      instrument = oi;</a>
+<a name="ln2109">      }</a>
+<a name="ln2110"> </a>
+<a name="ln2111">//---------------------------------------------------------</a>
+<a name="ln2112">//   flip</a>
+<a name="ln2113">//---------------------------------------------------------</a>
+<a name="ln2114"> </a>
+<a name="ln2115">void SwapCR::flip(EditData*)</a>
+<a name="ln2116">      {</a>
+<a name="ln2117">      Segment* s1 = cr1-&gt;segment();</a>
+<a name="ln2118">      Segment* s2 = cr2-&gt;segment();</a>
+<a name="ln2119">      int track = cr1-&gt;track();</a>
+<a name="ln2120"> </a>
+<a name="ln2121">      Element* cr = s1-&gt;element(track);</a>
+<a name="ln2122">      s1-&gt;setElement(track, s2-&gt;element(track));</a>
+<a name="ln2123">      s2-&gt;setElement(track, cr);</a>
+<a name="ln2124">      cr1-&gt;score()-&gt;setLayout(s1-&gt;tick(), cr1-&gt;staffIdx(), cr1);</a>
+<a name="ln2125">      cr1-&gt;score()-&gt;setLayout(s2-&gt;tick(), cr1-&gt;staffIdx(), cr1);</a>
+<a name="ln2126">      }</a>
+<a name="ln2127"> </a>
+<a name="ln2128">//---------------------------------------------------------</a>
+<a name="ln2129">//   ChangeClefType</a>
+<a name="ln2130">//---------------------------------------------------------</a>
+<a name="ln2131"> </a>
+<a name="ln2132">ChangeClefType::ChangeClefType(Clef* c, ClefType cl, ClefType tc)</a>
+<a name="ln2133">      {</a>
+<a name="ln2134">      clef            = c;</a>
+<a name="ln2135">      concertClef     = cl;</a>
+<a name="ln2136">      transposingClef = tc;</a>
+<a name="ln2137">      }</a>
+<a name="ln2138"> </a>
+<a name="ln2139">//---------------------------------------------------------</a>
+<a name="ln2140">//   ChangeClefType::flip</a>
+<a name="ln2141">//---------------------------------------------------------</a>
+<a name="ln2142"> </a>
+<a name="ln2143">void ChangeClefType::flip(EditData*)</a>
+<a name="ln2144">      {</a>
+<a name="ln2145">      ClefType ocl = clef-&gt;concertClef();</a>
+<a name="ln2146">      ClefType otc = clef-&gt;transposingClef();</a>
+<a name="ln2147"> </a>
+<a name="ln2148">      clef-&gt;setConcertClef(concertClef);</a>
+<a name="ln2149">      clef-&gt;setTransposingClef(transposingClef);</a>
+<a name="ln2150"> </a>
+<a name="ln2151">      clef-&gt;staff()-&gt;setClef(clef);</a>
+<a name="ln2152">      Segment* segment = clef-&gt;segment();</a>
+<a name="ln2153">      updateNoteLines(segment, clef-&gt;track());</a>
+<a name="ln2154">      clef-&gt;triggerLayoutAll();      // TODO: reduce layout to clef range</a>
+<a name="ln2155"> </a>
+<a name="ln2156">      concertClef     = ocl;</a>
+<a name="ln2157">      transposingClef = otc;</a>
+<a name="ln2158">      // layout the clef to align the currentClefType with the actual one immediately</a>
+<a name="ln2159">      clef-&gt;layout();</a>
+<a name="ln2160">      }</a>
+<a name="ln2161"> </a>
+<a name="ln2162">//---------------------------------------------------------</a>
+<a name="ln2163">//   flip</a>
+<a name="ln2164">//---------------------------------------------------------</a>
+<a name="ln2165">#if 0 // MoveStaff is commented out in mscore/instrwidget.cpp, not used anywhere else</a>
+<a name="ln2166">void MoveStaff::flip(EditData*)</a>
+<a name="ln2167">      {</a>
+<a name="ln2168">      Part* oldPart = staff-&gt;part();</a>
+<a name="ln2169">      int idx = staff-&gt;rstaff();</a>
+<a name="ln2170">      oldPart-&gt;removeStaff(staff);</a>
+<a name="ln2171">      part-&gt;insertStaff(staff, rstaff);</a>
+<a name="ln2172">      part = oldPart;</a>
+<a name="ln2173">      rstaff = idx;</a>
+<a name="ln2174">      staff-&gt;score()-&gt;setLayoutAll();</a>
+<a name="ln2175">      }</a>
+<a name="ln2176">#endif</a>
+<a name="ln2177"> </a>
+<a name="ln2178">//---------------------------------------------------------</a>
+<a name="ln2179">//   ChangeProperty::flip</a>
+<a name="ln2180">//---------------------------------------------------------</a>
+<a name="ln2181"> </a>
+<a name="ln2182">void ChangeProperty::flip(EditData*)</a>
+<a name="ln2183">      {</a>
+<a name="ln2184">      qCDebug(undoRedo) &lt;&lt; element-&gt;name() &lt;&lt; int(id) &lt;&lt; &quot;(&quot; &lt;&lt; propertyName(id) &lt;&lt; &quot;)&quot; &lt;&lt; element-&gt;getProperty(id) &lt;&lt; &quot;-&gt;&quot; &lt;&lt; property;</a>
+<a name="ln2185"> </a>
+<a name="ln2186">      QVariant v       = element-&gt;getProperty(id);</a>
+<a name="ln2187">      PropertyFlags ps = element-&gt;propertyFlags(id);</a>
+<a name="ln2188"> </a>
+<a name="ln2189">      element-&gt;setProperty(id, property);</a>
+<a name="ln2190">      element-&gt;setPropertyFlags(id, flags);</a>
+<a name="ln2191">      property = v;</a>
+<a name="ln2192">      flags = ps;</a>
+<a name="ln2193">      }</a>
+<a name="ln2194"> </a>
+<a name="ln2195">//---------------------------------------------------------</a>
+<a name="ln2196">//   ChangeBracketProperty::flip</a>
+<a name="ln2197">//---------------------------------------------------------</a>
+<a name="ln2198"> </a>
+<a name="ln2199">void ChangeBracketProperty::flip(EditData* ed)</a>
+<a name="ln2200">      {</a>
+<a name="ln2201">      element = staff-&gt;brackets()[level];</a>
+<a name="ln2202">      ChangeProperty::flip(ed);</a>
+<a name="ln2203">      level = toBracketItem(element)-&gt;column();</a>
+<a name="ln2204">      }</a>
+<a name="ln2205"> </a>
+<a name="ln2206">//---------------------------------------------------------</a>
+<a name="ln2207">//   ChangeMetaText::flip</a>
+<a name="ln2208">//---------------------------------------------------------</a>
+<a name="ln2209"> </a>
+<a name="ln2210">void ChangeMetaText::flip(EditData*)</a>
+<a name="ln2211">      {</a>
+<a name="ln2212">      QString s = score-&gt;metaTag(id);</a>
+<a name="ln2213">      score-&gt;setMetaTag(id, text);</a>
+<a name="ln2214">      text = s;</a>
+<a name="ln2215">      }</a>
+<a name="ln2216"> </a>
+<a name="ln2217">//---------------------------------------------------------</a>
+<a name="ln2218">//   ChangeSynthesizerState::flip</a>
+<a name="ln2219">//---------------------------------------------------------</a>
+<a name="ln2220"> </a>
+<a name="ln2221">void ChangeSynthesizerState::flip(EditData*)</a>
+<a name="ln2222">      {</a>
+<a name="ln2223">      std::swap(state, score-&gt;_synthesizerState);</a>
+<a name="ln2224">      }</a>
+<a name="ln2225"> </a>
+<a name="ln2226">void AddBracket::redo(EditData*)</a>
+<a name="ln2227">      {</a>
+<a name="ln2228">      staff-&gt;setBracketType(level, type);</a>
+<a name="ln2229">      staff-&gt;setBracketSpan(level, span);</a>
+<a name="ln2230">      staff-&gt;triggerLayout();</a>
+<a name="ln2231">      }</a>
+<a name="ln2232"> </a>
+<a name="ln2233">void AddBracket::undo(EditData*)</a>
+<a name="ln2234">      {</a>
+<a name="ln2235">      staff-&gt;setBracketType(level, BracketType::NO_BRACKET);</a>
+<a name="ln2236">      staff-&gt;triggerLayout();</a>
+<a name="ln2237">      }</a>
+<a name="ln2238"> </a>
+<a name="ln2239">void RemoveBracket::redo(EditData*)</a>
+<a name="ln2240">      {</a>
+<a name="ln2241">      staff-&gt;setBracketType(level, BracketType::NO_BRACKET);</a>
+<a name="ln2242">      staff-&gt;triggerLayout();</a>
+<a name="ln2243">      }</a>
+<a name="ln2244"> </a>
+<a name="ln2245">void RemoveBracket::undo(EditData*)</a>
+<a name="ln2246">      {</a>
+<a name="ln2247">      staff-&gt;setBracketType(level, type);</a>
+<a name="ln2248">      staff-&gt;setBracketSpan(level, span);</a>
+<a name="ln2249">      staff-&gt;triggerLayout();</a>
+<a name="ln2250">      }</a>
+<a name="ln2251"> </a>
+<a name="ln2252">//---------------------------------------------------------</a>
+<a name="ln2253">//   ChangeSpannerElements</a>
+<a name="ln2254">//---------------------------------------------------------</a>
+<a name="ln2255"> </a>
+<a name="ln2256">void ChangeSpannerElements::flip(EditData*)</a>
+<a name="ln2257">      {</a>
+<a name="ln2258">      Element*    oldStartElement   = spanner-&gt;startElement();</a>
+<a name="ln2259">      Element*    oldEndElement     = spanner-&gt;endElement();</a>
+<a name="ln2260">      if (spanner-&gt;anchor() == Spanner::Anchor::NOTE) {</a>
+<a name="ln2261">            // be sure new spanner elements are of the right type</a>
+<a name="ln2262">            if (!startElement-&gt;isNote() || !endElement-&gt;isNote())</a>
+<a name="ln2263">                  return;</a>
+<a name="ln2264">            Note* oldStartNote = toNote(oldStartElement);</a>
+<a name="ln2265">            Note* oldEndNote = toNote(oldEndElement);</a>
+<a name="ln2266">            Note* newStartNote = toNote(startElement);</a>
+<a name="ln2267">            Note* newEndNote = toNote(endElement);</a>
+<a name="ln2268">            // update spanner's start and end notes</a>
+<a name="ln2269">            if (newStartNote &amp;&amp; newEndNote) {</a>
+<a name="ln2270">                  spanner-&gt;setNoteSpan(newStartNote, newEndNote);</a>
+<a name="ln2271">                  if (spanner-&gt;isTie()) {</a>
+<a name="ln2272">                        Tie* tie = toTie(spanner);</a>
+<a name="ln2273">                        oldStartNote-&gt;setTieFor(nullptr);</a>
+<a name="ln2274">                        oldEndNote-&gt;setTieBack(nullptr);</a>
+<a name="ln2275">                        newStartNote-&gt;setTieFor(tie);</a>
+<a name="ln2276">                        newEndNote-&gt;setTieBack(tie);</a>
+<a name="ln2277">                        }</a>
+<a name="ln2278">                  else {</a>
+<a name="ln2279">                        oldStartNote-&gt;removeSpannerFor(spanner);</a>
+<a name="ln2280">                        oldEndNote-&gt;removeSpannerBack(spanner);</a>
+<a name="ln2281">                        newStartNote-&gt;addSpannerFor(spanner);</a>
+<a name="ln2282">                        newEndNote-&gt;addSpannerBack(spanner);</a>
+<a name="ln2283">                        if (spanner-&gt;isGlissando())</a>
+<a name="ln2284">                              oldEndNote-&gt;chord()-&gt;updateEndsGlissando();</a>
+<a name="ln2285">                        }</a>
+<a name="ln2286">                  }</a>
+<a name="ln2287">            }</a>
+<a name="ln2288">      else {</a>
+<a name="ln2289">            spanner-&gt;setStartElement(startElement);</a>
+<a name="ln2290">            spanner-&gt;setEndElement(endElement);</a>
+<a name="ln2291">            }</a>
+<a name="ln2292">      startElement = oldStartElement;</a>
+<a name="ln2293">      endElement   = oldEndElement;</a>
+<a name="ln2294">      spanner-&gt;triggerLayout();</a>
+<a name="ln2295">      }</a>
+<a name="ln2296"> </a>
+<a name="ln2297">//---------------------------------------------------------</a>
+<a name="ln2298">//   ChangeParent</a>
+<a name="ln2299">//---------------------------------------------------------</a>
+<a name="ln2300"> </a>
+<a name="ln2301">void ChangeParent::flip(EditData*)</a>
+<a name="ln2302">      {</a>
+<a name="ln2303">      Element* p = element-&gt;parent();</a>
+<a name="ln2304">      int si = element-&gt;staffIdx();</a>
+<a name="ln2305">      p-&gt;remove(element);</a>
+<a name="ln2306">      element-&gt;setParent(parent);</a>
+<a name="ln2307">      element-&gt;setTrack(staffIdx * VOICES);</a>
+<a name="ln2308">      parent-&gt;add(element);</a>
+<a name="ln2309">      staffIdx = si;</a>
+<a name="ln2310">      parent = p;</a>
+<a name="ln2311">      }</a>
+<a name="ln2312"> </a>
+<a name="ln2313">//---------------------------------------------------------</a>
+<a name="ln2314">//   ChangeMMRest</a>
+<a name="ln2315">//---------------------------------------------------------</a>
+<a name="ln2316"> </a>
+<a name="ln2317">void ChangeMMRest::flip(EditData*)</a>
+<a name="ln2318">      {</a>
+<a name="ln2319">      Measure* mmr = m-&gt;mmRest();</a>
+<a name="ln2320">      m-&gt;setMMRest(mmrest);</a>
+<a name="ln2321">      mmrest = mmr;</a>
+<a name="ln2322">      }</a>
+<a name="ln2323"> </a>
+<a name="ln2324">//---------------------------------------------------------</a>
+<a name="ln2325">//   InsertTime</a>
+<a name="ln2326">//---------------------------------------------------------</a>
+<a name="ln2327"> </a>
+<a name="ln2328">void InsertTime::redo(EditData*)</a>
+<a name="ln2329">      {</a>
+<a name="ln2330">      score-&gt;insertTime(tick, len);</a>
+<a name="ln2331">      }</a>
+<a name="ln2332"> </a>
+<a name="ln2333">void InsertTime::undo(EditData*)</a>
+<a name="ln2334">      {</a>
+<a name="ln2335">      score-&gt;insertTime(tick, -len);</a>
+<a name="ln2336">      }</a>
+<a name="ln2337"> </a>
+<a name="ln2338">//---------------------------------------------------------</a>
+<a name="ln2339">//   InsertTimeUnmanagedSpanner::flip</a>
+<a name="ln2340">//---------------------------------------------------------</a>
+<a name="ln2341"> </a>
+<a name="ln2342">void InsertTimeUnmanagedSpanner::flip(EditData*)</a>
+<a name="ln2343">      {</a>
+<a name="ln2344">      for (Score* s : score-&gt;scoreList()) {</a>
+<a name="ln2345">            const auto unmanagedSpanners(s-&gt;unmanagedSpanners());</a>
+<a name="ln2346">            for (Spanner* sp : unmanagedSpanners)</a>
+<a name="ln2347">                  sp-&gt;insertTimeUnmanaged(tick, len);</a>
+<a name="ln2348">            }</a>
+<a name="ln2349">      len = -len;</a>
+<a name="ln2350">      }</a>
+<a name="ln2351"> </a>
+<a name="ln2352">//---------------------------------------------------------</a>
+<a name="ln2353">//   ChangeNoteEvent::flip</a>
+<a name="ln2354">//---------------------------------------------------------</a>
+<a name="ln2355"> </a>
+<a name="ln2356">void ChangeNoteEvent::flip(EditData*)</a>
+<a name="ln2357">      {</a>
+<a name="ln2358">      note-&gt;score()-&gt;setPlaylistDirty();</a>
+<a name="ln2359">      NoteEvent e = *oldEvent;</a>
+<a name="ln2360">      *oldEvent   = newEvent;</a>
+<a name="ln2361">      newEvent    = e;</a>
+<a name="ln2362">      // Get a copy of the current playEventType.</a>
+<a name="ln2363">      PlayEventType petval = note-&gt;chord()-&gt;playEventType();</a>
+<a name="ln2364">      // Replace current setting with new setting.</a>
+<a name="ln2365">      note-&gt;chord()-&gt;setPlayEventType(newPetype);</a>
+<a name="ln2366">      // Save copy of old setting.</a>
+<a name="ln2367">      newPetype = petval;</a>
+<a name="ln2368">      }</a>
+<a name="ln2369"> </a>
+<a name="ln2370">//---------------------------------------------------------</a>
+<a name="ln2371">//   LinkUnlink</a>
+<a name="ln2372">//---------------------------------------------------------</a>
+<a name="ln2373"> </a>
+<a name="ln2374">LinkUnlink::~LinkUnlink()</a>
+<a name="ln2375">      {</a>
+<a name="ln2376">      if (le &amp;&amp; mustDelete) {</a>
+<a name="ln2377">            Q_ASSERT(le-&gt;size() &lt;= 1);</a>
+<a name="ln2378">            delete le;</a>
+<a name="ln2379">            }</a>
+<a name="ln2380">      }</a>
+<a name="ln2381"> </a>
+<a name="ln2382">void LinkUnlink::link()</a>
+<a name="ln2383">      {</a>
+<a name="ln2384">      if (le-&gt;size() == 1)</a>
+<a name="ln2385">            le-&gt;front()-&gt;setLinks(le);</a>
+<a name="ln2386">      mustDelete = false;</a>
+<a name="ln2387">      le-&gt;append(e);</a>
+<a name="ln2388">      e-&gt;setLinks(le);</a>
+<a name="ln2389">      }</a>
+<a name="ln2390"> </a>
+<a name="ln2391">void LinkUnlink::unlink()</a>
+<a name="ln2392">      {</a>
+<a name="ln2393">      Q_ASSERT(le-&gt;contains(e));</a>
+<a name="ln2394">      le-&gt;removeOne(e);</a>
+<a name="ln2395">      if (le-&gt;size() == 1) {</a>
+<a name="ln2396">            le-&gt;front()-&gt;setLinks(0);</a>
+<a name="ln2397">            mustDelete = true;</a>
+<a name="ln2398">            }</a>
+<a name="ln2399"> </a>
+<a name="ln2400">      e-&gt;setLinks(0);</a>
+<a name="ln2401">      }</a>
+<a name="ln2402"> </a>
+<a name="ln2403">//---------------------------------------------------------</a>
+<a name="ln2404">//   Link</a>
+<a name="ln2405">//    link e1 to e2</a>
+<a name="ln2406">//---------------------------------------------------------</a>
+<a name="ln2407"> </a>
+<a name="ln2408">Link::Link(ScoreElement* e1, ScoreElement* e2)</a>
+<a name="ln2409">      {</a>
+<a name="ln2410">      Q_ASSERT(e1-&gt;links() == 0);</a>
+<a name="ln2411">      le = e2-&gt;links();</a>
+<a name="ln2412">      if (!le) {</a>
+<a name="ln2413">            if (e1-&gt;isStaff())</a>
+<a name="ln2414">                  le = new LinkedElements(e1-&gt;score(), -1);</a>
+<a name="ln2415">            else</a>
+<a name="ln2416">                  le = new LinkedElements(e1-&gt;score());</a>
+<a name="ln2417">            le-&gt;push_back(e2);</a>
+<a name="ln2418">            }</a>
+<a name="ln2419">      e = e1;</a>
+<a name="ln2420">      }</a>
+<a name="ln2421"> </a>
+<a name="ln2422">//---------------------------------------------------------</a>
+<a name="ln2423">//   Link::isFiltered</a>
+<a name="ln2424">//---------------------------------------------------------</a>
+<a name="ln2425"> </a>
+<a name="ln2426">bool Link::isFiltered(UndoCommand::Filter f, const Element* target) const</a>
+<a name="ln2427">      {</a>
+<a name="ln2428">      using Filter = UndoCommand::Filter;</a>
+<a name="ln2429">      if (f == Filter::Link)</a>
+<a name="ln2430">            return e == target || le-&gt;contains(const_cast&lt;Element*&gt;(target));</a>
+<a name="ln2431">      return false;</a>
+<a name="ln2432">      }</a>
+<a name="ln2433"> </a>
+<a name="ln2434">//---------------------------------------------------------</a>
+<a name="ln2435">//   Unlink</a>
+<a name="ln2436">//---------------------------------------------------------</a>
+<a name="ln2437"> </a>
+<a name="ln2438">Unlink::Unlink(ScoreElement* _e)</a>
+<a name="ln2439">      {</a>
+<a name="ln2440">      e  = _e;</a>
+<a name="ln2441">      le = e-&gt;links();</a>
+<a name="ln2442">      Q_ASSERT(le);</a>
+<a name="ln2443">      }</a>
+<a name="ln2444"> </a>
+<a name="ln2445">//---------------------------------------------------------</a>
+<a name="ln2446">//   ChangeStartEndSpanner::flip</a>
+<a name="ln2447">//---------------------------------------------------------</a>
+<a name="ln2448"> </a>
+<a name="ln2449">void ChangeStartEndSpanner::flip(EditData*)</a>
+<a name="ln2450">      {</a>
+<a name="ln2451">      Element* s = spanner-&gt;startElement();</a>
+<a name="ln2452">      Element* e = spanner-&gt;endElement();</a>
+<a name="ln2453">      spanner-&gt;setStartElement(start);</a>
+<a name="ln2454">      spanner-&gt;setEndElement(end);</a>
+<a name="ln2455">      start = s;</a>
+<a name="ln2456">      end   = e;</a>
+<a name="ln2457">      }</a>
+<a name="ln2458"> </a>
+<a name="ln2459">//---------------------------------------------------------</a>
+<a name="ln2460">//   ChangeMetaTags::flip</a>
+<a name="ln2461">//---------------------------------------------------------</a>
+<a name="ln2462"> </a>
+<a name="ln2463">void ChangeMetaTags::flip(EditData*)</a>
+<a name="ln2464">      {</a>
+<a name="ln2465">      QMap&lt;QString,QString&gt; t = score-&gt;metaTags();</a>
+<a name="ln2466">      score-&gt;setMetaTags(metaTags);</a>
+<a name="ln2467">      metaTags = t;</a>
+<a name="ln2468">      }</a>
+<a name="ln2469"> </a>
+<a name="ln2470">//---------------------------------------------------------</a>
+<a name="ln2471">//   ChangeDrumset::flip</a>
+<a name="ln2472">//---------------------------------------------------------</a>
+<a name="ln2473"> </a>
+<a name="ln2474">void ChangeDrumset::flip(EditData*)</a>
+<a name="ln2475">      {</a>
+<a name="ln2476">      Drumset d = *instrument-&gt;drumset();</a>
+<a name="ln2477">      instrument-&gt;setDrumset(&amp;drumset);</a>
+<a name="ln2478">      drumset = d;</a>
+<a name="ln2479">      }</a>
+<a name="ln2480"> </a>
+<a name="ln2481">//---------------------------------------------------------</a>
+<a name="ln2482">//   FretDot</a>
+<a name="ln2483">//---------------------------------------------------------</a>
+<a name="ln2484"> </a>
+<a name="ln2485">void FretDot::redo(EditData*)</a>
+<a name="ln2486">      {</a>
+<a name="ln2487">      undoData = FretUndoData(diagram);</a>
+<a name="ln2488"> </a>
+<a name="ln2489">      diagram-&gt;setDot(string, fret, add, dtype);</a>
+<a name="ln2490">      diagram-&gt;triggerLayout();</a>
+<a name="ln2491">      }</a>
+<a name="ln2492"> </a>
+<a name="ln2493"> </a>
+<a name="ln2494">void FretDot::undo(EditData*)</a>
+<a name="ln2495">      {</a>
+<a name="ln2496">      undoData.updateDiagram();</a>
+<a name="ln2497">      diagram-&gt;triggerLayout();</a>
+<a name="ln2498">      }</a>
+<a name="ln2499"> </a>
+<a name="ln2500">//---------------------------------------------------------</a>
+<a name="ln2501">//   FretMarker</a>
+<a name="ln2502">//---------------------------------------------------------</a>
+<a name="ln2503"> </a>
+<a name="ln2504">void FretMarker::redo(EditData*)</a>
+<a name="ln2505">      {</a>
+<a name="ln2506">      undoData = FretUndoData(diagram);</a>
+<a name="ln2507"> </a>
+<a name="ln2508">      diagram-&gt;setMarker(string, mtype);</a>
+<a name="ln2509">      diagram-&gt;triggerLayout();</a>
+<a name="ln2510">      }</a>
+<a name="ln2511"> </a>
+<a name="ln2512">void FretMarker::undo(EditData*)</a>
+<a name="ln2513">      {</a>
+<a name="ln2514">      undoData.updateDiagram();</a>
+<a name="ln2515">      diagram-&gt;triggerLayout();</a>
+<a name="ln2516">      }</a>
+<a name="ln2517"> </a>
+<a name="ln2518">//---------------------------------------------------------</a>
+<a name="ln2519">//   FretBarre</a>
+<a name="ln2520">//---------------------------------------------------------</a>
+<a name="ln2521"> </a>
+<a name="ln2522">void FretBarre::redo(EditData*)</a>
+<a name="ln2523">      {</a>
+<a name="ln2524">      undoData = FretUndoData(diagram);</a>
+<a name="ln2525"> </a>
+<a name="ln2526">      diagram-&gt;setBarre(string, fret, add);</a>
+<a name="ln2527">      diagram-&gt;triggerLayout();</a>
+<a name="ln2528">      }</a>
+<a name="ln2529"> </a>
+<a name="ln2530">void FretBarre::undo(EditData*)</a>
+<a name="ln2531">      {</a>
+<a name="ln2532">      undoData.updateDiagram();</a>
+<a name="ln2533">      diagram-&gt;triggerLayout();</a>
+<a name="ln2534">      }</a>
+<a name="ln2535"> </a>
+<a name="ln2536">//---------------------------------------------------------</a>
+<a name="ln2537">//   FretClear</a>
+<a name="ln2538">//---------------------------------------------------------</a>
+<a name="ln2539"> </a>
+<a name="ln2540">void FretClear::redo(EditData*)</a>
+<a name="ln2541">      {</a>
+<a name="ln2542">      undoData = FretUndoData(diagram);</a>
+<a name="ln2543"> </a>
+<a name="ln2544">      diagram-&gt;clear();</a>
+<a name="ln2545">      diagram-&gt;triggerLayout();</a>
+<a name="ln2546">      }</a>
+<a name="ln2547"> </a>
+<a name="ln2548">void FretClear::undo(EditData*)</a>
+<a name="ln2549">      {</a>
+<a name="ln2550">      undoData.updateDiagram();</a>
+<a name="ln2551">      diagram-&gt;triggerLayout();</a>
+<a name="ln2552">      }</a>
+<a name="ln2553"> </a>
+<a name="ln2554">//---------------------------------------------------------</a>
+<a name="ln2555">//   MoveTremolo</a>
+<a name="ln2556">//---------------------------------------------------------</a>
+<a name="ln2557"> </a>
+<a name="ln2558">void MoveTremolo::redo(EditData*)</a>
+<a name="ln2559">      {</a>
+<a name="ln2560">      // Find new tremolo chords</a>
+<a name="ln2561">      Measure* m1 = score-&gt;tick2measure(chord1Tick);</a>
+<a name="ln2562">      Measure* m2 = score-&gt;tick2measure(chord2Tick);</a>
+<a name="ln2563">      Chord* c1 = m1-&gt;findChord(chord1Tick, track);</a>
+<a name="ln2564">      Chord* c2 = m2-&gt;findChord(chord2Tick, track);</a>
+<a name="ln2565"> </a>
+<a name="ln2566">      // Remember the old tremolo chords</a>
+<a name="ln2567">      oldC1 = trem-&gt;chord1();</a>
+<a name="ln2568">      oldC2 = trem-&gt;chord2();</a>
+<a name="ln2569"> </a>
+<a name="ln2570">      // Move tremolo away from old chords</a>
+<a name="ln2571">      trem-&gt;chord1()-&gt;setTremolo(nullptr);</a>
+<a name="ln2572">      trem-&gt;chord2()-&gt;setTremolo(nullptr);</a>
+<a name="ln2573"> </a>
+<a name="ln2574">      // Delete old tremolo on c1 and c2, if present</a>
+<a name="ln2575">      if (c1-&gt;tremolo() &amp;&amp; (c1-&gt;tremolo() != trem)) {</a>
+<a name="ln2576">            if (c2-&gt;tremolo() == c1-&gt;tremolo())</a>
+<a name="ln2577">                  c2-&gt;tremolo()-&gt;setChords(c1,c2);</a>
+<a name="ln2578">            else</a>
+<a name="ln2579">                  c1-&gt;tremolo()-&gt;setChords(c1,nullptr);</a>
+<a name="ln2580">            Tremolo* oldTremolo  = c1-&gt;tremolo();</a>
+<a name="ln2581">            c1-&gt;setTremolo(nullptr);</a>
+<a name="ln2582">            delete oldTremolo;</a>
+<a name="ln2583">            }</a>
+<a name="ln2584">      if (c2-&gt;tremolo() &amp;&amp; (c2-&gt;tremolo() != trem)) {</a>
+<a name="ln2585">            c2-&gt;tremolo()-&gt;setChords(nullptr,c2);</a>
+<a name="ln2586">            Tremolo* oldTremolo  = c2-&gt;tremolo();</a>
+<a name="ln2587">            c2-&gt;setTremolo(nullptr);</a>
+<a name="ln2588">            delete oldTremolo;</a>
+<a name="ln2589">            }</a>
+<a name="ln2590"> </a>
+<a name="ln2591">      // Move tremolo to new chords</a>
+<a name="ln2592">      c1-&gt;setTremolo(trem);</a>
+<a name="ln2593">      c2-&gt;setTremolo(trem);</a>
+<a name="ln2594">      trem-&gt;setChords(c1, c2);</a>
+<a name="ln2595">      trem-&gt;setParent(c1);</a>
+<a name="ln2596"> </a>
+<a name="ln2597">      // Tremolo would cross barline, so remove it</a>
+<a name="ln2598">      if (m1 != m2) {</a>
+<a name="ln2599">            score-&gt;undoRemoveElement(trem);</a>
+<a name="ln2600">            return;</a>
+<a name="ln2601">            }</a>
+<a name="ln2602">      // One of the notes crosses a barline, so remove the tremolo</a>
+<a name="ln2603">      if (c1-&gt;ticks() != c2-&gt;ticks())</a>
+<a name="ln2604">            score-&gt;undoRemoveElement(trem);</a>
+<a name="ln2605">      }</a>
+<a name="ln2606"> </a>
+<a name="ln2607">void MoveTremolo::undo(EditData*)</a>
+<a name="ln2608">      {</a>
+<a name="ln2609">      // Move tremolo to old position</a>
+<a name="ln2610">      trem-&gt;chord1()-&gt;setTremolo(nullptr);</a>
+<a name="ln2611">      trem-&gt;chord2()-&gt;setTremolo(nullptr);</a>
+<a name="ln2612">      oldC1-&gt;setTremolo(trem);</a>
+<a name="ln2613">      oldC2-&gt;setTremolo(trem);</a>
+<a name="ln2614">      trem-&gt;setChords(oldC1, oldC2);</a>
+<a name="ln2615">      trem-&gt;setParent(oldC1);</a>
+<a name="ln2616">      }</a>
+<a name="ln2617"> </a>
+<a name="ln2618">}</a>
+
+</code></pre>
+<div class="balloon" rel="147"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1044/" target="_blank">V1044</a> Loop break conditions do not depend on the number of iterations.</p></div>
+<div class="balloon" rel="161"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1044/" target="_blank">V1044</a> Loop break conditions do not depend on the number of iterations.</p></div>
+<div class="balloon" rel="237"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="435"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="454"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1044/" target="_blank">V1044</a> Loop break conditions do not depend on the number of iterations.</p></div>
+<div class="balloon" rel="475"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1044/" target="_blank">V1044</a> Loop break conditions do not depend on the number of iterations.</p></div>
+<div class="balloon" rel="2184"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1044/" target="_blank">V1044</a> Loop break conditions do not depend on the number of iterations.</p></div>
+<div class="balloon" rel="2577"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'c2->tremolo()' pointer was utilized before it was verified against nullptr. Check lines: 2577, 2584.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

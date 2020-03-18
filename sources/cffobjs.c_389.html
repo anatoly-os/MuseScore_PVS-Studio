@@ -1,0 +1,1125 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>cffobjs.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  cffobjs.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    OpenType objects manager (body).                                     */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20"> </a>
+<a name="ln21">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln22">#include FT_INTERNAL_CALC_H</a>
+<a name="ln23">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln24">#include FT_ERRORS_H</a>
+<a name="ln25">#include FT_TRUETYPE_IDS_H</a>
+<a name="ln26">#include FT_TRUETYPE_TAGS_H</a>
+<a name="ln27">#include FT_INTERNAL_SFNT_H</a>
+<a name="ln28">#include FT_CFF_DRIVER_H</a>
+<a name="ln29"> </a>
+<a name="ln30">#include &quot;cffobjs.h&quot;</a>
+<a name="ln31">#include &quot;cffload.h&quot;</a>
+<a name="ln32">#include &quot;cffcmap.h&quot;</a>
+<a name="ln33">#include &quot;cffpic.h&quot;</a>
+<a name="ln34"> </a>
+<a name="ln35">#include &quot;cfferrs.h&quot;</a>
+<a name="ln36"> </a>
+<a name="ln37"> </a>
+<a name="ln38">  /*************************************************************************/</a>
+<a name="ln39">  /*                                                                       */</a>
+<a name="ln40">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln41">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln42">  /* messages during execution.                                            */</a>
+<a name="ln43">  /*                                                                       */</a>
+<a name="ln44">#undef  FT_COMPONENT</a>
+<a name="ln45">#define FT_COMPONENT  trace_cffobjs</a>
+<a name="ln46"> </a>
+<a name="ln47"> </a>
+<a name="ln48">  /*************************************************************************/</a>
+<a name="ln49">  /*                                                                       */</a>
+<a name="ln50">  /*                            SIZE FUNCTIONS                             */</a>
+<a name="ln51">  /*                                                                       */</a>
+<a name="ln52">  /*  Note that we store the global hints in the size's `internal' root    */</a>
+<a name="ln53">  /*  field.                                                               */</a>
+<a name="ln54">  /*                                                                       */</a>
+<a name="ln55">  /*************************************************************************/</a>
+<a name="ln56"> </a>
+<a name="ln57"> </a>
+<a name="ln58">  static PSH_Globals_Funcs</a>
+<a name="ln59">  cff_size_get_globals_funcs( CFF_Size  size )</a>
+<a name="ln60">  {</a>
+<a name="ln61">    CFF_Face          face     = (CFF_Face)size-&gt;root.face;</a>
+<a name="ln62">    CFF_Font          font     = (CFF_Font)face-&gt;extra.data;</a>
+<a name="ln63">    PSHinter_Service  pshinter = font-&gt;pshinter;</a>
+<a name="ln64">    FT_Module         module;</a>
+<a name="ln65"> </a>
+<a name="ln66"> </a>
+<a name="ln67">    module = FT_Get_Module( size-&gt;root.face-&gt;driver-&gt;root.library,</a>
+<a name="ln68">                            &quot;pshinter&quot; );</a>
+<a name="ln69">    return ( module &amp;&amp; pshinter &amp;&amp; pshinter-&gt;get_globals_funcs )</a>
+<a name="ln70">           ? pshinter-&gt;get_globals_funcs( module )</a>
+<a name="ln71">           : 0;</a>
+<a name="ln72">  }</a>
+<a name="ln73"> </a>
+<a name="ln74"> </a>
+<a name="ln75">  FT_LOCAL_DEF( void )</a>
+<a name="ln76">  cff_size_done( FT_Size  cffsize )        /* CFF_Size */</a>
+<a name="ln77">  {</a>
+<a name="ln78">    CFF_Size      size     = (CFF_Size)cffsize;</a>
+<a name="ln79">    CFF_Face      face     = (CFF_Face)size-&gt;root.face;</a>
+<a name="ln80">    CFF_Font      font     = (CFF_Font)face-&gt;extra.data;</a>
+<a name="ln81">    CFF_Internal  internal = (CFF_Internal)cffsize-&gt;internal;</a>
+<a name="ln82"> </a>
+<a name="ln83"> </a>
+<a name="ln84">    if ( internal )</a>
+<a name="ln85">    {</a>
+<a name="ln86">      PSH_Globals_Funcs  funcs;</a>
+<a name="ln87"> </a>
+<a name="ln88"> </a>
+<a name="ln89">      funcs = cff_size_get_globals_funcs( size );</a>
+<a name="ln90">      if ( funcs )</a>
+<a name="ln91">      {</a>
+<a name="ln92">        FT_UInt  i;</a>
+<a name="ln93"> </a>
+<a name="ln94"> </a>
+<a name="ln95">        funcs-&gt;destroy( internal-&gt;topfont );</a>
+<a name="ln96"> </a>
+<a name="ln97">        for ( i = font-&gt;num_subfonts; i &gt; 0; i-- )</a>
+<a name="ln98">          funcs-&gt;destroy( internal-&gt;subfonts[i - 1] );</a>
+<a name="ln99">      }</a>
+<a name="ln100"> </a>
+<a name="ln101">      /* `internal' is freed by destroy_size (in ftobjs.c) */</a>
+<a name="ln102">    }</a>
+<a name="ln103">  }</a>
+<a name="ln104"> </a>
+<a name="ln105"> </a>
+<a name="ln106">  /* CFF and Type 1 private dictionaries have slightly different      */</a>
+<a name="ln107">  /* structures; we need to synthesize a Type 1 dictionary on the fly */</a>
+<a name="ln108"> </a>
+<a name="ln109">  static void</a>
+<a name="ln110">  cff_make_private_dict( CFF_SubFont  subfont,</a>
+<a name="ln111">                         PS_Private   priv )</a>
+<a name="ln112">  {</a>
+<a name="ln113">    CFF_Private  cpriv = &amp;subfont-&gt;private_dict;</a>
+<a name="ln114">    FT_UInt      n, count;</a>
+<a name="ln115"> </a>
+<a name="ln116"> </a>
+<a name="ln117">    FT_MEM_ZERO( priv, sizeof ( *priv ) );</a>
+<a name="ln118"> </a>
+<a name="ln119">    count = priv-&gt;num_blue_values = cpriv-&gt;num_blue_values;</a>
+<a name="ln120">    for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln121">      priv-&gt;blue_values[n] = (FT_Short)cpriv-&gt;blue_values[n];</a>
+<a name="ln122"> </a>
+<a name="ln123">    count = priv-&gt;num_other_blues = cpriv-&gt;num_other_blues;</a>
+<a name="ln124">    for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln125">      priv-&gt;other_blues[n] = (FT_Short)cpriv-&gt;other_blues[n];</a>
+<a name="ln126"> </a>
+<a name="ln127">    count = priv-&gt;num_family_blues = cpriv-&gt;num_family_blues;</a>
+<a name="ln128">    for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln129">      priv-&gt;family_blues[n] = (FT_Short)cpriv-&gt;family_blues[n];</a>
+<a name="ln130"> </a>
+<a name="ln131">    count = priv-&gt;num_family_other_blues = cpriv-&gt;num_family_other_blues;</a>
+<a name="ln132">    for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln133">      priv-&gt;family_other_blues[n] = (FT_Short)cpriv-&gt;family_other_blues[n];</a>
+<a name="ln134"> </a>
+<a name="ln135">    priv-&gt;blue_scale = cpriv-&gt;blue_scale;</a>
+<a name="ln136">    priv-&gt;blue_shift = (FT_Int)cpriv-&gt;blue_shift;</a>
+<a name="ln137">    priv-&gt;blue_fuzz  = (FT_Int)cpriv-&gt;blue_fuzz;</a>
+<a name="ln138"> </a>
+<a name="ln139">    priv-&gt;standard_width[0]  = (FT_UShort)cpriv-&gt;standard_width;</a>
+<a name="ln140">    priv-&gt;standard_height[0] = (FT_UShort)cpriv-&gt;standard_height;</a>
+<a name="ln141"> </a>
+<a name="ln142">    count = priv-&gt;num_snap_widths = cpriv-&gt;num_snap_widths;</a>
+<a name="ln143">    for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln144">      priv-&gt;snap_widths[n] = (FT_Short)cpriv-&gt;snap_widths[n];</a>
+<a name="ln145"> </a>
+<a name="ln146">    count = priv-&gt;num_snap_heights = cpriv-&gt;num_snap_heights;</a>
+<a name="ln147">    for ( n = 0; n &lt; count; n++ )</a>
+<a name="ln148">      priv-&gt;snap_heights[n] = (FT_Short)cpriv-&gt;snap_heights[n];</a>
+<a name="ln149"> </a>
+<a name="ln150">    priv-&gt;force_bold     = cpriv-&gt;force_bold;</a>
+<a name="ln151">    priv-&gt;language_group = cpriv-&gt;language_group;</a>
+<a name="ln152">    priv-&gt;lenIV          = cpriv-&gt;lenIV;</a>
+<a name="ln153">  }</a>
+<a name="ln154"> </a>
+<a name="ln155"> </a>
+<a name="ln156">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln157">  cff_size_init( FT_Size  cffsize )         /* CFF_Size */</a>
+<a name="ln158">  {</a>
+<a name="ln159">    CFF_Size           size  = (CFF_Size)cffsize;</a>
+<a name="ln160">    FT_Error           error = FT_Err_Ok;</a>
+<a name="ln161">    PSH_Globals_Funcs  funcs = cff_size_get_globals_funcs( size );</a>
+<a name="ln162"> </a>
+<a name="ln163"> </a>
+<a name="ln164">    if ( funcs )</a>
+<a name="ln165">    {</a>
+<a name="ln166">      CFF_Face      face     = (CFF_Face)cffsize-&gt;face;</a>
+<a name="ln167">      CFF_Font      font     = (CFF_Font)face-&gt;extra.data;</a>
+<a name="ln168">      CFF_Internal  internal = NULL;</a>
+<a name="ln169"> </a>
+<a name="ln170">      PS_PrivateRec  priv;</a>
+<a name="ln171">      FT_Memory      memory = cffsize-&gt;face-&gt;memory;</a>
+<a name="ln172"> </a>
+<a name="ln173">      FT_UInt  i;</a>
+<a name="ln174"> </a>
+<a name="ln175"> </a>
+<a name="ln176">      if ( FT_NEW( internal ) )</a>
+<a name="ln177">        goto Exit;</a>
+<a name="ln178"> </a>
+<a name="ln179">      cff_make_private_dict( &amp;font-&gt;top_font, &amp;priv );</a>
+<a name="ln180">      error = funcs-&gt;create( cffsize-&gt;face-&gt;memory, &amp;priv,</a>
+<a name="ln181">                             &amp;internal-&gt;topfont );</a>
+<a name="ln182">      if ( error )</a>
+<a name="ln183">        goto Exit;</a>
+<a name="ln184"> </a>
+<a name="ln185">      for ( i = font-&gt;num_subfonts; i &gt; 0; i-- )</a>
+<a name="ln186">      {</a>
+<a name="ln187">        CFF_SubFont  sub = font-&gt;subfonts[i - 1];</a>
+<a name="ln188"> </a>
+<a name="ln189"> </a>
+<a name="ln190">        cff_make_private_dict( sub, &amp;priv );</a>
+<a name="ln191">        error = funcs-&gt;create( cffsize-&gt;face-&gt;memory, &amp;priv,</a>
+<a name="ln192">                               &amp;internal-&gt;subfonts[i - 1] );</a>
+<a name="ln193">        if ( error )</a>
+<a name="ln194">          goto Exit;</a>
+<a name="ln195">      }</a>
+<a name="ln196"> </a>
+<a name="ln197">      cffsize-&gt;internal = (FT_Size_Internal)(void*)internal;</a>
+<a name="ln198">    }</a>
+<a name="ln199"> </a>
+<a name="ln200">    size-&gt;strike_index = 0xFFFFFFFFUL;</a>
+<a name="ln201"> </a>
+<a name="ln202">  Exit:</a>
+<a name="ln203">    return error;</a>
+<a name="ln204">  }</a>
+<a name="ln205"> </a>
+<a name="ln206"> </a>
+<a name="ln207">#ifdef TT_CONFIG_OPTION_EMBEDDED_BITMAPS</a>
+<a name="ln208"> </a>
+<a name="ln209">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln210">  cff_size_select( FT_Size   size,</a>
+<a name="ln211">                   FT_ULong  strike_index )</a>
+<a name="ln212">  {</a>
+<a name="ln213">    CFF_Size           cffsize = (CFF_Size)size;</a>
+<a name="ln214">    PSH_Globals_Funcs  funcs;</a>
+<a name="ln215"> </a>
+<a name="ln216"> </a>
+<a name="ln217">    cffsize-&gt;strike_index = strike_index;</a>
+<a name="ln218"> </a>
+<a name="ln219">    FT_Select_Metrics( size-&gt;face, strike_index );</a>
+<a name="ln220"> </a>
+<a name="ln221">    funcs = cff_size_get_globals_funcs( cffsize );</a>
+<a name="ln222"> </a>
+<a name="ln223">    if ( funcs )</a>
+<a name="ln224">    {</a>
+<a name="ln225">      CFF_Face      face     = (CFF_Face)size-&gt;face;</a>
+<a name="ln226">      CFF_Font      font     = (CFF_Font)face-&gt;extra.data;</a>
+<a name="ln227">      CFF_Internal  internal = (CFF_Internal)size-&gt;internal;</a>
+<a name="ln228"> </a>
+<a name="ln229">      FT_Long  top_upm  = (FT_Long)font-&gt;top_font.font_dict.units_per_em;</a>
+<a name="ln230">      FT_UInt  i;</a>
+<a name="ln231"> </a>
+<a name="ln232"> </a>
+<a name="ln233">      funcs-&gt;set_scale( internal-&gt;topfont,</a>
+<a name="ln234">                        size-&gt;metrics.x_scale, size-&gt;metrics.y_scale,</a>
+<a name="ln235">                        0, 0 );</a>
+<a name="ln236"> </a>
+<a name="ln237">      for ( i = font-&gt;num_subfonts; i &gt; 0; i-- )</a>
+<a name="ln238">      {</a>
+<a name="ln239">        CFF_SubFont  sub     = font-&gt;subfonts[i - 1];</a>
+<a name="ln240">        FT_Long      sub_upm = (FT_Long)sub-&gt;font_dict.units_per_em;</a>
+<a name="ln241">        FT_Pos       x_scale, y_scale;</a>
+<a name="ln242"> </a>
+<a name="ln243"> </a>
+<a name="ln244">        if ( top_upm != sub_upm )</a>
+<a name="ln245">        {</a>
+<a name="ln246">          x_scale = FT_MulDiv( size-&gt;metrics.x_scale, top_upm, sub_upm );</a>
+<a name="ln247">          y_scale = FT_MulDiv( size-&gt;metrics.y_scale, top_upm, sub_upm );</a>
+<a name="ln248">        }</a>
+<a name="ln249">        else</a>
+<a name="ln250">        {</a>
+<a name="ln251">          x_scale = size-&gt;metrics.x_scale;</a>
+<a name="ln252">          y_scale = size-&gt;metrics.y_scale;</a>
+<a name="ln253">        }</a>
+<a name="ln254"> </a>
+<a name="ln255">        funcs-&gt;set_scale( internal-&gt;subfonts[i - 1],</a>
+<a name="ln256">                          x_scale, y_scale, 0, 0 );</a>
+<a name="ln257">      }</a>
+<a name="ln258">    }</a>
+<a name="ln259"> </a>
+<a name="ln260">    return FT_Err_Ok;</a>
+<a name="ln261">  }</a>
+<a name="ln262"> </a>
+<a name="ln263">#endif /* TT_CONFIG_OPTION_EMBEDDED_BITMAPS */</a>
+<a name="ln264"> </a>
+<a name="ln265"> </a>
+<a name="ln266">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln267">  cff_size_request( FT_Size          size,</a>
+<a name="ln268">                    FT_Size_Request  req )</a>
+<a name="ln269">  {</a>
+<a name="ln270">    CFF_Size           cffsize = (CFF_Size)size;</a>
+<a name="ln271">    PSH_Globals_Funcs  funcs;</a>
+<a name="ln272"> </a>
+<a name="ln273"> </a>
+<a name="ln274">#ifdef TT_CONFIG_OPTION_EMBEDDED_BITMAPS</a>
+<a name="ln275"> </a>
+<a name="ln276">    if ( FT_HAS_FIXED_SIZES( size-&gt;face ) )</a>
+<a name="ln277">    {</a>
+<a name="ln278">      CFF_Face      cffface = (CFF_Face)size-&gt;face;</a>
+<a name="ln279">      SFNT_Service  sfnt    = (SFNT_Service)cffface-&gt;sfnt;</a>
+<a name="ln280">      FT_ULong      strike_index;</a>
+<a name="ln281"> </a>
+<a name="ln282"> </a>
+<a name="ln283">      if ( sfnt-&gt;set_sbit_strike( cffface, req, &amp;strike_index ) )</a>
+<a name="ln284">        cffsize-&gt;strike_index = 0xFFFFFFFFUL;</a>
+<a name="ln285">      else</a>
+<a name="ln286">        return cff_size_select( size, strike_index );</a>
+<a name="ln287">    }</a>
+<a name="ln288"> </a>
+<a name="ln289">#endif /* TT_CONFIG_OPTION_EMBEDDED_BITMAPS */</a>
+<a name="ln290"> </a>
+<a name="ln291">    FT_Request_Metrics( size-&gt;face, req );</a>
+<a name="ln292"> </a>
+<a name="ln293">    funcs = cff_size_get_globals_funcs( cffsize );</a>
+<a name="ln294"> </a>
+<a name="ln295">    if ( funcs )</a>
+<a name="ln296">    {</a>
+<a name="ln297">      CFF_Face      cffface  = (CFF_Face)size-&gt;face;</a>
+<a name="ln298">      CFF_Font      font     = (CFF_Font)cffface-&gt;extra.data;</a>
+<a name="ln299">      CFF_Internal  internal = (CFF_Internal)size-&gt;internal;</a>
+<a name="ln300"> </a>
+<a name="ln301">      FT_Long  top_upm  = (FT_Long)font-&gt;top_font.font_dict.units_per_em;</a>
+<a name="ln302">      FT_UInt  i;</a>
+<a name="ln303"> </a>
+<a name="ln304"> </a>
+<a name="ln305">      funcs-&gt;set_scale( internal-&gt;topfont,</a>
+<a name="ln306">                        size-&gt;metrics.x_scale, size-&gt;metrics.y_scale,</a>
+<a name="ln307">                        0, 0 );</a>
+<a name="ln308"> </a>
+<a name="ln309">      for ( i = font-&gt;num_subfonts; i &gt; 0; i-- )</a>
+<a name="ln310">      {</a>
+<a name="ln311">        CFF_SubFont  sub     = font-&gt;subfonts[i - 1];</a>
+<a name="ln312">        FT_Long      sub_upm = (FT_Long)sub-&gt;font_dict.units_per_em;</a>
+<a name="ln313">        FT_Pos       x_scale, y_scale;</a>
+<a name="ln314"> </a>
+<a name="ln315"> </a>
+<a name="ln316">        if ( top_upm != sub_upm )</a>
+<a name="ln317">        {</a>
+<a name="ln318">          x_scale = FT_MulDiv( size-&gt;metrics.x_scale, top_upm, sub_upm );</a>
+<a name="ln319">          y_scale = FT_MulDiv( size-&gt;metrics.y_scale, top_upm, sub_upm );</a>
+<a name="ln320">        }</a>
+<a name="ln321">        else</a>
+<a name="ln322">        {</a>
+<a name="ln323">          x_scale = size-&gt;metrics.x_scale;</a>
+<a name="ln324">          y_scale = size-&gt;metrics.y_scale;</a>
+<a name="ln325">        }</a>
+<a name="ln326"> </a>
+<a name="ln327">        funcs-&gt;set_scale( internal-&gt;subfonts[i - 1],</a>
+<a name="ln328">                          x_scale, y_scale, 0, 0 );</a>
+<a name="ln329">      }</a>
+<a name="ln330">    }</a>
+<a name="ln331"> </a>
+<a name="ln332">    return FT_Err_Ok;</a>
+<a name="ln333">  }</a>
+<a name="ln334"> </a>
+<a name="ln335"> </a>
+<a name="ln336">  /*************************************************************************/</a>
+<a name="ln337">  /*                                                                       */</a>
+<a name="ln338">  /*                            SLOT  FUNCTIONS                            */</a>
+<a name="ln339">  /*                                                                       */</a>
+<a name="ln340">  /*************************************************************************/</a>
+<a name="ln341"> </a>
+<a name="ln342">  FT_LOCAL_DEF( void )</a>
+<a name="ln343">  cff_slot_done( FT_GlyphSlot  slot )</a>
+<a name="ln344">  {</a>
+<a name="ln345">    slot-&gt;internal-&gt;glyph_hints = NULL;</a>
+<a name="ln346">  }</a>
+<a name="ln347"> </a>
+<a name="ln348"> </a>
+<a name="ln349">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln350">  cff_slot_init( FT_GlyphSlot  slot )</a>
+<a name="ln351">  {</a>
+<a name="ln352">    CFF_Face          face     = (CFF_Face)slot-&gt;face;</a>
+<a name="ln353">    CFF_Font          font     = (CFF_Font)face-&gt;extra.data;</a>
+<a name="ln354">    PSHinter_Service  pshinter = font-&gt;pshinter;</a>
+<a name="ln355"> </a>
+<a name="ln356"> </a>
+<a name="ln357">    if ( pshinter )</a>
+<a name="ln358">    {</a>
+<a name="ln359">      FT_Module  module;</a>
+<a name="ln360"> </a>
+<a name="ln361"> </a>
+<a name="ln362">      module = FT_Get_Module( slot-&gt;face-&gt;driver-&gt;root.library,</a>
+<a name="ln363">                              &quot;pshinter&quot; );</a>
+<a name="ln364">      if ( module )</a>
+<a name="ln365">      {</a>
+<a name="ln366">        T2_Hints_Funcs  funcs;</a>
+<a name="ln367"> </a>
+<a name="ln368"> </a>
+<a name="ln369">        funcs = pshinter-&gt;get_t2_funcs( module );</a>
+<a name="ln370">        slot-&gt;internal-&gt;glyph_hints = (void*)funcs;</a>
+<a name="ln371">      }</a>
+<a name="ln372">    }</a>
+<a name="ln373"> </a>
+<a name="ln374">    return FT_Err_Ok;</a>
+<a name="ln375">  }</a>
+<a name="ln376"> </a>
+<a name="ln377"> </a>
+<a name="ln378">  /*************************************************************************/</a>
+<a name="ln379">  /*                                                                       */</a>
+<a name="ln380">  /*                           FACE  FUNCTIONS                             */</a>
+<a name="ln381">  /*                                                                       */</a>
+<a name="ln382">  /*************************************************************************/</a>
+<a name="ln383"> </a>
+<a name="ln384">  static FT_String*</a>
+<a name="ln385">  cff_strcpy( FT_Memory         memory,</a>
+<a name="ln386">              const FT_String*  source )</a>
+<a name="ln387">  {</a>
+<a name="ln388">    FT_Error    error;</a>
+<a name="ln389">    FT_String*  result;</a>
+<a name="ln390"> </a>
+<a name="ln391"> </a>
+<a name="ln392">    (void)FT_STRDUP( result, source );</a>
+<a name="ln393"> </a>
+<a name="ln394">    FT_UNUSED( error );</a>
+<a name="ln395"> </a>
+<a name="ln396">    return result;</a>
+<a name="ln397">  }</a>
+<a name="ln398"> </a>
+<a name="ln399"> </a>
+<a name="ln400">  /* Strip all subset prefixes of the form `ABCDEF+'.  Usually, there */</a>
+<a name="ln401">  /* is only one, but font names like `APCOOG+JFABTD+FuturaBQ-Bold'   */</a>
+<a name="ln402">  /* have been seen in the wild.                                      */</a>
+<a name="ln403"> </a>
+<a name="ln404">  static void</a>
+<a name="ln405">  remove_subset_prefix( FT_String*  name )</a>
+<a name="ln406">  {</a>
+<a name="ln407">    FT_Int32  idx             = 0;</a>
+<a name="ln408">    FT_Int32  length          = (FT_Int32)strlen( name ) + 1;</a>
+<a name="ln409">    FT_Bool   continue_search = 1;</a>
+<a name="ln410"> </a>
+<a name="ln411"> </a>
+<a name="ln412">    while ( continue_search )</a>
+<a name="ln413">    {</a>
+<a name="ln414">      if ( length &gt;= 7 &amp;&amp; name[6] == '+' )</a>
+<a name="ln415">      {</a>
+<a name="ln416">        for ( idx = 0; idx &lt; 6; idx++ )</a>
+<a name="ln417">        {</a>
+<a name="ln418">          /* ASCII uppercase letters */</a>
+<a name="ln419">          if ( !( 'A' &lt;= name[idx] &amp;&amp; name[idx] &lt;= 'Z' ) )</a>
+<a name="ln420">            continue_search = 0;</a>
+<a name="ln421">        }</a>
+<a name="ln422"> </a>
+<a name="ln423">        if ( continue_search )</a>
+<a name="ln424">        {</a>
+<a name="ln425">          for ( idx = 7; idx &lt; length; idx++ )</a>
+<a name="ln426">            name[idx - 7] = name[idx];</a>
+<a name="ln427">          length -= 7;</a>
+<a name="ln428">        }</a>
+<a name="ln429">      }</a>
+<a name="ln430">      else</a>
+<a name="ln431">        continue_search = 0;</a>
+<a name="ln432">    }</a>
+<a name="ln433">  }</a>
+<a name="ln434"> </a>
+<a name="ln435"> </a>
+<a name="ln436">  /* Remove the style part from the family name (if present). */</a>
+<a name="ln437"> </a>
+<a name="ln438">  static void</a>
+<a name="ln439">  remove_style( FT_String*        family_name,</a>
+<a name="ln440">                const FT_String*  style_name )</a>
+<a name="ln441">  {</a>
+<a name="ln442">    FT_Int32  family_name_length, style_name_length;</a>
+<a name="ln443"> </a>
+<a name="ln444"> </a>
+<a name="ln445">    family_name_length = (FT_Int32)strlen( family_name );</a>
+<a name="ln446">    style_name_length  = (FT_Int32)strlen( style_name );</a>
+<a name="ln447"> </a>
+<a name="ln448">    if ( family_name_length &gt; style_name_length )</a>
+<a name="ln449">    {</a>
+<a name="ln450">      FT_Int  idx;</a>
+<a name="ln451"> </a>
+<a name="ln452"> </a>
+<a name="ln453">      for ( idx = 1; idx &lt;= style_name_length; ++idx )</a>
+<a name="ln454">      {</a>
+<a name="ln455">        if ( family_name[family_name_length - idx] !=</a>
+<a name="ln456">             style_name[style_name_length - idx] )</a>
+<a name="ln457">          break;</a>
+<a name="ln458">      }</a>
+<a name="ln459"> </a>
+<a name="ln460">      if ( idx &gt; style_name_length )</a>
+<a name="ln461">      {</a>
+<a name="ln462">        /* family_name ends with style_name; remove it */</a>
+<a name="ln463">        idx = family_name_length - style_name_length - 1;</a>
+<a name="ln464"> </a>
+<a name="ln465">        /* also remove special characters     */</a>
+<a name="ln466">        /* between real family name and style */</a>
+<a name="ln467">        while ( idx &gt; 0                     &amp;&amp;</a>
+<a name="ln468">                ( family_name[idx] == '-' ||</a>
+<a name="ln469">                  family_name[idx] == ' ' ||</a>
+<a name="ln470">                  family_name[idx] == '_' ||</a>
+<a name="ln471">                  family_name[idx] == '+' ) )</a>
+<a name="ln472">          --idx;</a>
+<a name="ln473"> </a>
+<a name="ln474">        if ( idx &gt; 0 )</a>
+<a name="ln475">          family_name[idx + 1] = '\0';</a>
+<a name="ln476">      }</a>
+<a name="ln477">    }</a>
+<a name="ln478">  }</a>
+<a name="ln479"> </a>
+<a name="ln480"> </a>
+<a name="ln481">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln482">  cff_face_init( FT_Stream      stream,</a>
+<a name="ln483">                 FT_Face        cffface,        /* CFF_Face */</a>
+<a name="ln484">                 FT_Int         face_index,</a>
+<a name="ln485">                 FT_Int         num_params,</a>
+<a name="ln486">                 FT_Parameter*  params )</a>
+<a name="ln487">  {</a>
+<a name="ln488">    CFF_Face            face        = (CFF_Face)cffface;</a>
+<a name="ln489">    FT_Error            error;</a>
+<a name="ln490">    SFNT_Service        sfnt;</a>
+<a name="ln491">    FT_Service_PsCMaps  psnames;</a>
+<a name="ln492">    PSHinter_Service    pshinter;</a>
+<a name="ln493">    FT_Bool             pure_cff    = 1;</a>
+<a name="ln494">    FT_Bool             sfnt_format = 0;</a>
+<a name="ln495">    FT_Library          library     = cffface-&gt;driver-&gt;root.library;</a>
+<a name="ln496"> </a>
+<a name="ln497"> </a>
+<a name="ln498">    sfnt = (SFNT_Service)FT_Get_Module_Interface(</a>
+<a name="ln499">             library, &quot;sfnt&quot; );</a>
+<a name="ln500">    if ( !sfnt )</a>
+<a name="ln501">    {</a>
+<a name="ln502">      FT_ERROR(( &quot;cff_face_init: cannot access `sfnt' module\n&quot; ));</a>
+<a name="ln503">      error = FT_THROW( Missing_Module );</a>
+<a name="ln504">      goto Exit;</a>
+<a name="ln505">    }</a>
+<a name="ln506"> </a>
+<a name="ln507">    FT_FACE_FIND_GLOBAL_SERVICE( face, psnames, POSTSCRIPT_CMAPS );</a>
+<a name="ln508"> </a>
+<a name="ln509">    pshinter = (PSHinter_Service)FT_Get_Module_Interface(</a>
+<a name="ln510">                 library, &quot;pshinter&quot; );</a>
+<a name="ln511"> </a>
+<a name="ln512">    FT_TRACE2(( &quot;CFF driver\n&quot; ));</a>
+<a name="ln513"> </a>
+<a name="ln514">    /* create input stream from resource */</a>
+<a name="ln515">    if ( FT_STREAM_SEEK( 0 ) )</a>
+<a name="ln516">      goto Exit;</a>
+<a name="ln517"> </a>
+<a name="ln518">    /* check whether we have a valid OpenType file */</a>
+<a name="ln519">    error = sfnt-&gt;init_face( stream, face, face_index, num_params, params );</a>
+<a name="ln520">    if ( !error )</a>
+<a name="ln521">    {</a>
+<a name="ln522">      if ( face-&gt;format_tag != TTAG_OTTO )  /* `OTTO'; OpenType/CFF font */</a>
+<a name="ln523">      {</a>
+<a name="ln524">        FT_TRACE2(( &quot;  not an OpenType/CFF font\n&quot; ));</a>
+<a name="ln525">        error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln526">        goto Exit;</a>
+<a name="ln527">      }</a>
+<a name="ln528"> </a>
+<a name="ln529">      /* if we are performing a simple font format check, exit immediately */</a>
+<a name="ln530">      if ( face_index &lt; 0 )</a>
+<a name="ln531">        return FT_Err_Ok;</a>
+<a name="ln532"> </a>
+<a name="ln533">      sfnt_format = 1;</a>
+<a name="ln534"> </a>
+<a name="ln535">      /* now, the font can be either an OpenType/CFF font, or an SVG CEF */</a>
+<a name="ln536">      /* font; in the latter case it doesn't have a `head' table         */</a>
+<a name="ln537">      error = face-&gt;goto_table( face, TTAG_head, stream, 0 );</a>
+<a name="ln538">      if ( !error )</a>
+<a name="ln539">      {</a>
+<a name="ln540">        pure_cff = 0;</a>
+<a name="ln541"> </a>
+<a name="ln542">        /* load font directory */</a>
+<a name="ln543">        error = sfnt-&gt;load_face( stream, face, face_index,</a>
+<a name="ln544">                                 num_params, params );</a>
+<a name="ln545">        if ( error )</a>
+<a name="ln546">          goto Exit;</a>
+<a name="ln547">      }</a>
+<a name="ln548">      else</a>
+<a name="ln549">      {</a>
+<a name="ln550">        /* load the `cmap' table explicitly */</a>
+<a name="ln551">        error = sfnt-&gt;load_cmap( face, stream );</a>
+<a name="ln552">        if ( error )</a>
+<a name="ln553">          goto Exit;</a>
+<a name="ln554">      }</a>
+<a name="ln555"> </a>
+<a name="ln556">      /* now load the CFF part of the file */</a>
+<a name="ln557">      error = face-&gt;goto_table( face, TTAG_CFF, stream, 0 );</a>
+<a name="ln558">      if ( error )</a>
+<a name="ln559">        goto Exit;</a>
+<a name="ln560">    }</a>
+<a name="ln561">    else</a>
+<a name="ln562">    {</a>
+<a name="ln563">      /* rewind to start of file; we are going to load a pure-CFF font */</a>
+<a name="ln564">      if ( FT_STREAM_SEEK( 0 ) )</a>
+<a name="ln565">        goto Exit;</a>
+<a name="ln566">      error = FT_Err_Ok;</a>
+<a name="ln567">    }</a>
+<a name="ln568"> </a>
+<a name="ln569">    /* now load and parse the CFF table in the file */</a>
+<a name="ln570">    {</a>
+<a name="ln571">      CFF_Font         cff = NULL;</a>
+<a name="ln572">      CFF_FontRecDict  dict;</a>
+<a name="ln573">      FT_Memory        memory = cffface-&gt;memory;</a>
+<a name="ln574">      FT_Int32         flags;</a>
+<a name="ln575">      FT_UInt          i;</a>
+<a name="ln576"> </a>
+<a name="ln577"> </a>
+<a name="ln578">      if ( FT_NEW( cff ) )</a>
+<a name="ln579">        goto Exit;</a>
+<a name="ln580"> </a>
+<a name="ln581">      face-&gt;extra.data = cff;</a>
+<a name="ln582">      error = cff_font_load( library, stream, face_index, cff, pure_cff );</a>
+<a name="ln583">      if ( error )</a>
+<a name="ln584">        goto Exit;</a>
+<a name="ln585"> </a>
+<a name="ln586">      /* if we are performing a simple font format check, exit immediately */</a>
+<a name="ln587">      /* (this is here for pure CFF)                                       */</a>
+<a name="ln588">      if ( face_index &lt; 0 )</a>
+<a name="ln589">        return FT_Err_Ok;</a>
+<a name="ln590"> </a>
+<a name="ln591">      cff-&gt;pshinter = pshinter;</a>
+<a name="ln592">      cff-&gt;psnames  = psnames;</a>
+<a name="ln593"> </a>
+<a name="ln594">      cffface-&gt;face_index = face_index &amp; 0xFFFF;</a>
+<a name="ln595"> </a>
+<a name="ln596">      /* Complement the root flags with some interesting information. */</a>
+<a name="ln597">      /* Note that this is only necessary for pure CFF and CEF fonts; */</a>
+<a name="ln598">      /* SFNT based fonts use the `name' table instead.               */</a>
+<a name="ln599"> </a>
+<a name="ln600">      cffface-&gt;num_glyphs = (FT_Long)cff-&gt;num_glyphs;</a>
+<a name="ln601"> </a>
+<a name="ln602">      dict = &amp;cff-&gt;top_font.font_dict;</a>
+<a name="ln603"> </a>
+<a name="ln604">      /* we need the `PSNames' module for CFF and CEF formats */</a>
+<a name="ln605">      /* which aren't CID-keyed                               */</a>
+<a name="ln606">      if ( dict-&gt;cid_registry == 0xFFFFU &amp;&amp; !psnames )</a>
+<a name="ln607">      {</a>
+<a name="ln608">        FT_ERROR(( &quot;cff_face_init:&quot;</a>
+<a name="ln609">                   &quot; cannot open CFF &amp; CEF fonts\n&quot;</a>
+<a name="ln610">                   &quot;              &quot;</a>
+<a name="ln611">                   &quot; without the `PSNames' module\n&quot; ));</a>
+<a name="ln612">        error = FT_THROW( Missing_Module );</a>
+<a name="ln613">        goto Exit;</a>
+<a name="ln614">      }</a>
+<a name="ln615"> </a>
+<a name="ln616">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln617">      {</a>
+<a name="ln618">        FT_UInt     idx;</a>
+<a name="ln619">        FT_String*  s;</a>
+<a name="ln620"> </a>
+<a name="ln621"> </a>
+<a name="ln622">        FT_TRACE4(( &quot;SIDs\n&quot; ));</a>
+<a name="ln623"> </a>
+<a name="ln624">        /* dump string index, including default strings for convenience */</a>
+<a name="ln625">        for ( idx = 0; idx &lt; cff-&gt;num_strings + 390; idx++ )</a>
+<a name="ln626">        {</a>
+<a name="ln627">          s = cff_index_get_sid_string( cff, idx );</a>
+<a name="ln628">          if ( s )</a>
+<a name="ln629">            FT_TRACE4((&quot;  %5d %s\n&quot;, idx, s ));</a>
+<a name="ln630">        }</a>
+<a name="ln631">      }</a>
+<a name="ln632">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln633"> </a>
+<a name="ln634">      if ( !dict-&gt;has_font_matrix )</a>
+<a name="ln635">        dict-&gt;units_per_em = pure_cff ? 1000 : face-&gt;root.units_per_EM;</a>
+<a name="ln636"> </a>
+<a name="ln637">      /* Normalize the font matrix so that `matrix-&gt;yy' is 1; the */</a>
+<a name="ln638">      /* scaling is done with `units_per_em' then (at this point, */</a>
+<a name="ln639">      /* it already contains the scaling factor, but without      */</a>
+<a name="ln640">      /* normalization of the matrix).                            */</a>
+<a name="ln641">      /*                                                          */</a>
+<a name="ln642">      /* Note that the offsets must be expressed in integer font  */</a>
+<a name="ln643">      /* units.                                                   */</a>
+<a name="ln644"> </a>
+<a name="ln645">      {</a>
+<a name="ln646">        FT_Matrix*  matrix = &amp;dict-&gt;font_matrix;</a>
+<a name="ln647">        FT_Vector*  offset = &amp;dict-&gt;font_offset;</a>
+<a name="ln648">        FT_ULong*   upm    = &amp;dict-&gt;units_per_em;</a>
+<a name="ln649">        FT_Fixed    temp   = FT_ABS( matrix-&gt;yy );</a>
+<a name="ln650"> </a>
+<a name="ln651"> </a>
+<a name="ln652">        if ( temp != 0x10000L )</a>
+<a name="ln653">        {</a>
+<a name="ln654">          *upm = (FT_ULong)FT_DivFix( (FT_Long)*upm, temp );</a>
+<a name="ln655"> </a>
+<a name="ln656">          matrix-&gt;xx = FT_DivFix( matrix-&gt;xx, temp );</a>
+<a name="ln657">          matrix-&gt;yx = FT_DivFix( matrix-&gt;yx, temp );</a>
+<a name="ln658">          matrix-&gt;xy = FT_DivFix( matrix-&gt;xy, temp );</a>
+<a name="ln659">          matrix-&gt;yy = FT_DivFix( matrix-&gt;yy, temp );</a>
+<a name="ln660">          offset-&gt;x  = FT_DivFix( offset-&gt;x,  temp );</a>
+<a name="ln661">          offset-&gt;y  = FT_DivFix( offset-&gt;y,  temp );</a>
+<a name="ln662">        }</a>
+<a name="ln663"> </a>
+<a name="ln664">        offset-&gt;x &gt;&gt;= 16;</a>
+<a name="ln665">        offset-&gt;y &gt;&gt;= 16;</a>
+<a name="ln666">      }</a>
+<a name="ln667"> </a>
+<a name="ln668">      for ( i = cff-&gt;num_subfonts; i &gt; 0; i-- )</a>
+<a name="ln669">      {</a>
+<a name="ln670">        CFF_FontRecDict  sub = &amp;cff-&gt;subfonts[i - 1]-&gt;font_dict;</a>
+<a name="ln671">        CFF_FontRecDict  top = &amp;cff-&gt;top_font.font_dict;</a>
+<a name="ln672"> </a>
+<a name="ln673">        FT_Matrix*  matrix;</a>
+<a name="ln674">        FT_Vector*  offset;</a>
+<a name="ln675">        FT_ULong*   upm;</a>
+<a name="ln676">        FT_Fixed    temp;</a>
+<a name="ln677"> </a>
+<a name="ln678"> </a>
+<a name="ln679">        if ( sub-&gt;has_font_matrix )</a>
+<a name="ln680">        {</a>
+<a name="ln681">          FT_Long  scaling;</a>
+<a name="ln682"> </a>
+<a name="ln683"> </a>
+<a name="ln684">          /* if we have a top-level matrix, */</a>
+<a name="ln685">          /* concatenate the subfont matrix */</a>
+<a name="ln686"> </a>
+<a name="ln687">          if ( top-&gt;has_font_matrix )</a>
+<a name="ln688">          {</a>
+<a name="ln689">            if ( top-&gt;units_per_em &gt; 1 &amp;&amp; sub-&gt;units_per_em &gt; 1 )</a>
+<a name="ln690">              scaling = (FT_Long)FT_MIN( top-&gt;units_per_em,</a>
+<a name="ln691">                                         sub-&gt;units_per_em );</a>
+<a name="ln692">            else</a>
+<a name="ln693">              scaling = 1;</a>
+<a name="ln694"> </a>
+<a name="ln695">            FT_Matrix_Multiply_Scaled( &amp;top-&gt;font_matrix,</a>
+<a name="ln696">                                       &amp;sub-&gt;font_matrix,</a>
+<a name="ln697">                                       scaling );</a>
+<a name="ln698">            FT_Vector_Transform_Scaled( &amp;sub-&gt;font_offset,</a>
+<a name="ln699">                                        &amp;top-&gt;font_matrix,</a>
+<a name="ln700">                                        scaling );</a>
+<a name="ln701"> </a>
+<a name="ln702">            sub-&gt;units_per_em = (FT_ULong)</a>
+<a name="ln703">                                  FT_MulDiv( (FT_Long)sub-&gt;units_per_em,</a>
+<a name="ln704">                                             (FT_Long)top-&gt;units_per_em,</a>
+<a name="ln705">                                             scaling );</a>
+<a name="ln706">          }</a>
+<a name="ln707">        }</a>
+<a name="ln708">        else</a>
+<a name="ln709">        {</a>
+<a name="ln710">          sub-&gt;font_matrix = top-&gt;font_matrix;</a>
+<a name="ln711">          sub-&gt;font_offset = top-&gt;font_offset;</a>
+<a name="ln712"> </a>
+<a name="ln713">          sub-&gt;units_per_em = top-&gt;units_per_em;</a>
+<a name="ln714">        }</a>
+<a name="ln715"> </a>
+<a name="ln716">        matrix = &amp;sub-&gt;font_matrix;</a>
+<a name="ln717">        offset = &amp;sub-&gt;font_offset;</a>
+<a name="ln718">        upm    = &amp;sub-&gt;units_per_em;</a>
+<a name="ln719">        temp   = FT_ABS( matrix-&gt;yy );</a>
+<a name="ln720"> </a>
+<a name="ln721">        if ( temp != 0x10000L )</a>
+<a name="ln722">        {</a>
+<a name="ln723">          *upm = (FT_ULong)FT_DivFix( (FT_Long)*upm, temp );</a>
+<a name="ln724"> </a>
+<a name="ln725">          matrix-&gt;xx = FT_DivFix( matrix-&gt;xx, temp );</a>
+<a name="ln726">          matrix-&gt;yx = FT_DivFix( matrix-&gt;yx, temp );</a>
+<a name="ln727">          matrix-&gt;xy = FT_DivFix( matrix-&gt;xy, temp );</a>
+<a name="ln728">          matrix-&gt;yy = FT_DivFix( matrix-&gt;yy, temp );</a>
+<a name="ln729">          offset-&gt;x  = FT_DivFix( offset-&gt;x,  temp );</a>
+<a name="ln730">          offset-&gt;y  = FT_DivFix( offset-&gt;y,  temp );</a>
+<a name="ln731">        }</a>
+<a name="ln732"> </a>
+<a name="ln733">        offset-&gt;x &gt;&gt;= 16;</a>
+<a name="ln734">        offset-&gt;y &gt;&gt;= 16;</a>
+<a name="ln735">      }</a>
+<a name="ln736"> </a>
+<a name="ln737">      if ( pure_cff )</a>
+<a name="ln738">      {</a>
+<a name="ln739">        char*  style_name = NULL;</a>
+<a name="ln740"> </a>
+<a name="ln741"> </a>
+<a name="ln742">        /* set up num_faces */</a>
+<a name="ln743">        cffface-&gt;num_faces = (FT_Long)cff-&gt;num_faces;</a>
+<a name="ln744"> </a>
+<a name="ln745">        /* compute number of glyphs */</a>
+<a name="ln746">        if ( dict-&gt;cid_registry != 0xFFFFU )</a>
+<a name="ln747">          cffface-&gt;num_glyphs = (FT_Long)( cff-&gt;charset.max_cid + 1 );</a>
+<a name="ln748">        else</a>
+<a name="ln749">          cffface-&gt;num_glyphs = (FT_Long)cff-&gt;charstrings_index.count;</a>
+<a name="ln750"> </a>
+<a name="ln751">        /* set global bbox, as well as EM size */</a>
+<a name="ln752">        cffface-&gt;bbox.xMin =   dict-&gt;font_bbox.xMin            &gt;&gt; 16;</a>
+<a name="ln753">        cffface-&gt;bbox.yMin =   dict-&gt;font_bbox.yMin            &gt;&gt; 16;</a>
+<a name="ln754">        /* no `U' suffix here to 0xFFFF! */</a>
+<a name="ln755">        cffface-&gt;bbox.xMax = ( dict-&gt;font_bbox.xMax + 0xFFFF ) &gt;&gt; 16;</a>
+<a name="ln756">        cffface-&gt;bbox.yMax = ( dict-&gt;font_bbox.yMax + 0xFFFF ) &gt;&gt; 16;</a>
+<a name="ln757"> </a>
+<a name="ln758">        cffface-&gt;units_per_EM = (FT_UShort)( dict-&gt;units_per_em );</a>
+<a name="ln759"> </a>
+<a name="ln760">        cffface-&gt;ascender  = (FT_Short)( cffface-&gt;bbox.yMax );</a>
+<a name="ln761">        cffface-&gt;descender = (FT_Short)( cffface-&gt;bbox.yMin );</a>
+<a name="ln762"> </a>
+<a name="ln763">        cffface-&gt;height = (FT_Short)( ( cffface-&gt;units_per_EM * 12 ) / 10 );</a>
+<a name="ln764">        if ( cffface-&gt;height &lt; cffface-&gt;ascender - cffface-&gt;descender )</a>
+<a name="ln765">          cffface-&gt;height = (FT_Short)( cffface-&gt;ascender - cffface-&gt;descender );</a>
+<a name="ln766"> </a>
+<a name="ln767">        cffface-&gt;underline_position  =</a>
+<a name="ln768">          (FT_Short)( dict-&gt;underline_position &gt;&gt; 16 );</a>
+<a name="ln769">        cffface-&gt;underline_thickness =</a>
+<a name="ln770">          (FT_Short)( dict-&gt;underline_thickness &gt;&gt; 16 );</a>
+<a name="ln771"> </a>
+<a name="ln772">        /* retrieve font family &amp; style name */</a>
+<a name="ln773">        cffface-&gt;family_name = cff_index_get_name(</a>
+<a name="ln774">                                 cff,</a>
+<a name="ln775">                                 (FT_UInt)( face_index &amp; 0xFFFF ) );</a>
+<a name="ln776">        if ( cffface-&gt;family_name )</a>
+<a name="ln777">        {</a>
+<a name="ln778">          char*  full   = cff_index_get_sid_string( cff,</a>
+<a name="ln779">                                                    dict-&gt;full_name );</a>
+<a name="ln780">          char*  fullp  = full;</a>
+<a name="ln781">          char*  family = cffface-&gt;family_name;</a>
+<a name="ln782">          char*  family_name = NULL;</a>
+<a name="ln783"> </a>
+<a name="ln784"> </a>
+<a name="ln785">          remove_subset_prefix( cffface-&gt;family_name );</a>
+<a name="ln786"> </a>
+<a name="ln787">          if ( dict-&gt;family_name )</a>
+<a name="ln788">          {</a>
+<a name="ln789">            family_name = cff_index_get_sid_string( cff,</a>
+<a name="ln790">                                                    dict-&gt;family_name );</a>
+<a name="ln791">            if ( family_name )</a>
+<a name="ln792">              family = family_name;</a>
+<a name="ln793">          }</a>
+<a name="ln794"> </a>
+<a name="ln795">          /* We try to extract the style name from the full name.   */</a>
+<a name="ln796">          /* We need to ignore spaces and dashes during the search. */</a>
+<a name="ln797">          if ( full &amp;&amp; family )</a>
+<a name="ln798">          {</a>
+<a name="ln799">            while ( *fullp )</a>
+<a name="ln800">            {</a>
+<a name="ln801">              /* skip common characters at the start of both strings */</a>
+<a name="ln802">              if ( *fullp == *family )</a>
+<a name="ln803">              {</a>
+<a name="ln804">                family++;</a>
+<a name="ln805">                fullp++;</a>
+<a name="ln806">                continue;</a>
+<a name="ln807">              }</a>
+<a name="ln808"> </a>
+<a name="ln809">              /* ignore spaces and dashes in full name during comparison */</a>
+<a name="ln810">              if ( *fullp == ' ' || *fullp == '-' )</a>
+<a name="ln811">              {</a>
+<a name="ln812">                fullp++;</a>
+<a name="ln813">                continue;</a>
+<a name="ln814">              }</a>
+<a name="ln815"> </a>
+<a name="ln816">              /* ignore spaces and dashes in family name during comparison */</a>
+<a name="ln817">              if ( *family == ' ' || *family == '-' )</a>
+<a name="ln818">              {</a>
+<a name="ln819">                family++;</a>
+<a name="ln820">                continue;</a>
+<a name="ln821">              }</a>
+<a name="ln822"> </a>
+<a name="ln823">              if ( !*family &amp;&amp; *fullp )</a>
+<a name="ln824">              {</a>
+<a name="ln825">                /* The full name begins with the same characters as the  */</a>
+<a name="ln826">                /* family name, with spaces and dashes removed.  In this */</a>
+<a name="ln827">                /* case, the remaining string in `fullp' will be used as */</a>
+<a name="ln828">                /* the style name.                                       */</a>
+<a name="ln829">                style_name = cff_strcpy( memory, fullp );</a>
+<a name="ln830"> </a>
+<a name="ln831">                /* remove the style part from the family name (if present) */</a>
+<a name="ln832">                remove_style( cffface-&gt;family_name, style_name );</a>
+<a name="ln833">              }</a>
+<a name="ln834">              break;</a>
+<a name="ln835">            }</a>
+<a name="ln836">          }</a>
+<a name="ln837">        }</a>
+<a name="ln838">        else</a>
+<a name="ln839">        {</a>
+<a name="ln840">          char  *cid_font_name =</a>
+<a name="ln841">                   cff_index_get_sid_string( cff,</a>
+<a name="ln842">                                             dict-&gt;cid_font_name );</a>
+<a name="ln843"> </a>
+<a name="ln844"> </a>
+<a name="ln845">          /* do we have a `/FontName' for a CID-keyed font? */</a>
+<a name="ln846">          if ( cid_font_name )</a>
+<a name="ln847">            cffface-&gt;family_name = cff_strcpy( memory, cid_font_name );</a>
+<a name="ln848">        }</a>
+<a name="ln849"> </a>
+<a name="ln850">        if ( style_name )</a>
+<a name="ln851">          cffface-&gt;style_name = style_name;</a>
+<a name="ln852">        else</a>
+<a name="ln853">          /* assume &quot;Regular&quot; style if we don't know better */</a>
+<a name="ln854">          cffface-&gt;style_name = cff_strcpy( memory, (char *)&quot;Regular&quot; );</a>
+<a name="ln855"> </a>
+<a name="ln856">        /*******************************************************************/</a>
+<a name="ln857">        /*                                                                 */</a>
+<a name="ln858">        /* Compute face flags.                                             */</a>
+<a name="ln859">        /*                                                                 */</a>
+<a name="ln860">        flags = FT_FACE_FLAG_SCALABLE   | /* scalable outlines */</a>
+<a name="ln861">                FT_FACE_FLAG_HORIZONTAL | /* horizontal data   */</a>
+<a name="ln862">                FT_FACE_FLAG_HINTER;      /* has native hinter */</a>
+<a name="ln863"> </a>
+<a name="ln864">        if ( sfnt_format )</a>
+<a name="ln865">          flags |= FT_FACE_FLAG_SFNT;</a>
+<a name="ln866"> </a>
+<a name="ln867">        /* fixed width font? */</a>
+<a name="ln868">        if ( dict-&gt;is_fixed_pitch )</a>
+<a name="ln869">          flags |= FT_FACE_FLAG_FIXED_WIDTH;</a>
+<a name="ln870"> </a>
+<a name="ln871">  /* XXX: WE DO NOT SUPPORT KERNING METRICS IN THE GPOS TABLE FOR NOW */</a>
+<a name="ln872">#if 0</a>
+<a name="ln873">        /* kerning available? */</a>
+<a name="ln874">        if ( face-&gt;kern_pairs )</a>
+<a name="ln875">          flags |= FT_FACE_FLAG_KERNING;</a>
+<a name="ln876">#endif</a>
+<a name="ln877"> </a>
+<a name="ln878">        cffface-&gt;face_flags |= flags;</a>
+<a name="ln879"> </a>
+<a name="ln880">        /*******************************************************************/</a>
+<a name="ln881">        /*                                                                 */</a>
+<a name="ln882">        /* Compute style flags.                                            */</a>
+<a name="ln883">        /*                                                                 */</a>
+<a name="ln884">        flags = 0;</a>
+<a name="ln885"> </a>
+<a name="ln886">        if ( dict-&gt;italic_angle )</a>
+<a name="ln887">          flags |= FT_STYLE_FLAG_ITALIC;</a>
+<a name="ln888"> </a>
+<a name="ln889">        {</a>
+<a name="ln890">          char  *weight = cff_index_get_sid_string( cff,</a>
+<a name="ln891">                                                    dict-&gt;weight );</a>
+<a name="ln892"> </a>
+<a name="ln893"> </a>
+<a name="ln894">          if ( weight )</a>
+<a name="ln895">            if ( !ft_strcmp( weight, &quot;Bold&quot;  ) ||</a>
+<a name="ln896">                 !ft_strcmp( weight, &quot;Black&quot; ) )</a>
+<a name="ln897">              flags |= FT_STYLE_FLAG_BOLD;</a>
+<a name="ln898">        }</a>
+<a name="ln899"> </a>
+<a name="ln900">        /* double check */</a>
+<a name="ln901">        if ( !(flags &amp; FT_STYLE_FLAG_BOLD) &amp;&amp; cffface-&gt;style_name )</a>
+<a name="ln902">          if ( !ft_strncmp( cffface-&gt;style_name, &quot;Bold&quot;, 4 )  ||</a>
+<a name="ln903">               !ft_strncmp( cffface-&gt;style_name, &quot;Black&quot;, 5 ) )</a>
+<a name="ln904">            flags |= FT_STYLE_FLAG_BOLD;</a>
+<a name="ln905"> </a>
+<a name="ln906">        cffface-&gt;style_flags = flags;</a>
+<a name="ln907">      }</a>
+<a name="ln908"> </a>
+<a name="ln909"> </a>
+<a name="ln910">#ifndef FT_CONFIG_OPTION_NO_GLYPH_NAMES</a>
+<a name="ln911">      /* CID-keyed CFF fonts don't have glyph names -- the SFNT loader */</a>
+<a name="ln912">      /* has unset this flag because of the 3.0 `post' table.          */</a>
+<a name="ln913">      if ( dict-&gt;cid_registry == 0xFFFFU )</a>
+<a name="ln914">        cffface-&gt;face_flags |= FT_FACE_FLAG_GLYPH_NAMES;</a>
+<a name="ln915">#endif</a>
+<a name="ln916"> </a>
+<a name="ln917">      if ( dict-&gt;cid_registry != 0xFFFFU &amp;&amp; pure_cff )</a>
+<a name="ln918">        cffface-&gt;face_flags |= FT_FACE_FLAG_CID_KEYED;</a>
+<a name="ln919"> </a>
+<a name="ln920"> </a>
+<a name="ln921">      /*******************************************************************/</a>
+<a name="ln922">      /*                                                                 */</a>
+<a name="ln923">      /* Compute char maps.                                              */</a>
+<a name="ln924">      /*                                                                 */</a>
+<a name="ln925"> </a>
+<a name="ln926">      /* Try to synthesize a Unicode charmap if there is none available */</a>
+<a name="ln927">      /* already.  If an OpenType font contains a Unicode &quot;cmap&quot;, we    */</a>
+<a name="ln928">      /* will use it, whatever be in the CFF part of the file.          */</a>
+<a name="ln929">      {</a>
+<a name="ln930">        FT_CharMapRec  cmaprec;</a>
+<a name="ln931">        FT_CharMap     cmap;</a>
+<a name="ln932">        FT_UInt        nn;</a>
+<a name="ln933">        CFF_Encoding   encoding = &amp;cff-&gt;encoding;</a>
+<a name="ln934"> </a>
+<a name="ln935"> </a>
+<a name="ln936">        for ( nn = 0; nn &lt; (FT_UInt)cffface-&gt;num_charmaps; nn++ )</a>
+<a name="ln937">        {</a>
+<a name="ln938">          cmap = cffface-&gt;charmaps[nn];</a>
+<a name="ln939"> </a>
+<a name="ln940">          /* Windows Unicode? */</a>
+<a name="ln941">          if ( cmap-&gt;platform_id == TT_PLATFORM_MICROSOFT &amp;&amp;</a>
+<a name="ln942">               cmap-&gt;encoding_id == TT_MS_ID_UNICODE_CS   )</a>
+<a name="ln943">            goto Skip_Unicode;</a>
+<a name="ln944"> </a>
+<a name="ln945">          /* Apple Unicode platform id? */</a>
+<a name="ln946">          if ( cmap-&gt;platform_id == TT_PLATFORM_APPLE_UNICODE )</a>
+<a name="ln947">            goto Skip_Unicode; /* Apple Unicode */</a>
+<a name="ln948">        }</a>
+<a name="ln949"> </a>
+<a name="ln950">        /* since CID-keyed fonts don't contain glyph names, we can't */</a>
+<a name="ln951">        /* construct a cmap                                          */</a>
+<a name="ln952">        if ( pure_cff &amp;&amp; cff-&gt;top_font.font_dict.cid_registry != 0xFFFFU )</a>
+<a name="ln953">          goto Exit;</a>
+<a name="ln954"> </a>
+<a name="ln955">        /* we didn't find a Unicode charmap -- synthesize one */</a>
+<a name="ln956">        cmaprec.face        = cffface;</a>
+<a name="ln957">        cmaprec.platform_id = TT_PLATFORM_MICROSOFT;</a>
+<a name="ln958">        cmaprec.encoding_id = TT_MS_ID_UNICODE_CS;</a>
+<a name="ln959">        cmaprec.encoding    = FT_ENCODING_UNICODE;</a>
+<a name="ln960"> </a>
+<a name="ln961">        nn = (FT_UInt)cffface-&gt;num_charmaps;</a>
+<a name="ln962"> </a>
+<a name="ln963">        error = FT_CMap_New( &amp;CFF_CMAP_UNICODE_CLASS_REC_GET, NULL,</a>
+<a name="ln964">                             &amp;cmaprec, NULL );</a>
+<a name="ln965">        if ( error                                      &amp;&amp;</a>
+<a name="ln966">             FT_ERR_NEQ( error, No_Unicode_Glyph_Name ) )</a>
+<a name="ln967">          goto Exit;</a>
+<a name="ln968">        error = FT_Err_Ok;</a>
+<a name="ln969"> </a>
+<a name="ln970">        /* if no Unicode charmap was previously selected, select this one */</a>
+<a name="ln971">        if ( cffface-&gt;charmap == NULL &amp;&amp; nn != (FT_UInt)cffface-&gt;num_charmaps )</a>
+<a name="ln972">          cffface-&gt;charmap = cffface-&gt;charmaps[nn];</a>
+<a name="ln973"> </a>
+<a name="ln974">      Skip_Unicode:</a>
+<a name="ln975">        if ( encoding-&gt;count &gt; 0 )</a>
+<a name="ln976">        {</a>
+<a name="ln977">          FT_CMap_Class  clazz;</a>
+<a name="ln978"> </a>
+<a name="ln979"> </a>
+<a name="ln980">          cmaprec.face        = cffface;</a>
+<a name="ln981">          cmaprec.platform_id = TT_PLATFORM_ADOBE;  /* Adobe platform id */</a>
+<a name="ln982"> </a>
+<a name="ln983">          if ( encoding-&gt;offset == 0 )</a>
+<a name="ln984">          {</a>
+<a name="ln985">            cmaprec.encoding_id = TT_ADOBE_ID_STANDARD;</a>
+<a name="ln986">            cmaprec.encoding    = FT_ENCODING_ADOBE_STANDARD;</a>
+<a name="ln987">            clazz               = &amp;CFF_CMAP_ENCODING_CLASS_REC_GET;</a>
+<a name="ln988">          }</a>
+<a name="ln989">          else if ( encoding-&gt;offset == 1 )</a>
+<a name="ln990">          {</a>
+<a name="ln991">            cmaprec.encoding_id = TT_ADOBE_ID_EXPERT;</a>
+<a name="ln992">            cmaprec.encoding    = FT_ENCODING_ADOBE_EXPERT;</a>
+<a name="ln993">            clazz               = &amp;CFF_CMAP_ENCODING_CLASS_REC_GET;</a>
+<a name="ln994">          }</a>
+<a name="ln995">          else</a>
+<a name="ln996">          {</a>
+<a name="ln997">            cmaprec.encoding_id = TT_ADOBE_ID_CUSTOM;</a>
+<a name="ln998">            cmaprec.encoding    = FT_ENCODING_ADOBE_CUSTOM;</a>
+<a name="ln999">            clazz               = &amp;CFF_CMAP_ENCODING_CLASS_REC_GET;</a>
+<a name="ln1000">          }</a>
+<a name="ln1001"> </a>
+<a name="ln1002">          error = FT_CMap_New( clazz, NULL, &amp;cmaprec, NULL );</a>
+<a name="ln1003">        }</a>
+<a name="ln1004">      }</a>
+<a name="ln1005">    }</a>
+<a name="ln1006"> </a>
+<a name="ln1007">  Exit:</a>
+<a name="ln1008">    return error;</a>
+<a name="ln1009">  }</a>
+<a name="ln1010"> </a>
+<a name="ln1011"> </a>
+<a name="ln1012">  FT_LOCAL_DEF( void )</a>
+<a name="ln1013">  cff_face_done( FT_Face  cffface )         /* CFF_Face */</a>
+<a name="ln1014">  {</a>
+<a name="ln1015">    CFF_Face      face = (CFF_Face)cffface;</a>
+<a name="ln1016">    FT_Memory     memory;</a>
+<a name="ln1017">    SFNT_Service  sfnt;</a>
+<a name="ln1018"> </a>
+<a name="ln1019"> </a>
+<a name="ln1020">    if ( !face )</a>
+<a name="ln1021">      return;</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    memory = cffface-&gt;memory;</a>
+<a name="ln1024">    sfnt   = (SFNT_Service)face-&gt;sfnt;</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    if ( sfnt )</a>
+<a name="ln1027">      sfnt-&gt;done_face( face );</a>
+<a name="ln1028"> </a>
+<a name="ln1029">    {</a>
+<a name="ln1030">      CFF_Font  cff = (CFF_Font)face-&gt;extra.data;</a>
+<a name="ln1031"> </a>
+<a name="ln1032"> </a>
+<a name="ln1033">      if ( cff )</a>
+<a name="ln1034">      {</a>
+<a name="ln1035">        cff_font_done( cff );</a>
+<a name="ln1036">        FT_FREE( face-&gt;extra.data );</a>
+<a name="ln1037">      }</a>
+<a name="ln1038">    }</a>
+<a name="ln1039">  }</a>
+<a name="ln1040"> </a>
+<a name="ln1041"> </a>
+<a name="ln1042">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1043">  cff_driver_init( FT_Module  module )        /* CFF_Driver */</a>
+<a name="ln1044">  {</a>
+<a name="ln1045">    CFF_Driver  driver = (CFF_Driver)module;</a>
+<a name="ln1046"> </a>
+<a name="ln1047"> </a>
+<a name="ln1048">    /* set default property values, cf. `ftcffdrv.h' */</a>
+<a name="ln1049">#ifdef CFF_CONFIG_OPTION_OLD_ENGINE</a>
+<a name="ln1050">    driver-&gt;hinting_engine = FT_CFF_HINTING_FREETYPE;</a>
+<a name="ln1051">#else</a>
+<a name="ln1052">    driver-&gt;hinting_engine = FT_CFF_HINTING_ADOBE;</a>
+<a name="ln1053">#endif</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    driver-&gt;no_stem_darkening = FALSE;</a>
+<a name="ln1056"> </a>
+<a name="ln1057">    driver-&gt;darken_params[0] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_X1;</a>
+<a name="ln1058">    driver-&gt;darken_params[1] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_Y1;</a>
+<a name="ln1059">    driver-&gt;darken_params[2] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_X2;</a>
+<a name="ln1060">    driver-&gt;darken_params[3] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_Y2;</a>
+<a name="ln1061">    driver-&gt;darken_params[4] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_X3;</a>
+<a name="ln1062">    driver-&gt;darken_params[5] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_Y3;</a>
+<a name="ln1063">    driver-&gt;darken_params[6] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_X4;</a>
+<a name="ln1064">    driver-&gt;darken_params[7] = CFF_CONFIG_OPTION_DARKENING_PARAMETER_Y4;</a>
+<a name="ln1065"> </a>
+<a name="ln1066">    return FT_Err_Ok;</a>
+<a name="ln1067">  }</a>
+<a name="ln1068"> </a>
+<a name="ln1069"> </a>
+<a name="ln1070">  FT_LOCAL_DEF( void )</a>
+<a name="ln1071">  cff_driver_done( FT_Module  module )        /* CFF_Driver */</a>
+<a name="ln1072">  {</a>
+<a name="ln1073">    FT_UNUSED( module );</a>
+<a name="ln1074">  }</a>
+<a name="ln1075"> </a>
+<a name="ln1076"> </a>
+<a name="ln1077">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="566"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+<div class="balloon" rel="747"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1028/" target="_blank">V1028</a> Possible overflow. Consider casting operands of the 'cff->charset.max_cid + 1' operator to the 'FT_Long' type, not the result.</p></div>
+<div class="balloon" rel="797"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: family.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,326 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>updatechecker.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2010 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;updatechecker.h&quot;</a>
+<a name="ln21">#include &quot;musescore.h&quot;</a>
+<a name="ln22">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln23">#include &quot;preferences.h&quot;</a>
+<a name="ln24">#include &quot;resourceManager.h&quot;</a>
+<a name="ln25">#include &quot;extension.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/utils.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">namespace Ms {</a>
+<a name="ln29"> </a>
+<a name="ln30">#if !defined(Q_OS_MAC) &amp;&amp; (!defined(Q_OS_WIN) || defined(MSCORE_UNSTABLE))</a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32">//   default period</a>
+<a name="ln33">//---------------------------------------------------------</a>
+<a name="ln34"> </a>
+<a name="ln35">static int defaultPeriod()</a>
+<a name="ln36">      {</a>
+<a name="ln37">      int result = 24;</a>
+<a name="ln38">      if(qApp-&gt;applicationName() == &quot;MuseScore2&quot;){ //avoid nightly cymbals</a>
+<a name="ln39">            if (MuseScore::unstable())</a>
+<a name="ln40">                  result = 24;</a>
+<a name="ln41">            else</a>
+<a name="ln42">                  result = 24; // yes, it's again the same but let's keep the logic for now</a>
+<a name="ln43">            }</a>
+<a name="ln44">      return result;</a>
+<a name="ln45">      }</a>
+<a name="ln46">#endif</a>
+<a name="ln47"> </a>
+<a name="ln48">UpdateChecker::UpdateChecker(QObject* parent)</a>
+<a name="ln49">      : UpdateCheckerBase(parent)</a>
+<a name="ln50">      {</a>
+<a name="ln51">      manager = new QNetworkAccessManager(this);</a>
+<a name="ln52">      connect(manager, SIGNAL(finished(QNetworkReply*)), this, SLOT(onRequestFinished(QNetworkReply*)));</a>
+<a name="ln53">      }</a>
+<a name="ln54"> </a>
+<a name="ln55">void UpdateChecker::onRequestFinished(QNetworkReply* reply)</a>
+<a name="ln56">      {</a>
+<a name="ln57">      if (reply-&gt;error() != QNetworkReply::NoError) {</a>
+<a name="ln58">            qDebug(&quot;Error while checking update [%s]&quot;, reply-&gt;errorString().toLatin1().constData());</a>
+<a name="ln59">            return;</a>
+<a name="ln60">            }</a>
+<a name="ln61"> </a>
+<a name="ln62">      QSettings s;</a>
+<a name="ln63">      s.beginGroup(&quot;Update&quot;);</a>
+<a name="ln64">      s.setValue(&quot;lastUpdateDate&quot;, QDateTime::currentDateTime());</a>
+<a name="ln65">      s.endGroup();</a>
+<a name="ln66"> </a>
+<a name="ln67">      QByteArray data = reply-&gt;readAll();</a>
+<a name="ln68">      QXmlStreamReader reader(data);</a>
+<a name="ln69">      QString version;</a>
+<a name="ln70">      QString upgradeRevision;</a>
+<a name="ln71">      QString downloadUrl;</a>
+<a name="ln72">      QString infoUrl;</a>
+<a name="ln73">      QString description;</a>
+<a name="ln74"> </a>
+<a name="ln75">      while (!reader.atEnd() &amp;&amp; !reader.hasError()) {</a>
+<a name="ln76">            QXmlStreamReader::TokenType token = reader.readNext();</a>
+<a name="ln77">            if(token == QXmlStreamReader::StartDocument) {</a>
+<a name="ln78">                  continue;</a>
+<a name="ln79">                  }</a>
+<a name="ln80">            if(token == QXmlStreamReader::StartElement) {</a>
+<a name="ln81">                  if(reader.name() == &quot;version&quot;)</a>
+<a name="ln82">                        version = parseText(reader);</a>
+<a name="ln83">                  else if (reader.name() == &quot;revision&quot;)</a>
+<a name="ln84">                        upgradeRevision = parseText(reader);</a>
+<a name="ln85">                  else if (reader.name() == &quot;downloadUrl&quot;) {</a>
+<a name="ln86">                        downloadUrl = parseText(reader);</a>
+<a name="ln87">#if defined(FOR_WINSTORE)</a>
+<a name="ln88">                        downloadUrl = QString(&quot;%1?package=appx&amp;version=%2&quot;).arg(downloadUrl).arg(_currentVersion);</a>
+<a name="ln89">#endif</a>
+<a name="ln90">                        }</a>
+<a name="ln91">                  else if (reader.name() == &quot;infoUrl&quot;)</a>
+<a name="ln92">                        infoUrl = parseText(reader);</a>
+<a name="ln93">                  else if (reader.name() == &quot;description&quot;)</a>
+<a name="ln94">                        description = parseText(reader);</a>
+<a name="ln95">                  }</a>
+<a name="ln96">            }</a>
+<a name="ln97"> </a>
+<a name="ln98">      if (reader.error() != QXmlStreamReader::NoError)</a>
+<a name="ln99">            qDebug() &lt;&lt; reader.error() &lt;&lt; reader.errorString();</a>
+<a name="ln100"> </a>
+<a name="ln101">      QString message = tr(&quot;An update for MuseScore is available: %1MuseScore %2 r.%3%4&quot;)</a>
+<a name="ln102">                  .arg(&quot;&lt;a href=\&quot;&quot; + downloadUrl + &quot;\&quot;&gt;&quot;)</a>
+<a name="ln103">                  .arg(version)</a>
+<a name="ln104">                  .arg(upgradeRevision)</a>
+<a name="ln105">                  .arg(&quot;&lt;/a&gt;&quot;);</a>
+<a name="ln106">//    qDebug(&quot;revision %s&quot;, revision.toLatin1().constData());</a>
+<a name="ln107">      if (!version.isEmpty() &amp;&amp;  version &gt; _currentVersion ) {</a>
+<a name="ln108">            QMessageBox msgBox;</a>
+<a name="ln109">            msgBox.setWindowTitle(tr(&quot;Update Available&quot;));</a>
+<a name="ln110">            msgBox.setText(message);</a>
+<a name="ln111">            msgBox.setTextFormat(Qt::RichText);</a>
+<a name="ln112">            msgBox.exec();</a>
+<a name="ln113">            }</a>
+<a name="ln114">      else if (manual) {</a>
+<a name="ln115">            QMessageBox msgBox;</a>
+<a name="ln116">            msgBox.setWindowTitle(tr(&quot;No Update Available&quot;));</a>
+<a name="ln117">            msgBox.setText(tr(&quot;No Update Available&quot;));</a>
+<a name="ln118">            msgBox.setTextFormat(Qt::RichText);</a>
+<a name="ln119">            msgBox.exec();</a>
+<a name="ln120">            }</a>
+<a name="ln121">      }</a>
+<a name="ln122"> </a>
+<a name="ln123">QString UpdateChecker::parseText(QXmlStreamReader&amp; reader)</a>
+<a name="ln124">      {</a>
+<a name="ln125">      QString result;</a>
+<a name="ln126">      reader.readNext();</a>
+<a name="ln127">      if (reader.tokenType() == QXmlStreamReader::Characters)</a>
+<a name="ln128">            result = reader.text().toString();</a>
+<a name="ln129">      return result;</a>
+<a name="ln130">      }</a>
+<a name="ln131"> </a>
+<a name="ln132">bool UpdateChecker::getUpdatePrefValue()</a>
+<a name="ln133">      {</a>
+<a name="ln134">      return preferences.getBool(PREF_UI_APP_STARTUP_CHECKUPDATE);</a>
+<a name="ln135">      }</a>
+<a name="ln136"> </a>
+<a name="ln137">QString UpdateChecker::getUpdatePrefString()</a>
+<a name="ln138">      {</a>
+<a name="ln139">      return &quot;lastUpdateDate&quot;;</a>
+<a name="ln140">      }</a>
+<a name="ln141"> </a>
+<a name="ln142">void UpdateChecker::check(QString currentVersion, bool m)</a>
+<a name="ln143">      {</a>
+<a name="ln144">      manual = m;</a>
+<a name="ln145">#if defined(Q_OS_WIN)</a>
+<a name="ln146">      os = &quot;win&quot;;</a>
+<a name="ln147">#endif</a>
+<a name="ln148">#if defined(Q_OS_MAC)</a>
+<a name="ln149">      os = &quot;mac&quot;;</a>
+<a name="ln150">#endif</a>
+<a name="ln151">      bool check = true;</a>
+<a name="ln152">      if (MuseScore::unstable()) {</a>
+<a name="ln153">            release = &quot;nightly&quot;;</a>
+<a name="ln154">            QString buildNumber = QString(&quot;%1&quot;).arg(BUILD_NUMBER);</a>
+<a name="ln155">            if (!buildNumber.isEmpty())</a>
+<a name="ln156">                  _currentVersion = QString(&quot;%1.%2&quot;).arg(currentVersion).arg(BUILD_NUMBER);</a>
+<a name="ln157">            else {</a>
+<a name="ln158">                  _currentVersion = currentVersion;</a>
+<a name="ln159">                  check = false;</a>
+<a name="ln160">                  }</a>
+<a name="ln161">            }</a>
+<a name="ln162">      else {</a>
+<a name="ln163">            release = &quot;stable&quot;;</a>
+<a name="ln164">             _currentVersion =  currentVersion;</a>
+<a name="ln165">            }</a>
+<a name="ln166">      if (MScore::debugMode)</a>
+<a name="ln167">            qDebug(&quot;release type: %s&quot;, release.toLatin1().constData());</a>
+<a name="ln168">      if (!os.isEmpty() &amp;&amp; !release.isEmpty() &amp;&amp; check)</a>
+<a name="ln169">            manager-&gt;get(QNetworkRequest(QUrl(&quot;http://update.musescore.org/update_&quot; + os +&quot;_&quot; + release +&quot;.xml&quot;)));</a>
+<a name="ln170">      }</a>
+<a name="ln171"> </a>
+<a name="ln172">UpdateCheckerBase::UpdateCheckerBase(QObject* parent)</a>
+<a name="ln173">      : QObject(parent)</a>
+<a name="ln174">      {</a>
+<a name="ln175"> </a>
+<a name="ln176">      }</a>
+<a name="ln177"> </a>
+<a name="ln178">//---------------------------------------------------------</a>
+<a name="ln179">//   default hasToCheck</a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181"> </a>
+<a name="ln182">bool UpdateCheckerBase::hasToCheck()</a>
+<a name="ln183">      {</a>
+<a name="ln184">      if(!getUpdatePrefValue())</a>
+<a name="ln185">            return false;</a>
+<a name="ln186">//disable embedded updating for both stable/unstable Mac builds and stable Win builds</a>
+<a name="ln187">#if !defined(Q_OS_MAC) &amp;&amp; (!defined(Q_OS_WIN) || defined(MSCORE_UNSTABLE))</a>
+<a name="ln188">      QSettings s;</a>
+<a name="ln189">      s.beginGroup(&quot;Update&quot;);</a>
+<a name="ln190">      QDateTime now = QDateTime::currentDateTime();</a>
+<a name="ln191">      QDateTime lastUpdate = s.value(getUpdatePrefString(), now).value&lt;QDateTime&gt;();</a>
+<a name="ln192"> </a>
+<a name="ln193">      if (MScore::debugMode) {</a>
+<a name="ln194">            qDebug(QString(&quot;preferences.&quot; + getUpdatePrefString() + &quot;: %d&quot;).toStdString().c_str() , getUpdatePrefValue());</a>
+<a name="ln195">            qDebug(QString(&quot;last update for &quot; + getUpdatePrefString() + &quot;: %s&quot;).toStdString().c_str(), qPrintable(lastUpdate.toString(&quot;dd.MM.yyyy hh:mm:ss.zzz&quot;)));</a>
+<a name="ln196">            }</a>
+<a name="ln197">      s.endGroup();</a>
+<a name="ln198">      return now == lastUpdate || now &gt; lastUpdate.addSecs(3600 * defaultPeriod()) ;</a>
+<a name="ln199">#else</a>
+<a name="ln200">      return true;</a>
+<a name="ln201">#endif</a>
+<a name="ln202">      }</a>
+<a name="ln203"> </a>
+<a name="ln204">ExtensionsUpdateChecker::ExtensionsUpdateChecker(QObject* parent)</a>
+<a name="ln205">      : UpdateCheckerBase(parent)</a>
+<a name="ln206">      {</a>
+<a name="ln207"> </a>
+<a name="ln208">      }</a>
+<a name="ln209"> </a>
+<a name="ln210">void ExtensionsUpdateChecker::check()</a>
+<a name="ln211">      {</a>
+<a name="ln212">      DownloadUtils *js = new DownloadUtils();</a>
+<a name="ln213">      js-&gt;setTarget(ResourceManager::baseAddr() + &quot;extensions/details.json&quot;);</a>
+<a name="ln214">      js-&gt;download();</a>
+<a name="ln215">      QByteArray json = js-&gt;returnData();</a>
+<a name="ln216"> </a>
+<a name="ln217">      // parse the json file</a>
+<a name="ln218">      QJsonParseError err;</a>
+<a name="ln219">      QJsonDocument result = QJsonDocument::fromJson(json, &amp;err);</a>
+<a name="ln220">      if (err.error != QJsonParseError::NoError || !result.isObject()) {</a>
+<a name="ln221">            qDebug(&quot;An error occurred during parsing&quot;);</a>
+<a name="ln222">            return;</a>
+<a name="ln223">            }</a>
+<a name="ln224"> </a>
+<a name="ln225">      QStringList extensions = result.object().keys();</a>
+<a name="ln226">      for (QString key : extensions) {</a>
+<a name="ln227">            if (!result.object().value(key).isObject())</a>
+<a name="ln228">                  continue;</a>
+<a name="ln229">            QJsonObject value = result.object().value(key).toObject();</a>
+<a name="ln230">            QString version = value.value(&quot;version&quot;).toString();</a>
+<a name="ln231"> </a>
+<a name="ln232">            // get the installed version of the extension if any</a>
+<a name="ln233">            if (Extension::isInstalled(key)) {</a>
+<a name="ln234">                  QString installedVersion = Extension::getLatestVersion(key);</a>
+<a name="ln235">                  if (compareVersion(installedVersion, version)) {</a>
+<a name="ln236">                        QMessageBox msgBox;</a>
+<a name="ln237">                        msgBox.setWindowTitle(tr(&quot;Extension Updates Available&quot;));</a>
+<a name="ln238">                        msgBox.setText(tr(&quot;One or more installed extensions have updates available in Help &gt; Resource Manager…&quot;));</a>
+<a name="ln239">                        msgBox.setTextFormat(Qt::RichText);</a>
+<a name="ln240">                        msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);</a>
+<a name="ln241">                        msgBox.setDefaultButton(QMessageBox::Ok);</a>
+<a name="ln242">                        msgBox.setEscapeButton(QMessageBox::Cancel);</a>
+<a name="ln243">                        int ret = msgBox.exec();</a>
+<a name="ln244">                        switch (ret) {</a>
+<a name="ln245">                              case QMessageBox::Ok: {</a>
+<a name="ln246">                                    ResourceManager r(static_cast&lt;QWidget*&gt;(this-&gt;parent()));</a>
+<a name="ln247">                                    r.selectExtensionsTab();</a>
+<a name="ln248">                                    r.exec();</a>
+<a name="ln249">                                    break;</a>
+<a name="ln250">                                    }</a>
+<a name="ln251">                              case QMessageBox::Cancel: {</a>
+<a name="ln252">                                    break;</a>
+<a name="ln253">                                    }</a>
+<a name="ln254">                              default:</a>
+<a name="ln255">                                    qWarning() &lt;&lt; &quot;undefined action in ExtensionsUpdateChecker::check&quot; &lt;&lt; ret;</a>
+<a name="ln256">                              }</a>
+<a name="ln257">                        QSettings s;</a>
+<a name="ln258">                        s.beginGroup(&quot;Update&quot;);</a>
+<a name="ln259">                        s.setValue(getUpdatePrefString(), QDateTime::currentDateTime());</a>
+<a name="ln260">                        s.endGroup();</a>
+<a name="ln261">                        break;</a>
+<a name="ln262">                        }</a>
+<a name="ln263">                  }</a>
+<a name="ln264">            }</a>
+<a name="ln265">      }</a>
+<a name="ln266"> </a>
+<a name="ln267">bool ExtensionsUpdateChecker::getUpdatePrefValue()</a>
+<a name="ln268">      {</a>
+<a name="ln269">      return preferences.getBool(PREF_UI_APP_STARTUP_CHECK_EXTENSIONS_UPDATE);</a>
+<a name="ln270">      }</a>
+<a name="ln271"> </a>
+<a name="ln272">QString ExtensionsUpdateChecker::getUpdatePrefString()</a>
+<a name="ln273">      {</a>
+<a name="ln274">      return &quot;lastExtensionsUpdateDate&quot;;</a>
+<a name="ln275">      }</a>
+<a name="ln276"> </a>
+<a name="ln277">}</a>
+<a name="ln278"> </a>
+
+</code></pre>
+<div class="balloon" rel="58"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="167"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

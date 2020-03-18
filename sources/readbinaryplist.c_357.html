@@ -1,0 +1,1161 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>readbinaryplist.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2"> </a>
+<a name="ln3">readbinaryplist.c -- Roger B. Dannenberg, Jun 2008</a>
+<a name="ln4">Based on ReadBinaryPList.m by Jens Ayton, 2007</a>
+<a name="ln5"> </a>
+<a name="ln6">Note that this code is intended to read preference files and has an upper</a>
+<a name="ln7">bound on file size (currently 100MB) and assumes in some places that 32 bit</a>
+<a name="ln8">offsets are sufficient.</a>
+<a name="ln9"> </a>
+<a name="ln10">Here are his comments:</a>
+<a name="ln11"> </a>
+<a name="ln12">Reader for binary property list files (version 00).</a>
+<a name="ln13"> </a>
+<a name="ln14">This has been found to work on all 566 binary plists in my ~/Library/Preferences/</a>
+<a name="ln15">and /Library/Preferences/ directories. This probably does not provide full</a>
+<a name="ln16">test coverage. It has also been found to provide different data to Apple's</a>
+<a name="ln17">implementation when presented with a key-value archive. This is because Apple's</a>
+<a name="ln18">implementation produces undocumented CFKeyArchiverUID objects. My implementation</a>
+<a name="ln19">produces dictionaries instead, matching the in-file representation used in XML</a>
+<a name="ln20">and OpenStep plists. See extract_uid().</a>
+<a name="ln21"> </a>
+<a name="ln22">Full disclosure: in implementing this software, I read one comment and one</a>
+<a name="ln23">struct defintion in CFLite, Apple's implementation, which is under the APSL</a>
+<a name="ln24">license. I also deduced the information about CFKeyArchiverUID from that code.</a>
+<a name="ln25">However, none of the implementation was copied.</a>
+<a name="ln26"> </a>
+<a name="ln27">Copyright (C) 2007 Jens Ayton</a>
+<a name="ln28"> </a>
+<a name="ln29">Permission is hereby granted, free of charge, to any person obtaining a copy</a>
+<a name="ln30">of this software and associated documentation files (the &quot;Software&quot;), to deal</a>
+<a name="ln31">in the Software without restriction, including without limitation the rights</a>
+<a name="ln32">to use, copy, modify, merge, publish, distribute, sublicense, and/or sell</a>
+<a name="ln33">copies of the Software, and to permit persons to whom the Software is</a>
+<a name="ln34">furnished to do so, subject to the following conditions:</a>
+<a name="ln35"> </a>
+<a name="ln36">The above copyright notice and this permission notice shall be included in all</a>
+<a name="ln37">copies or substantial portions of the Software.</a>
+<a name="ln38"> </a>
+<a name="ln39">THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</a>
+<a name="ln40">IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</a>
+<a name="ln41">FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE</a>
+<a name="ln42">AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER</a>
+<a name="ln43">LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,</a>
+<a name="ln44">OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE</a>
+<a name="ln45">SOFTWARE.</a>
+<a name="ln46"> </a>
+<a name="ln47">*/</a>
+<a name="ln48"> </a>
+<a name="ln49">/* A note about memory management:</a>
+<a name="ln50">Strings and possibly other values are unique and because the values</a>
+<a name="ln51">associated with IDs are cached, you end up with a directed graph rather</a>
+<a name="ln52">than a tree. It is tricky to free the data because if you do a simple</a>
+<a name="ln53">depth-first search to free nodes, you will free nodes twice. I decided</a>
+<a name="ln54">to allocate memory from blocks of 1024 bytes and keep the blocks in a</a>
+<a name="ln55">list associated with but private to this module. So the user should</a>
+<a name="ln56">access this module by calling:</a>
+<a name="ln57">    bplist_read_file() or bplist_read_user_pref() or </a>
+<a name="ln58">    bplist_read_system_pref()</a>
+<a name="ln59">which returns a value. When you are done with the value, call</a>
+<a name="ln60">    bplist_free_data()</a>
+<a name="ln61">This will of course free the value_ptr returned by bplist_read_*()</a>
+<a name="ln62"> </a>
+<a name="ln63">To deal with memory exhaustion (what happens when malloc returns</a>
+<a name="ln64">NULL?), use setjmp/longjmp -- a single setjmp protects the whole</a>
+<a name="ln65">parser, and allocate uses longjmp to abort. After abort, memory</a>
+<a name="ln66">is freed and NULL is returned to caller. There is not much here</a>
+<a name="ln67">in the way of error reporting.</a>
+<a name="ln68"> </a>
+<a name="ln69">Memory is obtained by calling allocate which either returns the</a>
+<a name="ln70">memory requested or calls longjmp, so callers don't have to check.</a>
+<a name="ln71"> </a>
+<a name="ln72">*/</a>
+<a name="ln73"> </a>
+<a name="ln74">#include &lt;sys/types.h&gt;</a>
+<a name="ln75">#include &lt;stdlib.h&gt;</a>
+<a name="ln76">#include &lt;string.h&gt;</a>
+<a name="ln77">#include &lt;assert.h&gt;</a>
+<a name="ln78">#include &lt;stdio.h&gt;</a>
+<a name="ln79">#include &lt;sys/stat.h&gt;</a>
+<a name="ln80">#include &quot;readbinaryplist.h&quot;</a>
+<a name="ln81">#include &lt;Carbon/Carbon.h&gt;</a>
+<a name="ln82"> </a>
+<a name="ln83">#define NO 0</a>
+<a name="ln84">#define YES 1</a>
+<a name="ln85">#define BOOL int</a>
+<a name="ln86"> </a>
+<a name="ln87">#define MAXPATHLEN 256</a>
+<a name="ln88"> </a>
+<a name="ln89">/* there are 2 levels of error logging/printing:</a>
+<a name="ln90"> *   BPLIST_LOG and BPLIST_LOG_VERBOSE</a>
+<a name="ln91"> * either or both can be set to non-zero to turn on</a>
+<a name="ln92"> * If BPLIST_LOG_VERBOSE is true, then BPLIST_LOG </a>
+<a name="ln93"> * is also true.</a>
+<a name="ln94"> * </a>
+<a name="ln95"> * In the code, logging is done by calling either</a>
+<a name="ln96"> * bplist_log() or bplist_log_verbose(), which take</a>
+<a name="ln97"> * parameters like printf but might be a no-op.</a>
+<a name="ln98"> */</a>
+<a name="ln99"> </a>
+<a name="ln100">/* #define BPLIST_LOG_VERBOSE 1 */</a>
+<a name="ln101"> </a>
+<a name="ln102">#if BPLIST_LOG_VERBOSE</a>
+<a name="ln103">    #ifndef BPLIST_LOG</a>
+<a name="ln104">        #define BPLIST_LOG 1</a>
+<a name="ln105">    #endif</a>
+<a name="ln106">#endif</a>
+<a name="ln107"> </a>
+<a name="ln108">#if BPLIST_LOG</a>
+<a name="ln109">    #define bplist_log printf</a>
+<a name="ln110">#else</a>
+<a name="ln111">    #define bplist_log(...)</a>
+<a name="ln112">#endif</a>
+<a name="ln113"> </a>
+<a name="ln114">#if BPLIST_LOG_VERBOSE</a>
+<a name="ln115">    #define bplist_log_verbose bplist_log</a>
+<a name="ln116">#else</a>
+<a name="ln117">    #define bplist_log_verbose(...)</a>
+<a name="ln118">#endif</a>
+<a name="ln119"> </a>
+<a name="ln120"> </a>
+<a name="ln121">/********* MEMORY MANAGEMENT ********/</a>
+<a name="ln122">#define BLOCK_SIZE 1024</a>
+<a name="ln123">// memory is aligned to multiples of this; assume malloc automatically</a>
+<a name="ln124">// aligns to this number and assume this number is &gt; sizeof(void *)</a>
+<a name="ln125">#define ALIGNMENT 8</a>
+<a name="ln126">static void *block_list = NULL;</a>
+<a name="ln127">static char *free_ptr = NULL;</a>
+<a name="ln128">static char *end_ptr = NULL;</a>
+<a name="ln129">static jmp_buf abort_parsing;</a>
+<a name="ln130"> </a>
+<a name="ln131">static void *allocate(size_t size)</a>
+<a name="ln132">{</a>
+<a name="ln133">    void *result;</a>
+<a name="ln134">    if (free_ptr + size &gt; end_ptr) {</a>
+<a name="ln135">        size_t how_much = BLOCK_SIZE;</a>
+<a name="ln136">        // align everything to 8 bytes</a>
+<a name="ln137">        if (size &gt; BLOCK_SIZE - ALIGNMENT) {</a>
+<a name="ln138">            how_much = size + ALIGNMENT;</a>
+<a name="ln139">        }</a>
+<a name="ln140">        result = malloc(how_much);</a>
+<a name="ln141">        if (result == NULL) {</a>
+<a name="ln142">            /* serious problem */</a>
+<a name="ln143">            longjmp(abort_parsing, 1);</a>
+<a name="ln144">        }</a>
+<a name="ln145">        *((void **)result) = block_list;</a>
+<a name="ln146">        block_list = result;</a>
+<a name="ln147">        free_ptr = ((char *) result) + ALIGNMENT;</a>
+<a name="ln148">        end_ptr = ((char *) result) + how_much;</a>
+<a name="ln149">    }</a>
+<a name="ln150">    // now, there is enough rooom at free_ptr</a>
+<a name="ln151">    result = free_ptr;</a>
+<a name="ln152">    free_ptr += size;</a>
+<a name="ln153">    return result;</a>
+<a name="ln154">}</a>
+<a name="ln155"> </a>
+<a name="ln156">void bplist_free_data()</a>
+<a name="ln157">{</a>
+<a name="ln158">    while (block_list) {</a>
+<a name="ln159">        void *next = *(void **)block_list;</a>
+<a name="ln160">        free(block_list);</a>
+<a name="ln161">        block_list = next;</a>
+<a name="ln162">    }</a>
+<a name="ln163">    free_ptr = NULL;</a>
+<a name="ln164">    end_ptr = NULL;</a>
+<a name="ln165">}</a>
+<a name="ln166"> </a>
+<a name="ln167">// layout of trailer -- last 32 bytes in plist data</a>
+<a name="ln168">    uint8_t unused[6];</a>
+<a name="ln169">    uint8_t offset_int_size;</a>
+<a name="ln170">    uint8_t object_ref_size;</a>
+<a name="ln171">    uint64_t object_count;</a>
+<a name="ln172">    uint64_t top_level_object;</a>
+<a name="ln173">    uint64_t offset_table_offset;</a>
+<a name="ln174"> </a>
+<a name="ln175"> </a>
+<a name="ln176">enum</a>
+<a name="ln177">{</a>
+<a name="ln178">    kHEADER_SIZE = 8,</a>
+<a name="ln179">    kTRAILER_SIZE = 32, //sizeof(bplist_trailer_node),</a>
+<a name="ln180">    kMINIMUM_SANE_SIZE = kHEADER_SIZE + kTRAILER_SIZE</a>
+<a name="ln181">};</a>
+<a name="ln182"> </a>
+<a name="ln183"> </a>
+<a name="ln184">static const char kHEADER_BYTES[kHEADER_SIZE] = &quot;bplist00&quot;;</a>
+<a name="ln185"> </a>
+<a name="ln186">// map from UID key to previously parsed value</a>
+<a name="ln187">typedef struct cache_struct {</a>
+<a name="ln188">    uint64_t key;</a>
+<a name="ln189">    value_ptr value;</a>
+<a name="ln190">    struct cache_struct *next;</a>
+<a name="ln191">} cache_node, *cache_ptr;</a>
+<a name="ln192"> </a>
+<a name="ln193"> </a>
+<a name="ln194">typedef struct bplist_info</a>
+<a name="ln195">{</a>
+<a name="ln196">    uint64_t object_count;</a>
+<a name="ln197">    const uint8_t *data_bytes;</a>
+<a name="ln198">    uint64_t length;</a>
+<a name="ln199">    uint64_t offset_table_offset;</a>
+<a name="ln200">    uint8_t offset_int_size;</a>
+<a name="ln201">    uint8_t object_ref_size;</a>
+<a name="ln202">    cache_ptr cache;</a>
+<a name="ln203">} bplist_info_node, *bplist_info_ptr;</a>
+<a name="ln204"> </a>
+<a name="ln205"> </a>
+<a name="ln206">static value_ptr bplist_read_pldata(pldata_ptr data);</a>
+<a name="ln207">static value_ptr bplist_read_pref(char *filename, OSType folder_type);</a>
+<a name="ln208">static uint64_t read_sized_int(bplist_info_ptr bplist, uint64_t offset, uint8_t size);</a>
+<a name="ln209">static uint64_t read_offset(bplist_info_ptr bplist, uint64_t index);</a>
+<a name="ln210">static BOOL read_self_sized_int(bplist_info_ptr bplist, uint64_t offset, uint64_t *outValue, size_t *outSize);</a>
+<a name="ln211"> </a>
+<a name="ln212">static value_ptr extract_object(bplist_info_ptr bplist, uint64_t objectRef);</a>
+<a name="ln213">static value_ptr extract_simple(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln214">static value_ptr extract_int(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln215">static value_ptr extract_real(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln216">static value_ptr extract_date(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln217">static value_ptr extract_data(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln218">static value_ptr extract_ascii_string(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln219">static value_ptr extract_unicode_string(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln220">static value_ptr extract_uid(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln221">static value_ptr extract_array(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln222">static value_ptr extract_dictionary(bplist_info_ptr bplist, uint64_t offset);</a>
+<a name="ln223"> </a>
+<a name="ln224"> </a>
+<a name="ln225">value_ptr value_create()</a>
+<a name="ln226">{</a>
+<a name="ln227">    value_ptr value = (value_ptr) allocate(sizeof(value_node));</a>
+<a name="ln228">    return value;</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231"> </a>
+<a name="ln232">void value_set_integer(value_ptr v, int64_t i) {</a>
+<a name="ln233">    v-&gt;tag = kTAG_INT; v-&gt;integer = i;</a>
+<a name="ln234">}</a>
+<a name="ln235"> </a>
+<a name="ln236">void value_set_real(value_ptr v, double d) {</a>
+<a name="ln237">    v-&gt;tag = kTAG_REAL; v-&gt;real = d;</a>
+<a name="ln238">}</a>
+<a name="ln239"> </a>
+<a name="ln240">// d is seconds since 1 January 2001</a>
+<a name="ln241">void value_set_date(value_ptr v, double d) {</a>
+<a name="ln242">    v-&gt;tag = kTAG_DATE; v-&gt;real = d;</a>
+<a name="ln243">}</a>
+<a name="ln244"> </a>
+<a name="ln245">void value_set_ascii_string(value_ptr v, const uint8_t *s, size_t len) {</a>
+<a name="ln246">    v-&gt;tag = kTAG_ASCIISTRING;</a>
+<a name="ln247">    v-&gt;string = (char *) allocate(len + 1);</a>
+<a name="ln248">    memcpy(v-&gt;string, s, len);</a>
+<a name="ln249">    v-&gt;string[len] = 0;</a>
+<a name="ln250">}</a>
+<a name="ln251"> </a>
+<a name="ln252">void value_set_unicode_string(value_ptr v, const uint8_t *s, size_t len) {</a>
+<a name="ln253">    v-&gt;tag = kTAG_UNICODESTRING;</a>
+<a name="ln254">    v-&gt;string = (char *) allocate(len + 1);</a>
+<a name="ln255">    memcpy(v-&gt;string, s, len);</a>
+<a name="ln256">    v-&gt;string[len] = 0;</a>
+<a name="ln257">}</a>
+<a name="ln258"> </a>
+<a name="ln259">void value_set_uid(value_ptr v, uint64_t uid)</a>
+<a name="ln260">{</a>
+<a name="ln261">    v-&gt;tag = kTAG_UID; v-&gt;uinteger = uid;</a>
+<a name="ln262">}</a>
+<a name="ln263"> </a>
+<a name="ln264">// v-&gt;data points to a pldata that points to the actual bytes</a>
+<a name="ln265">// the bytes are copied, so caller must free byte source (*data)</a>
+<a name="ln266">void value_set_data(value_ptr v, const uint8_t *data, size_t len) {</a>
+<a name="ln267">    v-&gt;tag = kTAG_DATA;</a>
+<a name="ln268">    pldata_ptr pldata = (pldata_ptr) allocate(sizeof(pldata_node));</a>
+<a name="ln269">    pldata-&gt;data = (uint8_t *) allocate(len);</a>
+<a name="ln270">    memcpy(pldata-&gt;data, data, len);</a>
+<a name="ln271">    pldata-&gt;len = len;</a>
+<a name="ln272">    v-&gt;data = pldata;</a>
+<a name="ln273">    printf(&quot;value at %p gets data at %p\n&quot;, v, pldata);</a>
+<a name="ln274">}</a>
+<a name="ln275"> </a>
+<a name="ln276">// caller releases ownership of array to value_ptr v</a>
+<a name="ln277">void value_set_array(value_ptr v, value_ptr *array, size_t length) {</a>
+<a name="ln278">    array_ptr a = (array_ptr) allocate(sizeof(array_node));</a>
+<a name="ln279">    a-&gt;array = array;</a>
+<a name="ln280">    a-&gt;length = length;</a>
+<a name="ln281">    v-&gt;tag = kTAG_ARRAY;</a>
+<a name="ln282">    v-&gt;array = a;</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">// caller releases ownership of dict to value_ptr v</a>
+<a name="ln286">void value_set_dict(value_ptr v, dict_ptr dict) {</a>
+<a name="ln287">    v-&gt;tag = kTAG_DICTIONARY;</a>
+<a name="ln288">    v-&gt;dict = dict;</a>
+<a name="ln289">}</a>
+<a name="ln290"> </a>
+<a name="ln291"> </a>
+<a name="ln292">// look up an objectref in the cache, a ref-&gt;value_ptr mapping</a>
+<a name="ln293">value_ptr cache_lookup(cache_ptr cache, uint64_t ref)</a>
+<a name="ln294">{</a>
+<a name="ln295">    while (cache) {</a>
+<a name="ln296">        if (cache-&gt;key == ref) {</a>
+<a name="ln297">            return cache-&gt;value;</a>
+<a name="ln298">        }</a>
+<a name="ln299">        cache = cache-&gt;next;</a>
+<a name="ln300">    }</a>
+<a name="ln301">    return NULL;</a>
+<a name="ln302">}</a>
+<a name="ln303"> </a>
+<a name="ln304"> </a>
+<a name="ln305">// insert an objectref and value in the cache</a>
+<a name="ln306">void cache_insert(cache_ptr *cache, uint64_t ref, value_ptr value)</a>
+<a name="ln307">{</a>
+<a name="ln308">    cache_ptr c = (cache_ptr) allocate(sizeof(cache_node));</a>
+<a name="ln309">    c-&gt;key = ref;</a>
+<a name="ln310">    c-&gt;value = value;</a>
+<a name="ln311">    c-&gt;next = *cache;</a>
+<a name="ln312">    *cache = c;</a>
+<a name="ln313">}</a>
+<a name="ln314"> </a>
+<a name="ln315"> </a>
+<a name="ln316">// insert an objectref and value in a dictionary</a>
+<a name="ln317">void dict_insert(dict_ptr *dict, value_ptr key, value_ptr value)</a>
+<a name="ln318">{</a>
+<a name="ln319">    dict_ptr d = (dict_ptr) allocate(sizeof(dict_node));</a>
+<a name="ln320">    d-&gt;key = key;</a>
+<a name="ln321">    d-&gt;value = value;</a>
+<a name="ln322">    d-&gt;next = *dict;</a>
+<a name="ln323">    *dict = d;</a>
+<a name="ln324">}</a>
+<a name="ln325"> </a>
+<a name="ln326"> </a>
+<a name="ln327">BOOL is_binary_plist(pldata_ptr data)</a>
+<a name="ln328">{</a>
+<a name="ln329">    if (data-&gt;len &lt; kMINIMUM_SANE_SIZE)  return NO;</a>
+<a name="ln330">    return memcmp(data-&gt;data, kHEADER_BYTES, kHEADER_SIZE) == 0;</a>
+<a name="ln331">}</a>
+<a name="ln332"> </a>
+<a name="ln333"> </a>
+<a name="ln334">value_ptr bplist_read_file(char *filename)</a>
+<a name="ln335">{</a>
+<a name="ln336">    struct stat stbuf;</a>
+<a name="ln337">    pldata_node pldata;</a>
+<a name="ln338">    FILE *file;</a>
+<a name="ln339">    size_t n;</a>
+<a name="ln340">    value_ptr value;</a>
+<a name="ln341">    int rslt = stat(filename, &amp;stbuf);</a>
+<a name="ln342">    if (rslt) {</a>
+<a name="ln343">        #if BPLIST_LOG</a>
+<a name="ln344">            perror(&quot;in stat&quot;);</a>
+<a name="ln345">        #endif</a>
+<a name="ln346">        bplist_log(&quot;Could not stat %s, error %d\n&quot;, filename, rslt);</a>
+<a name="ln347">        return NULL;</a>
+<a name="ln348">    }</a>
+<a name="ln349">    // if file is &gt;100MB, assume it is not a preferences file and give up</a>
+<a name="ln350">    if (stbuf.st_size &gt; 100000000) {</a>
+<a name="ln351">        bplist_log(&quot;Large file %s encountered (%llu bytes) -- not read\n&quot;,</a>
+<a name="ln352">                   filename, stbuf.st_size);</a>
+<a name="ln353">        return NULL;</a>
+<a name="ln354">    }</a>
+<a name="ln355">    pldata.len = (size_t) stbuf.st_size;</a>
+<a name="ln356">    // note: this is supposed to be malloc, not allocate. It is separate</a>
+<a name="ln357">    // from the graph structure, large, and easy to free right after</a>
+<a name="ln358">    // parsing.</a>
+<a name="ln359">    pldata.data = (uint8_t *) malloc(pldata.len);</a>
+<a name="ln360">    if (!pldata.data) {</a>
+<a name="ln361">        bplist_log(&quot;Could not allocate %lu bytes for %s\n&quot;,</a>
+<a name="ln362">                   (unsigned long) pldata.len, filename);</a>
+<a name="ln363">        return NULL;</a>
+<a name="ln364">    }</a>
+<a name="ln365">    file = fopen(filename, &quot;rb&quot;);</a>
+<a name="ln366">    if (!file) {</a>
+<a name="ln367">        bplist_log(&quot;Could not open %s\n&quot;, filename);</a>
+<a name="ln368">        return NULL;</a>
+<a name="ln369">    }</a>
+<a name="ln370">    n = fread(pldata.data, 1, pldata.len, file);</a>
+<a name="ln371">    if (n != pldata.len) {</a>
+<a name="ln372">        bplist_log(&quot;Error reading from %s\n&quot;, filename);</a>
+<a name="ln373">        return NULL;</a>
+<a name="ln374">    }</a>
+<a name="ln375">    value = bplist_read_pldata(&amp;pldata);</a>
+<a name="ln376">    free(pldata.data);</a>
+<a name="ln377">    return value;</a>
+<a name="ln378">}</a>
+<a name="ln379"> </a>
+<a name="ln380"> </a>
+<a name="ln381">value_ptr bplist_read_pref(char *filename, OSType folder_type)</a>
+<a name="ln382">{</a>
+<a name="ln383">    FSRef prefdir;</a>
+<a name="ln384">    char cstr[MAXPATHLEN];</a>
+<a name="ln385"> </a>
+<a name="ln386">    OSErr err = FSFindFolder(kOnAppropriateDisk, folder_type,</a>
+<a name="ln387">                             FALSE, &amp;prefdir);</a>
+<a name="ln388">    if (err) {</a>
+<a name="ln389">        bplist_log(&quot;Error finding preferences folder: %d\n&quot;, err);</a>
+<a name="ln390">        return NULL;</a>
+<a name="ln391">    }</a>
+<a name="ln392">    err = FSRefMakePath(&amp;prefdir, (UInt8 *) cstr, (UInt32) (MAXPATHLEN - 1));</a>
+<a name="ln393">    if (err) {</a>
+<a name="ln394">        bplist_log(&quot;Error making path name for preferences folder: %d\n&quot;, err);</a>
+<a name="ln395">        return NULL;</a>
+<a name="ln396">    }</a>
+<a name="ln397">    strlcat(cstr, &quot;/&quot;, MAXPATHLEN);</a>
+<a name="ln398">    strlcat(cstr, filename, MAXPATHLEN);</a>
+<a name="ln399">    return bplist_read_file(cstr);</a>
+<a name="ln400">}</a>
+<a name="ln401"> </a>
+<a name="ln402"> </a>
+<a name="ln403">value_ptr bplist_read_system_pref(char *filename) {</a>
+<a name="ln404">    return bplist_read_pref(filename, kSystemPreferencesFolderType);</a>
+<a name="ln405">}</a>
+<a name="ln406"> </a>
+<a name="ln407"> </a>
+<a name="ln408">value_ptr bplist_read_user_pref(char *filename) {</a>
+<a name="ln409">    return bplist_read_pref(filename, kPreferencesFolderType);</a>
+<a name="ln410">}</a>
+<a name="ln411"> </a>
+<a name="ln412"> </a>
+<a name="ln413">// data is stored with high-order bytes first.</a>
+<a name="ln414">// read from plist data in a machine-independent fashion</a>
+<a name="ln415">//</a>
+<a name="ln416">uint64_t convert_uint64(uint8_t *ptr)</a>
+<a name="ln417">{</a>
+<a name="ln418">    uint64_t rslt = 0;</a>
+<a name="ln419">    int i;</a>
+<a name="ln420">    // shift in bytes, high-order first</a>
+<a name="ln421">    for (i = 0; i &lt; sizeof(uint64_t); i++) {</a>
+<a name="ln422">        rslt &lt;&lt;= 8;</a>
+<a name="ln423">        rslt += ptr[i];</a>
+<a name="ln424">    }</a>
+<a name="ln425">    return rslt;</a>
+<a name="ln426">}</a>
+<a name="ln427"> </a>
+<a name="ln428"> </a>
+<a name="ln429">value_ptr bplist_read_pldata(pldata_ptr data)</a>
+<a name="ln430">{</a>
+<a name="ln431">    value_ptr result = NULL;</a>
+<a name="ln432">    bplist_info_node bplist;</a>
+<a name="ln433">    uint8_t *ptr;</a>
+<a name="ln434">    uint64_t top_level_object;</a>
+<a name="ln435">    int i;</a>
+<a name="ln436"> </a>
+<a name="ln437">    if (data == NULL)  return NULL;</a>
+<a name="ln438">    if (!is_binary_plist(data)) {</a>
+<a name="ln439">        bplist_log(&quot;Bad binary plist: too short or invalid header.\n&quot;);</a>
+<a name="ln440">        return NULL;</a>
+<a name="ln441">    }</a>
+<a name="ln442">        </a>
+<a name="ln443">    // read trailer</a>
+<a name="ln444">    ptr = (uint8_t *) (data-&gt;data + data-&gt;len - kTRAILER_SIZE);</a>
+<a name="ln445">    bplist.offset_int_size = ptr[6];</a>
+<a name="ln446">    bplist.object_ref_size = ptr[7];</a>
+<a name="ln447">    bplist.object_count = convert_uint64(ptr + 8);</a>
+<a name="ln448">    top_level_object = convert_uint64(ptr + 16);</a>
+<a name="ln449">    bplist.offset_table_offset = convert_uint64(ptr + 24);</a>
+<a name="ln450">        </a>
+<a name="ln451">    // Basic sanity checks</a>
+<a name="ln452">    if (bplist.offset_int_size &lt; 1 || bplist.offset_int_size &gt; 8 ||</a>
+<a name="ln453">        bplist.object_ref_size &lt; 1 || bplist.object_ref_size &gt; 8 ||</a>
+<a name="ln454">        bplist.offset_table_offset &lt; kHEADER_SIZE) {</a>
+<a name="ln455">        bplist_log(&quot;Bad binary plist: trailer declared insane.\n&quot;);</a>
+<a name="ln456">        return NULL;                </a>
+<a name="ln457">    }</a>
+<a name="ln458">        </a>
+<a name="ln459">    // Ensure offset table is inside file</a>
+<a name="ln460">    uint64_t offsetTableSize = bplist.offset_int_size * bplist.object_count;</a>
+<a name="ln461">    if (offsetTableSize + bplist.offset_table_offset + kTRAILER_SIZE &gt; </a>
+<a name="ln462">        data-&gt;len) {</a>
+<a name="ln463">        bplist_log(&quot;Bad binary plist: offset table overlaps end of container.\n&quot;);</a>
+<a name="ln464">        return NULL;</a>
+<a name="ln465">    }</a>
+<a name="ln466">        </a>
+<a name="ln467">    bplist.data_bytes = data-&gt;data;</a>
+<a name="ln468">    bplist.length = data-&gt;len;</a>
+<a name="ln469">    bplist.cache = NULL; /* dictionary is empty */</a>
+<a name="ln470"> </a>
+<a name="ln471">    bplist_log_verbose(&quot;Got a sane bplist with %llu items, offset_int_size: %u, object_ref_size: %u\n&quot;, </a>
+<a name="ln472">                      bplist.object_count, bplist.offset_int_size, </a>
+<a name="ln473">                      bplist.object_ref_size);</a>
+<a name="ln474">    /* at this point, we are ready to do some parsing which allocates</a>
+<a name="ln475">        memory for the result data structure. If memory allocation (using</a>
+<a name="ln476">        allocate fails, a longjmp will return to here and we simply give up</a>
+<a name="ln477">     */</a>
+<a name="ln478">    i = setjmp(abort_parsing);</a>
+<a name="ln479">    if (i == 0) {</a>
+<a name="ln480">        result = extract_object(&amp;bplist, top_level_object);</a>
+<a name="ln481">    } else {</a>
+<a name="ln482">        bplist_log(&quot;allocate() failed to allocate memory. Giving up.\n&quot;);</a>
+<a name="ln483">        result = NULL;</a>
+<a name="ln484">    }</a>
+<a name="ln485">    if (!result) {</a>
+<a name="ln486">        bplist_free_data();</a>
+<a name="ln487">    }</a>
+<a name="ln488">    return result;</a>
+<a name="ln489">}</a>
+<a name="ln490"> </a>
+<a name="ln491"> </a>
+<a name="ln492">static value_ptr extract_object(bplist_info_ptr bplist, uint64_t objectRef)</a>
+<a name="ln493">{</a>
+<a name="ln494">    uint64_t offset;</a>
+<a name="ln495">    value_ptr result = NULL;</a>
+<a name="ln496">    uint8_t objectTag;</a>
+<a name="ln497">    </a>
+<a name="ln498">    if (objectRef &gt;= bplist-&gt;object_count) {</a>
+<a name="ln499">        // Out-of-range object reference.</a>
+<a name="ln500">        bplist_log(&quot;Bad binary plist: object index is out of range.\n&quot;);</a>
+<a name="ln501">        return NULL;</a>
+<a name="ln502">    }</a>
+<a name="ln503">        </a>
+<a name="ln504">    // Use cached object if it exists</a>
+<a name="ln505">    result = cache_lookup(bplist-&gt;cache, objectRef);</a>
+<a name="ln506">    if (result != NULL)  return result;</a>
+<a name="ln507">        </a>
+<a name="ln508">    // Otherwise, find object in file.</a>
+<a name="ln509">    offset = read_offset(bplist, objectRef);</a>
+<a name="ln510">    if (offset &gt; bplist-&gt;length) {</a>
+<a name="ln511">        // Out-of-range offset.</a>
+<a name="ln512">        bplist_log(&quot;Bad binary plist: object outside container.\n&quot;);</a>
+<a name="ln513">        return NULL;</a>
+<a name="ln514">    }</a>
+<a name="ln515">    objectTag = *(bplist-&gt;data_bytes + offset);</a>
+<a name="ln516">    switch (objectTag &amp; 0xF0) {</a>
+<a name="ln517">    case kTAG_SIMPLE:</a>
+<a name="ln518">        result = extract_simple(bplist, offset);</a>
+<a name="ln519">        break;</a>
+<a name="ln520">                </a>
+<a name="ln521">    case kTAG_INT:</a>
+<a name="ln522">        result = extract_int(bplist, offset);</a>
+<a name="ln523">        break;</a>
+<a name="ln524">                        </a>
+<a name="ln525">    case kTAG_REAL:</a>
+<a name="ln526">        result = extract_real(bplist, offset);</a>
+<a name="ln527">        break;</a>
+<a name="ln528">                        </a>
+<a name="ln529">    case kTAG_DATE:</a>
+<a name="ln530">        result = extract_date(bplist, offset);</a>
+<a name="ln531">        break;</a>
+<a name="ln532">                        </a>
+<a name="ln533">    case kTAG_DATA:</a>
+<a name="ln534">        result = extract_data(bplist, offset);</a>
+<a name="ln535">        break;</a>
+<a name="ln536">                        </a>
+<a name="ln537">    case kTAG_ASCIISTRING:</a>
+<a name="ln538">        result = extract_ascii_string(bplist, offset);</a>
+<a name="ln539">        break;</a>
+<a name="ln540">                        </a>
+<a name="ln541">    case kTAG_UNICODESTRING:</a>
+<a name="ln542">        result = extract_unicode_string(bplist, offset);</a>
+<a name="ln543">        break;</a>
+<a name="ln544">        </a>
+<a name="ln545">    case kTAG_UID:</a>
+<a name="ln546">        result = extract_uid(bplist, offset);</a>
+<a name="ln547">        break;</a>
+<a name="ln548">        </a>
+<a name="ln549">    case kTAG_ARRAY:</a>
+<a name="ln550">        result = extract_array(bplist, offset);</a>
+<a name="ln551">        break;</a>
+<a name="ln552">        </a>
+<a name="ln553">    case kTAG_DICTIONARY:</a>
+<a name="ln554">        result = extract_dictionary(bplist, offset);</a>
+<a name="ln555">        break;</a>
+<a name="ln556">        </a>
+<a name="ln557">    default:</a>
+<a name="ln558">        // Unknown tag.</a>
+<a name="ln559">        bplist_log(&quot;Bad binary plist: unknown tag 0x%X.\n&quot;, </a>
+<a name="ln560">                   (objectTag &amp; 0x0F) &gt;&gt; 4);</a>
+<a name="ln561">        result = NULL;</a>
+<a name="ln562">    }</a>
+<a name="ln563">    </a>
+<a name="ln564">    // Cache and return result.</a>
+<a name="ln565">    if (result != NULL)  </a>
+<a name="ln566">        cache_insert(&amp;bplist-&gt;cache, objectRef, result);</a>
+<a name="ln567">    return result;</a>
+<a name="ln568">}</a>
+<a name="ln569"> </a>
+<a name="ln570"> </a>
+<a name="ln571">static uint64_t read_sized_int(bplist_info_ptr bplist, uint64_t offset, </a>
+<a name="ln572">                               uint8_t size)</a>
+<a name="ln573">{</a>
+<a name="ln574">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; size &gt;= 1 &amp;&amp; size &lt;= 8 &amp;&amp; </a>
+<a name="ln575">           offset + size &lt;= bplist-&gt;length);</a>
+<a name="ln576">        </a>
+<a name="ln577">    uint64_t result = 0;</a>
+<a name="ln578">    const uint8_t *byte = bplist-&gt;data_bytes + offset;</a>
+<a name="ln579">        </a>
+<a name="ln580">    do {</a>
+<a name="ln581">        // note that ints seem to be high-order first</a>
+<a name="ln582">        result = (result &lt;&lt; 8) | *byte++;</a>
+<a name="ln583">    } while (--size);</a>
+<a name="ln584">        </a>
+<a name="ln585">    return result;</a>
+<a name="ln586">}</a>
+<a name="ln587"> </a>
+<a name="ln588"> </a>
+<a name="ln589">static uint64_t read_offset(bplist_info_ptr bplist, uint64_t index)</a>
+<a name="ln590">{</a>
+<a name="ln591">    assert(index &lt; bplist-&gt;object_count);</a>
+<a name="ln592">        </a>
+<a name="ln593">    return read_sized_int(bplist, </a>
+<a name="ln594">            bplist-&gt;offset_table_offset + bplist-&gt;offset_int_size * index, </a>
+<a name="ln595">            bplist-&gt;offset_int_size);</a>
+<a name="ln596">}</a>
+<a name="ln597"> </a>
+<a name="ln598"> </a>
+<a name="ln599">static BOOL read_self_sized_int(bplist_info_ptr bplist, uint64_t offset, </a>
+<a name="ln600">                             uint64_t *outValue, size_t *outSize)</a>
+<a name="ln601">{</a>
+<a name="ln602">    uint32_t size;</a>
+<a name="ln603">    int64_t value;</a>
+<a name="ln604">        </a>
+<a name="ln605">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln606">        </a>
+<a name="ln607">    size = 1 &lt;&lt; (bplist-&gt;data_bytes[offset] &amp; 0x0F);</a>
+<a name="ln608">    if (size &gt; 8) {</a>
+<a name="ln609">        // Maximum allowable size in this implementation is 1&lt;&lt;3 = 8 bytes.</a>
+<a name="ln610">        // This also happens to be the biggest we can handle.</a>
+<a name="ln611">        return NO;</a>
+<a name="ln612">    }</a>
+<a name="ln613">        </a>
+<a name="ln614">    if (offset + 1 + size &gt; bplist-&gt;length) {</a>
+<a name="ln615">        // Out of range.</a>
+<a name="ln616">        return NO;</a>
+<a name="ln617">    }</a>
+<a name="ln618">        </a>
+<a name="ln619">    value = read_sized_int(bplist, offset + 1, size);</a>
+<a name="ln620">    </a>
+<a name="ln621">    if (outValue != NULL) *outValue = value;</a>
+<a name="ln622">    if (outSize != NULL) *outSize = size + 1; // +1 for tag byte.</a>
+<a name="ln623">    return YES;</a>
+<a name="ln624">}</a>
+<a name="ln625"> </a>
+<a name="ln626"> </a>
+<a name="ln627">static value_ptr extract_simple(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln628">{</a>
+<a name="ln629">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln630">    value_ptr value = value_create();</a>
+<a name="ln631">        </a>
+<a name="ln632">    switch (bplist-&gt;data_bytes[offset]) {</a>
+<a name="ln633">    case kVALUE_NULL:</a>
+<a name="ln634">        value-&gt;tag = kVALUE_NULL;</a>
+<a name="ln635">        return value;</a>
+<a name="ln636">        </a>
+<a name="ln637">    case kVALUE_TRUE:</a>
+<a name="ln638">        value-&gt;tag = kVALUE_TRUE;</a>
+<a name="ln639">        return value;</a>
+<a name="ln640">                        </a>
+<a name="ln641">    case kVALUE_FALSE:</a>
+<a name="ln642">        value-&gt;tag = kVALUE_FALSE;</a>
+<a name="ln643">        return value;</a>
+<a name="ln644">    }</a>
+<a name="ln645">        </a>
+<a name="ln646">    // Note: kVALUE_FILLER is treated as invalid, because it, er, is.</a>
+<a name="ln647">    bplist_log(&quot;Bad binary plist: invalid atom.\n&quot;);</a>
+<a name="ln648">    free(value);</a>
+<a name="ln649">    return NULL;</a>
+<a name="ln650">}</a>
+<a name="ln651"> </a>
+<a name="ln652"> </a>
+<a name="ln653">static value_ptr extract_int(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln654">{</a>
+<a name="ln655">    value_ptr value = value_create();</a>
+<a name="ln656">    value-&gt;tag = kTAG_INT;</a>
+<a name="ln657"> </a>
+<a name="ln658">    if (!read_self_sized_int(bplist, offset, &amp;value-&gt;uinteger, NULL)) {</a>
+<a name="ln659">        bplist_log(&quot;Bad binary plist: invalid integer object.\n&quot;);</a>
+<a name="ln660">    }</a>
+<a name="ln661">        </a>
+<a name="ln662">    /* NOTE: originally, I sign-extended here. This was the wrong thing; it</a>
+<a name="ln663">       turns out that negative ints are always stored as 64-bit, and smaller</a>
+<a name="ln664">       ints are unsigned.</a>
+<a name="ln665">    */</a>
+<a name="ln666">    return value;</a>
+<a name="ln667">}</a>
+<a name="ln668"> </a>
+<a name="ln669"> </a>
+<a name="ln670">static value_ptr extract_real(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln671">{</a>
+<a name="ln672">    value_ptr value = value_create();</a>
+<a name="ln673">    uint32_t size;</a>
+<a name="ln674">        </a>
+<a name="ln675">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln676">    </a>
+<a name="ln677">    size = 1 &lt;&lt; (bplist-&gt;data_bytes[offset] &amp; 0x0F);</a>
+<a name="ln678">        </a>
+<a name="ln679">    // FIXME: what to do if faced with other sizes for float/double?</a>
+<a name="ln680">    assert (sizeof (float) == sizeof (uint32_t) &amp;&amp; </a>
+<a name="ln681">            sizeof (double) == sizeof (uint64_t));</a>
+<a name="ln682">        </a>
+<a name="ln683">    if (offset + 1 + size &gt; bplist-&gt;length) {</a>
+<a name="ln684">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln685">                  &quot;floating-point number&quot;);</a>
+<a name="ln686">        free(value);</a>
+<a name="ln687">        return NULL;</a>
+<a name="ln688">    }</a>
+<a name="ln689">        </a>
+<a name="ln690">    if (size == sizeof (float)) {</a>
+<a name="ln691">        // cast is ok because we know size is 4 bytes</a>
+<a name="ln692">        uint32_t i = (uint32_t) read_sized_int(bplist, offset + 1, size); </a>
+<a name="ln693">        // Note that this handles byte swapping.</a>
+<a name="ln694">        value_set_real(value, *(float *)&amp;i);</a>
+<a name="ln695">        return value;</a>
+<a name="ln696">    } else if (size == sizeof (double)) {</a>
+<a name="ln697">        uint64_t i = read_sized_int(bplist, offset + 1, size);</a>
+<a name="ln698">        // Note that this handles byte swapping.</a>
+<a name="ln699">        value_set_real(value, *(double *)&amp;i);</a>
+<a name="ln700">        return value;</a>
+<a name="ln701">    } else {</a>
+<a name="ln702">        // Can't handle floats of other sizes.</a>
+<a name="ln703">        bplist_log(&quot;Bad binary plist: can't handle %u-byte float.\n&quot;, size);</a>
+<a name="ln704">        free(value);</a>
+<a name="ln705">        return NULL;</a>
+<a name="ln706">    }</a>
+<a name="ln707">}</a>
+<a name="ln708"> </a>
+<a name="ln709"> </a>
+<a name="ln710">static value_ptr extract_date(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln711">{</a>
+<a name="ln712">    value_ptr value;</a>
+<a name="ln713">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln714">        </a>
+<a name="ln715">    // Data has size code like int and real, but only 3 (meaning 8 bytes) is valid.</a>
+<a name="ln716">    if (bplist-&gt;data_bytes[offset] != kVALUE_FULLDATETAG) {</a>
+<a name="ln717">        bplist_log(&quot;Bad binary plist: invalid size for date object.\n&quot;);</a>
+<a name="ln718">        return NULL;</a>
+<a name="ln719">    }</a>
+<a name="ln720">        </a>
+<a name="ln721">    if (offset + 1 + sizeof (double) &gt; bplist-&gt;length) {</a>
+<a name="ln722">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln723">                  &quot;date&quot;);</a>
+<a name="ln724">        return NULL;</a>
+<a name="ln725">    }</a>
+<a name="ln726">        </a>
+<a name="ln727">    // FIXME: what to do if faced with other sizes for double?</a>
+<a name="ln728">    assert (sizeof (double) == sizeof (uint64_t));</a>
+<a name="ln729">        </a>
+<a name="ln730">    uint64_t date = read_sized_int(bplist, offset + 1, sizeof(double));</a>
+<a name="ln731">    // Note that this handles byte swapping.</a>
+<a name="ln732">    value = value_create();</a>
+<a name="ln733">    value_set_date(value, *(double *)&amp;date);</a>
+<a name="ln734">    return value;</a>
+<a name="ln735">}</a>
+<a name="ln736"> </a>
+<a name="ln737"> </a>
+<a name="ln738">uint64_t bplist_get_a_size(bplist_info_ptr bplist, </a>
+<a name="ln739">                           uint64_t *offset_ptr, char *msg)</a>
+<a name="ln740">{</a>
+<a name="ln741">    uint64_t size = bplist-&gt;data_bytes[*offset_ptr] &amp; 0x0F;</a>
+<a name="ln742">    (*offset_ptr)++;</a>
+<a name="ln743">    if (size == 0x0F) {</a>
+<a name="ln744">        // 0x0F means separate int size follows. </a>
+<a name="ln745">        // Smaller values are used for short data.</a>
+<a name="ln746">        size_t extra; // the length of the data size we are about to read</a>
+<a name="ln747">        if ((bplist-&gt;data_bytes[*offset_ptr] &amp; 0xF0) != kTAG_INT) {</a>
+<a name="ln748">            // Bad data, mistagged size int</a>
+<a name="ln749">            bplist_log(&quot;Bad binary plist: %s object size is not tagged as int.\n&quot;,</a>
+<a name="ln750">                       msg);</a>
+<a name="ln751">            return UINT64_MAX; // error</a>
+<a name="ln752">        }</a>
+<a name="ln753">                </a>
+<a name="ln754">        // read integer data as size, extra tells how many bytes to skip</a>
+<a name="ln755">        if (!read_self_sized_int(bplist, *offset_ptr, &amp;size, &amp;extra)) {</a>
+<a name="ln756">            bplist_log(&quot;Bad binary plist: invalid %s object size tag.\n&quot;, </a>
+<a name="ln757">                      &quot;data&quot;);</a>
+<a name="ln758">            return UINT64_MAX; // error</a>
+<a name="ln759">        }</a>
+<a name="ln760">        (*offset_ptr) += extra;</a>
+<a name="ln761">    }</a>
+<a name="ln762"> </a>
+<a name="ln763">    if (*offset_ptr + size &gt; bplist-&gt;length) {</a>
+<a name="ln764">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln765">                  &quot;data&quot;);</a>
+<a name="ln766">        return UINT64_MAX; // error</a>
+<a name="ln767">    }</a>
+<a name="ln768">    return size;</a>
+<a name="ln769">}</a>
+<a name="ln770"> </a>
+<a name="ln771"> </a>
+<a name="ln772">static value_ptr extract_data(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln773">{</a>
+<a name="ln774">    uint64_t size;</a>
+<a name="ln775">    value_ptr value;</a>
+<a name="ln776">        </a>
+<a name="ln777">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln778">        </a>
+<a name="ln779">    if ((size = bplist_get_a_size(bplist, &amp;offset, &quot;data&quot;)) == UINT64_MAX) </a>
+<a name="ln780">        return NULL;</a>
+<a name="ln781">        </a>
+<a name="ln782">    value = value_create();</a>
+<a name="ln783">    // cast is ok because we only allow files up to 100MB:</a>
+<a name="ln784">    value_set_data(value, bplist-&gt;data_bytes + (size_t) offset, (size_t) size);</a>
+<a name="ln785">    return value;</a>
+<a name="ln786">}</a>
+<a name="ln787"> </a>
+<a name="ln788"> </a>
+<a name="ln789">static value_ptr extract_ascii_string(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln790">{</a>
+<a name="ln791">    uint64_t size;</a>
+<a name="ln792">    value_ptr value; // return value</a>
+<a name="ln793">        </a>
+<a name="ln794">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln795">        </a>
+<a name="ln796">    if ((size = bplist_get_a_size(bplist, &amp;offset, &quot;ascii string&quot;)) ==</a>
+<a name="ln797">        UINT64_MAX) </a>
+<a name="ln798">        return NULL;</a>
+<a name="ln799"> </a>
+<a name="ln800">    value = value_create();</a>
+<a name="ln801">    // cast is ok because we only allow 100MB files</a>
+<a name="ln802">    value_set_ascii_string(value, bplist-&gt;data_bytes + (size_t) offset, </a>
+<a name="ln803">                           (size_t) size);</a>
+<a name="ln804">    return value;</a>
+<a name="ln805">}</a>
+<a name="ln806"> </a>
+<a name="ln807"> </a>
+<a name="ln808">static value_ptr extract_unicode_string(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln809">{</a>
+<a name="ln810">    uint64_t size;</a>
+<a name="ln811">    value_ptr value;</a>
+<a name="ln812">        </a>
+<a name="ln813">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln814">        </a>
+<a name="ln815">    if ((size = bplist_get_a_size(bplist, &amp;offset, &quot;unicode string&quot;)) == </a>
+<a name="ln816">        UINT64_MAX)</a>
+<a name="ln817">        return NULL;</a>
+<a name="ln818">        </a>
+<a name="ln819">    value = value_create();</a>
+<a name="ln820">    // cast is ok because we only allow 100MB files</a>
+<a name="ln821">    value_set_unicode_string(value, bplist-&gt;data_bytes + (size_t) offset, </a>
+<a name="ln822">                             (size_t) size);</a>
+<a name="ln823">    return value;</a>
+<a name="ln824">}</a>
+<a name="ln825"> </a>
+<a name="ln826"> </a>
+<a name="ln827">static value_ptr extract_uid(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln828">{</a>
+<a name="ln829">    /* UIDs are used by Cocoa's key-value coder.</a>
+<a name="ln830">       When writing other plist formats, they are expanded to dictionaries of</a>
+<a name="ln831">       the form &lt;dict&gt;&lt;key&gt;CF$UID&lt;/key&gt;&lt;integer&gt;value&lt;/integer&gt;&lt;/dict&gt;, so we</a>
+<a name="ln832">       do the same here on reading. This results in plists identical to what</a>
+<a name="ln833">       running plutil -convert xml1 gives us. However, this is not the same</a>
+<a name="ln834">       result as [Core]Foundation's plist parser, which extracts them as un-</a>
+<a name="ln835">       introspectable CF objects. In fact, it even seems to convert the CF$UID</a>
+<a name="ln836">       dictionaries from XML plists on the fly.</a>
+<a name="ln837">    */</a>
+<a name="ln838">        </a>
+<a name="ln839">    value_ptr value;</a>
+<a name="ln840">    uint64_t uid;</a>
+<a name="ln841">        </a>
+<a name="ln842">    if (!read_self_sized_int(bplist, offset, &amp;uid, NULL)) {</a>
+<a name="ln843">        bplist_log(&quot;Bad binary plist: invalid UID object.\n&quot;);</a>
+<a name="ln844">        return NULL;</a>
+<a name="ln845">    }</a>
+<a name="ln846">        </a>
+<a name="ln847">    // assert(NO); // original code suggests using a string for a key</a>
+<a name="ln848">    // but our dictionaries all use big ints for keys, so I don't know</a>
+<a name="ln849">    // what to do here</a>
+<a name="ln850">    </a>
+<a name="ln851">    // In practice, I believe this code is never executed by PortMidi.</a>
+<a name="ln852">    // I changed it to do something and not raise compiler warnings, but</a>
+<a name="ln853">    // not sure what the code should do.</a>
+<a name="ln854"> </a>
+<a name="ln855">    value = value_create();</a>
+<a name="ln856">    value_set_uid(value, uid);</a>
+<a name="ln857">    // return [NSDictionary dictionaryWithObject:</a>
+<a name="ln858">    //         [NSNumber numberWithUnsignedLongLong:value] </a>
+<a name="ln859">    //         forKey:&quot;CF$UID&quot;];</a>
+<a name="ln860">    return value;</a>
+<a name="ln861">}</a>
+<a name="ln862"> </a>
+<a name="ln863"> </a>
+<a name="ln864">static value_ptr extract_array(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln865">{</a>
+<a name="ln866">    uint64_t i, count;</a>
+<a name="ln867">    uint64_t size;</a>
+<a name="ln868">    uint64_t elementID;</a>
+<a name="ln869">    value_ptr element = NULL;</a>
+<a name="ln870">    value_ptr *array = NULL;</a>
+<a name="ln871">    value_ptr value = NULL;</a>
+<a name="ln872">    BOOL ok = YES;</a>
+<a name="ln873">        </a>
+<a name="ln874">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln875">        </a>
+<a name="ln876">    if ((count = bplist_get_a_size(bplist, &amp;offset, &quot;array&quot;)) == UINT64_MAX)</a>
+<a name="ln877">        return NULL;</a>
+<a name="ln878">        </a>
+<a name="ln879">    if (count &gt; UINT64_MAX / bplist-&gt;object_ref_size - offset) {</a>
+<a name="ln880">        // Offset overflow.</a>
+<a name="ln881">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln882">                   &quot;array&quot;);</a>
+<a name="ln883">        return NULL;</a>
+<a name="ln884">    }</a>
+<a name="ln885">        </a>
+<a name="ln886">    size = bplist-&gt;object_ref_size * count;</a>
+<a name="ln887">    if (size + offset &gt; bplist-&gt;length) {</a>
+<a name="ln888">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln889">                   &quot;array&quot;);</a>
+<a name="ln890">        return NULL;</a>
+<a name="ln891">    }</a>
+<a name="ln892">        </a>
+<a name="ln893">    // got count, the number of array elements</a>
+<a name="ln894"> </a>
+<a name="ln895">    value = value_create();</a>
+<a name="ln896">    assert(value);</a>
+<a name="ln897"> </a>
+<a name="ln898">    if (count == 0) {</a>
+<a name="ln899">        // count must be size_t or smaller because max file size is 100MB</a>
+<a name="ln900">        value_set_array(value, array, (size_t) count);</a>
+<a name="ln901">        return value;</a>
+<a name="ln902">    }</a>
+<a name="ln903">        </a>
+<a name="ln904">    array = allocate(sizeof(value_ptr) * (size_t) count);</a>
+<a name="ln905">        </a>
+<a name="ln906">    for (i = 0; i != count; ++i) {</a>
+<a name="ln907">        bplist_log_verbose(&quot;[%u]\n&quot;, i);</a>
+<a name="ln908">        elementID = read_sized_int(bplist, offset + i * bplist-&gt;object_ref_size, </a>
+<a name="ln909">                                 bplist-&gt;object_ref_size);</a>
+<a name="ln910">        element = extract_object(bplist, elementID);</a>
+<a name="ln911">        if (element != NULL) {</a>
+<a name="ln912">            array[i] = element;</a>
+<a name="ln913">        } else {</a>
+<a name="ln914">            ok = NO;</a>
+<a name="ln915">            break;</a>
+<a name="ln916">        }</a>
+<a name="ln917">    }</a>
+<a name="ln918">    if (ok) { // count is smaller than size_t max because of 100MB file limit</a>
+<a name="ln919">        value_set_array(value, array, (size_t) count);</a>
+<a name="ln920">    }</a>
+<a name="ln921"> </a>
+<a name="ln922">    return value;</a>
+<a name="ln923">}</a>
+<a name="ln924"> </a>
+<a name="ln925"> </a>
+<a name="ln926">static value_ptr extract_dictionary(bplist_info_ptr bplist, uint64_t offset)</a>
+<a name="ln927">{</a>
+<a name="ln928">    uint64_t i, count;</a>
+<a name="ln929">    uint64_t size;</a>
+<a name="ln930">    uint64_t elementID;</a>
+<a name="ln931">    value_ptr value = NULL;</a>
+<a name="ln932">    dict_ptr dict = NULL;</a>
+<a name="ln933">    BOOL ok = YES;</a>
+<a name="ln934">        </a>
+<a name="ln935">    assert(bplist-&gt;data_bytes != NULL &amp;&amp; offset &lt; bplist-&gt;length);</a>
+<a name="ln936">        </a>
+<a name="ln937">        </a>
+<a name="ln938">    if ((count = bplist_get_a_size(bplist, &amp;offset, &quot;array&quot;)) == UINT64_MAX)</a>
+<a name="ln939">        return NULL;</a>
+<a name="ln940"> </a>
+<a name="ln941">    if (count &gt; UINT64_MAX / (bplist-&gt;object_ref_size * 2) - offset) {</a>
+<a name="ln942">        // Offset overflow.</a>
+<a name="ln943">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln944">                   &quot;dictionary&quot;);</a>
+<a name="ln945">        return NULL;</a>
+<a name="ln946">    }</a>
+<a name="ln947">    </a>
+<a name="ln948">    size = bplist-&gt;object_ref_size * count * 2;</a>
+<a name="ln949">    if (size + offset &gt; bplist-&gt;length) {</a>
+<a name="ln950">        bplist_log(&quot;Bad binary plist: %s object overlaps end of container.\n&quot;, </a>
+<a name="ln951">                   &quot;dictionary&quot;);</a>
+<a name="ln952">        return NULL;</a>
+<a name="ln953">    }</a>
+<a name="ln954">    </a>
+<a name="ln955">    value = value_create();</a>
+<a name="ln956">    if (count == 0) {</a>
+<a name="ln957">        value_set_dict(value, NULL);</a>
+<a name="ln958">        return value;</a>
+<a name="ln959">    }</a>
+<a name="ln960"> </a>
+<a name="ln961">    for (i = 0; i != count; ++i) {</a>
+<a name="ln962">        value_ptr key;</a>
+<a name="ln963">        value_ptr val;</a>
+<a name="ln964">        elementID = read_sized_int(bplist, offset + i * bplist-&gt;object_ref_size, </a>
+<a name="ln965">                                 bplist-&gt;object_ref_size);</a>
+<a name="ln966">        key = extract_object(bplist, elementID);</a>
+<a name="ln967">        if (key != NULL) {</a>
+<a name="ln968">            bplist_log_verbose(&quot;key: %p\n&quot;, key);</a>
+<a name="ln969">        } else {</a>
+<a name="ln970">            ok = NO;</a>
+<a name="ln971">            break;</a>
+<a name="ln972">        }</a>
+<a name="ln973">                    </a>
+<a name="ln974">        elementID = read_sized_int(bplist, </a>
+<a name="ln975">                            offset + (i + count) * bplist-&gt;object_ref_size, </a>
+<a name="ln976">                            bplist-&gt;object_ref_size);</a>
+<a name="ln977">        val = extract_object(bplist, elementID);</a>
+<a name="ln978">        if (val != NULL) {</a>
+<a name="ln979">            dict_insert(&amp;dict, key, val);</a>
+<a name="ln980">        } else {</a>
+<a name="ln981">            ok = NO;</a>
+<a name="ln982">            break;</a>
+<a name="ln983">        }</a>
+<a name="ln984">    }</a>
+<a name="ln985">    if (ok) {</a>
+<a name="ln986">        value_set_dict(value, dict);</a>
+<a name="ln987">    }</a>
+<a name="ln988">    </a>
+<a name="ln989">    return value;</a>
+<a name="ln990">}</a>
+<a name="ln991"> </a>
+<a name="ln992">/*************** functions for accessing values ****************/</a>
+<a name="ln993"> </a>
+<a name="ln994"> </a>
+<a name="ln995">char *value_get_asciistring(value_ptr v)</a>
+<a name="ln996">{</a>
+<a name="ln997">    if (v-&gt;tag != kTAG_ASCIISTRING) return NULL;</a>
+<a name="ln998">    return v-&gt;string;</a>
+<a name="ln999">}</a>
+<a name="ln1000"> </a>
+<a name="ln1001"> </a>
+<a name="ln1002">value_ptr value_dict_lookup_using_string(value_ptr v, char *key)</a>
+<a name="ln1003">{</a>
+<a name="ln1004">    dict_ptr dict;</a>
+<a name="ln1005">    if (v-&gt;tag != kTAG_DICTIONARY) return NULL; // not a dictionary</a>
+<a name="ln1006">    dict = v-&gt;dict;</a>
+<a name="ln1007">    /* search for key */</a>
+<a name="ln1008">    while (dict) {</a>
+<a name="ln1009">        if (dict-&gt;key &amp;&amp; dict-&gt;key-&gt;tag == kTAG_ASCIISTRING &amp;&amp;</a>
+<a name="ln1010">            strcmp(key, dict-&gt;key-&gt;string) == 0) { // found it</a>
+<a name="ln1011">            return dict-&gt;value;</a>
+<a name="ln1012">        }</a>
+<a name="ln1013">        dict = dict-&gt;next;</a>
+<a name="ln1014">    }</a>
+<a name="ln1015">    return NULL; /* not found */</a>
+<a name="ln1016">}</a>
+<a name="ln1017"> </a>
+<a name="ln1018">value_ptr value_dict_lookup_using_path(value_ptr v, char *path)</a>
+<a name="ln1019">{</a>
+<a name="ln1020">    char key[MAX_KEY_SIZE];</a>
+<a name="ln1021">    while (*path) { /* more to the path */</a>
+<a name="ln1022">        int i = 0;</a>
+<a name="ln1023">        while (i &lt; MAX_KEY_SIZE - 1) {</a>
+<a name="ln1024">            key[i] = *path++;</a>
+<a name="ln1025">            if (key[i] == '/') { /* end of entry in path */</a>
+<a name="ln1026">                key[i + 1] = 0;</a>
+<a name="ln1027">                break;</a>
+<a name="ln1028">            }</a>
+<a name="ln1029">            if (!key[i]) {</a>
+<a name="ln1030">                path--; /* back up to end of string char */</a>
+<a name="ln1031">                break;  /* this will cause outer loop to exit */</a>
+<a name="ln1032">            }</a>
+<a name="ln1033">            i++;</a>
+<a name="ln1034">        }</a>
+<a name="ln1035">        if (!v || v-&gt;tag != kTAG_DICTIONARY) return NULL;</a>
+<a name="ln1036">        /* now, look up the key to get next value */</a>
+<a name="ln1037">        v = value_dict_lookup_using_string(v, key);</a>
+<a name="ln1038">        if (v == NULL) return NULL;</a>
+<a name="ln1039">    }</a>
+<a name="ln1040">    return v;</a>
+<a name="ln1041">}</a>
+<a name="ln1042">                </a>
+<a name="ln1043"> </a>
+<a name="ln1044">/*************** functions for debugging ***************/</a>
+<a name="ln1045"> </a>
+<a name="ln1046">void plist_print(value_ptr v)</a>
+<a name="ln1047">{</a>
+<a name="ln1048">    size_t i;</a>
+<a name="ln1049">    int comma_needed;</a>
+<a name="ln1050">    dict_ptr dict;</a>
+<a name="ln1051">    if (!v) {</a>
+<a name="ln1052">        printf(&quot;NULL&quot;);</a>
+<a name="ln1053">        return;</a>
+<a name="ln1054">    }</a>
+<a name="ln1055">    switch (v-&gt;tag &amp; 0xF0) {</a>
+<a name="ln1056">    case kTAG_SIMPLE:</a>
+<a name="ln1057">        switch (v-&gt;tag) {</a>
+<a name="ln1058">        case kVALUE_NULL: </a>
+<a name="ln1059">            printf(&quot;NULL@%p&quot;, v); break;</a>
+<a name="ln1060">        case kVALUE_FALSE: </a>
+<a name="ln1061">            printf(&quot;FALSE@%p&quot;, v); break;</a>
+<a name="ln1062">        case kVALUE_TRUE:</a>
+<a name="ln1063">            printf(&quot;TRUE@%p&quot;, v); break;</a>
+<a name="ln1064">        default:</a>
+<a name="ln1065">            printf(&quot;UNKNOWN tag=%x@%p&quot;, v-&gt;tag, v); break;</a>
+<a name="ln1066">        }</a>
+<a name="ln1067">        break;</a>
+<a name="ln1068">    case kTAG_INT:</a>
+<a name="ln1069">        printf(&quot;%lld@%p&quot;, v-&gt;integer, v); break;</a>
+<a name="ln1070">    case kTAG_REAL:</a>
+<a name="ln1071">        printf(&quot;%g@%p&quot;, v-&gt;real, v); break;</a>
+<a name="ln1072">    case kTAG_DATE:</a>
+<a name="ln1073">        printf(&quot;date:%g@%p&quot;, v-&gt;real, v); break;</a>
+<a name="ln1074">    case kTAG_DATA:</a>
+<a name="ln1075">        printf(&quot;data@%p-&gt;%p:[%p:&quot;, v, v-&gt;data, v-&gt;data-&gt;data);</a>
+<a name="ln1076">        for (i = 0; i &lt; v-&gt;data-&gt;len; i++) {</a>
+<a name="ln1077">            printf(&quot; %2x&quot;, v-&gt;data-&gt;data[i]);</a>
+<a name="ln1078">        }</a>
+<a name="ln1079">        printf(&quot;]&quot;); break;</a>
+<a name="ln1080">    case kTAG_ASCIISTRING:</a>
+<a name="ln1081">        printf(&quot;%p:\&quot;%s\&quot;@%p&quot;, v-&gt;string, v-&gt;string, v); break;</a>
+<a name="ln1082">    case kTAG_UNICODESTRING:</a>
+<a name="ln1083">        printf(&quot;unicode:%p:\&quot;%s\&quot;@%p&quot;, v-&gt;string, v-&gt;string, v); break;</a>
+<a name="ln1084">    case kTAG_UID:</a>
+<a name="ln1085">        printf(&quot;UID:%llu@%p&quot;, v-&gt;uinteger, v); break;</a>
+<a name="ln1086">    case kTAG_ARRAY:</a>
+<a name="ln1087">        comma_needed = FALSE;</a>
+<a name="ln1088">        printf(&quot;%p-&gt;%p:[%p:&quot;, v, v-&gt;array, v-&gt;array-&gt;array);</a>
+<a name="ln1089">        for (i = 0; i &lt; v-&gt;array-&gt;length; i++) {</a>
+<a name="ln1090">            if (comma_needed) printf(&quot;, &quot;);</a>
+<a name="ln1091">            plist_print(v-&gt;array-&gt;array[i]);</a>
+<a name="ln1092">            comma_needed = TRUE;</a>
+<a name="ln1093">        }</a>
+<a name="ln1094">        printf(&quot;]&quot;); break;</a>
+<a name="ln1095">    case kTAG_DICTIONARY:</a>
+<a name="ln1096">        comma_needed = FALSE;</a>
+<a name="ln1097">        printf(&quot;%p:[&quot;, v);</a>
+<a name="ln1098">        dict = v-&gt;dict;</a>
+<a name="ln1099">        while (dict) {</a>
+<a name="ln1100">            if (comma_needed) printf(&quot;, &quot;);</a>
+<a name="ln1101">            printf(&quot;%p:&quot;, dict);</a>
+<a name="ln1102">            plist_print(dict-&gt;key);</a>
+<a name="ln1103">            printf(&quot;-&gt;&quot;);</a>
+<a name="ln1104">            plist_print(dict-&gt;value);</a>
+<a name="ln1105">            comma_needed = TRUE;</a>
+<a name="ln1106">            dict = dict-&gt;next;</a>
+<a name="ln1107">        }</a>
+<a name="ln1108">        printf(&quot;]&quot;); break;</a>
+<a name="ln1109">    default:</a>
+<a name="ln1110">        printf(&quot;UNKNOWN tag=%x&quot;, v-&gt;tag);</a>
+<a name="ln1111">        break;</a>
+<a name="ln1112">    }</a>
+<a name="ln1113">}</a>
+<a name="ln1114"> </a>
+<a name="ln1115">            </a>
+
+</code></pre>
+<div class="balloon" rel="373"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v773/" target="_blank">V773</a> The function was exited without closing the file referenced by the 'file' handle. A resource leak is possible.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

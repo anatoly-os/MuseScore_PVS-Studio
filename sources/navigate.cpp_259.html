@@ -1,0 +1,834 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>navigate.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;navigate.h&quot;</a>
+<a name="ln14">#include &quot;element.h&quot;</a>
+<a name="ln15">#include &quot;clef.h&quot;</a>
+<a name="ln16">#include &quot;score.h&quot;</a>
+<a name="ln17">#include &quot;note.h&quot;</a>
+<a name="ln18">#include &quot;rest.h&quot;</a>
+<a name="ln19">#include &quot;chord.h&quot;</a>
+<a name="ln20">#include &quot;system.h&quot;</a>
+<a name="ln21">#include &quot;segment.h&quot;</a>
+<a name="ln22">#include &quot;harmony.h&quot;</a>
+<a name="ln23">#include &quot;utils.h&quot;</a>
+<a name="ln24">#include &quot;input.h&quot;</a>
+<a name="ln25">#include &quot;measure.h&quot;</a>
+<a name="ln26">#include &quot;page.h&quot;</a>
+<a name="ln27">#include &quot;spanner.h&quot;</a>
+<a name="ln28">#include &quot;system.h&quot;</a>
+<a name="ln29">#include &quot;staff.h&quot;</a>
+<a name="ln30">#include &quot;barline.h&quot;</a>
+<a name="ln31"> </a>
+<a name="ln32">namespace Ms {</a>
+<a name="ln33"> </a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35">//   nextChordRest</a>
+<a name="ln36">//    return next Chord or Rest</a>
+<a name="ln37">//---------------------------------------------------------</a>
+<a name="ln38"> </a>
+<a name="ln39">ChordRest* nextChordRest(ChordRest* cr, bool skipGrace)</a>
+<a name="ln40">      {</a>
+<a name="ln41">      if (!cr)</a>
+<a name="ln42">            return 0;</a>
+<a name="ln43"> </a>
+<a name="ln44">      if (cr-&gt;isGrace()) {</a>
+<a name="ln45">            //</a>
+<a name="ln46">            // cr is a grace note</a>
+<a name="ln47"> </a>
+<a name="ln48">            Chord* c  = toChord(cr);</a>
+<a name="ln49">            Chord* pc = toChord(cr-&gt;parent());</a>
+<a name="ln50"> </a>
+<a name="ln51">            if (skipGrace) {</a>
+<a name="ln52">                  cr = toChordRest(cr-&gt;parent());</a>
+<a name="ln53">                  }</a>
+<a name="ln54">            else if (cr-&gt;isGraceBefore()) {</a>
+<a name="ln55">                  QVector&lt;Chord*&gt; cl = pc-&gt;graceNotesBefore();</a>
+<a name="ln56">                  auto i = std::find(cl.begin(), cl.end(), c);</a>
+<a name="ln57">                  if (i == cl.end())</a>
+<a name="ln58">                        return 0;   // unable to find self?</a>
+<a name="ln59">                  ++i;</a>
+<a name="ln60">                  if (i != cl.end())</a>
+<a name="ln61">                        return *i;</a>
+<a name="ln62">                  // if this was last grace note before, return parent</a>
+<a name="ln63">                  return pc;</a>
+<a name="ln64">                  }</a>
+<a name="ln65">            else {</a>
+<a name="ln66">                  QVector&lt;Chord*&gt; cl = pc-&gt;graceNotesAfter();</a>
+<a name="ln67">                  auto i = std::find(cl.begin(), cl.end(), c);</a>
+<a name="ln68">                  if (i == cl.end())</a>
+<a name="ln69">                        return 0;   // unable to find self?</a>
+<a name="ln70">                  ++i;</a>
+<a name="ln71">                  if (i != cl.end())</a>
+<a name="ln72">                        return *i;</a>
+<a name="ln73">                  // if this was last grace note after, fall through to find next main note</a>
+<a name="ln74">                  cr = pc;</a>
+<a name="ln75">                  }</a>
+<a name="ln76">            }</a>
+<a name="ln77">      else {</a>
+<a name="ln78">            //</a>
+<a name="ln79">            // cr is not a grace note</a>
+<a name="ln80">            if (cr-&gt;isChord() &amp;&amp; !skipGrace) {</a>
+<a name="ln81">                  Chord* c = toChord(cr);</a>
+<a name="ln82">                  if (!c-&gt;graceNotes().empty()) {</a>
+<a name="ln83">                        QVector&lt;Chord*&gt; cl = c-&gt;graceNotesAfter();</a>
+<a name="ln84">                        if (!cl.empty())</a>
+<a name="ln85">                              return cl.first();</a>
+<a name="ln86">                        }</a>
+<a name="ln87">                  }</a>
+<a name="ln88">            }</a>
+<a name="ln89"> </a>
+<a name="ln90">      int track      = cr-&gt;track();</a>
+<a name="ln91">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln92"> </a>
+<a name="ln93">      for (Segment* seg = cr-&gt;segment()-&gt;next1MM(st); seg; seg = seg-&gt;next1MM(st)) {</a>
+<a name="ln94">            ChordRest* e = toChordRest(seg-&gt;element(track));</a>
+<a name="ln95">            if (e) {</a>
+<a name="ln96">                  if (e-&gt;isChord() &amp;&amp; !skipGrace) {</a>
+<a name="ln97">                        Chord* c = toChord(e);</a>
+<a name="ln98">                        if (!c-&gt;graceNotes().empty()) {</a>
+<a name="ln99">                              QVector&lt;Chord*&gt; cl = c-&gt;graceNotesBefore();</a>
+<a name="ln100">                              if (!cl.empty())</a>
+<a name="ln101">                                    return cl.first();</a>
+<a name="ln102">                              }</a>
+<a name="ln103">                        }</a>
+<a name="ln104">                  return e;</a>
+<a name="ln105">                  }</a>
+<a name="ln106">            }</a>
+<a name="ln107"> </a>
+<a name="ln108">      return 0;</a>
+<a name="ln109">      }</a>
+<a name="ln110"> </a>
+<a name="ln111">//---------------------------------------------------------</a>
+<a name="ln112">//   prevChordRest</a>
+<a name="ln113">//    return previous Chord or Rest</a>
+<a name="ln114">//    if grace is true, include grace notes</a>
+<a name="ln115">//---------------------------------------------------------</a>
+<a name="ln116"> </a>
+<a name="ln117">ChordRest* prevChordRest(ChordRest* cr, bool skipGrace)</a>
+<a name="ln118">      {</a>
+<a name="ln119">      if (!cr)</a>
+<a name="ln120">            return 0;</a>
+<a name="ln121"> </a>
+<a name="ln122">      if (cr-&gt;isGrace()) {</a>
+<a name="ln123">            //</a>
+<a name="ln124">            // cr is a grace note</a>
+<a name="ln125"> </a>
+<a name="ln126">            Chord* c  = toChord(cr);</a>
+<a name="ln127">            Chord* pc = toChord(cr-&gt;parent());</a>
+<a name="ln128"> </a>
+<a name="ln129">            if (skipGrace) {</a>
+<a name="ln130">                  cr = toChordRest(cr-&gt;parent());</a>
+<a name="ln131">                  }</a>
+<a name="ln132">            else if (cr-&gt;isGraceBefore()) {</a>
+<a name="ln133">                  QVector&lt;Chord*&gt; cl = pc-&gt;graceNotesBefore();</a>
+<a name="ln134">                  auto i = std::find(cl.begin(), cl.end(), c);</a>
+<a name="ln135">                  if (i == cl.end())</a>
+<a name="ln136">                        return 0;   // unable to find self?</a>
+<a name="ln137">                  if (i != cl.begin())</a>
+<a name="ln138">                        return *--i;</a>
+<a name="ln139">                  // if this was first grace note before, fall through to find previous main note</a>
+<a name="ln140">                  cr = pc;</a>
+<a name="ln141">                  }</a>
+<a name="ln142">            else {</a>
+<a name="ln143">                  QVector&lt;Chord*&gt; cl = pc-&gt;graceNotesAfter();</a>
+<a name="ln144">                  auto i = std::find(cl.begin(), cl.end(), c);</a>
+<a name="ln145">                  if (i == cl.end())</a>
+<a name="ln146">                        return 0;   // unable to find self?</a>
+<a name="ln147">                  if (i != cl.begin())</a>
+<a name="ln148">                        return *--i;</a>
+<a name="ln149">                  // if this was first grace note after, return parent</a>
+<a name="ln150">                  return pc;</a>
+<a name="ln151">                  }</a>
+<a name="ln152">            }</a>
+<a name="ln153">      else {</a>
+<a name="ln154">            //</a>
+<a name="ln155">            // cr is not a grace note</a>
+<a name="ln156">            if (cr-&gt;isChord() &amp;&amp; !skipGrace) {</a>
+<a name="ln157">                  Chord* c = toChord(cr);</a>
+<a name="ln158">                  QVector&lt;Chord*&gt; cl = c-&gt;graceNotesBefore();</a>
+<a name="ln159">                  if (!cl.empty())</a>
+<a name="ln160">                        return cl.last();</a>
+<a name="ln161">                  }</a>
+<a name="ln162">            }</a>
+<a name="ln163"> </a>
+<a name="ln164">      int track = cr-&gt;track();</a>
+<a name="ln165">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln166">      for (Segment* seg = cr-&gt;segment()-&gt;prev1MM(st); seg; seg = seg-&gt;prev1MM(st)) {</a>
+<a name="ln167">            ChordRest* e = toChordRest(seg-&gt;element(track));</a>
+<a name="ln168">            if (e) {</a>
+<a name="ln169">                  if (e-&gt;type() == ElementType::CHORD &amp;&amp; !skipGrace) {</a>
+<a name="ln170">                        QVector&lt;Chord*&gt; cl = toChord(e)-&gt;graceNotesAfter();</a>
+<a name="ln171">                        if (!cl.empty())</a>
+<a name="ln172">                              return cl.last();</a>
+<a name="ln173">                        }</a>
+<a name="ln174">                  return e;</a>
+<a name="ln175">                  }</a>
+<a name="ln176">            }</a>
+<a name="ln177"> </a>
+<a name="ln178">      return 0;</a>
+<a name="ln179">      }</a>
+<a name="ln180"> </a>
+<a name="ln181">//---------------------------------------------------------</a>
+<a name="ln182">//   upAlt</a>
+<a name="ln183">//    element: Note() or Rest()</a>
+<a name="ln184">//    return: Note() or Rest()</a>
+<a name="ln185">//</a>
+<a name="ln186">//    return next higher pitched note in chord</a>
+<a name="ln187">//    move to previous track if at top of chord</a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189"> </a>
+<a name="ln190">Element* Score::upAlt(Element* element)</a>
+<a name="ln191">      {</a>
+<a name="ln192">      Element* re = 0;</a>
+<a name="ln193">      if (element-&gt;isRest())</a>
+<a name="ln194">            re = prevTrack(toRest(element));</a>
+<a name="ln195">      else if (element-&gt;isNote()) {</a>
+<a name="ln196">            Note* note = toNote(element);</a>
+<a name="ln197">            Chord* chord = note-&gt;chord();</a>
+<a name="ln198">            const std::vector&lt;Note*&gt;&amp; notes = chord-&gt;notes();</a>
+<a name="ln199">            auto i = std::find(notes.begin(), notes.end(), note);</a>
+<a name="ln200">            ++i;</a>
+<a name="ln201">            if (i != notes.end())</a>
+<a name="ln202">                  re = *i;</a>
+<a name="ln203">            else {</a>
+<a name="ln204">                  re = prevTrack(chord);</a>
+<a name="ln205">                  if (re-&gt;track() == chord-&gt;track())</a>
+<a name="ln206">                        re = element;</a>
+<a name="ln207">                  }</a>
+<a name="ln208">            }</a>
+<a name="ln209">      if (re == 0)</a>
+<a name="ln210">            return 0;</a>
+<a name="ln211">      if (re-&gt;isChord())</a>
+<a name="ln212">            re = toChord(re)-&gt;notes().front();</a>
+<a name="ln213">      return re;</a>
+<a name="ln214">      }</a>
+<a name="ln215"> </a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217">//   upAltCtrl</a>
+<a name="ln218">//    select top note in chord</a>
+<a name="ln219">//---------------------------------------------------------</a>
+<a name="ln220"> </a>
+<a name="ln221">Note* Score::upAltCtrl(Note* note) const</a>
+<a name="ln222">      {</a>
+<a name="ln223">      return note-&gt;chord()-&gt;upNote();</a>
+<a name="ln224">      }</a>
+<a name="ln225"> </a>
+<a name="ln226">//---------------------------------------------------------</a>
+<a name="ln227">//   downAlt</a>
+<a name="ln228">//    return next lower pitched note in chord</a>
+<a name="ln229">//    move to next track if at bottom of chord</a>
+<a name="ln230">//---------------------------------------------------------</a>
+<a name="ln231"> </a>
+<a name="ln232">Element* Score::downAlt(Element* element)</a>
+<a name="ln233">      {</a>
+<a name="ln234">      Element* re = 0;</a>
+<a name="ln235">      if (element-&gt;isRest())</a>
+<a name="ln236">            re = nextTrack(toRest(element));</a>
+<a name="ln237">      else if (element-&gt;isNote()) {</a>
+<a name="ln238">            Note* note   = toNote(element);</a>
+<a name="ln239">            Chord* chord = note-&gt;chord();</a>
+<a name="ln240">            const std::vector&lt;Note*&gt;&amp; notes = chord-&gt;notes();</a>
+<a name="ln241">            auto i = std::find(notes.begin(), notes.end(), note);</a>
+<a name="ln242">            if (i != notes.begin()) {</a>
+<a name="ln243">                  --i;</a>
+<a name="ln244">                  re = *i;</a>
+<a name="ln245">                  }</a>
+<a name="ln246">            else {</a>
+<a name="ln247">                  re = nextTrack(chord);</a>
+<a name="ln248">                  if (re-&gt;track() == chord-&gt;track())</a>
+<a name="ln249">                        re = element;</a>
+<a name="ln250">                  }</a>
+<a name="ln251">            }</a>
+<a name="ln252">      if (re == 0)</a>
+<a name="ln253">            return 0;</a>
+<a name="ln254">      if (re-&gt;isChord())</a>
+<a name="ln255">            re = toChord(re)-&gt;notes().back();</a>
+<a name="ln256">      return re;</a>
+<a name="ln257">      }</a>
+<a name="ln258"> </a>
+<a name="ln259">//---------------------------------------------------------</a>
+<a name="ln260">//   downAltCtrl</a>
+<a name="ln261">//    niedrigste Note in Chord selektieren</a>
+<a name="ln262">//---------------------------------------------------------</a>
+<a name="ln263"> </a>
+<a name="ln264">Note* Score::downAltCtrl(Note* note) const</a>
+<a name="ln265">      {</a>
+<a name="ln266">      return note-&gt;chord()-&gt;downNote();</a>
+<a name="ln267">      }</a>
+<a name="ln268"> </a>
+<a name="ln269">//---------------------------------------------------------</a>
+<a name="ln270">//   firstElement</a>
+<a name="ln271">//---------------------------------------------------------</a>
+<a name="ln272"> </a>
+<a name="ln273">Element* Score::firstElement(bool frame)</a>
+<a name="ln274">      {</a>
+<a name="ln275">      if (frame) {</a>
+<a name="ln276">            MeasureBase* mb = measures()-&gt;first();</a>
+<a name="ln277">            if (mb &amp;&amp; mb-&gt;isBox())</a>
+<a name="ln278">                  return mb;</a>
+<a name="ln279">            }</a>
+<a name="ln280">      Segment *s = firstSegmentMM(SegmentType::All);</a>
+<a name="ln281">      return s ? s-&gt;element(0) : nullptr;</a>
+<a name="ln282">      }</a>
+<a name="ln283"> </a>
+<a name="ln284">//---------------------------------------------------------</a>
+<a name="ln285">//   lastElement</a>
+<a name="ln286">//---------------------------------------------------------</a>
+<a name="ln287"> </a>
+<a name="ln288">Element* Score::lastElement(bool frame)</a>
+<a name="ln289">      {</a>
+<a name="ln290">      if (frame) {</a>
+<a name="ln291">            MeasureBase* mb = measures()-&gt;last();</a>
+<a name="ln292">            if (mb &amp;&amp; mb-&gt;isBox())</a>
+<a name="ln293">                  return mb;</a>
+<a name="ln294">            }</a>
+<a name="ln295">      Element* re = 0;</a>
+<a name="ln296">      Segment* seg = lastSegmentMM();</a>
+<a name="ln297">      if (!seg)</a>
+<a name="ln298">            return nullptr;</a>
+<a name="ln299">      while (true) {</a>
+<a name="ln300">            for (int i = (staves().size() -1) * VOICES; i &lt; staves().size() * VOICES; i++) {</a>
+<a name="ln301">                  if (seg-&gt;element(i))</a>
+<a name="ln302">                        re = seg-&gt;element(i);</a>
+<a name="ln303">                  }</a>
+<a name="ln304">            if (re) {</a>
+<a name="ln305">                  if (re-&gt;isChord()) {</a>
+<a name="ln306">                        return toChord(re)-&gt;notes().front();</a>
+<a name="ln307">                        }</a>
+<a name="ln308">                  return re;</a>
+<a name="ln309">                  }</a>
+<a name="ln310">            seg = seg-&gt;prev1MM(SegmentType::All);</a>
+<a name="ln311">            }</a>
+<a name="ln312">      }</a>
+<a name="ln313"> </a>
+<a name="ln314">//---------------------------------------------------------</a>
+<a name="ln315">//   upStaff</a>
+<a name="ln316">//---------------------------------------------------------</a>
+<a name="ln317"> </a>
+<a name="ln318">ChordRest* Score::upStaff(ChordRest* cr)</a>
+<a name="ln319">      {</a>
+<a name="ln320">      Segment* segment = cr-&gt;segment();</a>
+<a name="ln321"> </a>
+<a name="ln322">      if (cr-&gt;staffIdx() == 0)</a>
+<a name="ln323">            return cr;</a>
+<a name="ln324"> </a>
+<a name="ln325">      for (int track = (cr-&gt;staffIdx() - 1) * VOICES; track &gt;= 0; --track) {</a>
+<a name="ln326">            Element* el = segment-&gt;element(track);</a>
+<a name="ln327">            if (!el)</a>
+<a name="ln328">                  continue;</a>
+<a name="ln329">            if (el-&gt;isNote())</a>
+<a name="ln330">                  el = toNote(el)-&gt;chord();</a>
+<a name="ln331">            if (el-&gt;isChordRest())</a>
+<a name="ln332">                  return toChordRest(el);</a>
+<a name="ln333">            }</a>
+<a name="ln334">      return 0;</a>
+<a name="ln335">      }</a>
+<a name="ln336"> </a>
+<a name="ln337">//---------------------------------------------------------</a>
+<a name="ln338">//   downStaff</a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340"> </a>
+<a name="ln341">ChordRest* Score::downStaff(ChordRest* cr)</a>
+<a name="ln342">      {</a>
+<a name="ln343">      Segment* segment = cr-&gt;segment();</a>
+<a name="ln344">      int tracks = nstaves() * VOICES;</a>
+<a name="ln345"> </a>
+<a name="ln346">      if (cr-&gt;staffIdx() == nstaves() - 1)</a>
+<a name="ln347">            return cr;</a>
+<a name="ln348"> </a>
+<a name="ln349">      for (int track = (cr-&gt;staffIdx() + 1) * VOICES; track &lt; tracks; --track) {</a>
+<a name="ln350">            Element* el = segment-&gt;element(track);</a>
+<a name="ln351">            if (!el)</a>
+<a name="ln352">                  continue;</a>
+<a name="ln353">            if (el-&gt;isNote())</a>
+<a name="ln354">                  el = toNote(el)-&gt;chord();</a>
+<a name="ln355">            if (el-&gt;isChordRest())</a>
+<a name="ln356">                  return toChordRest(el);</a>
+<a name="ln357">            }</a>
+<a name="ln358">      return 0;</a>
+<a name="ln359">      }</a>
+<a name="ln360"> </a>
+<a name="ln361">//---------------------------------------------------------</a>
+<a name="ln362">//   nextTrack</a>
+<a name="ln363">//    returns note at or just before current (cr) position</a>
+<a name="ln364">//    in next track for this measure</a>
+<a name="ln365">//    that contains such an element</a>
+<a name="ln366">//---------------------------------------------------------</a>
+<a name="ln367"> </a>
+<a name="ln368">ChordRest* Score::nextTrack(ChordRest* cr)</a>
+<a name="ln369">      {</a>
+<a name="ln370">      if (!cr)</a>
+<a name="ln371">            return 0;</a>
+<a name="ln372"> </a>
+<a name="ln373">      ChordRest* el = 0;</a>
+<a name="ln374">      Measure* measure = cr-&gt;measure();</a>
+<a name="ln375">      int track = cr-&gt;track();</a>
+<a name="ln376">      int tracks = nstaves() * VOICES;</a>
+<a name="ln377"> </a>
+<a name="ln378">      while (!el) {</a>
+<a name="ln379">            // find next non-empty track</a>
+<a name="ln380">            while (++track &lt; tracks) {</a>
+<a name="ln381">                  if (measure-&gt;hasVoice(track))</a>
+<a name="ln382">                        break;</a>
+<a name="ln383">                  }</a>
+<a name="ln384">            // no more tracks, return original element</a>
+<a name="ln385">            if (track == tracks)</a>
+<a name="ln386">                  return cr;</a>
+<a name="ln387">            // find element at same or previous segment within this track</a>
+<a name="ln388">            for (Segment* segment = cr-&gt;segment(); segment; segment = segment-&gt;prev(SegmentType::ChordRest)) {</a>
+<a name="ln389">                  el = toChordRest(segment-&gt;element(track));</a>
+<a name="ln390">                  if (el)</a>
+<a name="ln391">                        break;</a>
+<a name="ln392">                  }</a>
+<a name="ln393">            }</a>
+<a name="ln394">      return el;</a>
+<a name="ln395">      }</a>
+<a name="ln396"> </a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398">//   prevTrack</a>
+<a name="ln399">//    returns ChordRest at or just before current (cr) position</a>
+<a name="ln400">//    in previous track for this measure</a>
+<a name="ln401">//    that contains such an element</a>
+<a name="ln402">//---------------------------------------------------------</a>
+<a name="ln403"> </a>
+<a name="ln404">ChordRest* Score::prevTrack(ChordRest* cr)</a>
+<a name="ln405">      {</a>
+<a name="ln406">      if (!cr)</a>
+<a name="ln407">            return 0;</a>
+<a name="ln408"> </a>
+<a name="ln409">      ChordRest* el = 0;</a>
+<a name="ln410">      Measure* measure = cr-&gt;measure();</a>
+<a name="ln411">      int track = cr-&gt;track();</a>
+<a name="ln412"> </a>
+<a name="ln413">      while (!el) {</a>
+<a name="ln414">            // find next non-empty track</a>
+<a name="ln415">            while (--track &gt;= 0){</a>
+<a name="ln416">                  if (measure-&gt;hasVoice(track))</a>
+<a name="ln417">                        break;</a>
+<a name="ln418">                  }</a>
+<a name="ln419">            // no more tracks, return original element</a>
+<a name="ln420">            if (track &lt; 0)</a>
+<a name="ln421">                  return cr;</a>
+<a name="ln422">            // find element at same or previous segment within this track</a>
+<a name="ln423">            for (Segment* segment = cr-&gt;segment(); segment; segment = segment-&gt;prev(SegmentType::ChordRest)) {</a>
+<a name="ln424">                  el = toChordRest(segment-&gt;element(track));</a>
+<a name="ln425">                  if (el)</a>
+<a name="ln426">                        break;</a>
+<a name="ln427">                  }</a>
+<a name="ln428">            }</a>
+<a name="ln429">      return el;</a>
+<a name="ln430">      }</a>
+<a name="ln431"> </a>
+<a name="ln432">//---------------------------------------------------------</a>
+<a name="ln433">//   nextMeasure</a>
+<a name="ln434">//---------------------------------------------------------</a>
+<a name="ln435"> </a>
+<a name="ln436">ChordRest* Score::nextMeasure(ChordRest* element, bool selectBehavior, bool mmRest)</a>
+<a name="ln437">      {</a>
+<a name="ln438">      if (!element)</a>
+<a name="ln439">            return 0;</a>
+<a name="ln440"> </a>
+<a name="ln441">      Measure* measure = 0;</a>
+<a name="ln442">      if (mmRest)</a>
+<a name="ln443">            measure = element-&gt;measure()-&gt;nextMeasureMM();</a>
+<a name="ln444">      else</a>
+<a name="ln445">            measure = element-&gt;measure()-&gt;nextMeasure();</a>
+<a name="ln446"> </a>
+<a name="ln447">      if (!measure)</a>
+<a name="ln448">            return 0;</a>
+<a name="ln449"> </a>
+<a name="ln450">      Fraction endTick = element-&gt;measure()-&gt;last()-&gt;nextChordRest(element-&gt;track(), true)-&gt;tick();</a>
+<a name="ln451">      bool last   = false;</a>
+<a name="ln452"> </a>
+<a name="ln453">      if (selection().isRange()) {</a>
+<a name="ln454">            if (element-&gt;tick() != endTick &amp;&amp; selection().tickEnd() &lt;= endTick) {</a>
+<a name="ln455">                  measure = element-&gt;measure();</a>
+<a name="ln456">                  last = true;</a>
+<a name="ln457">                  }</a>
+<a name="ln458">            else if (element-&gt;tick() == endTick &amp;&amp; selection().isEndActive())</a>
+<a name="ln459">                  last = true;</a>
+<a name="ln460">            }</a>
+<a name="ln461">      else if (element-&gt;tick() != endTick &amp;&amp; selectBehavior) {</a>
+<a name="ln462">            measure = element-&gt;measure();</a>
+<a name="ln463">            last = true;</a>
+<a name="ln464">            }</a>
+<a name="ln465">      if (!measure) {</a>
+<a name="ln466">            measure = element-&gt;measure();</a>
+<a name="ln467">            last = true;</a>
+<a name="ln468">            }</a>
+<a name="ln469">      int staff = element-&gt;staffIdx();</a>
+<a name="ln470"> </a>
+<a name="ln471">      Segment* startSeg = last ? measure-&gt;last() : measure-&gt;first();</a>
+<a name="ln472">      for (Segment* seg = startSeg; seg; seg = last ? seg-&gt;prev() : seg-&gt;next()) {</a>
+<a name="ln473">            int etrack = (staff+1) * VOICES;</a>
+<a name="ln474">            for (int track = staff * VOICES; track &lt; etrack; ++track) {</a>
+<a name="ln475">                  Element* pel = seg-&gt;element(track);</a>
+<a name="ln476"> </a>
+<a name="ln477">                  if (pel &amp;&amp; pel-&gt;isChordRest())</a>
+<a name="ln478">                        return toChordRest(pel);</a>
+<a name="ln479">                  }</a>
+<a name="ln480">            }</a>
+<a name="ln481">      return 0;</a>
+<a name="ln482">      }</a>
+<a name="ln483"> </a>
+<a name="ln484">//---------------------------------------------------------</a>
+<a name="ln485">//   prevMeasure</a>
+<a name="ln486">//---------------------------------------------------------</a>
+<a name="ln487"> </a>
+<a name="ln488">ChordRest* Score::prevMeasure(ChordRest* element, bool mmRest)</a>
+<a name="ln489">      {</a>
+<a name="ln490">      if (!element)</a>
+<a name="ln491">            return 0;</a>
+<a name="ln492"> </a>
+<a name="ln493">      Measure* measure =  0;</a>
+<a name="ln494">      if (mmRest)</a>
+<a name="ln495">            measure = element-&gt;measure()-&gt;prevMeasureMM();</a>
+<a name="ln496">      else</a>
+<a name="ln497">            measure = element-&gt;measure()-&gt;prevMeasure();</a>
+<a name="ln498"> </a>
+<a name="ln499">      Fraction startTick = element-&gt;measure()-&gt;first()-&gt;nextChordRest(element-&gt;track())-&gt;tick();</a>
+<a name="ln500">      bool last = false;</a>
+<a name="ln501"> </a>
+<a name="ln502">      if (selection().isRange() &amp;&amp; selection().isEndActive() &amp;&amp; selection().startSegment()-&gt;tick() &lt;= startTick)</a>
+<a name="ln503">            last = true;</a>
+<a name="ln504">      else if (element-&gt;tick() != startTick) {</a>
+<a name="ln505">            measure = element-&gt;measure();</a>
+<a name="ln506">            }</a>
+<a name="ln507">      if (!measure) {</a>
+<a name="ln508">            measure = element-&gt;measure();</a>
+<a name="ln509">            last = false;</a>
+<a name="ln510">            }</a>
+<a name="ln511"> </a>
+<a name="ln512">      int staff = element-&gt;staffIdx();</a>
+<a name="ln513"> </a>
+<a name="ln514">      Segment* startSeg = last ? measure-&gt;last() : measure-&gt;first();</a>
+<a name="ln515">      for (Segment* seg = startSeg; seg; seg = last ? seg-&gt;prev() : seg-&gt;next()) {</a>
+<a name="ln516">            int etrack = (staff+1) * VOICES;</a>
+<a name="ln517">            for (int track = staff * VOICES; track &lt; etrack; ++track) {</a>
+<a name="ln518">                  Element* pel = seg-&gt;element(track);</a>
+<a name="ln519"> </a>
+<a name="ln520">                  if (pel &amp;&amp; pel-&gt;isChordRest())</a>
+<a name="ln521">                        return toChordRest(pel);</a>
+<a name="ln522">                  }</a>
+<a name="ln523">            }</a>
+<a name="ln524">      return 0;</a>
+<a name="ln525">      }</a>
+<a name="ln526"> </a>
+<a name="ln527">//---------------------------------------------------------</a>
+<a name="ln528">//   nextElement</a>
+<a name="ln529">//---------------------------------------------------------</a>
+<a name="ln530"> </a>
+<a name="ln531">Element* Score::nextElement()</a>
+<a name="ln532">      {</a>
+<a name="ln533">      Element* e = getSelectedElement();</a>
+<a name="ln534">      if (!e)</a>
+<a name="ln535">            return nullptr;</a>
+<a name="ln536">      int staffId = e-&gt;staffIdx();</a>
+<a name="ln537">      while (e) {</a>
+<a name="ln538">            switch (e-&gt;type()) {</a>
+<a name="ln539">                  case ElementType::NOTE:</a>
+<a name="ln540">                  case ElementType::REST:</a>
+<a name="ln541">                  case ElementType::CHORD: {</a>
+<a name="ln542">                        Element* next = e-&gt;nextElement();</a>
+<a name="ln543">                        if (next)</a>
+<a name="ln544">                              return next;</a>
+<a name="ln545">                        else</a>
+<a name="ln546">                              break;</a>
+<a name="ln547">                       }</a>
+<a name="ln548">                  case ElementType::SEGMENT: {</a>
+<a name="ln549">                        Segment* s = toSegment(e);</a>
+<a name="ln550">                        Element* next = s-&gt;nextElement(staffId);</a>
+<a name="ln551">                        if (next)</a>
+<a name="ln552">                              return next;</a>
+<a name="ln553">                        else</a>
+<a name="ln554">                              break;</a>
+<a name="ln555">                        }</a>
+<a name="ln556">                  case ElementType::MEASURE: {</a>
+<a name="ln557">                        Measure* m = toMeasure(e);</a>
+<a name="ln558">                        Element* next = m-&gt;nextElementStaff(staffId);</a>
+<a name="ln559">                        if (next)</a>
+<a name="ln560">                              return next;</a>
+<a name="ln561">                        else</a>
+<a name="ln562">                              break;</a>
+<a name="ln563">                        }</a>
+<a name="ln564">                  case ElementType::CLEF:</a>
+<a name="ln565">                  case ElementType::KEYSIG:</a>
+<a name="ln566">                  case ElementType::TIMESIG:</a>
+<a name="ln567">                  case ElementType::BAR_LINE: {</a>
+<a name="ln568">                       for (; e &amp;&amp; e-&gt;type() != ElementType::SEGMENT; e = e-&gt;parent()) {</a>
+<a name="ln569">                             ;</a>
+<a name="ln570">                             }</a>
+<a name="ln571">                       Segment* s = toSegment(e);</a>
+<a name="ln572">                       Element* next = s-&gt;nextElement(staffId);</a>
+<a name="ln573">                       if (next)</a>
+<a name="ln574">                             return next;</a>
+<a name="ln575">                       else</a>
+<a name="ln576">                             return score()-&gt;firstElement();</a>
+<a name="ln577">                       }</a>
+<a name="ln578">#if 1</a>
+<a name="ln579">                  case ElementType::VOLTA_SEGMENT:</a>
+<a name="ln580">#else</a>
+<a name="ln581">                  case ElementType::VOLTA_SEGMENT: {</a>
+<a name="ln582">                        // TODO: see Spanner::nextSpanner()</a>
+<a name="ln583">                        System* sys = toSpannerSegment(e)-&gt;system();</a>
+<a name="ln584">                        if (sys)</a>
+<a name="ln585">                              staffId = sys-&gt;firstVisibleStaff();</a>
+<a name="ln586">                        }</a>
+<a name="ln587">                        // fall through</a>
+<a name="ln588">#endif</a>
+<a name="ln589">                  case ElementType::SLUR_SEGMENT:</a>
+<a name="ln590">                  case ElementType::TEXTLINE_SEGMENT:</a>
+<a name="ln591">                  case ElementType::HAIRPIN_SEGMENT:</a>
+<a name="ln592">                  case ElementType::OTTAVA_SEGMENT:</a>
+<a name="ln593">                  case ElementType::TRILL_SEGMENT:</a>
+<a name="ln594">                  case ElementType::VIBRATO_SEGMENT:</a>
+<a name="ln595">                  case ElementType::LET_RING_SEGMENT:</a>
+<a name="ln596">                  case ElementType::PALM_MUTE_SEGMENT:</a>
+<a name="ln597">                  case ElementType::PEDAL_SEGMENT: {</a>
+<a name="ln598">                        SpannerSegment* s = toSpannerSegment(e);</a>
+<a name="ln599">                        Spanner* sp = s-&gt;spanner();</a>
+<a name="ln600">                        Spanner* nextSp = sp-&gt;nextSpanner(sp, staffId);</a>
+<a name="ln601">                        if (nextSp)</a>
+<a name="ln602">                              return nextSp-&gt;spannerSegments().front();</a>
+<a name="ln603"> </a>
+<a name="ln604">                        Segment* seg = tick2segment(sp-&gt;tick());</a>
+<a name="ln605">                        if (seg) {</a>
+<a name="ln606">                              Segment* nextSegment = seg-&gt;next1();</a>
+<a name="ln607">                              while (nextSegment) {</a>
+<a name="ln608">                                    Element* nextEl = nextSegment-&gt;firstElementOfSegment(nextSegment, staffId);</a>
+<a name="ln609">                                    if (nextEl)</a>
+<a name="ln610">                                          return nextEl;</a>
+<a name="ln611">                                    nextSegment = nextSegment-&gt;next1MM();</a>
+<a name="ln612">                                    }</a>
+<a name="ln613">                              }</a>
+<a name="ln614">                        break;</a>
+<a name="ln615">                        }</a>
+<a name="ln616">                  case ElementType::GLISSANDO_SEGMENT:</a>
+<a name="ln617">                  case ElementType::TIE_SEGMENT: {</a>
+<a name="ln618">                        SpannerSegment* s = toSpannerSegment(e);</a>
+<a name="ln619">                        Spanner* sp = s-&gt;spanner();</a>
+<a name="ln620">                        Element* elSt = sp-&gt;startElement();</a>
+<a name="ln621">                        Note* n = toNote(elSt);</a>
+<a name="ln622">                        Element* next =  n-&gt;nextElement();</a>
+<a name="ln623">                        if (next)</a>
+<a name="ln624">                              return next;</a>
+<a name="ln625">                        else</a>
+<a name="ln626">                              break;</a>
+<a name="ln627">                        }</a>
+<a name="ln628">                  case ElementType::VBOX:</a>
+<a name="ln629">                  case ElementType::HBOX:</a>
+<a name="ln630">                  case ElementType::TBOX: {</a>
+<a name="ln631">                        MeasureBase* mb = toMeasureBase(e)-&gt;nextMM();</a>
+<a name="ln632">                        if (!mb) {</a>
+<a name="ln633">                              break;</a>
+<a name="ln634">                              }</a>
+<a name="ln635">                        else if (mb-&gt;isMeasure()) {</a>
+<a name="ln636">                              ChordRest* cr = selection().currentCR();</a>
+<a name="ln637">                              int si = cr ? cr-&gt;staffIdx() : 0;</a>
+<a name="ln638">                              return toMeasure(mb)-&gt;nextElementStaff(si);</a>
+<a name="ln639">                              }</a>
+<a name="ln640">                        else {</a>
+<a name="ln641">                              return mb;</a>
+<a name="ln642">                              }</a>
+<a name="ln643">                        }</a>
+<a name="ln644">                  default:</a>
+<a name="ln645">                        break;</a>
+<a name="ln646">                  }</a>
+<a name="ln647">            e = e-&gt;parent();</a>
+<a name="ln648">            }</a>
+<a name="ln649">      return score()-&gt;lastElement();</a>
+<a name="ln650">      }</a>
+<a name="ln651"> </a>
+<a name="ln652">//---------------------------------------------------------</a>
+<a name="ln653">//   prevElement</a>
+<a name="ln654">//---------------------------------------------------------</a>
+<a name="ln655"> </a>
+<a name="ln656">Element* Score::prevElement()</a>
+<a name="ln657">      {</a>
+<a name="ln658">      Element* e = getSelectedElement();</a>
+<a name="ln659">      if (!e)</a>
+<a name="ln660">            return nullptr;</a>
+<a name="ln661">      int staffId = e-&gt;staffIdx();</a>
+<a name="ln662">      while (e) {</a>
+<a name="ln663">            switch (e-&gt;type()) {</a>
+<a name="ln664">                  case ElementType::NOTE:</a>
+<a name="ln665">                  case ElementType::REST:</a>
+<a name="ln666">                  case ElementType::CHORD: {</a>
+<a name="ln667">                        Element* prev = e-&gt;prevElement();</a>
+<a name="ln668">                        if (prev)</a>
+<a name="ln669">                              return prev;</a>
+<a name="ln670">                        else</a>
+<a name="ln671">                              break;</a>
+<a name="ln672">                        }</a>
+<a name="ln673">                  case ElementType::SEGMENT: {</a>
+<a name="ln674">                        Segment* s = toSegment(e);</a>
+<a name="ln675">                        Element* prev = s-&gt;prevElement(staffId);</a>
+<a name="ln676">                        if (prev)</a>
+<a name="ln677">                              return prev;</a>
+<a name="ln678">                        else</a>
+<a name="ln679">                              break;</a>
+<a name="ln680">                        }</a>
+<a name="ln681">                  case ElementType::MEASURE: {</a>
+<a name="ln682">                        Measure* m = toMeasure(e);</a>
+<a name="ln683">                        return m-&gt;prevElementStaff(staffId);</a>
+<a name="ln684">                        }</a>
+<a name="ln685">                  case ElementType::CLEF:</a>
+<a name="ln686">                  case ElementType::KEYSIG:</a>
+<a name="ln687">                  case ElementType::TIMESIG:</a>
+<a name="ln688">                  case ElementType::BAR_LINE: {</a>
+<a name="ln689">                        for (; e &amp;&amp; e-&gt;type() != ElementType::SEGMENT; e = e-&gt;parent()) {</a>
+<a name="ln690">                              ;</a>
+<a name="ln691">                              }</a>
+<a name="ln692">                        Segment* s = toSegment(e);</a>
+<a name="ln693">                        return s-&gt;prevElement(staffId);</a>
+<a name="ln694">                        }</a>
+<a name="ln695">#if 1</a>
+<a name="ln696">                  case ElementType::VOLTA_SEGMENT:</a>
+<a name="ln697">#else</a>
+<a name="ln698">                  case ElementType::VOLTA_SEGMENT: {</a>
+<a name="ln699">                        // TODO: see Spanner::nextSpanner()</a>
+<a name="ln700">                        System* sys = toSpannerSegment(e)-&gt;system();</a>
+<a name="ln701">                        if (sys)</a>
+<a name="ln702">                              staffId = sys-&gt;firstVisibleStaff();</a>
+<a name="ln703">                        }</a>
+<a name="ln704">                        // fall through</a>
+<a name="ln705">#endif</a>
+<a name="ln706">                  case ElementType::SLUR_SEGMENT:</a>
+<a name="ln707">                  case ElementType::TEXTLINE_SEGMENT:</a>
+<a name="ln708">                  case ElementType::HAIRPIN_SEGMENT:</a>
+<a name="ln709">                  case ElementType::OTTAVA_SEGMENT:</a>
+<a name="ln710">                  case ElementType::TRILL_SEGMENT:</a>
+<a name="ln711">                  case ElementType::VIBRATO_SEGMENT:</a>
+<a name="ln712">                  case ElementType::PEDAL_SEGMENT: {</a>
+<a name="ln713">                        SpannerSegment* s = toSpannerSegment(e);</a>
+<a name="ln714">                        Spanner* sp = s-&gt;spanner();</a>
+<a name="ln715">                        Element* stEl = sp-&gt;startElement();</a>
+<a name="ln716">                        Spanner* prevSp = sp-&gt;prevSpanner(sp, staffId);</a>
+<a name="ln717">                        if (prevSp)</a>
+<a name="ln718">                              return prevSp-&gt;spannerSegments().front();</a>
+<a name="ln719">                        else {</a>
+<a name="ln720">                              Segment* startSeg = sp-&gt;startSegment();</a>
+<a name="ln721">                              if (!startSeg-&gt;annotations().empty()) {</a>
+<a name="ln722">                                    Element* last = startSeg-&gt;lastAnnotation(startSeg, staffId);</a>
+<a name="ln723">                                    if (last)</a>
+<a name="ln724">                                          return last;</a>
+<a name="ln725">                                    }</a>
+<a name="ln726">                              Element* el = startSeg-&gt;lastElementOfSegment(startSeg, staffId);</a>
+<a name="ln727">                              if (stEl-&gt;type() == ElementType::CHORD || stEl-&gt;type() == ElementType::REST</a>
+<a name="ln728">                                       || stEl-&gt;type() == ElementType::REPEAT_MEASURE || stEl-&gt;type() == ElementType::NOTE) {</a>
+<a name="ln729">                                    ChordRest* cr = startSeg-&gt;cr(stEl-&gt;track());</a>
+<a name="ln730">                                    if (cr) {</a>
+<a name="ln731">                                          Element* elCr = cr-&gt;lastElementBeforeSegment();</a>
+<a name="ln732">                                          if (elCr) {</a>
+<a name="ln733">                                                return elCr;</a>
+<a name="ln734">                                                }</a>
+<a name="ln735">                                          }</a>
+<a name="ln736">                                    }</a>
+<a name="ln737">                              if (el-&gt;isChord())</a>
+<a name="ln738">                                    return toChord(el)-&gt;lastElementBeforeSegment();</a>
+<a name="ln739">                              else if (el-&gt;isNote()) {</a>
+<a name="ln740">                                    Chord* c = toNote(el)-&gt;chord();</a>
+<a name="ln741">                                    return c-&gt;lastElementBeforeSegment();</a>
+<a name="ln742">                                    }</a>
+<a name="ln743">                              else {</a>
+<a name="ln744">                                    return el;</a>
+<a name="ln745">                                    }</a>
+<a name="ln746">                             }</a>
+<a name="ln747">                        }</a>
+<a name="ln748">                  case ElementType::GLISSANDO_SEGMENT:</a>
+<a name="ln749">                  case ElementType::TIE_SEGMENT: {</a>
+<a name="ln750">                        SpannerSegment* s = toSpannerSegment(e);</a>
+<a name="ln751">                        Spanner* sp = s-&gt;spanner();</a>
+<a name="ln752">                        Element* elSt = sp-&gt;startElement();</a>
+<a name="ln753">                        Q_ASSERT(elSt-&gt;type() == ElementType::NOTE);</a>
+<a name="ln754">                        Note* n = toNote(elSt);</a>
+<a name="ln755">                        Element* prev =  n-&gt;prevElement();</a>
+<a name="ln756">                        if(prev)</a>
+<a name="ln757">                              return prev;</a>
+<a name="ln758">                        else</a>
+<a name="ln759">                              break;</a>
+<a name="ln760">                        }</a>
+<a name="ln761">                  case ElementType::VBOX:</a>
+<a name="ln762">                  case ElementType::HBOX:</a>
+<a name="ln763">                  case ElementType::TBOX: {</a>
+<a name="ln764">                        MeasureBase* mb = toMeasureBase(e)-&gt;prevMM();</a>
+<a name="ln765">                        if (!mb) {</a>
+<a name="ln766">                              break;</a>
+<a name="ln767">                              }</a>
+<a name="ln768">                        else if (mb-&gt;isMeasure()) {</a>
+<a name="ln769">                              ChordRest* cr = selection().currentCR();</a>
+<a name="ln770">                              int si = cr ? cr-&gt;staffIdx() : 0;</a>
+<a name="ln771">                              Segment* s = toMeasure(mb)-&gt;last();</a>
+<a name="ln772">                              if (s)</a>
+<a name="ln773">                                    return s-&gt;lastElement(si);</a>
+<a name="ln774">                              }</a>
+<a name="ln775">                        else {</a>
+<a name="ln776">                              return mb;</a>
+<a name="ln777">                              }</a>
+<a name="ln778">                        }</a>
+<a name="ln779">                  default:</a>
+<a name="ln780">                        break;</a>
+<a name="ln781">                  }</a>
+<a name="ln782">            e = e-&gt;parent();</a>
+<a name="ln783">            }</a>
+<a name="ln784">      return score()-&gt;firstElement();</a>
+<a name="ln785">      }</a>
+<a name="ln786"> </a>
+<a name="ln787">}</a>
+<a name="ln788"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

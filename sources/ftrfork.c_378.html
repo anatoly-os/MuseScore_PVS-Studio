@@ -1,0 +1,927 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ftrfork.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ftrfork.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Embedded resource forks accessor (body).                             */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2004-2015 by                                                 */</a>
+<a name="ln8">/*  Masatake YAMATO and Redhat K.K.                                        */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  FT_Raccess_Get_HeaderInfo() and raccess_guess_darwin_hfsplus() are     */</a>
+<a name="ln11">/*  derived from ftobjs.c.                                                 */</a>
+<a name="ln12">/*                                                                         */</a>
+<a name="ln13">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln14">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln15">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln16">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln17">/*  understand and accept it fully.                                        */</a>
+<a name="ln18">/*                                                                         */</a>
+<a name="ln19">/***************************************************************************/</a>
+<a name="ln20"> </a>
+<a name="ln21">/***************************************************************************/</a>
+<a name="ln22">/* Development of the code in this file is support of                      */</a>
+<a name="ln23">/* Information-technology Promotion Agency, Japan.                         */</a>
+<a name="ln24">/***************************************************************************/</a>
+<a name="ln25"> </a>
+<a name="ln26"> </a>
+<a name="ln27">#include &lt;ft2build.h&gt;</a>
+<a name="ln28">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln29">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln30">#include FT_INTERNAL_RFORK_H</a>
+<a name="ln31">#include &quot;basepic.h&quot;</a>
+<a name="ln32">#include &quot;ftbase.h&quot;</a>
+<a name="ln33"> </a>
+<a name="ln34">#undef  FT_COMPONENT</a>
+<a name="ln35">#define FT_COMPONENT  trace_raccess</a>
+<a name="ln36"> </a>
+<a name="ln37"> </a>
+<a name="ln38">  /*************************************************************************/</a>
+<a name="ln39">  /*************************************************************************/</a>
+<a name="ln40">  /*************************************************************************/</a>
+<a name="ln41">  /****                                                                 ****/</a>
+<a name="ln42">  /****                                                                 ****/</a>
+<a name="ln43">  /****               Resource fork directory access                    ****/</a>
+<a name="ln44">  /****                                                                 ****/</a>
+<a name="ln45">  /****                                                                 ****/</a>
+<a name="ln46">  /*************************************************************************/</a>
+<a name="ln47">  /*************************************************************************/</a>
+<a name="ln48">  /*************************************************************************/</a>
+<a name="ln49"> </a>
+<a name="ln50">  FT_BASE_DEF( FT_Error )</a>
+<a name="ln51">  FT_Raccess_Get_HeaderInfo( FT_Library  library,</a>
+<a name="ln52">                             FT_Stream   stream,</a>
+<a name="ln53">                             FT_Long     rfork_offset,</a>
+<a name="ln54">                             FT_Long    *map_offset,</a>
+<a name="ln55">                             FT_Long    *rdata_pos )</a>
+<a name="ln56">  {</a>
+<a name="ln57">    FT_Error       error;</a>
+<a name="ln58">    unsigned char  head[16], head2[16];</a>
+<a name="ln59">    FT_Long        map_pos, rdata_len;</a>
+<a name="ln60">    int            allzeros, allmatch, i;</a>
+<a name="ln61">    FT_Long        type_list;</a>
+<a name="ln62"> </a>
+<a name="ln63">    FT_UNUSED( library );</a>
+<a name="ln64"> </a>
+<a name="ln65"> </a>
+<a name="ln66">    error = FT_Stream_Seek( stream, (FT_ULong)rfork_offset );</a>
+<a name="ln67">    if ( error )</a>
+<a name="ln68">      return error;</a>
+<a name="ln69"> </a>
+<a name="ln70">    error = FT_Stream_Read( stream, (FT_Byte *)head, 16 );</a>
+<a name="ln71">    if ( error )</a>
+<a name="ln72">      return error;</a>
+<a name="ln73"> </a>
+<a name="ln74">    /* ensure positive values */</a>
+<a name="ln75">    if ( head[0] &gt;= 0x80 || head[4] &gt;= 0x80 || head[8] &gt;= 0x80 )</a>
+<a name="ln76">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln77"> </a>
+<a name="ln78">    *rdata_pos = ( head[ 0] &lt;&lt; 24 ) |</a>
+<a name="ln79">                 ( head[ 1] &lt;&lt; 16 ) |</a>
+<a name="ln80">                 ( head[ 2] &lt;&lt;  8 ) |</a>
+<a name="ln81">                   head[ 3];</a>
+<a name="ln82">    map_pos    = ( head[ 4] &lt;&lt; 24 ) |</a>
+<a name="ln83">                 ( head[ 5] &lt;&lt; 16 ) |</a>
+<a name="ln84">                 ( head[ 6] &lt;&lt;  8 ) |</a>
+<a name="ln85">                   head[ 7];</a>
+<a name="ln86">    rdata_len  = ( head[ 8] &lt;&lt; 24 ) |</a>
+<a name="ln87">                 ( head[ 9] &lt;&lt; 16 ) |</a>
+<a name="ln88">                 ( head[10] &lt;&lt;  8 ) |</a>
+<a name="ln89">                   head[11];</a>
+<a name="ln90"> </a>
+<a name="ln91">    /* map_len = head[12] .. head[15] */</a>
+<a name="ln92"> </a>
+<a name="ln93">    if ( *rdata_pos != map_pos - rdata_len || map_pos == 0 )</a>
+<a name="ln94">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln95"> </a>
+<a name="ln96">    if ( FT_LONG_MAX - rfork_offset &lt; *rdata_pos ||</a>
+<a name="ln97">         FT_LONG_MAX - rfork_offset &lt; map_pos    )</a>
+<a name="ln98">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln99"> </a>
+<a name="ln100">    *rdata_pos += rfork_offset;</a>
+<a name="ln101">    map_pos    += rfork_offset;</a>
+<a name="ln102"> </a>
+<a name="ln103">    error = FT_Stream_Seek( stream, (FT_ULong)map_pos );</a>
+<a name="ln104">    if ( error )</a>
+<a name="ln105">      return error;</a>
+<a name="ln106"> </a>
+<a name="ln107">    head2[15] = (FT_Byte)( head[15] + 1 );       /* make it be different */</a>
+<a name="ln108"> </a>
+<a name="ln109">    error = FT_Stream_Read( stream, (FT_Byte*)head2, 16 );</a>
+<a name="ln110">    if ( error )</a>
+<a name="ln111">      return error;</a>
+<a name="ln112"> </a>
+<a name="ln113">    allzeros = 1;</a>
+<a name="ln114">    allmatch = 1;</a>
+<a name="ln115">    for ( i = 0; i &lt; 16; ++i )</a>
+<a name="ln116">    {</a>
+<a name="ln117">      if ( head2[i] != 0 )</a>
+<a name="ln118">        allzeros = 0;</a>
+<a name="ln119">      if ( head2[i] != head[i] )</a>
+<a name="ln120">        allmatch = 0;</a>
+<a name="ln121">    }</a>
+<a name="ln122">    if ( !allzeros &amp;&amp; !allmatch )</a>
+<a name="ln123">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln124"> </a>
+<a name="ln125">    /* If we have reached this point then it is probably a mac resource */</a>
+<a name="ln126">    /* file.  Now, does it contain any interesting resources?           */</a>
+<a name="ln127">    /* Skip handle to next resource map, the file resource number, and  */</a>
+<a name="ln128">    /* attributes.                                                      */</a>
+<a name="ln129">    (void)FT_STREAM_SKIP( 4        /* skip handle to next resource map */</a>
+<a name="ln130">                          + 2      /* skip file resource number */</a>
+<a name="ln131">                          + 2 );   /* skip attributes */</a>
+<a name="ln132"> </a>
+<a name="ln133">    if ( FT_READ_USHORT( type_list ) )</a>
+<a name="ln134">      return error;</a>
+<a name="ln135">    if ( type_list == -1 )</a>
+<a name="ln136">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln137"> </a>
+<a name="ln138">    error = FT_Stream_Seek( stream, (FT_ULong)( map_pos + type_list ) );</a>
+<a name="ln139">    if ( error )</a>
+<a name="ln140">      return error;</a>
+<a name="ln141"> </a>
+<a name="ln142">    *map_offset = map_pos + type_list;</a>
+<a name="ln143">    return FT_Err_Ok;</a>
+<a name="ln144">  }</a>
+<a name="ln145"> </a>
+<a name="ln146"> </a>
+<a name="ln147">  static int</a>
+<a name="ln148">  ft_raccess_sort_ref_by_id( FT_RFork_Ref*  a,</a>
+<a name="ln149">                             FT_RFork_Ref*  b )</a>
+<a name="ln150">  {</a>
+<a name="ln151">    if ( a-&gt;res_id &lt; b-&gt;res_id )</a>
+<a name="ln152">      return -1;</a>
+<a name="ln153">    else if ( a-&gt;res_id &gt; b-&gt;res_id )</a>
+<a name="ln154">      return 1;</a>
+<a name="ln155">    else</a>
+<a name="ln156">      return 0;</a>
+<a name="ln157">  }</a>
+<a name="ln158"> </a>
+<a name="ln159"> </a>
+<a name="ln160">  FT_BASE_DEF( FT_Error )</a>
+<a name="ln161">  FT_Raccess_Get_DataOffsets( FT_Library  library,</a>
+<a name="ln162">                              FT_Stream   stream,</a>
+<a name="ln163">                              FT_Long     map_offset,</a>
+<a name="ln164">                              FT_Long     rdata_pos,</a>
+<a name="ln165">                              FT_Long     tag,</a>
+<a name="ln166">                              FT_Bool     sort_by_res_id,</a>
+<a name="ln167">                              FT_Long   **offsets,</a>
+<a name="ln168">                              FT_Long    *count )</a>
+<a name="ln169">  {</a>
+<a name="ln170">    FT_Error      error;</a>
+<a name="ln171">    int           i, j, cnt, subcnt;</a>
+<a name="ln172">    FT_Long       tag_internal, rpos;</a>
+<a name="ln173">    FT_Memory     memory = library-&gt;memory;</a>
+<a name="ln174">    FT_Long       temp;</a>
+<a name="ln175">    FT_Long       *offsets_internal = NULL;</a>
+<a name="ln176">    FT_RFork_Ref  *ref = NULL;</a>
+<a name="ln177"> </a>
+<a name="ln178"> </a>
+<a name="ln179">    FT_TRACE3(( &quot;\n&quot; ));</a>
+<a name="ln180">    error = FT_Stream_Seek( stream, (FT_ULong)map_offset );</a>
+<a name="ln181">    if ( error )</a>
+<a name="ln182">      return error;</a>
+<a name="ln183"> </a>
+<a name="ln184">    if ( FT_READ_USHORT( cnt ) )</a>
+<a name="ln185">      return error;</a>
+<a name="ln186">    cnt++;</a>
+<a name="ln187"> </a>
+<a name="ln188">    for ( i = 0; i &lt; cnt; ++i )</a>
+<a name="ln189">    {</a>
+<a name="ln190">      if ( FT_READ_LONG( tag_internal ) ||</a>
+<a name="ln191">           FT_READ_USHORT( subcnt )     ||</a>
+<a name="ln192">           FT_READ_USHORT( rpos )       )</a>
+<a name="ln193">        return error;</a>
+<a name="ln194"> </a>
+<a name="ln195">      FT_TRACE2(( &quot;Resource tags: %c%c%c%c\n&quot;,</a>
+<a name="ln196">                  (char)( 0xFF &amp; ( tag_internal &gt;&gt; 24 ) ),</a>
+<a name="ln197">                  (char)( 0xFF &amp; ( tag_internal &gt;&gt; 16 ) ),</a>
+<a name="ln198">                  (char)( 0xFF &amp; ( tag_internal &gt;&gt;  8 ) ),</a>
+<a name="ln199">                  (char)( 0xFF &amp; ( tag_internal &gt;&gt;  0 ) ) ));</a>
+<a name="ln200">      FT_TRACE3(( &quot;             : subcount=%d, suboffset=0x%04x\n&quot;,</a>
+<a name="ln201">                  subcnt, rpos ));</a>
+<a name="ln202"> </a>
+<a name="ln203">      if ( tag_internal == tag )</a>
+<a name="ln204">      {</a>
+<a name="ln205">        *count = subcnt + 1;</a>
+<a name="ln206">        rpos  += map_offset;</a>
+<a name="ln207"> </a>
+<a name="ln208">        error = FT_Stream_Seek( stream, (FT_ULong)rpos );</a>
+<a name="ln209">        if ( error )</a>
+<a name="ln210">          return error;</a>
+<a name="ln211"> </a>
+<a name="ln212">        if ( FT_NEW_ARRAY( ref, *count ) )</a>
+<a name="ln213">          return error;</a>
+<a name="ln214"> </a>
+<a name="ln215">        for ( j = 0; j &lt; *count; ++j )</a>
+<a name="ln216">        {</a>
+<a name="ln217">          if ( FT_READ_USHORT( ref[j].res_id ) )</a>
+<a name="ln218">            goto Exit;</a>
+<a name="ln219">          if ( FT_STREAM_SKIP( 2 ) ) /* resource name */</a>
+<a name="ln220">            goto Exit;</a>
+<a name="ln221">          if ( FT_READ_LONG( temp ) )</a>
+<a name="ln222">            goto Exit;</a>
+<a name="ln223">          if ( FT_STREAM_SKIP( 4 ) ) /* mbz */</a>
+<a name="ln224">            goto Exit;</a>
+<a name="ln225"> </a>
+<a name="ln226">          ref[j].offset = temp &amp; 0xFFFFFFL;</a>
+<a name="ln227">          FT_TRACE3(( &quot;             [%d]:&quot;</a>
+<a name="ln228">                      &quot; resource_id=0x%04x, offset=0x%08x\n&quot;,</a>
+<a name="ln229">                      j, ref[j].res_id, ref[j].offset ));</a>
+<a name="ln230">        }</a>
+<a name="ln231"> </a>
+<a name="ln232">        if (sort_by_res_id)</a>
+<a name="ln233">        {</a>
+<a name="ln234">          ft_qsort( ref, (size_t)*count, sizeof ( FT_RFork_Ref ),</a>
+<a name="ln235">                    ( int(*)(const void*, const void*) )</a>
+<a name="ln236">                    ft_raccess_sort_ref_by_id );</a>
+<a name="ln237"> </a>
+<a name="ln238">          FT_TRACE3(( &quot;             -- sort resources by their ids --\n&quot; ));</a>
+<a name="ln239">          for ( j = 0; j &lt; *count; ++ j ) {</a>
+<a name="ln240">            FT_TRACE3(( &quot;             [%d]:&quot;</a>
+<a name="ln241">                        &quot; resource_id=0x%04x, offset=0x%08x\n&quot;,</a>
+<a name="ln242">                        j, ref[j].res_id, ref[j].offset ));</a>
+<a name="ln243">          }</a>
+<a name="ln244">        }</a>
+<a name="ln245"> </a>
+<a name="ln246">        if ( FT_NEW_ARRAY( offsets_internal, *count ) )</a>
+<a name="ln247">          goto Exit;</a>
+<a name="ln248"> </a>
+<a name="ln249">        /* XXX: duplicated reference ID,</a>
+<a name="ln250">         *      gap between reference IDs are acceptable?</a>
+<a name="ln251">         *      further investigation on Apple implementation is needed.</a>
+<a name="ln252">         */</a>
+<a name="ln253">        for ( j = 0; j &lt; *count; ++j )</a>
+<a name="ln254">          offsets_internal[j] = rdata_pos + ref[j].offset;</a>
+<a name="ln255"> </a>
+<a name="ln256">        *offsets = offsets_internal;</a>
+<a name="ln257">        error    = FT_Err_Ok;</a>
+<a name="ln258"> </a>
+<a name="ln259">      Exit:</a>
+<a name="ln260">        FT_FREE( ref );</a>
+<a name="ln261">        return error;</a>
+<a name="ln262">      }</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    return FT_THROW( Cannot_Open_Resource );</a>
+<a name="ln266">  }</a>
+<a name="ln267"> </a>
+<a name="ln268"> </a>
+<a name="ln269">#ifdef FT_CONFIG_OPTION_GUESSING_EMBEDDED_RFORK</a>
+<a name="ln270"> </a>
+<a name="ln271">  /*************************************************************************/</a>
+<a name="ln272">  /*************************************************************************/</a>
+<a name="ln273">  /*************************************************************************/</a>
+<a name="ln274">  /****                                                                 ****/</a>
+<a name="ln275">  /****                                                                 ****/</a>
+<a name="ln276">  /****                     Guessing functions                          ****/</a>
+<a name="ln277">  /****                                                                 ****/</a>
+<a name="ln278">  /****            When you add a new guessing function,                ****/</a>
+<a name="ln279">  /****           update FT_RACCESS_N_RULES in ftrfork.h.               ****/</a>
+<a name="ln280">  /****                                                                 ****/</a>
+<a name="ln281">  /*************************************************************************/</a>
+<a name="ln282">  /*************************************************************************/</a>
+<a name="ln283">  /*************************************************************************/</a>
+<a name="ln284"> </a>
+<a name="ln285">  static FT_Error</a>
+<a name="ln286">  raccess_guess_apple_double( FT_Library  library,</a>
+<a name="ln287">                              FT_Stream   stream,</a>
+<a name="ln288">                              char       *base_file_name,</a>
+<a name="ln289">                              char      **result_file_name,</a>
+<a name="ln290">                              FT_Long    *result_offset );</a>
+<a name="ln291"> </a>
+<a name="ln292">  static FT_Error</a>
+<a name="ln293">  raccess_guess_apple_single( FT_Library  library,</a>
+<a name="ln294">                              FT_Stream   stream,</a>
+<a name="ln295">                              char       *base_file_name,</a>
+<a name="ln296">                              char      **result_file_name,</a>
+<a name="ln297">                              FT_Long    *result_offset );</a>
+<a name="ln298"> </a>
+<a name="ln299">  static FT_Error</a>
+<a name="ln300">  raccess_guess_darwin_ufs_export( FT_Library  library,</a>
+<a name="ln301">                                   FT_Stream   stream,</a>
+<a name="ln302">                                   char       *base_file_name,</a>
+<a name="ln303">                                   char      **result_file_name,</a>
+<a name="ln304">                                   FT_Long    *result_offset );</a>
+<a name="ln305"> </a>
+<a name="ln306">  static FT_Error</a>
+<a name="ln307">  raccess_guess_darwin_newvfs( FT_Library  library,</a>
+<a name="ln308">                               FT_Stream   stream,</a>
+<a name="ln309">                               char       *base_file_name,</a>
+<a name="ln310">                               char      **result_file_name,</a>
+<a name="ln311">                               FT_Long    *result_offset );</a>
+<a name="ln312"> </a>
+<a name="ln313">  static FT_Error</a>
+<a name="ln314">  raccess_guess_darwin_hfsplus( FT_Library  library,</a>
+<a name="ln315">                                FT_Stream   stream,</a>
+<a name="ln316">                                char       *base_file_name,</a>
+<a name="ln317">                                char      **result_file_name,</a>
+<a name="ln318">                                FT_Long    *result_offset );</a>
+<a name="ln319"> </a>
+<a name="ln320">  static FT_Error</a>
+<a name="ln321">  raccess_guess_vfat( FT_Library  library,</a>
+<a name="ln322">                      FT_Stream   stream,</a>
+<a name="ln323">                      char       *base_file_name,</a>
+<a name="ln324">                      char      **result_file_name,</a>
+<a name="ln325">                      FT_Long    *result_offset );</a>
+<a name="ln326"> </a>
+<a name="ln327">  static FT_Error</a>
+<a name="ln328">  raccess_guess_linux_cap( FT_Library  library,</a>
+<a name="ln329">                           FT_Stream   stream,</a>
+<a name="ln330">                           char       *base_file_name,</a>
+<a name="ln331">                           char      **result_file_name,</a>
+<a name="ln332">                           FT_Long    *result_offset );</a>
+<a name="ln333"> </a>
+<a name="ln334">  static FT_Error</a>
+<a name="ln335">  raccess_guess_linux_double( FT_Library  library,</a>
+<a name="ln336">                              FT_Stream   stream,</a>
+<a name="ln337">                              char       *base_file_name,</a>
+<a name="ln338">                              char      **result_file_name,</a>
+<a name="ln339">                              FT_Long    *result_offset );</a>
+<a name="ln340"> </a>
+<a name="ln341">  static FT_Error</a>
+<a name="ln342">  raccess_guess_linux_netatalk( FT_Library  library,</a>
+<a name="ln343">                                FT_Stream   stream,</a>
+<a name="ln344">                                char       *base_file_name,</a>
+<a name="ln345">                                char      **result_file_name,</a>
+<a name="ln346">                                FT_Long    *result_offset );</a>
+<a name="ln347"> </a>
+<a name="ln348"> </a>
+<a name="ln349">  CONST_FT_RFORK_RULE_ARRAY_BEGIN(ft_raccess_guess_table,</a>
+<a name="ln350">                                  ft_raccess_guess_rec)</a>
+<a name="ln351">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(apple_double,      apple_double)</a>
+<a name="ln352">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(apple_single,      apple_single)</a>
+<a name="ln353">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(darwin_ufs_export, darwin_ufs_export)</a>
+<a name="ln354">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(darwin_newvfs,     darwin_newvfs)</a>
+<a name="ln355">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(darwin_hfsplus,    darwin_hfsplus)</a>
+<a name="ln356">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(vfat,              vfat)</a>
+<a name="ln357">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(linux_cap,         linux_cap)</a>
+<a name="ln358">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(linux_double,      linux_double)</a>
+<a name="ln359">  CONST_FT_RFORK_RULE_ARRAY_ENTRY(linux_netatalk,    linux_netatalk)</a>
+<a name="ln360">  CONST_FT_RFORK_RULE_ARRAY_END</a>
+<a name="ln361"> </a>
+<a name="ln362"> </a>
+<a name="ln363">  /*************************************************************************/</a>
+<a name="ln364">  /****                                                                 ****/</a>
+<a name="ln365">  /****                       Helper functions                          ****/</a>
+<a name="ln366">  /****                                                                 ****/</a>
+<a name="ln367">  /*************************************************************************/</a>
+<a name="ln368"> </a>
+<a name="ln369">  static FT_Error</a>
+<a name="ln370">  raccess_guess_apple_generic( FT_Library  library,</a>
+<a name="ln371">                               FT_Stream   stream,</a>
+<a name="ln372">                               char       *base_file_name,</a>
+<a name="ln373">                               FT_Int32    magic,</a>
+<a name="ln374">                               FT_Long    *result_offset );</a>
+<a name="ln375"> </a>
+<a name="ln376">  static FT_Error</a>
+<a name="ln377">  raccess_guess_linux_double_from_file_name( FT_Library  library,</a>
+<a name="ln378">                                             char *      file_name,</a>
+<a name="ln379">                                             FT_Long    *result_offset );</a>
+<a name="ln380"> </a>
+<a name="ln381">  static char *</a>
+<a name="ln382">  raccess_make_file_name( FT_Memory    memory,</a>
+<a name="ln383">                          const char  *original_name,</a>
+<a name="ln384">                          const char  *insertion );</a>
+<a name="ln385"> </a>
+<a name="ln386">  FT_BASE_DEF( void )</a>
+<a name="ln387">  FT_Raccess_Guess( FT_Library  library,</a>
+<a name="ln388">                    FT_Stream   stream,</a>
+<a name="ln389">                    char*       base_name,</a>
+<a name="ln390">                    char      **new_names,</a>
+<a name="ln391">                    FT_Long    *offsets,</a>
+<a name="ln392">                    FT_Error   *errors )</a>
+<a name="ln393">  {</a>
+<a name="ln394">    FT_Int  i;</a>
+<a name="ln395"> </a>
+<a name="ln396"> </a>
+<a name="ln397">    for ( i = 0; i &lt; FT_RACCESS_N_RULES; i++ )</a>
+<a name="ln398">    {</a>
+<a name="ln399">      new_names[i] = NULL;</a>
+<a name="ln400">      if ( NULL != stream )</a>
+<a name="ln401">        errors[i] = FT_Stream_Seek( stream, 0 );</a>
+<a name="ln402">      else</a>
+<a name="ln403">        errors[i] = FT_Err_Ok;</a>
+<a name="ln404"> </a>
+<a name="ln405">      if ( errors[i] )</a>
+<a name="ln406">        continue ;</a>
+<a name="ln407"> </a>
+<a name="ln408">      errors[i] = (FT_RACCESS_GUESS_TABLE_GET[i].func)( library,</a>
+<a name="ln409">                                                 stream, base_name,</a>
+<a name="ln410">                                                 &amp;(new_names[i]),</a>
+<a name="ln411">                                                 &amp;(offsets[i]) );</a>
+<a name="ln412">    }</a>
+<a name="ln413"> </a>
+<a name="ln414">    return;</a>
+<a name="ln415">  }</a>
+<a name="ln416"> </a>
+<a name="ln417"> </a>
+<a name="ln418">#ifndef FT_MACINTOSH</a>
+<a name="ln419">  static FT_RFork_Rule</a>
+<a name="ln420">  raccess_get_rule_type_from_rule_index( FT_Library  library,</a>
+<a name="ln421">                                         FT_UInt     rule_index )</a>
+<a name="ln422">  {</a>
+<a name="ln423">    FT_UNUSED( library );</a>
+<a name="ln424"> </a>
+<a name="ln425">    if ( rule_index &gt;= FT_RACCESS_N_RULES )</a>
+<a name="ln426">      return FT_RFork_Rule_invalid;</a>
+<a name="ln427"> </a>
+<a name="ln428">    return FT_RACCESS_GUESS_TABLE_GET[rule_index].type;</a>
+<a name="ln429">  }</a>
+<a name="ln430"> </a>
+<a name="ln431"> </a>
+<a name="ln432">  /*</a>
+<a name="ln433">   * For this function, refer ftbase.h.</a>
+<a name="ln434">   */</a>
+<a name="ln435">  FT_LOCAL_DEF( FT_Bool )</a>
+<a name="ln436">  ft_raccess_rule_by_darwin_vfs( FT_Library  library,</a>
+<a name="ln437">                                 FT_UInt     rule_index )</a>
+<a name="ln438">  {</a>
+<a name="ln439">    switch( raccess_get_rule_type_from_rule_index( library, rule_index ) )</a>
+<a name="ln440">    {</a>
+<a name="ln441">      case FT_RFork_Rule_darwin_newvfs:</a>
+<a name="ln442">      case FT_RFork_Rule_darwin_hfsplus:</a>
+<a name="ln443">        return TRUE;</a>
+<a name="ln444"> </a>
+<a name="ln445">      default:</a>
+<a name="ln446">        return FALSE;</a>
+<a name="ln447">    }</a>
+<a name="ln448">  }</a>
+<a name="ln449">#endif</a>
+<a name="ln450"> </a>
+<a name="ln451"> </a>
+<a name="ln452">  static FT_Error</a>
+<a name="ln453">  raccess_guess_apple_double( FT_Library  library,</a>
+<a name="ln454">                              FT_Stream   stream,</a>
+<a name="ln455">                              char       *base_file_name,</a>
+<a name="ln456">                              char      **result_file_name,</a>
+<a name="ln457">                              FT_Long    *result_offset )</a>
+<a name="ln458">  {</a>
+<a name="ln459">    FT_Int32  magic = ( 0x00 &lt;&lt; 24 ) |</a>
+<a name="ln460">                      ( 0x05 &lt;&lt; 16 ) |</a>
+<a name="ln461">                      ( 0x16 &lt;&lt;  8 ) |</a>
+<a name="ln462">                        0x07;</a>
+<a name="ln463"> </a>
+<a name="ln464"> </a>
+<a name="ln465">    *result_file_name = NULL;</a>
+<a name="ln466">    if ( NULL == stream )</a>
+<a name="ln467">      return FT_THROW( Cannot_Open_Stream );</a>
+<a name="ln468"> </a>
+<a name="ln469">    return raccess_guess_apple_generic( library, stream, base_file_name,</a>
+<a name="ln470">                                        magic, result_offset );</a>
+<a name="ln471">  }</a>
+<a name="ln472"> </a>
+<a name="ln473"> </a>
+<a name="ln474">  static FT_Error</a>
+<a name="ln475">  raccess_guess_apple_single( FT_Library  library,</a>
+<a name="ln476">                              FT_Stream   stream,</a>
+<a name="ln477">                              char       *base_file_name,</a>
+<a name="ln478">                              char      **result_file_name,</a>
+<a name="ln479">                              FT_Long    *result_offset )</a>
+<a name="ln480">  {</a>
+<a name="ln481">    FT_Int32  magic = ( 0x00 &lt;&lt; 24 ) |</a>
+<a name="ln482">                      ( 0x05 &lt;&lt; 16 ) |</a>
+<a name="ln483">                      ( 0x16 &lt;&lt;  8 ) |</a>
+<a name="ln484">                        0x00;</a>
+<a name="ln485"> </a>
+<a name="ln486"> </a>
+<a name="ln487">    *result_file_name = NULL;</a>
+<a name="ln488">    if ( NULL == stream )</a>
+<a name="ln489">      return FT_THROW( Cannot_Open_Stream );</a>
+<a name="ln490"> </a>
+<a name="ln491">    return raccess_guess_apple_generic( library, stream, base_file_name,</a>
+<a name="ln492">                                        magic, result_offset );</a>
+<a name="ln493">  }</a>
+<a name="ln494"> </a>
+<a name="ln495"> </a>
+<a name="ln496">  static FT_Error</a>
+<a name="ln497">  raccess_guess_darwin_ufs_export( FT_Library  library,</a>
+<a name="ln498">                                   FT_Stream   stream,</a>
+<a name="ln499">                                   char       *base_file_name,</a>
+<a name="ln500">                                   char      **result_file_name,</a>
+<a name="ln501">                                   FT_Long    *result_offset )</a>
+<a name="ln502">  {</a>
+<a name="ln503">    char*      newpath;</a>
+<a name="ln504">    FT_Error   error;</a>
+<a name="ln505">    FT_Memory  memory;</a>
+<a name="ln506"> </a>
+<a name="ln507">    FT_UNUSED( stream );</a>
+<a name="ln508"> </a>
+<a name="ln509"> </a>
+<a name="ln510">    memory  = library-&gt;memory;</a>
+<a name="ln511">    newpath = raccess_make_file_name( memory, base_file_name, &quot;._&quot; );</a>
+<a name="ln512">    if ( !newpath )</a>
+<a name="ln513">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln514"> </a>
+<a name="ln515">    error = raccess_guess_linux_double_from_file_name( library, newpath,</a>
+<a name="ln516">                                                       result_offset );</a>
+<a name="ln517">    if ( !error )</a>
+<a name="ln518">      *result_file_name = newpath;</a>
+<a name="ln519">    else</a>
+<a name="ln520">      FT_FREE( newpath );</a>
+<a name="ln521"> </a>
+<a name="ln522">    return error;</a>
+<a name="ln523">  }</a>
+<a name="ln524"> </a>
+<a name="ln525"> </a>
+<a name="ln526">  static FT_Error</a>
+<a name="ln527">  raccess_guess_darwin_hfsplus( FT_Library  library,</a>
+<a name="ln528">                                FT_Stream   stream,</a>
+<a name="ln529">                                char       *base_file_name,</a>
+<a name="ln530">                                char      **result_file_name,</a>
+<a name="ln531">                                FT_Long    *result_offset )</a>
+<a name="ln532">  {</a>
+<a name="ln533">    /*</a>
+<a name="ln534">      Only meaningful on systems with hfs+ drivers (or Macs).</a>
+<a name="ln535">     */</a>
+<a name="ln536">    FT_Error   error;</a>
+<a name="ln537">    char*      newpath = NULL;</a>
+<a name="ln538">    FT_Memory  memory;</a>
+<a name="ln539">    FT_Long    base_file_len = (FT_Long)ft_strlen( base_file_name );</a>
+<a name="ln540"> </a>
+<a name="ln541">    FT_UNUSED( stream );</a>
+<a name="ln542"> </a>
+<a name="ln543"> </a>
+<a name="ln544">    memory = library-&gt;memory;</a>
+<a name="ln545"> </a>
+<a name="ln546">    if ( base_file_len + 6 &gt; FT_INT_MAX )</a>
+<a name="ln547">      return FT_THROW( Array_Too_Large );</a>
+<a name="ln548"> </a>
+<a name="ln549">    if ( FT_ALLOC( newpath, base_file_len + 6 ) )</a>
+<a name="ln550">      return error;</a>
+<a name="ln551"> </a>
+<a name="ln552">    FT_MEM_COPY( newpath, base_file_name, base_file_len );</a>
+<a name="ln553">    FT_MEM_COPY( newpath + base_file_len, &quot;/rsrc&quot;, 6 );</a>
+<a name="ln554"> </a>
+<a name="ln555">    *result_file_name = newpath;</a>
+<a name="ln556">    *result_offset    = 0;</a>
+<a name="ln557"> </a>
+<a name="ln558">    return FT_Err_Ok;</a>
+<a name="ln559">  }</a>
+<a name="ln560"> </a>
+<a name="ln561"> </a>
+<a name="ln562">  static FT_Error</a>
+<a name="ln563">  raccess_guess_darwin_newvfs( FT_Library  library,</a>
+<a name="ln564">                               FT_Stream   stream,</a>
+<a name="ln565">                               char       *base_file_name,</a>
+<a name="ln566">                               char      **result_file_name,</a>
+<a name="ln567">                               FT_Long    *result_offset )</a>
+<a name="ln568">  {</a>
+<a name="ln569">    /*</a>
+<a name="ln570">      Only meaningful on systems with Mac OS X (&gt; 10.1).</a>
+<a name="ln571">     */</a>
+<a name="ln572">    FT_Error   error;</a>
+<a name="ln573">    char*      newpath = NULL;</a>
+<a name="ln574">    FT_Memory  memory;</a>
+<a name="ln575">    FT_Long    base_file_len = (FT_Long)ft_strlen( base_file_name );</a>
+<a name="ln576"> </a>
+<a name="ln577">    FT_UNUSED( stream );</a>
+<a name="ln578"> </a>
+<a name="ln579"> </a>
+<a name="ln580">    memory = library-&gt;memory;</a>
+<a name="ln581"> </a>
+<a name="ln582">    if ( base_file_len + 18 &gt; FT_INT_MAX )</a>
+<a name="ln583">      return FT_THROW( Array_Too_Large );</a>
+<a name="ln584"> </a>
+<a name="ln585">    if ( FT_ALLOC( newpath, base_file_len + 18 ) )</a>
+<a name="ln586">      return error;</a>
+<a name="ln587"> </a>
+<a name="ln588">    FT_MEM_COPY( newpath, base_file_name, base_file_len );</a>
+<a name="ln589">    FT_MEM_COPY( newpath + base_file_len, &quot;/..namedfork/rsrc&quot;, 18 );</a>
+<a name="ln590"> </a>
+<a name="ln591">    *result_file_name = newpath;</a>
+<a name="ln592">    *result_offset    = 0;</a>
+<a name="ln593"> </a>
+<a name="ln594">    return FT_Err_Ok;</a>
+<a name="ln595">  }</a>
+<a name="ln596"> </a>
+<a name="ln597"> </a>
+<a name="ln598">  static FT_Error</a>
+<a name="ln599">  raccess_guess_vfat( FT_Library  library,</a>
+<a name="ln600">                      FT_Stream   stream,</a>
+<a name="ln601">                      char       *base_file_name,</a>
+<a name="ln602">                      char      **result_file_name,</a>
+<a name="ln603">                      FT_Long    *result_offset )</a>
+<a name="ln604">  {</a>
+<a name="ln605">    char*      newpath;</a>
+<a name="ln606">    FT_Memory  memory;</a>
+<a name="ln607"> </a>
+<a name="ln608">    FT_UNUSED( stream );</a>
+<a name="ln609"> </a>
+<a name="ln610"> </a>
+<a name="ln611">    memory = library-&gt;memory;</a>
+<a name="ln612"> </a>
+<a name="ln613">    newpath = raccess_make_file_name( memory, base_file_name,</a>
+<a name="ln614">                                      &quot;resource.frk/&quot; );</a>
+<a name="ln615">    if ( !newpath )</a>
+<a name="ln616">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln617"> </a>
+<a name="ln618">    *result_file_name = newpath;</a>
+<a name="ln619">    *result_offset    = 0;</a>
+<a name="ln620"> </a>
+<a name="ln621">    return FT_Err_Ok;</a>
+<a name="ln622">  }</a>
+<a name="ln623"> </a>
+<a name="ln624"> </a>
+<a name="ln625">  static FT_Error</a>
+<a name="ln626">  raccess_guess_linux_cap( FT_Library  library,</a>
+<a name="ln627">                           FT_Stream   stream,</a>
+<a name="ln628">                           char       *base_file_name,</a>
+<a name="ln629">                           char      **result_file_name,</a>
+<a name="ln630">                           FT_Long    *result_offset )</a>
+<a name="ln631">  {</a>
+<a name="ln632">    char*      newpath;</a>
+<a name="ln633">    FT_Memory  memory;</a>
+<a name="ln634"> </a>
+<a name="ln635">    FT_UNUSED( stream );</a>
+<a name="ln636"> </a>
+<a name="ln637"> </a>
+<a name="ln638">    memory = library-&gt;memory;</a>
+<a name="ln639"> </a>
+<a name="ln640">    newpath = raccess_make_file_name( memory, base_file_name, &quot;.resource/&quot; );</a>
+<a name="ln641">    if ( !newpath )</a>
+<a name="ln642">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln643"> </a>
+<a name="ln644">    *result_file_name = newpath;</a>
+<a name="ln645">    *result_offset    = 0;</a>
+<a name="ln646"> </a>
+<a name="ln647">    return FT_Err_Ok;</a>
+<a name="ln648">  }</a>
+<a name="ln649"> </a>
+<a name="ln650"> </a>
+<a name="ln651">  static FT_Error</a>
+<a name="ln652">  raccess_guess_linux_double( FT_Library  library,</a>
+<a name="ln653">                              FT_Stream   stream,</a>
+<a name="ln654">                              char       *base_file_name,</a>
+<a name="ln655">                              char      **result_file_name,</a>
+<a name="ln656">                              FT_Long    *result_offset )</a>
+<a name="ln657">  {</a>
+<a name="ln658">    char*      newpath;</a>
+<a name="ln659">    FT_Error   error;</a>
+<a name="ln660">    FT_Memory  memory;</a>
+<a name="ln661"> </a>
+<a name="ln662">    FT_UNUSED( stream );</a>
+<a name="ln663"> </a>
+<a name="ln664"> </a>
+<a name="ln665">    memory = library-&gt;memory;</a>
+<a name="ln666"> </a>
+<a name="ln667">    newpath = raccess_make_file_name( memory, base_file_name, &quot;%&quot; );</a>
+<a name="ln668">    if ( !newpath )</a>
+<a name="ln669">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln670"> </a>
+<a name="ln671">    error = raccess_guess_linux_double_from_file_name( library, newpath,</a>
+<a name="ln672">                                                       result_offset );</a>
+<a name="ln673">    if ( !error )</a>
+<a name="ln674">      *result_file_name = newpath;</a>
+<a name="ln675">    else</a>
+<a name="ln676">      FT_FREE( newpath );</a>
+<a name="ln677"> </a>
+<a name="ln678">    return error;</a>
+<a name="ln679">  }</a>
+<a name="ln680"> </a>
+<a name="ln681"> </a>
+<a name="ln682">  static FT_Error</a>
+<a name="ln683">  raccess_guess_linux_netatalk( FT_Library  library,</a>
+<a name="ln684">                                FT_Stream   stream,</a>
+<a name="ln685">                                char       *base_file_name,</a>
+<a name="ln686">                                char      **result_file_name,</a>
+<a name="ln687">                                FT_Long    *result_offset )</a>
+<a name="ln688">  {</a>
+<a name="ln689">    char*      newpath;</a>
+<a name="ln690">    FT_Error   error;</a>
+<a name="ln691">    FT_Memory  memory;</a>
+<a name="ln692"> </a>
+<a name="ln693">    FT_UNUSED( stream );</a>
+<a name="ln694"> </a>
+<a name="ln695"> </a>
+<a name="ln696">    memory = library-&gt;memory;</a>
+<a name="ln697"> </a>
+<a name="ln698">    newpath = raccess_make_file_name( memory, base_file_name,</a>
+<a name="ln699">                                      &quot;.AppleDouble/&quot; );</a>
+<a name="ln700">    if ( !newpath )</a>
+<a name="ln701">      return FT_THROW( Out_Of_Memory );</a>
+<a name="ln702"> </a>
+<a name="ln703">    error = raccess_guess_linux_double_from_file_name( library, newpath,</a>
+<a name="ln704">                                                       result_offset );</a>
+<a name="ln705">    if ( !error )</a>
+<a name="ln706">      *result_file_name = newpath;</a>
+<a name="ln707">    else</a>
+<a name="ln708">      FT_FREE( newpath );</a>
+<a name="ln709"> </a>
+<a name="ln710">    return error;</a>
+<a name="ln711">  }</a>
+<a name="ln712"> </a>
+<a name="ln713"> </a>
+<a name="ln714">  static FT_Error</a>
+<a name="ln715">  raccess_guess_apple_generic( FT_Library  library,</a>
+<a name="ln716">                               FT_Stream   stream,</a>
+<a name="ln717">                               char       *base_file_name,</a>
+<a name="ln718">                               FT_Int32    magic,</a>
+<a name="ln719">                               FT_Long    *result_offset )</a>
+<a name="ln720">  {</a>
+<a name="ln721">    FT_Int32   magic_from_stream;</a>
+<a name="ln722">    FT_Error   error;</a>
+<a name="ln723">    FT_Int32   version_number = 0;</a>
+<a name="ln724">    FT_UShort  n_of_entries;</a>
+<a name="ln725"> </a>
+<a name="ln726">    int        i;</a>
+<a name="ln727">    FT_Int32   entry_id, entry_offset, entry_length = 0;</a>
+<a name="ln728"> </a>
+<a name="ln729">    const FT_Int32  resource_fork_entry_id = 0x2;</a>
+<a name="ln730"> </a>
+<a name="ln731">    FT_UNUSED( library );</a>
+<a name="ln732">    FT_UNUSED( base_file_name );</a>
+<a name="ln733">    FT_UNUSED( version_number );</a>
+<a name="ln734">    FT_UNUSED( entry_length   );</a>
+<a name="ln735"> </a>
+<a name="ln736"> </a>
+<a name="ln737">    if ( FT_READ_LONG( magic_from_stream ) )</a>
+<a name="ln738">      return error;</a>
+<a name="ln739">    if ( magic_from_stream != magic )</a>
+<a name="ln740">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln741"> </a>
+<a name="ln742">    if ( FT_READ_LONG( version_number ) )</a>
+<a name="ln743">      return error;</a>
+<a name="ln744"> </a>
+<a name="ln745">    /* filler */</a>
+<a name="ln746">    error = FT_Stream_Skip( stream, 16 );</a>
+<a name="ln747">    if ( error )</a>
+<a name="ln748">      return error;</a>
+<a name="ln749"> </a>
+<a name="ln750">    if ( FT_READ_USHORT( n_of_entries ) )</a>
+<a name="ln751">      return error;</a>
+<a name="ln752">    if ( n_of_entries == 0 )</a>
+<a name="ln753">      return FT_THROW( Unknown_File_Format );</a>
+<a name="ln754"> </a>
+<a name="ln755">    for ( i = 0; i &lt; n_of_entries; i++ )</a>
+<a name="ln756">    {</a>
+<a name="ln757">      if ( FT_READ_LONG( entry_id ) )</a>
+<a name="ln758">        return error;</a>
+<a name="ln759">      if ( entry_id == resource_fork_entry_id )</a>
+<a name="ln760">      {</a>
+<a name="ln761">        if ( FT_READ_LONG( entry_offset ) ||</a>
+<a name="ln762">             FT_READ_LONG( entry_length ) )</a>
+<a name="ln763">          continue;</a>
+<a name="ln764">        *result_offset = entry_offset;</a>
+<a name="ln765"> </a>
+<a name="ln766">        return FT_Err_Ok;</a>
+<a name="ln767">      }</a>
+<a name="ln768">      else</a>
+<a name="ln769">      {</a>
+<a name="ln770">        error = FT_Stream_Skip( stream, 4 + 4 );    /* offset + length */</a>
+<a name="ln771">        if ( error )</a>
+<a name="ln772">          return error;</a>
+<a name="ln773">      }</a>
+<a name="ln774">    }</a>
+<a name="ln775"> </a>
+<a name="ln776">    return FT_THROW( Unknown_File_Format );</a>
+<a name="ln777">  }</a>
+<a name="ln778"> </a>
+<a name="ln779"> </a>
+<a name="ln780">  static FT_Error</a>
+<a name="ln781">  raccess_guess_linux_double_from_file_name( FT_Library  library,</a>
+<a name="ln782">                                             char       *file_name,</a>
+<a name="ln783">                                             FT_Long    *result_offset )</a>
+<a name="ln784">  {</a>
+<a name="ln785">    FT_Open_Args  args2;</a>
+<a name="ln786">    FT_Stream     stream2;</a>
+<a name="ln787">    char *        nouse = NULL;</a>
+<a name="ln788">    FT_Error      error;</a>
+<a name="ln789"> </a>
+<a name="ln790"> </a>
+<a name="ln791">    args2.flags    = FT_OPEN_PATHNAME;</a>
+<a name="ln792">    args2.pathname = file_name;</a>
+<a name="ln793">    error = FT_Stream_New( library, &amp;args2, &amp;stream2 );</a>
+<a name="ln794">    if ( error )</a>
+<a name="ln795">      return error;</a>
+<a name="ln796"> </a>
+<a name="ln797">    error = raccess_guess_apple_double( library, stream2, file_name,</a>
+<a name="ln798">                                        &amp;nouse, result_offset );</a>
+<a name="ln799"> </a>
+<a name="ln800">    FT_Stream_Free( stream2, 0 );</a>
+<a name="ln801"> </a>
+<a name="ln802">    return error;</a>
+<a name="ln803">  }</a>
+<a name="ln804"> </a>
+<a name="ln805"> </a>
+<a name="ln806">  static char*</a>
+<a name="ln807">  raccess_make_file_name( FT_Memory    memory,</a>
+<a name="ln808">                          const char  *original_name,</a>
+<a name="ln809">                          const char  *insertion )</a>
+<a name="ln810">  {</a>
+<a name="ln811">    char*        new_name = NULL;</a>
+<a name="ln812">    const char*  tmp;</a>
+<a name="ln813">    const char*  slash;</a>
+<a name="ln814">    size_t       new_length;</a>
+<a name="ln815">    FT_Error     error = FT_Err_Ok;</a>
+<a name="ln816"> </a>
+<a name="ln817">    FT_UNUSED( error );</a>
+<a name="ln818"> </a>
+<a name="ln819"> </a>
+<a name="ln820">    new_length = ft_strlen( original_name ) + ft_strlen( insertion );</a>
+<a name="ln821">    if ( FT_ALLOC( new_name, new_length + 1 ) )</a>
+<a name="ln822">      return NULL;</a>
+<a name="ln823"> </a>
+<a name="ln824">    tmp = ft_strrchr( original_name, '/' );</a>
+<a name="ln825">    if ( tmp )</a>
+<a name="ln826">    {</a>
+<a name="ln827">      ft_strncpy( new_name,</a>
+<a name="ln828">                  original_name,</a>
+<a name="ln829">                  (size_t)( tmp - original_name + 1 ) );</a>
+<a name="ln830">      new_name[tmp - original_name + 1] = '\0';</a>
+<a name="ln831">      slash = tmp + 1;</a>
+<a name="ln832">    }</a>
+<a name="ln833">    else</a>
+<a name="ln834">    {</a>
+<a name="ln835">      slash       = original_name;</a>
+<a name="ln836">      new_name[0] = '\0';</a>
+<a name="ln837">    }</a>
+<a name="ln838"> </a>
+<a name="ln839">    ft_strcat( new_name, insertion );</a>
+<a name="ln840">    ft_strcat( new_name, slash );</a>
+<a name="ln841"> </a>
+<a name="ln842">    return new_name;</a>
+<a name="ln843">  }</a>
+<a name="ln844"> </a>
+<a name="ln845"> </a>
+<a name="ln846">#else   /* !FT_CONFIG_OPTION_GUESSING_EMBEDDED_RFORK */</a>
+<a name="ln847"> </a>
+<a name="ln848"> </a>
+<a name="ln849">  /*************************************************************************/</a>
+<a name="ln850">  /*                  Dummy function; just sets errors                     */</a>
+<a name="ln851">  /*************************************************************************/</a>
+<a name="ln852"> </a>
+<a name="ln853">  FT_BASE_DEF( void )</a>
+<a name="ln854">  FT_Raccess_Guess( FT_Library  library,</a>
+<a name="ln855">                    FT_Stream   stream,</a>
+<a name="ln856">                    char       *base_name,</a>
+<a name="ln857">                    char      **new_names,</a>
+<a name="ln858">                    FT_Long    *offsets,</a>
+<a name="ln859">                    FT_Error   *errors )</a>
+<a name="ln860">  {</a>
+<a name="ln861">    FT_Int  i;</a>
+<a name="ln862"> </a>
+<a name="ln863">    FT_UNUSED( library );</a>
+<a name="ln864">    FT_UNUSED( stream );</a>
+<a name="ln865">    FT_UNUSED( base_name );</a>
+<a name="ln866"> </a>
+<a name="ln867"> </a>
+<a name="ln868">    for ( i = 0; i &lt; FT_RACCESS_N_RULES; i++ )</a>
+<a name="ln869">    {</a>
+<a name="ln870">      new_names[i] = NULL;</a>
+<a name="ln871">      offsets[i]   = 0;</a>
+<a name="ln872">      errors[i]    = FT_ERR( Unimplemented_Feature );</a>
+<a name="ln873">    }</a>
+<a name="ln874">  }</a>
+<a name="ln875"> </a>
+<a name="ln876"> </a>
+<a name="ln877">#endif  /* !FT_CONFIG_OPTION_GUESSING_EMBEDDED_RFORK */</a>
+<a name="ln878"> </a>
+<a name="ln879"> </a>
+<a name="ln880">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="135"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'type_list == - 1' is always false.</p></div>
+<div class="balloon" rel="257"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

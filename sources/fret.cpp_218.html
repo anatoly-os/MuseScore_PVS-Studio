@@ -1,0 +1,1533 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>fret.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2010-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;fret.h&quot;</a>
+<a name="ln14">#include &quot;measure.h&quot;</a>
+<a name="ln15">#include &quot;system.h&quot;</a>
+<a name="ln16">#include &quot;score.h&quot;</a>
+<a name="ln17">#include &quot;stringdata.h&quot;</a>
+<a name="ln18">#include &quot;chord.h&quot;</a>
+<a name="ln19">#include &quot;note.h&quot;</a>
+<a name="ln20">#include &quot;segment.h&quot;</a>
+<a name="ln21">#include &quot;mscore.h&quot;</a>
+<a name="ln22">#include &quot;harmony.h&quot;</a>
+<a name="ln23">#include &quot;staff.h&quot;</a>
+<a name="ln24">#include &quot;undo.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">namespace Ms {</a>
+<a name="ln27"> </a>
+<a name="ln28">//    parent() is Segment or Box</a>
+<a name="ln29">//</a>
+<a name="ln30"> </a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32">//   fretStyle</a>
+<a name="ln33">//---------------------------------------------------------</a>
+<a name="ln34"> </a>
+<a name="ln35">static const ElementStyle fretStyle {</a>
+<a name="ln36">      { Sid::fretNumPos,                         Pid::FRET_NUM_POS            },</a>
+<a name="ln37">      { Sid::fretMag,                            Pid::MAG                     },</a>
+<a name="ln38">      { Sid::fretPlacement,                      Pid::PLACEMENT               },</a>
+<a name="ln39">      { Sid::fretStrings,                        Pid::FRET_STRINGS            },</a>
+<a name="ln40">      { Sid::fretFrets,                          Pid::FRET_FRETS              },</a>
+<a name="ln41">      { Sid::fretNut,                            Pid::FRET_NUT                },</a>
+<a name="ln42">      { Sid::fretMinDistance,                    Pid::MIN_DISTANCE            },</a>
+<a name="ln43">      };</a>
+<a name="ln44"> </a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46">//   FretDiagram</a>
+<a name="ln47">//---------------------------------------------------------</a>
+<a name="ln48"> </a>
+<a name="ln49">FretDiagram::FretDiagram(Score* score)</a>
+<a name="ln50">   : Element(score, ElementFlag::MOVABLE | ElementFlag::ON_STAFF)</a>
+<a name="ln51">      {</a>
+<a name="ln52">      font.setFamily(&quot;FreeSans&quot;);</a>
+<a name="ln53">      font.setPointSize(4.0 * mag());</a>
+<a name="ln54">      initElementStyle(&amp;fretStyle);</a>
+<a name="ln55">      }</a>
+<a name="ln56"> </a>
+<a name="ln57">FretDiagram::FretDiagram(const FretDiagram&amp; f)</a>
+<a name="ln58">   : Element(f)</a>
+<a name="ln59">      {</a>
+<a name="ln60">      _strings    = f._strings;</a>
+<a name="ln61">      _frets      = f._frets;</a>
+<a name="ln62">      _fretOffset = f._fretOffset;</a>
+<a name="ln63">      _maxFrets   = f._maxFrets;</a>
+<a name="ln64">      font        = f.font;</a>
+<a name="ln65">      _userMag    = f._userMag;</a>
+<a name="ln66">      _numPos     = f._numPos;</a>
+<a name="ln67">      _dots       = f._dots;</a>
+<a name="ln68">      _markers    = f._markers;</a>
+<a name="ln69">      _barres     = f._barres;</a>
+<a name="ln70">      _showNut    = f._showNut;</a>
+<a name="ln71"> </a>
+<a name="ln72">      if (f._harmony) {</a>
+<a name="ln73">            Harmony* h = new Harmony(*f._harmony);</a>
+<a name="ln74">            add(h);</a>
+<a name="ln75">            }</a>
+<a name="ln76">      }</a>
+<a name="ln77"> </a>
+<a name="ln78">FretDiagram::~FretDiagram()</a>
+<a name="ln79">      {</a>
+<a name="ln80">      if (_harmony)</a>
+<a name="ln81">            delete _harmony;</a>
+<a name="ln82">      }</a>
+<a name="ln83"> </a>
+<a name="ln84">//---------------------------------------------------------</a>
+<a name="ln85">//   fromString</a>
+<a name="ln86">///   Create diagram from string like &quot;XO-123&quot;</a>
+<a name="ln87">///   Always assume barre on the first visible fret</a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89"> </a>
+<a name="ln90">FretDiagram* FretDiagram::fromString(Score* score, const QString &amp;s)</a>
+<a name="ln91">      {</a>
+<a name="ln92">      FretDiagram* fd = new FretDiagram(score);</a>
+<a name="ln93">      int strings = s.size();</a>
+<a name="ln94"> </a>
+<a name="ln95">      fd-&gt;setStrings(strings);</a>
+<a name="ln96">      fd-&gt;setFrets(4);</a>
+<a name="ln97">      fd-&gt;setPropertyFlags(Pid::FRET_STRINGS, PropertyFlags::UNSTYLED);</a>
+<a name="ln98">      fd-&gt;setPropertyFlags(Pid::FRET_FRETS,   PropertyFlags::UNSTYLED);</a>
+<a name="ln99">      int offset = 0;</a>
+<a name="ln100">      int barreString = -1;</a>
+<a name="ln101">      std::vector&lt;std::pair&lt;int, int&gt;&gt; dotsToAdd;</a>
+<a name="ln102"> </a>
+<a name="ln103">      for (int i = 0; i &lt; strings; i++) {</a>
+<a name="ln104">            QChar c = s.at(i);</a>
+<a name="ln105">            if (c == 'X' || c == 'O') {</a>
+<a name="ln106">                  FretMarkerType mt = (c == 'X' ? FretMarkerType::CROSS : FretMarkerType::CIRCLE);</a>
+<a name="ln107">                  fd-&gt;setMarker(i, mt);</a>
+<a name="ln108">                  }</a>
+<a name="ln109">            else if (c == '-' &amp;&amp; barreString == -1) {</a>
+<a name="ln110">                  barreString = i;</a>
+<a name="ln111">                  }</a>
+<a name="ln112">            else {</a>
+<a name="ln113">                  int fret = c.digitValue();</a>
+<a name="ln114">                  if (fret != -1) {</a>
+<a name="ln115">                        dotsToAdd.push_back(make_pair(i, fret));</a>
+<a name="ln116">                        if (fret - 3 &gt; 0 &amp;&amp; offset &lt; fret - 3)</a>
+<a name="ln117">                            offset = fret - 3;</a>
+<a name="ln118">                        }</a>
+<a name="ln119">                  }</a>
+<a name="ln120">            }</a>
+<a name="ln121"> </a>
+<a name="ln122">      if (offset &gt; 0)</a>
+<a name="ln123">            fd-&gt;setFretOffset(offset);</a>
+<a name="ln124"> </a>
+<a name="ln125">      for (std::pair&lt;int, int&gt; d : dotsToAdd) {</a>
+<a name="ln126">            fd-&gt;setDot(d.first, d.second - offset, true);</a>
+<a name="ln127">            }</a>
+<a name="ln128"> </a>
+<a name="ln129">      // This assumes that any barre goes to the end of the fret</a>
+<a name="ln130">      if (barreString &gt;= 0)</a>
+<a name="ln131">            fd-&gt;setBarre(barreString, -1, 1);</a>
+<a name="ln132"> </a>
+<a name="ln133">      return fd;</a>
+<a name="ln134">      }</a>
+<a name="ln135"> </a>
+<a name="ln136">//---------------------------------------------------------</a>
+<a name="ln137">//   pagePos</a>
+<a name="ln138">//---------------------------------------------------------</a>
+<a name="ln139"> </a>
+<a name="ln140">QPointF FretDiagram::pagePos() const</a>
+<a name="ln141">      {</a>
+<a name="ln142">      if (parent() == 0)</a>
+<a name="ln143">            return pos();</a>
+<a name="ln144">      if (parent()-&gt;isSegment()) {</a>
+<a name="ln145">            Measure* m = toSegment(parent())-&gt;measure();</a>
+<a name="ln146">            System* system = m-&gt;system();</a>
+<a name="ln147">            qreal yp = y();</a>
+<a name="ln148">            if (system)</a>
+<a name="ln149">                  yp += system-&gt;staffYpage(staffIdx());</a>
+<a name="ln150">            return QPointF(pageX(), yp);</a>
+<a name="ln151">            }</a>
+<a name="ln152">      else</a>
+<a name="ln153">            return Element::pagePos();</a>
+<a name="ln154">      }</a>
+<a name="ln155"> </a>
+<a name="ln156">//---------------------------------------------------------</a>
+<a name="ln157">//   dragAnchor</a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159"> </a>
+<a name="ln160">QLineF FretDiagram::dragAnchor() const</a>
+<a name="ln161">      {</a>
+<a name="ln162">      qreal xp = 0.0;</a>
+<a name="ln163">      for (Element* e = parent(); e; e = e-&gt;parent())</a>
+<a name="ln164">            xp += e-&gt;x();</a>
+<a name="ln165">      qreal yp;</a>
+<a name="ln166">      if (parent()-&gt;isSegment()) {</a>
+<a name="ln167">            System* system = toSegment(parent())-&gt;measure()-&gt;system();</a>
+<a name="ln168">            yp = system-&gt;staffCanvasYpage(staffIdx());</a>
+<a name="ln169">            }</a>
+<a name="ln170">      else</a>
+<a name="ln171">            yp = parent()-&gt;canvasPos().y();</a>
+<a name="ln172">      QPointF p1(xp, yp);</a>
+<a name="ln173">      return QLineF(p1, canvasPos());</a>
+<a name="ln174">#if 0 // TODOxx</a>
+<a name="ln175">      if (parent()-&gt;isSegment()) {</a>
+<a name="ln176">            Segment* s     = toSegment(parent());</a>
+<a name="ln177">            Measure* m     = s-&gt;measure();</a>
+<a name="ln178">            System* system = m-&gt;system();</a>
+<a name="ln179">            qreal yp      = system-&gt;staff(staffIdx())-&gt;y() + system-&gt;y();</a>
+<a name="ln180">            qreal xp      = m-&gt;tick2pos(s-&gt;tick()) + m-&gt;pagePos().x();</a>
+<a name="ln181">            QPointF p1(xp, yp);</a>
+<a name="ln182"> </a>
+<a name="ln183">            qreal x  = 0.0;</a>
+<a name="ln184">            qreal y  = 0.0;</a>
+<a name="ln185">            qreal tw = width();</a>
+<a name="ln186">            qreal th = height();</a>
+<a name="ln187">            if (_align &amp; Align::BOTTOM)</a>
+<a name="ln188">                  y = th;</a>
+<a name="ln189">            else if (_align &amp; Align::VCENTER)</a>
+<a name="ln190">                  y = (th * .5);</a>
+<a name="ln191">            else if (_align &amp; Align::BASELINE)</a>
+<a name="ln192">                  y = baseLine();</a>
+<a name="ln193">            if (_align &amp; Align::RIGHT)</a>
+<a name="ln194">                  x = tw;</a>
+<a name="ln195">            else if (_align &amp; Align::HCENTER)</a>
+<a name="ln196">                  x = (tw * .5);</a>
+<a name="ln197">            return QLineF(p1, abbox().topLeft() + QPointF(x, y));</a>
+<a name="ln198">            }</a>
+<a name="ln199">      return QLineF(parent()-&gt;pagePos(), abbox().topLeft());</a>
+<a name="ln200">#endif</a>
+<a name="ln201">      }</a>
+<a name="ln202"> </a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204">//   setStrings</a>
+<a name="ln205">//---------------------------------------------------------</a>
+<a name="ln206"> </a>
+<a name="ln207">void FretDiagram::setStrings(int n)</a>
+<a name="ln208">      {</a>
+<a name="ln209">      int difference = n - _strings;</a>
+<a name="ln210">      if (difference == 0 || n &lt;= 0)</a>
+<a name="ln211">            return;</a>
+<a name="ln212"> </a>
+<a name="ln213">      // Move all dots, makers, barres to the RIGHT, so we add strings to the left</a>
+<a name="ln214">      // This is more useful - few instruments need strings added to the right.</a>
+<a name="ln215">      DotMap tempDots;</a>
+<a name="ln216">      MarkerMap tempMarkers;</a>
+<a name="ln217"> </a>
+<a name="ln218">      for (int string = 0; string &lt; _strings; ++string) {</a>
+<a name="ln219">            if (string + difference &lt; 0)</a>
+<a name="ln220">                  continue;</a>
+<a name="ln221"> </a>
+<a name="ln222">            for (auto const&amp; d : dot(string)) {</a>
+<a name="ln223">                  if (d.exists())</a>
+<a name="ln224">                        tempDots[string + difference].push_back(FretItem::Dot(d));</a>
+<a name="ln225">                  }</a>
+<a name="ln226"> </a>
+<a name="ln227">            if (marker(string).exists())</a>
+<a name="ln228">                  tempMarkers[string + difference] = marker(string);</a>
+<a name="ln229">            }</a>
+<a name="ln230"> </a>
+<a name="ln231">      _dots = tempDots;</a>
+<a name="ln232">      _markers = tempMarkers;</a>
+<a name="ln233"> </a>
+<a name="ln234">      for (int fret = 1; fret &lt;= _frets; ++fret) {</a>
+<a name="ln235">            if (barre(fret).exists()) {</a>
+<a name="ln236">                  if (_barres[fret].startString + difference &lt;= 0) {</a>
+<a name="ln237">                        removeBarre(fret);</a>
+<a name="ln238">                        continue;</a>
+<a name="ln239">                        }</a>
+<a name="ln240"> </a>
+<a name="ln241">                  _barres[fret].startString = qMax(0, _barres[fret].startString + difference);</a>
+<a name="ln242">                  _barres[fret].endString   = _barres[fret].endString == -1 ? -1 : _barres[fret].endString + difference;</a>
+<a name="ln243">                  }</a>
+<a name="ln244"> </a>
+<a name="ln245">            }</a>
+<a name="ln246"> </a>
+<a name="ln247">      _strings = n;</a>
+<a name="ln248">      }</a>
+<a name="ln249"> </a>
+<a name="ln250">//---------------------------------------------------------</a>
+<a name="ln251">//   init</a>
+<a name="ln252">//---------------------------------------------------------</a>
+<a name="ln253"> </a>
+<a name="ln254">void FretDiagram::init(StringData* stringData, Chord* chord)</a>
+<a name="ln255">      {</a>
+<a name="ln256">      if (!stringData)</a>
+<a name="ln257">            setStrings(6);</a>
+<a name="ln258">      else</a>
+<a name="ln259">            setStrings(stringData-&gt;strings());</a>
+<a name="ln260">      if (stringData) {</a>
+<a name="ln261">            for (int string = 0; string &lt; _strings; ++string)</a>
+<a name="ln262">                  setMarker(string, FretMarkerType::CROSS);</a>
+<a name="ln263">            for (const Note* note : chord-&gt;notes()) {</a>
+<a name="ln264">                  int string;</a>
+<a name="ln265">                  int fret;</a>
+<a name="ln266">                  if (stringData-&gt;convertPitch(note-&gt;pitch(), chord-&gt;staff(), chord-&gt;segment()-&gt;tick(), &amp;string, &amp;fret))</a>
+<a name="ln267">                        setDot(string, fret);</a>
+<a name="ln268">                  }</a>
+<a name="ln269">            _maxFrets = stringData-&gt;frets();</a>
+<a name="ln270">            }</a>
+<a name="ln271">      else</a>
+<a name="ln272">            _maxFrets = 6;</a>
+<a name="ln273">      }</a>
+<a name="ln274"> </a>
+<a name="ln275">//---------------------------------------------------------</a>
+<a name="ln276">//   draw</a>
+<a name="ln277">//---------------------------------------------------------</a>
+<a name="ln278"> </a>
+<a name="ln279">void FretDiagram::draw(QPainter* painter) const</a>
+<a name="ln280">      {</a>
+<a name="ln281">      // Init pen and other values</a>
+<a name="ln282">      qreal _spatium = spatium() * _userMag;</a>
+<a name="ln283">      QPen pen(curColor());</a>
+<a name="ln284">      pen.setCapStyle(Qt::FlatCap);</a>
+<a name="ln285">      painter-&gt;setBrush(QBrush(QColor(painter-&gt;pen().color())));</a>
+<a name="ln286"> </a>
+<a name="ln287">      // x2 is the x val of the rightmost string</a>
+<a name="ln288">      qreal x2 = (_strings-1) * stringDist;</a>
+<a name="ln289"> </a>
+<a name="ln290">      // Draw the nut</a>
+<a name="ln291">      pen.setWidthF(nutLw);</a>
+<a name="ln292">      painter-&gt;setPen(pen);</a>
+<a name="ln293">      painter-&gt;drawLine(QLineF(-stringLw * .5, 0.0, x2 + stringLw * .5, 0.0));</a>
+<a name="ln294"> </a>
+<a name="ln295">      // Draw strings and frets</a>
+<a name="ln296">      pen.setWidthF(stringLw);</a>
+<a name="ln297">      painter-&gt;setPen(pen);</a>
+<a name="ln298"> </a>
+<a name="ln299">      // y2 is the y val of the bottom fretline</a>
+<a name="ln300">      qreal y2 = fretDist * (_frets + .5);</a>
+<a name="ln301">      for (int i = 0; i &lt; _strings; ++i) {</a>
+<a name="ln302">            qreal x = stringDist * i;</a>
+<a name="ln303">            painter-&gt;drawLine(QLineF(x, _fretOffset ? -_spatium * .2 : 0.0, x, y2));</a>
+<a name="ln304">            }</a>
+<a name="ln305">      for (int i = 1; i &lt;= _frets; ++i) {</a>
+<a name="ln306">            qreal y = fretDist * i;</a>
+<a name="ln307">            painter-&gt;drawLine(QLineF(0.0, y, x2, y));</a>
+<a name="ln308">            }</a>
+<a name="ln309"> </a>
+<a name="ln310">      // Setup the font for the markers</a>
+<a name="ln311">      QFont scaledFont(font);</a>
+<a name="ln312">      scaledFont.setPointSizeF(font.pointSize() * _userMag * (spatium() / SPATIUM20));</a>
+<a name="ln313">      QFontMetricsF fm(scaledFont, MScore::paintDevice());</a>
+<a name="ln314">      scaledFont.setPointSizeF(scaledFont.pointSizeF() * MScore::pixelRatio);</a>
+<a name="ln315"> </a>
+<a name="ln316">      painter-&gt;setFont(scaledFont);</a>
+<a name="ln317"> </a>
+<a name="ln318">      // dotd is the diameter of a dot</a>
+<a name="ln319">      qreal dotd = _spatium * .49 * score()-&gt;styleD(Sid::fretDotSize);</a>
+<a name="ln320"> </a>
+<a name="ln321">      // Draw dots, sym pen is used to draw them</a>
+<a name="ln322">      QPen symPen(pen);</a>
+<a name="ln323">      symPen.setCapStyle(Qt::RoundCap);</a>
+<a name="ln324">      qreal symPenWidth = stringLw * 1.2;</a>
+<a name="ln325">      symPen.setWidthF(symPenWidth);</a>
+<a name="ln326"> </a>
+<a name="ln327">      for (auto const&amp; i : _dots) {</a>
+<a name="ln328">            for (auto const&amp; d : i.second) {</a>
+<a name="ln329">                  if (!d.exists())</a>
+<a name="ln330">                        continue;</a>
+<a name="ln331"> </a>
+<a name="ln332">                  int string = i.first;</a>
+<a name="ln333">                  int fret = d.fret - 1;</a>
+<a name="ln334"> </a>
+<a name="ln335">                  // Calculate coords of the top left corner of the dot</a>
+<a name="ln336">                  qreal x = stringDist * string - dotd * .5;</a>
+<a name="ln337">                  qreal y = fretDist * fret + fretDist * .5 - dotd * .5;</a>
+<a name="ln338"> </a>
+<a name="ln339">                  // Draw different symbols</a>
+<a name="ln340">                  painter-&gt;setPen(symPen);</a>
+<a name="ln341">                  switch (d.dtype) {</a>
+<a name="ln342">                        case FretDotType::CROSS:</a>
+<a name="ln343">                              // Give the cross a slightly larger width</a>
+<a name="ln344">                              symPen.setWidthF(symPenWidth * 1.5);</a>
+<a name="ln345">                              painter-&gt;setPen(symPen);</a>
+<a name="ln346">                              painter-&gt;drawLine(QLineF(x, y, x + dotd, y + dotd));</a>
+<a name="ln347">                              painter-&gt;drawLine(QLineF(x + dotd, y, x, y + dotd));</a>
+<a name="ln348">                              symPen.setWidthF(symPenWidth);</a>
+<a name="ln349">                              break;</a>
+<a name="ln350">                        case FretDotType::SQUARE:</a>
+<a name="ln351">                              painter-&gt;setBrush(Qt::NoBrush);</a>
+<a name="ln352">                              painter-&gt;drawRect(QRectF(x, y, dotd, dotd));</a>
+<a name="ln353">                              break;</a>
+<a name="ln354">                        case FretDotType::TRIANGLE:</a>
+<a name="ln355">                              painter-&gt;drawLine(QLineF(x, y + dotd, x + .5 * dotd, y));</a>
+<a name="ln356">                              painter-&gt;drawLine(QLineF(x + .5 * dotd, y, x + dotd, y + dotd));</a>
+<a name="ln357">                              painter-&gt;drawLine(QLineF(x + dotd, y + dotd, x, y + dotd));                                    </a>
+<a name="ln358">                              break;</a>
+<a name="ln359">                        case FretDotType::NORMAL:</a>
+<a name="ln360">                        default:</a>
+<a name="ln361">                              painter-&gt;setBrush(symPen.color());</a>
+<a name="ln362">                              painter-&gt;setPen(Qt::NoPen);</a>
+<a name="ln363">                              painter-&gt;drawEllipse(QRectF(x, y, dotd, dotd));</a>
+<a name="ln364">                              break;</a>
+<a name="ln365">                        }</a>
+<a name="ln366">                  }</a>
+<a name="ln367">            }</a>
+<a name="ln368"> </a>
+<a name="ln369">      // Draw markers</a>
+<a name="ln370">      painter-&gt;setPen(pen);</a>
+<a name="ln371">      for (auto const&amp; i : _markers) {</a>
+<a name="ln372">            int string = i.first;</a>
+<a name="ln373">            FretItem::Marker marker = i.second;</a>
+<a name="ln374">            if (!marker.exists())</a>
+<a name="ln375">                  continue;</a>
+<a name="ln376"> </a>
+<a name="ln377">            QChar markerChar = FretItem::markerToChar(marker.mtype);</a>
+<a name="ln378"> </a>
+<a name="ln379">            qreal x = stringDist * string;</a>
+<a name="ln380">            qreal y = -fretDist * .3 - fm.ascent();</a>
+<a name="ln381">            painter-&gt;drawText(QRectF(x, y, .0, .0),</a>
+<a name="ln382">               Qt::AlignHCenter|Qt::TextDontClip, markerChar);</a>
+<a name="ln383">            }</a>
+<a name="ln384"> </a>
+<a name="ln385">      // Draw barres</a>
+<a name="ln386">      for (auto const&amp; i : _barres) {</a>
+<a name="ln387">            int fret        = i.first;</a>
+<a name="ln388">            int startString = i.second.startString;</a>
+<a name="ln389">            int endString   = i.second.endString;</a>
+<a name="ln390"> </a>
+<a name="ln391">            qreal x1    = stringDist * startString;</a>
+<a name="ln392">            qreal newX2 = endString == -1 ? x2 : stringDist * endString;</a>
+<a name="ln393">            qreal y     = fretDist * (fret - 1) + fretDist * .5;</a>
+<a name="ln394">            pen.setWidthF(dotd * score()-&gt;styleD(Sid::barreLineWidth));</a>
+<a name="ln395">            pen.setCapStyle(Qt::RoundCap);</a>
+<a name="ln396">            painter-&gt;setPen(pen);</a>
+<a name="ln397">            painter-&gt;drawLine(QLineF(x1, y, newX2, y));</a>
+<a name="ln398">            }</a>
+<a name="ln399"> </a>
+<a name="ln400">      // Draw fret offset number</a>
+<a name="ln401">      if (_fretOffset &gt; 0) {</a>
+<a name="ln402">            qreal fretNumMag = score()-&gt;styleD(Sid::fretNumMag);</a>
+<a name="ln403">            scaledFont.setPointSizeF(scaledFont.pointSizeF() * fretNumMag);</a>
+<a name="ln404">            painter-&gt;setFont(scaledFont);</a>
+<a name="ln405">            if (_numPos == 0) {</a>
+<a name="ln406">                  painter-&gt;drawText(QRectF(-stringDist *.4, .0, .0, fretDist),</a>
+<a name="ln407">                     Qt::AlignVCenter|Qt::AlignRight|Qt::TextDontClip,</a>
+<a name="ln408">                     QString(&quot;%1&quot;).arg(_fretOffset+1));</a>
+<a name="ln409">                  }</a>
+<a name="ln410">            else {</a>
+<a name="ln411">                  painter-&gt;drawText(QRectF(x2 + (stringDist * 0.4), .0, .0, fretDist),</a>
+<a name="ln412">                     Qt::AlignVCenter|Qt::AlignLeft|Qt::TextDontClip,</a>
+<a name="ln413">                     QString(&quot;%1&quot;).arg(_fretOffset+1));</a>
+<a name="ln414">                  }</a>
+<a name="ln415">            painter-&gt;setFont(font);</a>
+<a name="ln416">            }</a>
+<a name="ln417"> </a>
+<a name="ln418">      // NOTE:JT possible future todo - draw fingerings</a>
+<a name="ln419">      }</a>
+<a name="ln420"> </a>
+<a name="ln421">//---------------------------------------------------------</a>
+<a name="ln422">//   layout</a>
+<a name="ln423">//---------------------------------------------------------</a>
+<a name="ln424"> </a>
+<a name="ln425">void FretDiagram::layout()</a>
+<a name="ln426">      {</a>
+<a name="ln427">      qreal _spatium  = spatium() * _userMag;</a>
+<a name="ln428">      stringLw        = _spatium * 0.08;</a>
+<a name="ln429">      nutLw           = (_fretOffset || !_showNut) ? stringLw : _spatium * 0.2;</a>
+<a name="ln430">      stringDist      = score()-&gt;styleP(Sid::fretStringSpacing) * _userMag;</a>
+<a name="ln431">      fretDist        = score()-&gt;styleP(Sid::fretFretSpacing) * _userMag;</a>
+<a name="ln432"> </a>
+<a name="ln433">      qreal w    = stringDist * (_strings - 1);</a>
+<a name="ln434">      qreal h    = _frets * fretDist + fretDist * .5;</a>
+<a name="ln435">      qreal y    = 0.0;</a>
+<a name="ln436">      qreal dotd = _spatium * .49 * score()-&gt;styleD(Sid::fretDotSize);</a>
+<a name="ln437">      qreal x    = -((dotd+stringLw) * .5);</a>
+<a name="ln438">      w         += dotd + stringLw;</a>
+<a name="ln439"> </a>
+<a name="ln440">      // Always allocate space for markers</a>
+<a name="ln441">      QFont scaledFont(font);</a>
+<a name="ln442">      scaledFont.setPointSize(font.pointSize() * _userMag);</a>
+<a name="ln443">      QFontMetricsF fm(scaledFont, MScore::paintDevice());</a>
+<a name="ln444">      y  = -(fretDist * .1 + fm.height());</a>
+<a name="ln445">      h -= y;</a>
+<a name="ln446"> </a>
+<a name="ln447">      if (_fretOffset &gt; 0) {</a>
+<a name="ln448">            qreal fretNumMag = score()-&gt;styleD(Sid::fretNumMag);</a>
+<a name="ln449">            scaledFont.setPointSizeF(scaledFont.pointSizeF() * fretNumMag);</a>
+<a name="ln450">            QFontMetricsF fm2(scaledFont, MScore::paintDevice());</a>
+<a name="ln451">            qreal numw = fm2.width(QString(&quot;%1&quot;).arg(_fretOffset+1));</a>
+<a name="ln452">            qreal xdiff = numw + stringDist * .4;</a>
+<a name="ln453">            w += xdiff;</a>
+<a name="ln454">            x += _numPos == 0 ? -xdiff : 0;</a>
+<a name="ln455">            }</a>
+<a name="ln456"> </a>
+<a name="ln457">      bbox().setRect(x, y, w, h);</a>
+<a name="ln458"> </a>
+<a name="ln459">      setPos(-_spatium, -h - styleP(Sid::fretY) + _spatium );</a>
+<a name="ln460"> </a>
+<a name="ln461">      if (!parent() || !parent()-&gt;isSegment()) {</a>
+<a name="ln462">            setPos(QPointF());</a>
+<a name="ln463">            return;</a>
+<a name="ln464">            }</a>
+<a name="ln465">      autoplaceSegmentElement();</a>
+<a name="ln466"> </a>
+<a name="ln467">      // don't display harmony in palette</a>
+<a name="ln468">      if (!parent())</a>
+<a name="ln469">            return;</a>
+<a name="ln470"> </a>
+<a name="ln471">      if (_harmony)</a>
+<a name="ln472">            _harmony-&gt;layout();</a>
+<a name="ln473">      if (_harmony &amp;&amp; _harmony-&gt;autoplace() &amp;&amp; _harmony-&gt;parent()) {</a>
+<a name="ln474">            Segment* s = toSegment(parent());</a>
+<a name="ln475">            Measure* m = s-&gt;measure();</a>
+<a name="ln476">            int si     = staffIdx();</a>
+<a name="ln477"> </a>
+<a name="ln478">            SysStaff* ss = m-&gt;system()-&gt;staff(si);</a>
+<a name="ln479">            QRectF r     = _harmony-&gt;bbox().translated(m-&gt;pos() + s-&gt;pos() + pos() + _harmony-&gt;pos());</a>
+<a name="ln480"> </a>
+<a name="ln481">            qreal minDistance = _harmony-&gt;minDistance().val() * spatium();</a>
+<a name="ln482">            SkylineLine sk(false);</a>
+<a name="ln483">            sk.add(r.x(), r.bottom(), r.width());</a>
+<a name="ln484">            qreal d = sk.minDistance(ss-&gt;skyline().north());</a>
+<a name="ln485">            if (d &gt; -minDistance) {</a>
+<a name="ln486">                  qreal yd = d + minDistance;</a>
+<a name="ln487">                  yd *= -1.0;</a>
+<a name="ln488">                  _harmony-&gt;rypos() += yd;</a>
+<a name="ln489">                  r.translate(QPointF(0.0, yd));</a>
+<a name="ln490">                  }</a>
+<a name="ln491">            if (_harmony-&gt;addToSkyline())</a>
+<a name="ln492">                  ss-&gt;skyline().add(r);</a>
+<a name="ln493">            }</a>
+<a name="ln494">      }</a>
+<a name="ln495"> </a>
+<a name="ln496">//---------------------------------------------------------</a>
+<a name="ln497">//   centerX</a>
+<a name="ln498">///   used by harmony for layout. Keep in sync with layout, same dotd and x as above</a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500"> </a>
+<a name="ln501">qreal FretDiagram::centerX() const</a>
+<a name="ln502">      {</a>
+<a name="ln503">      qreal dotd = spatium() * _userMag * .49 * score()-&gt;styleD(Sid::fretDotSize);</a>
+<a name="ln504">      qreal x    = -((dotd+stringLw) * .5);</a>
+<a name="ln505">      return bbox().right() * .5 + x;</a>
+<a name="ln506">      }</a>
+<a name="ln507"> </a>
+<a name="ln508">//---------------------------------------------------------</a>
+<a name="ln509">//   write</a>
+<a name="ln510">//    NOTICE: if you are looking to change how fret diagrams are</a>
+<a name="ln511">//    written, edit the writeNew function. writeOld is purely compatibility.</a>
+<a name="ln512">//---------------------------------------------------------</a>
+<a name="ln513"> </a>
+<a name="ln514">static const std::array&lt;Pid, 7&gt; pids { {</a>
+<a name="ln515">      Pid::MIN_DISTANCE,</a>
+<a name="ln516">      Pid::FRET_OFFSET,</a>
+<a name="ln517">      Pid::FRET_FRETS,</a>
+<a name="ln518">      Pid::FRET_STRINGS,</a>
+<a name="ln519">      Pid::FRET_NUT,</a>
+<a name="ln520">      Pid::MAG,</a>
+<a name="ln521">      Pid::FRET_NUM_POS</a>
+<a name="ln522">      } };</a>
+<a name="ln523"> </a>
+<a name="ln524">void FretDiagram::write(XmlWriter&amp; xml) const</a>
+<a name="ln525">      {</a>
+<a name="ln526">      if (!xml.canWrite(this))</a>
+<a name="ln527">            return;</a>
+<a name="ln528">      xml.stag(this);</a>
+<a name="ln529"> </a>
+<a name="ln530">      // Write properties first and only once</a>
+<a name="ln531">      for (Pid p : pids) {</a>
+<a name="ln532">            writeProperty(xml, p);</a>
+<a name="ln533">            }</a>
+<a name="ln534">      Element::writeProperties(xml);</a>
+<a name="ln535"> </a>
+<a name="ln536">      if (_harmony)</a>
+<a name="ln537">            _harmony-&gt;write(xml);</a>
+<a name="ln538"> </a>
+<a name="ln539">      // Lowercase f indicates new writing format</a>
+<a name="ln540">      // TODO: in the next score format version (4) use only write new + props and discard</a>
+<a name="ln541">      // the compatibility writing.</a>
+<a name="ln542">      xml.stag(&quot;fretDiagram&quot;);</a>
+<a name="ln543">      writeNew(xml);</a>
+<a name="ln544">      xml.etag();</a>
+<a name="ln545"> </a>
+<a name="ln546">      writeOld(xml);</a>
+<a name="ln547">      xml.etag();</a>
+<a name="ln548">      }</a>
+<a name="ln549"> </a>
+<a name="ln550">//---------------------------------------------------------</a>
+<a name="ln551">//   writeOld</a>
+<a name="ln552">//    This is the old method of writing. This is for backwards</a>
+<a name="ln553">//    compatibility with &lt; 3.1 versions.</a>
+<a name="ln554">//---------------------------------------------------------</a>
+<a name="ln555"> </a>
+<a name="ln556">void FretDiagram::writeOld(XmlWriter&amp; xml) const</a>
+<a name="ln557">      {</a>
+<a name="ln558">      int lowestDotFret = -1;</a>
+<a name="ln559">      int furthestLeftLowestDot = -1;</a>
+<a name="ln560"> </a>
+<a name="ln561">      // Do some checks for details needed for checking whether to add barres</a>
+<a name="ln562">      for (int i = 0; i &lt; _strings; ++i) {</a>
+<a name="ln563">            std::vector&lt;FretItem::Dot&gt; allDots = dot(i);</a>
+<a name="ln564"> </a>
+<a name="ln565">            bool dotExists = false;</a>
+<a name="ln566">            for (auto const&amp; d : allDots) {</a>
+<a name="ln567">                  if (d.exists()) {</a>
+<a name="ln568">                        dotExists = true;</a>
+<a name="ln569">                        break;</a>
+<a name="ln570">                        }</a>
+<a name="ln571">                  }</a>
+<a name="ln572"> </a>
+<a name="ln573">            if (!dotExists)</a>
+<a name="ln574">                  continue;</a>
+<a name="ln575"> </a>
+<a name="ln576">            for (auto const&amp; d : allDots) {</a>
+<a name="ln577">                  if (d.exists()) {</a>
+<a name="ln578">                        if (d.fret &lt; lowestDotFret || lowestDotFret == -1) {</a>
+<a name="ln579">                              lowestDotFret = d.fret;</a>
+<a name="ln580">                              furthestLeftLowestDot = i;</a>
+<a name="ln581">                              }</a>
+<a name="ln582">                        else if (d.fret == lowestDotFret &amp;&amp; (i &lt; furthestLeftLowestDot || furthestLeftLowestDot == -1)) {</a>
+<a name="ln583">                              furthestLeftLowestDot = i;</a>
+<a name="ln584">                              }</a>
+<a name="ln585">                        }</a>
+<a name="ln586">                  }</a>
+<a name="ln587">            }</a>
+<a name="ln588"> </a>
+<a name="ln589">      // The old system writes a barre as a bool, which causes no problems in any way, not at all.</a>
+<a name="ln590">      // So, only write that if the barre is on the lowest fret with a dot,</a>
+<a name="ln591">      // and there are no other dots on its fret, and it goes all the way to the right.</a>
+<a name="ln592">      int barreStartString = -1;</a>
+<a name="ln593">      int barreFret = -1;</a>
+<a name="ln594">      for (auto const&amp; i : _barres) {</a>
+<a name="ln595">            FretItem::Barre b = i.second;</a>
+<a name="ln596">            if (b.exists()) {</a>
+<a name="ln597">                  int fret = i.first;</a>
+<a name="ln598">                  if (fret &lt;= lowestDotFret &amp;&amp; b.endString == -1 &amp;&amp; !(fret == lowestDotFret &amp;&amp; b.startString &gt; furthestLeftLowestDot)) {</a>
+<a name="ln599">                        barreStartString = b.startString;</a>
+<a name="ln600">                        barreFret = fret;</a>
+<a name="ln601">                        break;</a>
+<a name="ln602">                        }</a>
+<a name="ln603">                  }</a>
+<a name="ln604">            }</a>
+<a name="ln605"> </a>
+<a name="ln606">      for (int i = 0; i &lt; _strings; ++i) {</a>
+<a name="ln607">            FretItem::Marker m = marker(i);</a>
+<a name="ln608">            std::vector&lt;FretItem::Dot&gt; allDots = dot(i);</a>
+<a name="ln609"> </a>
+<a name="ln610">            bool dotExists = false;</a>
+<a name="ln611">            for (auto const&amp; d : allDots) {</a>
+<a name="ln612">                  if (d.exists()) {</a>
+<a name="ln613">                        dotExists = true;</a>
+<a name="ln614">                        break;</a>
+<a name="ln615">                        }</a>
+<a name="ln616">                  }</a>
+<a name="ln617"> </a>
+<a name="ln618">            if (!dotExists &amp;&amp; !m.exists() &amp;&amp; i != barreStartString)</a>
+<a name="ln619">                  continue;</a>
+<a name="ln620"> </a>
+<a name="ln621">            xml.stag(QString(&quot;string no=\&quot;%1\&quot;&quot;).arg(i));</a>
+<a name="ln622"> </a>
+<a name="ln623">            if (m.exists())</a>
+<a name="ln624">                  xml.tag(&quot;marker&quot;, FretItem::markerToChar(m.mtype).unicode());</a>
+<a name="ln625"> </a>
+<a name="ln626">            for (auto const&amp; d : allDots) {</a>
+<a name="ln627">                  if (d.exists() &amp;&amp; !(i == barreStartString &amp;&amp; d.fret == barreFret)) {</a>
+<a name="ln628">                        xml.tag(&quot;dot&quot;, d.fret);</a>
+<a name="ln629">                        }</a>
+<a name="ln630">                  }</a>
+<a name="ln631"> </a>
+<a name="ln632">            // Add dot so barre will display in pre-3.1</a>
+<a name="ln633">            if (barreStartString == i) {</a>
+<a name="ln634">                  xml.tag(&quot;dot&quot;, barreFret);</a>
+<a name="ln635">                  }</a>
+<a name="ln636"> </a>
+<a name="ln637">            xml.etag();</a>
+<a name="ln638">            }</a>
+<a name="ln639"> </a>
+<a name="ln640">      if (barreFret &gt; 0)</a>
+<a name="ln641">            xml.tag(&quot;barre&quot;, 1);</a>
+<a name="ln642">      }</a>
+<a name="ln643"> </a>
+<a name="ln644">//---------------------------------------------------------</a>
+<a name="ln645">//   writeNew</a>
+<a name="ln646">//    This is the important one for 3.1+</a>
+<a name="ln647">//---------------------------------------------------------</a>
+<a name="ln648"> </a>
+<a name="ln649">void FretDiagram::writeNew(XmlWriter&amp; xml) const</a>
+<a name="ln650">      {</a>
+<a name="ln651">      for (int i = 0; i &lt; _strings; ++i) {</a>
+<a name="ln652">            FretItem::Marker m = marker(i);</a>
+<a name="ln653">            std::vector&lt;FretItem::Dot&gt; allDots = dot(i);</a>
+<a name="ln654"> </a>
+<a name="ln655">            bool dotExists = false;</a>
+<a name="ln656">            for (auto const&amp; d : allDots) {</a>
+<a name="ln657">                  if (d.exists()) {</a>
+<a name="ln658">                        dotExists = true;</a>
+<a name="ln659">                        break;</a>
+<a name="ln660">                        }</a>
+<a name="ln661">                  }</a>
+<a name="ln662"> </a>
+<a name="ln663">            // Only write a string if we have anything to write</a>
+<a name="ln664">            if (!dotExists &amp;&amp; !m.exists())</a>
+<a name="ln665">                  continue;</a>
+<a name="ln666"> </a>
+<a name="ln667">            // Start the string writing</a>
+<a name="ln668">            xml.stag(QString(&quot;string no=\&quot;%1\&quot;&quot;).arg(i));</a>
+<a name="ln669"> </a>
+<a name="ln670">            // Write marker</a>
+<a name="ln671">            if (m.exists())</a>
+<a name="ln672">                  xml.tag(&quot;marker&quot;, FretItem::markerTypeToName(m.mtype));</a>
+<a name="ln673"> </a>
+<a name="ln674">            // Write any dots</a>
+<a name="ln675">            for (auto const&amp; d : allDots) {</a>
+<a name="ln676">                  if (d.exists()) {</a>
+<a name="ln677">                        // TODO: write fingering</a>
+<a name="ln678">                        xml.tag(QString(&quot;dot fret=\&quot;%1\&quot;&quot;).arg(d.fret), FretItem::dotTypeToName(d.dtype));</a>
+<a name="ln679">                        }</a>
+<a name="ln680">                  }</a>
+<a name="ln681"> </a>
+<a name="ln682">            xml.etag();</a>
+<a name="ln683">            }</a>
+<a name="ln684"> </a>
+<a name="ln685">      for (int f = 1; f &lt;= _frets; ++f) {</a>
+<a name="ln686">            FretItem::Barre b = barre(f);</a>
+<a name="ln687">            if (!b.exists())</a>
+<a name="ln688">                  continue;</a>
+<a name="ln689"> </a>
+<a name="ln690">            xml.tag(QString(&quot;barre start=\&quot;%1\&quot; end=\&quot;%2\&quot;&quot;).arg(b.startString).arg(b.endString), f);</a>
+<a name="ln691">            }</a>
+<a name="ln692">      }</a>
+<a name="ln693"> </a>
+<a name="ln694">//---------------------------------------------------------</a>
+<a name="ln695">//   read</a>
+<a name="ln696">//---------------------------------------------------------</a>
+<a name="ln697"> </a>
+<a name="ln698">void FretDiagram::read(XmlReader&amp; e)</a>
+<a name="ln699">      {</a>
+<a name="ln700">      // Read the old format first</a>
+<a name="ln701">      bool hasBarre = false;</a>
+<a name="ln702">      bool haveReadNew = false;</a>
+<a name="ln703"> </a>
+<a name="ln704">      while (e.readNextStartElement()) {</a>
+<a name="ln705">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln706"> </a>
+<a name="ln707">            // Check for new format fret diagram</a>
+<a name="ln708">            if (haveReadNew) {</a>
+<a name="ln709">                  e.skipCurrentElement();</a>
+<a name="ln710">                  continue;</a>
+<a name="ln711">                  }</a>
+<a name="ln712">            if (tag == &quot;fretDiagram&quot;) {</a>
+<a name="ln713">                  readNew(e);</a>
+<a name="ln714">                  haveReadNew = true;       </a>
+<a name="ln715">                  }</a>
+<a name="ln716">            </a>
+<a name="ln717">            // Check for new properties</a>
+<a name="ln718">            else if (tag == &quot;showNut&quot;)</a>
+<a name="ln719">                  readProperty(e, Pid::FRET_NUT);</a>
+<a name="ln720"> </a>
+<a name="ln721">            // Then read the rest if there is no new format diagram (compatibility read)</a>
+<a name="ln722">            else if (tag == &quot;strings&quot;)</a>
+<a name="ln723">                  readProperty(e, Pid::FRET_STRINGS);</a>
+<a name="ln724">            else if (tag == &quot;frets&quot;)</a>
+<a name="ln725">                  readProperty(e, Pid::FRET_FRETS);</a>
+<a name="ln726">            else if (tag == &quot;fretOffset&quot;)</a>
+<a name="ln727">                  readProperty(e, Pid::FRET_OFFSET);</a>
+<a name="ln728">            else if (tag == &quot;string&quot;) {</a>
+<a name="ln729">                  int no = e.intAttribute(&quot;no&quot;);</a>
+<a name="ln730">                  while (e.readNextStartElement()) {</a>
+<a name="ln731">                        const QStringRef&amp; t(e.name());</a>
+<a name="ln732">                        if (t == &quot;dot&quot;)</a>
+<a name="ln733">                              setDot(no, e.readInt());</a>
+<a name="ln734">                        else if (t == &quot;marker&quot;)</a>
+<a name="ln735">                              setMarker(no, QChar(e.readInt()) == 'X' ? FretMarkerType::CROSS : FretMarkerType::CIRCLE);</a>
+<a name="ln736">                        /*else if (t == &quot;fingering&quot;)</a>
+<a name="ln737">                              setFingering(no, e.readInt());*/</a>
+<a name="ln738">                        else</a>
+<a name="ln739">                              e.unknown();</a>
+<a name="ln740">                        }</a>
+<a name="ln741">                  }</a>
+<a name="ln742">            else if (tag == &quot;barre&quot;)</a>
+<a name="ln743">                  hasBarre = e.readBool();</a>
+<a name="ln744">            else if (tag == &quot;mag&quot;)</a>
+<a name="ln745">                  readProperty(e, Pid::MAG);</a>
+<a name="ln746">            else if (tag == &quot;Harmony&quot;) {</a>
+<a name="ln747">                  Harmony* h = new Harmony(score());</a>
+<a name="ln748">                  h-&gt;read(e);</a>
+<a name="ln749">                  add(h);</a>
+<a name="ln750">                  }</a>
+<a name="ln751">            else if (!Element::readProperties(e))</a>
+<a name="ln752">                  e.unknown();</a>
+<a name="ln753">            }</a>
+<a name="ln754"> </a>
+<a name="ln755">      // Old handling of barres</a>
+<a name="ln756">      if (hasBarre) {</a>
+<a name="ln757">            for (int s = 0; s &lt; _strings; ++s) {</a>
+<a name="ln758">                  for (auto&amp; d : dot(s)) {</a>
+<a name="ln759">                        if (d.exists()) {</a>
+<a name="ln760">                              setBarre(s, -1, d.fret);</a>
+<a name="ln761">                              return;</a>
+<a name="ln762">                              }</a>
+<a name="ln763">                        }</a>
+<a name="ln764">                  }</a>
+<a name="ln765">            }</a>
+<a name="ln766">      }</a>
+<a name="ln767"> </a>
+<a name="ln768">//---------------------------------------------------------</a>
+<a name="ln769">//   readNew</a>
+<a name="ln770">//    read the new 'fretDiagram' tag</a>
+<a name="ln771">//---------------------------------------------------------</a>
+<a name="ln772"> </a>
+<a name="ln773">void FretDiagram::readNew(XmlReader&amp; e)</a>
+<a name="ln774">      {</a>
+<a name="ln775">      while (e.readNextStartElement()) {</a>
+<a name="ln776">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln777"> </a>
+<a name="ln778">            if (tag == &quot;string&quot;) {</a>
+<a name="ln779">                  int no = e.intAttribute(&quot;no&quot;);</a>
+<a name="ln780">                  while (e.readNextStartElement()) {</a>
+<a name="ln781">                        const QStringRef&amp; t(e.name());</a>
+<a name="ln782">                        if (t == &quot;dot&quot;) {</a>
+<a name="ln783">                              int fret = e.intAttribute(&quot;fret&quot;, 0);</a>
+<a name="ln784">                              FretDotType dtype = FretItem::nameToDotType(e.readElementText());</a>
+<a name="ln785">                              setDot(no, fret, true, dtype);</a>
+<a name="ln786">                              }</a>
+<a name="ln787">                        else if (t == &quot;marker&quot;) {</a>
+<a name="ln788">                              FretMarkerType mtype = FretItem::nameToMarkerType(e.readElementText());</a>
+<a name="ln789">                              setMarker(no, mtype);</a>
+<a name="ln790">                              }</a>
+<a name="ln791">                        else if (t == &quot;fingering&quot;) {</a>
+<a name="ln792">                              e.readElementText();</a>
+<a name="ln793">                              /*setFingering(no, e.readInt()); NOTE:JT todo */</a>
+<a name="ln794">                              }</a>
+<a name="ln795">                        else</a>
+<a name="ln796">                              e.unknown();</a>
+<a name="ln797">                        }</a>
+<a name="ln798">                  }</a>
+<a name="ln799">            else if (tag == &quot;barre&quot;) {</a>
+<a name="ln800">                  int start = e.intAttribute(&quot;start&quot;, -1);</a>
+<a name="ln801">                  int end = e.intAttribute(&quot;end&quot;, -1);</a>
+<a name="ln802">                  int fret = e.readInt();</a>
+<a name="ln803"> </a>
+<a name="ln804">                  setBarre(start, end, fret);</a>
+<a name="ln805">                  }</a>
+<a name="ln806">            else if (!Element::readProperties(e))</a>
+<a name="ln807">                  e.unknown();</a>
+<a name="ln808">            }</a>
+<a name="ln809">      }</a>
+<a name="ln810"> </a>
+<a name="ln811">//---------------------------------------------------------</a>
+<a name="ln812">//   setDot</a>
+<a name="ln813">//    take a fret value of 0 to mean remove the dot, except with add</a>
+<a name="ln814">//    where we actually need to pass a fret val.</a>
+<a name="ln815">//---------------------------------------------------------</a>
+<a name="ln816"> </a>
+<a name="ln817">void FretDiagram::setDot(int string, int fret, bool add /*= false*/, FretDotType dtype /*= FretDotType::NORMAL*/)</a>
+<a name="ln818">      {</a>
+<a name="ln819">      if (fret == 0)</a>
+<a name="ln820">            removeDot(string, fret);</a>
+<a name="ln821">      else if (string &gt;= 0 &amp;&amp; string &lt; _strings) {</a>
+<a name="ln822">            // Special case - with add, if there is a dot in the position, remove it</a>
+<a name="ln823">            // If not, add it.</a>
+<a name="ln824">            if (add) {</a>
+<a name="ln825">                  if (dot(string, fret)[0].exists()) {</a>
+<a name="ln826">                        removeDot(string, fret);</a>
+<a name="ln827">                        return;     // We are done here, all we needed to do was remove a single dot</a>
+<a name="ln828">                        }</a>
+<a name="ln829">                  }</a>
+<a name="ln830">            else</a>
+<a name="ln831">                  _dots[string].clear();</a>
+<a name="ln832"> </a>
+<a name="ln833">            _dots[string].push_back(FretItem::Dot(fret, dtype));</a>
+<a name="ln834">            setMarker(string, FretMarkerType::NONE);</a>
+<a name="ln835">            }</a>
+<a name="ln836">      }</a>
+<a name="ln837"> </a>
+<a name="ln838">//---------------------------------------------------------</a>
+<a name="ln839">//   setMarker</a>
+<a name="ln840">//    Remove any dots and barres if the marker is being set to anything other than none.</a>
+<a name="ln841">//---------------------------------------------------------</a>
+<a name="ln842"> </a>
+<a name="ln843">void FretDiagram::setMarker(int string, FretMarkerType mtype)</a>
+<a name="ln844">      {</a>
+<a name="ln845">      if (string &gt;= 0 &amp;&amp; string &lt; _strings) {</a>
+<a name="ln846">            _markers[string] = FretItem::Marker(mtype);</a>
+<a name="ln847">            if (mtype != FretMarkerType::NONE) {</a>
+<a name="ln848">                  removeDot(string);</a>
+<a name="ln849">                  removeBarres(string);</a>
+<a name="ln850">                  }</a>
+<a name="ln851">            }</a>
+<a name="ln852">      }</a>
+<a name="ln853"> </a>
+<a name="ln854">//---------------------------------------------------------</a>
+<a name="ln855">//   setFingering</a>
+<a name="ln856">//    NOTE:JT: todo possible future feature</a>
+<a name="ln857">//---------------------------------------------------------</a>
+<a name="ln858"> </a>
+<a name="ln859">#if 0</a>
+<a name="ln860">void FretDiagram::setFingering(int string, int finger)</a>
+<a name="ln861">      {</a>
+<a name="ln862">      if (_dots.find(string) != _dots.end()) {</a>
+<a name="ln863">            _dots[string].fingering = finger;</a>
+<a name="ln864">            qDebug(&quot;set finger: s %d finger %d&quot;, string, finger);</a>
+<a name="ln865">            }</a>
+<a name="ln866">      }</a>
+<a name="ln867">#endif</a>
+<a name="ln868"> </a>
+<a name="ln869">//---------------------------------------------------------</a>
+<a name="ln870">//   setBarre</a>
+<a name="ln871">//    We'll accept a value of -1 for the end string, to denote</a>
+<a name="ln872">//    that the barre goes as far right as possible.</a>
+<a name="ln873">//    Take a start string value of -1 to mean 'remove this barre'</a>
+<a name="ln874">//---------------------------------------------------------</a>
+<a name="ln875"> </a>
+<a name="ln876">void FretDiagram::setBarre(int startString, int endString, int fret)</a>
+<a name="ln877">      {</a>
+<a name="ln878">      if (startString == -1)</a>
+<a name="ln879">            removeBarre(fret);</a>
+<a name="ln880">      else if (startString &gt;= 0 &amp;&amp; endString &gt;= -1 &amp;&amp; startString &lt; _strings &amp;&amp; endString &lt; _strings)</a>
+<a name="ln881">            _barres[fret] = FretItem::Barre(startString, endString);</a>
+<a name="ln882">      }</a>
+<a name="ln883"> </a>
+<a name="ln884">//---------------------------------------------------------</a>
+<a name="ln885">//    This version is for clicks on a dot with shift.</a>
+<a name="ln886">//    If there is no barre at fret, then add one with the string as the start.</a>
+<a name="ln887">//    If there is a barre with a -1 end string, set the end string to string.</a>
+<a name="ln888">//    If there is a barre with a set start and end, remove it.</a>
+<a name="ln889">//    Add may be used in the future if we decide to add dots as default with barres.</a>
+<a name="ln890">//---------------------------------------------------------</a>
+<a name="ln891"> </a>
+<a name="ln892">void FretDiagram::setBarre(int string, int fret, bool add /*= false*/)</a>
+<a name="ln893">      {</a>
+<a name="ln894">      Q_UNUSED(add);</a>
+<a name="ln895"> </a>
+<a name="ln896">      FretItem::Barre b = barre(fret);</a>
+<a name="ln897">      if (!b.exists()) {</a>
+<a name="ln898">            if (string &lt; _strings - 1) {</a>
+<a name="ln899">                  _barres[fret] = FretItem::Barre(string, -1);</a>
+<a name="ln900">                  removeDotsMarkers(string, -1, fret);</a>
+<a name="ln901">                  }</a>
+<a name="ln902">            } </a>
+<a name="ln903">      else if (b.endString == -1 &amp;&amp; b.startString &lt; string) {</a>
+<a name="ln904">            _barres[fret].endString = string;</a>
+<a name="ln905">            }</a>
+<a name="ln906">      else {</a>
+<a name="ln907">            removeDotsMarkers(b.startString, b.endString, fret);</a>
+<a name="ln908">            removeBarre(fret);</a>
+<a name="ln909">            }</a>
+<a name="ln910">      }</a>
+<a name="ln911"> </a>
+<a name="ln912">//---------------------------------------------------------</a>
+<a name="ln913">//   undoSetFretDot</a>
+<a name="ln914">//---------------------------------------------------------</a>
+<a name="ln915"> </a>
+<a name="ln916">void FretDiagram::undoSetFretDot(int _string, int _fret, bool _add /*= true*/, FretDotType _dtype /*= FretDotType::NORMAl*/)</a>
+<a name="ln917">      {</a>
+<a name="ln918">      for (ScoreElement* e : linkList()) {</a>
+<a name="ln919">            FretDiagram* fd = toFretDiagram(e);</a>
+<a name="ln920">            fd-&gt;score()-&gt;undo(new FretDot(fd, _string, _fret, _add, _dtype));</a>
+<a name="ln921">            }</a>
+<a name="ln922">      }</a>
+<a name="ln923"> </a>
+<a name="ln924">//---------------------------------------------------------</a>
+<a name="ln925">//   undoSetFretMarker</a>
+<a name="ln926">//---------------------------------------------------------</a>
+<a name="ln927"> </a>
+<a name="ln928">void FretDiagram::undoSetFretMarker(int _string, FretMarkerType _mtype)</a>
+<a name="ln929">      {</a>
+<a name="ln930">      for (ScoreElement* e : linkList()) {</a>
+<a name="ln931">            FretDiagram* fd = toFretDiagram(e);</a>
+<a name="ln932">            fd-&gt;score()-&gt;undo(new FretMarker(fd, _string, _mtype));</a>
+<a name="ln933">            }</a>
+<a name="ln934">      }</a>
+<a name="ln935"> </a>
+<a name="ln936">//---------------------------------------------------------</a>
+<a name="ln937">//   undoSetFretBarre</a>
+<a name="ln938">//    add refers to using multiple dots per string when adding dots automatically</a>
+<a name="ln939">//---------------------------------------------------------</a>
+<a name="ln940"> </a>
+<a name="ln941">void FretDiagram::undoSetFretBarre(int _string, int _fret, bool _add /*= false*/)</a>
+<a name="ln942">      {</a>
+<a name="ln943">      for (ScoreElement* e : linkList()) {</a>
+<a name="ln944">            FretDiagram* fd = toFretDiagram(e);</a>
+<a name="ln945">            fd-&gt;score()-&gt;undo(new FretBarre(fd, _string, _fret, _add));</a>
+<a name="ln946">            }</a>
+<a name="ln947">      }</a>
+<a name="ln948"> </a>
+<a name="ln949">//---------------------------------------------------------</a>
+<a name="ln950">//   removeBarre</a>
+<a name="ln951">//    Remove a barre on a given fret.</a>
+<a name="ln952">//---------------------------------------------------------</a>
+<a name="ln953"> </a>
+<a name="ln954">void FretDiagram::removeBarre(int f)</a>
+<a name="ln955">      {</a>
+<a name="ln956">      _barres.erase(f);</a>
+<a name="ln957">      }</a>
+<a name="ln958"> </a>
+<a name="ln959">//---------------------------------------------------------</a>
+<a name="ln960">//   removeBarres</a>
+<a name="ln961">//    Remove barres crossing a certain point. Fret of 0 means any point along</a>
+<a name="ln962">//    the string.</a>
+<a name="ln963">//---------------------------------------------------------</a>
+<a name="ln964"> </a>
+<a name="ln965">void FretDiagram::removeBarres(int string, int fret /*= 0*/)</a>
+<a name="ln966">      {</a>
+<a name="ln967">      auto iter = _barres.begin();</a>
+<a name="ln968">      while (iter != _barres.end()) {</a>
+<a name="ln969">            int bfret = iter-&gt;first;</a>
+<a name="ln970">            FretItem::Barre b = iter-&gt;second;</a>
+<a name="ln971"> </a>
+<a name="ln972">            if (b.exists() &amp;&amp; b.startString &lt;= string &amp;&amp; (b.endString &gt;= string || b.endString == -1)) {</a>
+<a name="ln973">                  if (fret &gt; 0 &amp;&amp; fret != bfret)</a>
+<a name="ln974">                        ++iter;</a>
+<a name="ln975">                  else</a>
+<a name="ln976">                        iter = _barres.erase(iter);</a>
+<a name="ln977">                  }</a>
+<a name="ln978">            else</a>
+<a name="ln979">                  ++iter;</a>
+<a name="ln980">            }</a>
+<a name="ln981">      }   </a>
+<a name="ln982"> </a>
+<a name="ln983">//---------------------------------------------------------</a>
+<a name="ln984">//   removeMarker</a>
+<a name="ln985">//---------------------------------------------------------</a>
+<a name="ln986"> </a>
+<a name="ln987">void FretDiagram::removeMarker(int s)</a>
+<a name="ln988">      {</a>
+<a name="ln989">      auto it = _markers.find(s);</a>
+<a name="ln990">      _markers.erase(it);</a>
+<a name="ln991">      }</a>
+<a name="ln992"> </a>
+<a name="ln993">//---------------------------------------------------------</a>
+<a name="ln994">//   removeDot</a>
+<a name="ln995">//    take a fret value of 0 to mean remove all dots</a>
+<a name="ln996">//---------------------------------------------------------</a>
+<a name="ln997"> </a>
+<a name="ln998">void FretDiagram::removeDot(int s, int f /*= 0*/)</a>
+<a name="ln999">      {</a>
+<a name="ln1000">      if (f &gt; 0) {</a>
+<a name="ln1001">            std::vector&lt;FretItem::Dot&gt; tempDots;</a>
+<a name="ln1002">            for (auto const&amp; d : dot(s)) {</a>
+<a name="ln1003">                  if (d.exists() &amp;&amp; d.fret != f)</a>
+<a name="ln1004">                        tempDots.push_back(FretItem::Dot(d));</a>
+<a name="ln1005">                  }</a>
+<a name="ln1006"> </a>
+<a name="ln1007">            _dots[s] = tempDots;</a>
+<a name="ln1008">            }</a>
+<a name="ln1009">      else</a>
+<a name="ln1010">            _dots[s].clear();</a>
+<a name="ln1011"> </a>
+<a name="ln1012">      if (_dots[s].size() == 0) {</a>
+<a name="ln1013">            auto it = _dots.find(s);</a>
+<a name="ln1014">            _dots.erase(it);</a>
+<a name="ln1015">            }</a>
+<a name="ln1016">      }</a>
+<a name="ln1017"> </a>
+<a name="ln1018">//---------------------------------------------------------</a>
+<a name="ln1019">//   removeDotsMarkers</a>
+<a name="ln1020">//    removes all markers between [ss, es] and dots between [ss, es],</a>
+<a name="ln1021">//    where the dots have a fret of fret.</a>
+<a name="ln1022">//---------------------------------------------------------</a>
+<a name="ln1023"> </a>
+<a name="ln1024">void FretDiagram::removeDotsMarkers(int ss, int es, int fret)</a>
+<a name="ln1025">      {</a>
+<a name="ln1026">      if (ss == -1)</a>
+<a name="ln1027">            return;</a>
+<a name="ln1028"> </a>
+<a name="ln1029">      int end = es == -1 ? _strings : es;</a>
+<a name="ln1030">      for (int string = ss; string &lt;= end; ++string) {</a>
+<a name="ln1031">            removeDot(string, fret);</a>
+<a name="ln1032"> </a>
+<a name="ln1033">            if (marker(string).exists())</a>
+<a name="ln1034">                  removeMarker(string);</a>
+<a name="ln1035">            }</a>
+<a name="ln1036">      }</a>
+<a name="ln1037"> </a>
+<a name="ln1038">//---------------------------------------------------------</a>
+<a name="ln1039">//   clear</a>
+<a name="ln1040">//---------------------------------------------------------</a>
+<a name="ln1041"> </a>
+<a name="ln1042">void FretDiagram::clear()</a>
+<a name="ln1043">      {</a>
+<a name="ln1044">      _barres.clear();</a>
+<a name="ln1045">      _dots.clear();</a>
+<a name="ln1046">      _markers.clear();</a>
+<a name="ln1047">      }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">//---------------------------------------------------------</a>
+<a name="ln1050">//   undoFretClear</a>
+<a name="ln1051">//---------------------------------------------------------</a>
+<a name="ln1052"> </a>
+<a name="ln1053">void FretDiagram::undoFretClear()</a>
+<a name="ln1054">      {</a>
+<a name="ln1055">      for (ScoreElement* e : linkList()) {</a>
+<a name="ln1056">            FretDiagram* fd = toFretDiagram(e);</a>
+<a name="ln1057">            fd-&gt;score()-&gt;undo(new FretClear(fd));</a>
+<a name="ln1058">            }</a>
+<a name="ln1059">      }</a>
+<a name="ln1060"> </a>
+<a name="ln1061">//---------------------------------------------------------</a>
+<a name="ln1062">//   dot</a>
+<a name="ln1063">//    take fret value of zero to mean all dots </a>
+<a name="ln1064">//---------------------------------------------------------</a>
+<a name="ln1065"> </a>
+<a name="ln1066">std::vector&lt;FretItem::Dot&gt; FretDiagram::dot(int s, int f /*= 0*/) const</a>
+<a name="ln1067">      {</a>
+<a name="ln1068">      if (_dots.find(s) != _dots.end()) {</a>
+<a name="ln1069">            if (f != 0) {</a>
+<a name="ln1070">                  for (auto const&amp; d : _dots.at(s)) {</a>
+<a name="ln1071">                        if (d.fret == f)</a>
+<a name="ln1072">                              return std::vector&lt;FretItem::Dot&gt; { FretItem::Dot(d) };</a>
+<a name="ln1073">                        }</a>
+<a name="ln1074">                  }</a>
+<a name="ln1075">            else</a>
+<a name="ln1076">                  return _dots.at(s);</a>
+<a name="ln1077">            }</a>
+<a name="ln1078">      return std::vector&lt;FretItem::Dot&gt; { FretItem::Dot(0) };</a>
+<a name="ln1079">      }</a>
+<a name="ln1080"> </a>
+<a name="ln1081">//---------------------------------------------------------</a>
+<a name="ln1082">//   marker</a>
+<a name="ln1083">//---------------------------------------------------------</a>
+<a name="ln1084"> </a>
+<a name="ln1085">FretItem::Marker FretDiagram::marker(int s) const</a>
+<a name="ln1086">      {</a>
+<a name="ln1087">      if (_markers.find(s) != _markers.end())</a>
+<a name="ln1088">            return _markers.at(s);</a>
+<a name="ln1089">      return FretItem::Marker(FretMarkerType::NONE);</a>
+<a name="ln1090">      }</a>
+<a name="ln1091"> </a>
+<a name="ln1092">//---------------------------------------------------------</a>
+<a name="ln1093">//   barre</a>
+<a name="ln1094">//---------------------------------------------------------</a>
+<a name="ln1095"> </a>
+<a name="ln1096">FretItem::Barre FretDiagram::barre(int f) const</a>
+<a name="ln1097">      {</a>
+<a name="ln1098">      if (_barres.find(f) != _barres.end())</a>
+<a name="ln1099">            return _barres.at(f);</a>
+<a name="ln1100">      return FretItem::Barre(-1, -1);</a>
+<a name="ln1101">      }</a>
+<a name="ln1102"> </a>
+<a name="ln1103">//---------------------------------------------------------</a>
+<a name="ln1104">//   setHarmony</a>
+<a name="ln1105">///   if this is being done by the user, use undoSetHarmony instead</a>
+<a name="ln1106">//---------------------------------------------------------</a>
+<a name="ln1107"> </a>
+<a name="ln1108">void FretDiagram::setHarmony(QString harmonyText)</a>
+<a name="ln1109">      {</a>
+<a name="ln1110">      if (!_harmony) {</a>
+<a name="ln1111">            Harmony* h = new Harmony(score());</a>
+<a name="ln1112">            add(h);</a>
+<a name="ln1113">            }</a>
+<a name="ln1114"> </a>
+<a name="ln1115">      _harmony-&gt;setHarmony(harmonyText);</a>
+<a name="ln1116">      _harmony-&gt;setXmlText(_harmony-&gt;harmonyName());</a>
+<a name="ln1117">      triggerLayout();</a>
+<a name="ln1118">      }</a>
+<a name="ln1119"> </a>
+<a name="ln1120">//---------------------------------------------------------</a>
+<a name="ln1121">//   add</a>
+<a name="ln1122">//---------------------------------------------------------</a>
+<a name="ln1123"> </a>
+<a name="ln1124">void FretDiagram::add(Element* e)</a>
+<a name="ln1125">      {</a>
+<a name="ln1126">      e-&gt;setParent(this);</a>
+<a name="ln1127">      if (e-&gt;isHarmony()) {</a>
+<a name="ln1128">            _harmony = toHarmony(e);</a>
+<a name="ln1129">            _harmony-&gt;setTrack(track());</a>
+<a name="ln1130">            _harmony-&gt;resetProperty(Pid::OFFSET);</a>
+<a name="ln1131">            }</a>
+<a name="ln1132">      else</a>
+<a name="ln1133">            qWarning(&quot;FretDiagram: cannot add &lt;%s&gt;\n&quot;, e-&gt;name());</a>
+<a name="ln1134">      }</a>
+<a name="ln1135"> </a>
+<a name="ln1136">//---------------------------------------------------------</a>
+<a name="ln1137">//   remove</a>
+<a name="ln1138">//---------------------------------------------------------</a>
+<a name="ln1139"> </a>
+<a name="ln1140">void FretDiagram::remove(Element* e)</a>
+<a name="ln1141">      {</a>
+<a name="ln1142">      if (e == _harmony)</a>
+<a name="ln1143">            _harmony = 0;</a>
+<a name="ln1144">      else</a>
+<a name="ln1145">            qWarning(&quot;FretDiagram: cannot remove &lt;%s&gt;\n&quot;, e-&gt;name());</a>
+<a name="ln1146">      }</a>
+<a name="ln1147"> </a>
+<a name="ln1148">//---------------------------------------------------------</a>
+<a name="ln1149">//   acceptDrop</a>
+<a name="ln1150">//---------------------------------------------------------</a>
+<a name="ln1151"> </a>
+<a name="ln1152">bool FretDiagram::acceptDrop(EditData&amp; data) const</a>
+<a name="ln1153">      {</a>
+<a name="ln1154">      return data.dropElement-&gt;type() == ElementType::HARMONY;</a>
+<a name="ln1155">      }</a>
+<a name="ln1156"> </a>
+<a name="ln1157">//---------------------------------------------------------</a>
+<a name="ln1158">//   drop</a>
+<a name="ln1159">//---------------------------------------------------------</a>
+<a name="ln1160"> </a>
+<a name="ln1161">Element* FretDiagram::drop(EditData&amp; data)</a>
+<a name="ln1162">      {</a>
+<a name="ln1163">      Element* e = data.dropElement;</a>
+<a name="ln1164">      if (e-&gt;isHarmony()) {</a>
+<a name="ln1165">            Harmony* h = toHarmony(e);</a>
+<a name="ln1166">            h-&gt;setParent(parent());</a>
+<a name="ln1167">            h-&gt;setTrack(track());</a>
+<a name="ln1168">            score()-&gt;undoAddElement(h);</a>
+<a name="ln1169">            }</a>
+<a name="ln1170">      else {</a>
+<a name="ln1171">            qWarning(&quot;FretDiagram: cannot drop &lt;%s&gt;\n&quot;, e-&gt;name());</a>
+<a name="ln1172">            delete e;</a>
+<a name="ln1173">            e = 0;</a>
+<a name="ln1174">            }</a>
+<a name="ln1175">      return e;</a>
+<a name="ln1176">      }</a>
+<a name="ln1177"> </a>
+<a name="ln1178">//---------------------------------------------------------</a>
+<a name="ln1179">//   scanElements</a>
+<a name="ln1180">//---------------------------------------------------------</a>
+<a name="ln1181"> </a>
+<a name="ln1182">void FretDiagram::scanElements(void* data, void (*func)(void*, Element*), bool all)</a>
+<a name="ln1183">      {</a>
+<a name="ln1184">      Q_UNUSED(all);</a>
+<a name="ln1185">      func(data, this);</a>
+<a name="ln1186">      // don't display harmony in palette</a>
+<a name="ln1187">      if (_harmony &amp;&amp; !!parent())</a>
+<a name="ln1188">            func(data, _harmony);</a>
+<a name="ln1189">      }</a>
+<a name="ln1190"> </a>
+<a name="ln1191">//---------------------------------------------------------</a>
+<a name="ln1192">//   Write MusicXML</a>
+<a name="ln1193">//---------------------------------------------------------</a>
+<a name="ln1194"> </a>
+<a name="ln1195">void FretDiagram::writeMusicXML(XmlWriter&amp; xml) const</a>
+<a name="ln1196">      {</a>
+<a name="ln1197">      qDebug(&quot;FretDiagram::writeMusicXML() this %p harmony %p&quot;, this, _harmony);</a>
+<a name="ln1198">      xml.stag(&quot;frame&quot;);</a>
+<a name="ln1199">      xml.tag(&quot;frame-strings&quot;, _strings);</a>
+<a name="ln1200">      xml.tag(&quot;frame-frets&quot;, frets());</a>
+<a name="ln1201">      QString strDots = &quot;'&quot;;</a>
+<a name="ln1202">      QString strMarker = &quot;'&quot;;</a>
+<a name="ln1203">      QString strFingering = &quot;'&quot;;</a>
+<a name="ln1204"> </a>
+<a name="ln1205">      for (int i = 0; i &lt; _strings; ++i) {</a>
+<a name="ln1206">            int mxmlString = _strings - i;</a>
+<a name="ln1207"> </a>
+<a name="ln1208">            std::vector&lt;int&gt; bStarts;</a>
+<a name="ln1209">            std::vector&lt;int&gt; bEnds;</a>
+<a name="ln1210">            for (auto const&amp; j : _barres) {</a>
+<a name="ln1211">                  FretItem::Barre b = j.second;</a>
+<a name="ln1212">                  int fret = j.first;</a>
+<a name="ln1213">                  if (!b.exists())</a>
+<a name="ln1214">                        continue;</a>
+<a name="ln1215"> </a>
+<a name="ln1216">                  if (b.startString == i)</a>
+<a name="ln1217">                        bStarts.push_back(fret);</a>
+<a name="ln1218">                  else if (b.endString == i || (b.endString == -1 &amp;&amp; mxmlString == 1))</a>
+<a name="ln1219">                        bEnds.push_back(fret);</a>
+<a name="ln1220">                  }</a>
+<a name="ln1221"> </a>
+<a name="ln1222">            if (marker(i).exists() &amp;&amp; marker(i).mtype == FretMarkerType::CIRCLE) {</a>
+<a name="ln1223">                  xml.stag(&quot;frame-note&quot;);</a>
+<a name="ln1224">                  xml.tag(&quot;string&quot;, mxmlString);</a>
+<a name="ln1225">                  xml.tag(&quot;fret&quot;, &quot;0&quot;);</a>
+<a name="ln1226">                  xml.etag();</a>
+<a name="ln1227">                  }</a>
+<a name="ln1228">            else {</a>
+<a name="ln1229">                  // Write dots</a>
+<a name="ln1230">                  for (auto const&amp; d : dot(i)) {</a>
+<a name="ln1231">                        if (!d.exists())</a>
+<a name="ln1232">                              continue;</a>
+<a name="ln1233">                        xml.stag(&quot;frame-note&quot;);</a>
+<a name="ln1234">                        xml.tag(&quot;string&quot;, mxmlString);</a>
+<a name="ln1235">                        xml.tag(&quot;fret&quot;, d.fret);</a>
+<a name="ln1236">                        // TODO: write fingerings</a>
+<a name="ln1237"> </a>
+<a name="ln1238">                        // Also write barre if it starts at this dot</a>
+<a name="ln1239">                        if (std::find(bStarts.begin(), bStarts.end(), d.fret) != bStarts.end()) {</a>
+<a name="ln1240">                              xml.tagE(&quot;barre type=\&quot;start\&quot;&quot;);</a>
+<a name="ln1241">                              bStarts.erase(std::remove(bStarts.begin(), bStarts.end(), d.fret), bStarts.end());</a>
+<a name="ln1242">                              }</a>
+<a name="ln1243">                        if (std::find(bEnds.begin(), bEnds.end(), d.fret) != bEnds.end()) {</a>
+<a name="ln1244">                              xml.tagE(&quot;barre type=\&quot;stop\&quot;&quot;);</a>
+<a name="ln1245">                              bEnds.erase(std::remove(bEnds.begin(), bEnds.end(), d.fret), bEnds.end());</a>
+<a name="ln1246">                              }</a>
+<a name="ln1247">                        xml.etag();</a>
+<a name="ln1248">                        }</a>
+<a name="ln1249">                  }</a>
+<a name="ln1250"> </a>
+<a name="ln1251">            // Write unwritten barres</a>
+<a name="ln1252">            for (int j : bStarts) {</a>
+<a name="ln1253">                  xml.stag(&quot;frame-note&quot;);</a>
+<a name="ln1254">                  xml.tag(&quot;string&quot;, mxmlString);</a>
+<a name="ln1255">                  xml.tag(&quot;fret&quot;, j);</a>
+<a name="ln1256">                  xml.tagE(&quot;barre type=\&quot;start\&quot;&quot;);</a>
+<a name="ln1257">                  xml.etag();</a>
+<a name="ln1258">                  }</a>
+<a name="ln1259"> </a>
+<a name="ln1260">            for (int j : bEnds) {</a>
+<a name="ln1261">                  xml.stag(&quot;frame-note&quot;);</a>
+<a name="ln1262">                  xml.tag(&quot;string&quot;, mxmlString);</a>
+<a name="ln1263">                  xml.tag(&quot;fret&quot;, j);</a>
+<a name="ln1264">                  xml.tagE(&quot;barre type=\&quot;stop\&quot;&quot;);</a>
+<a name="ln1265">                  xml.etag();</a>
+<a name="ln1266">                  }</a>
+<a name="ln1267">            }</a>
+<a name="ln1268"> </a>
+<a name="ln1269">      xml.etag();</a>
+<a name="ln1270">      }</a>
+<a name="ln1271"> </a>
+<a name="ln1272">//---------------------------------------------------------</a>
+<a name="ln1273">//   getProperty</a>
+<a name="ln1274">//---------------------------------------------------------</a>
+<a name="ln1275"> </a>
+<a name="ln1276">QVariant FretDiagram::getProperty(Pid propertyId) const</a>
+<a name="ln1277">      {</a>
+<a name="ln1278">      switch (propertyId) {</a>
+<a name="ln1279">            case Pid::MAG:</a>
+<a name="ln1280">                  return userMag();</a>
+<a name="ln1281">            case Pid::FRET_STRINGS:</a>
+<a name="ln1282">                  return strings();</a>
+<a name="ln1283">            case Pid::FRET_FRETS:</a>
+<a name="ln1284">                  return frets();</a>
+<a name="ln1285">            case Pid::FRET_NUT:</a>
+<a name="ln1286">                  return showNut();</a>
+<a name="ln1287">            case Pid::FRET_OFFSET:</a>
+<a name="ln1288">                  return fretOffset();</a>
+<a name="ln1289">            case Pid::FRET_NUM_POS:</a>
+<a name="ln1290">                  return _numPos;</a>
+<a name="ln1291">            default:</a>
+<a name="ln1292">                  return Element::getProperty(propertyId);</a>
+<a name="ln1293">            }</a>
+<a name="ln1294">      }</a>
+<a name="ln1295"> </a>
+<a name="ln1296">//---------------------------------------------------------</a>
+<a name="ln1297">//   setProperty</a>
+<a name="ln1298">//---------------------------------------------------------</a>
+<a name="ln1299"> </a>
+<a name="ln1300">bool FretDiagram::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln1301">      {</a>
+<a name="ln1302">      switch (propertyId) {</a>
+<a name="ln1303">            case Pid::MAG:</a>
+<a name="ln1304">                  setUserMag(v.toDouble());</a>
+<a name="ln1305">                  break;</a>
+<a name="ln1306">            case Pid::FRET_STRINGS:</a>
+<a name="ln1307">                  setStrings(v.toInt());</a>
+<a name="ln1308">                  break;</a>
+<a name="ln1309">            case Pid::FRET_FRETS:</a>
+<a name="ln1310">                  setFrets(v.toInt());</a>
+<a name="ln1311">                  break;</a>
+<a name="ln1312">            case Pid::FRET_NUT:</a>
+<a name="ln1313">                  setShowNut(v.toBool());</a>
+<a name="ln1314">                  break;</a>
+<a name="ln1315">            case Pid::FRET_OFFSET:</a>
+<a name="ln1316">                  setFretOffset(v.toInt());</a>
+<a name="ln1317">                  break;</a>
+<a name="ln1318">            case Pid::FRET_NUM_POS:</a>
+<a name="ln1319">                  _numPos = v.toInt();</a>
+<a name="ln1320">                  break;</a>
+<a name="ln1321">            default:</a>
+<a name="ln1322">                  return Element::setProperty(propertyId, v);</a>
+<a name="ln1323">            }</a>
+<a name="ln1324">      triggerLayout();</a>
+<a name="ln1325">      return true;</a>
+<a name="ln1326">      }</a>
+<a name="ln1327"> </a>
+<a name="ln1328">//---------------------------------------------------------</a>
+<a name="ln1329">//   propertyDefault</a>
+<a name="ln1330">//---------------------------------------------------------</a>
+<a name="ln1331"> </a>
+<a name="ln1332">QVariant FretDiagram::propertyDefault(Pid pid) const</a>
+<a name="ln1333">      {</a>
+<a name="ln1334">      // We shouldn't style the fret offset</a>
+<a name="ln1335">      if (pid == Pid::FRET_OFFSET) {</a>
+<a name="ln1336">            return QVariant(0);</a>
+<a name="ln1337">            }</a>
+<a name="ln1338"> </a>
+<a name="ln1339">      for (const StyledProperty&amp; p : *styledProperties()) {</a>
+<a name="ln1340">            if (p.pid == pid) {</a>
+<a name="ln1341">                  if (propertyType(pid) == P_TYPE::SP_REAL)</a>
+<a name="ln1342">                        return score()-&gt;styleP(p.sid);</a>
+<a name="ln1343">                  return score()-&gt;styleV(p.sid);</a>
+<a name="ln1344">                  }</a>
+<a name="ln1345">            }</a>
+<a name="ln1346">      return Element::propertyDefault(pid);</a>
+<a name="ln1347">      }</a>
+<a name="ln1348"> </a>
+<a name="ln1349">//---------------------------------------------------------</a>
+<a name="ln1350">//   endEditDrag</a>
+<a name="ln1351">//---------------------------------------------------------</a>
+<a name="ln1352"> </a>
+<a name="ln1353">void FretDiagram::endEditDrag(EditData&amp; editData)</a>
+<a name="ln1354">      {</a>
+<a name="ln1355">      Element::endEditDrag(editData);</a>
+<a name="ln1356"> </a>
+<a name="ln1357">      triggerLayout();</a>
+<a name="ln1358">      }</a>
+<a name="ln1359"> </a>
+<a name="ln1360"> </a>
+<a name="ln1361">//---------------------------------------------------------</a>
+<a name="ln1362">//   markerToChar</a>
+<a name="ln1363">//---------------------------------------------------------</a>
+<a name="ln1364"> </a>
+<a name="ln1365">QChar FretItem::markerToChar(FretMarkerType t)</a>
+<a name="ln1366">      {</a>
+<a name="ln1367">      switch (t) {</a>
+<a name="ln1368">            case FretMarkerType::CIRCLE:</a>
+<a name="ln1369">                  return QChar('O');</a>
+<a name="ln1370">            case FretMarkerType::CROSS:</a>
+<a name="ln1371">                  return QChar('X');</a>
+<a name="ln1372">            case FretMarkerType::NONE:</a>
+<a name="ln1373">            default:</a>
+<a name="ln1374">                  return QChar();</a>
+<a name="ln1375">            }</a>
+<a name="ln1376">      }</a>
+<a name="ln1377"> </a>
+<a name="ln1378">//---------------------------------------------------------</a>
+<a name="ln1379">//   markerTypeToName</a>
+<a name="ln1380">//---------------------------------------------------------</a>
+<a name="ln1381"> </a>
+<a name="ln1382">const std::vector&lt;FretItem::MarkerTypeNameItem&gt; FretItem::markerTypeNameMap = {</a>
+<a name="ln1383">      { FretMarkerType::CIRCLE,     &quot;circle&quot;    },</a>
+<a name="ln1384">      { FretMarkerType::CROSS,      &quot;cross&quot;     },</a>
+<a name="ln1385">      { FretMarkerType::NONE,       &quot;none&quot;      }</a>
+<a name="ln1386">      };</a>
+<a name="ln1387"> </a>
+<a name="ln1388">QString FretItem::markerTypeToName(FretMarkerType t)</a>
+<a name="ln1389">      {</a>
+<a name="ln1390">      for (auto i : FretItem::markerTypeNameMap) {</a>
+<a name="ln1391">            if (i.mtype == t)</a>
+<a name="ln1392">                  return i.name;</a>
+<a name="ln1393">            }</a>
+<a name="ln1394">      qFatal(&quot;Unrecognised FretMarkerType!&quot;);</a>
+<a name="ln1395">      return QString();       // prevent compiler warnings</a>
+<a name="ln1396">      }</a>
+<a name="ln1397"> </a>
+<a name="ln1398">//---------------------------------------------------------</a>
+<a name="ln1399">//   nameToMarkerType</a>
+<a name="ln1400">//---------------------------------------------------------</a>
+<a name="ln1401"> </a>
+<a name="ln1402">FretMarkerType FretItem::nameToMarkerType(QString n)</a>
+<a name="ln1403">      {</a>
+<a name="ln1404">      for (auto i : FretItem::markerTypeNameMap) {</a>
+<a name="ln1405">            if (i.name == n)</a>
+<a name="ln1406">                  return i.mtype;</a>
+<a name="ln1407">            }</a>
+<a name="ln1408">      qWarning(&quot;Unrecognised marker name!&quot;);</a>
+<a name="ln1409">      return FretMarkerType::NONE;       // default</a>
+<a name="ln1410">      }</a>
+<a name="ln1411"> </a>
+<a name="ln1412">//---------------------------------------------------------</a>
+<a name="ln1413">//   dotTypeToName</a>
+<a name="ln1414">//---------------------------------------------------------</a>
+<a name="ln1415"> </a>
+<a name="ln1416">const std::vector&lt;FretItem::DotTypeNameItem&gt; FretItem::dotTypeNameMap = {</a>
+<a name="ln1417">      { FretDotType::NORMAL,        &quot;normal&quot;    },</a>
+<a name="ln1418">      { FretDotType::CROSS,         &quot;cross&quot;     },</a>
+<a name="ln1419">      { FretDotType::SQUARE,        &quot;square&quot;    },</a>
+<a name="ln1420">      { FretDotType::TRIANGLE,      &quot;triangle&quot;  },</a>
+<a name="ln1421">      };</a>
+<a name="ln1422"> </a>
+<a name="ln1423">QString FretItem::dotTypeToName(FretDotType t)</a>
+<a name="ln1424">      {</a>
+<a name="ln1425">      for (auto i : FretItem::dotTypeNameMap) {</a>
+<a name="ln1426">            if (i.dtype == t)</a>
+<a name="ln1427">                  return i.name;</a>
+<a name="ln1428">            }</a>
+<a name="ln1429">      qFatal(&quot;Unrecognised FretDotType!&quot;);</a>
+<a name="ln1430">      return QString();       // prevent compiler warnings</a>
+<a name="ln1431">      }</a>
+<a name="ln1432"> </a>
+<a name="ln1433">//---------------------------------------------------------</a>
+<a name="ln1434">//   nameToDotType</a>
+<a name="ln1435">//---------------------------------------------------------</a>
+<a name="ln1436"> </a>
+<a name="ln1437">FretDotType FretItem::nameToDotType(QString n)</a>
+<a name="ln1438">      {</a>
+<a name="ln1439">      for (auto i : FretItem::dotTypeNameMap) {</a>
+<a name="ln1440">            if (i.name == n)</a>
+<a name="ln1441">                  return i.dtype;</a>
+<a name="ln1442">            }</a>
+<a name="ln1443">      qWarning(&quot;Unrecognised dot name!&quot;);</a>
+<a name="ln1444">      return FretDotType::NORMAL;       // default</a>
+<a name="ln1445">      }</a>
+<a name="ln1446"> </a>
+<a name="ln1447">//---------------------------------------------------------</a>
+<a name="ln1448">//   updateStored</a>
+<a name="ln1449">//---------------------------------------------------------</a>
+<a name="ln1450"> </a>
+<a name="ln1451">FretUndoData::FretUndoData(FretDiagram* fd)</a>
+<a name="ln1452">      {</a>
+<a name="ln1453">      // We need to store the old barres and markers, since predicting how</a>
+<a name="ln1454">      // adding dots, markers, barres etc. will change things is too difficult.</a>
+<a name="ln1455">      // Update linked fret diagrams:</a>
+<a name="ln1456">      _diagram = fd;</a>
+<a name="ln1457">      _dots = _diagram-&gt;_dots;</a>
+<a name="ln1458">      _markers = _diagram-&gt;_markers;</a>
+<a name="ln1459">      _barres = _diagram-&gt;_barres;</a>
+<a name="ln1460">      }</a>
+<a name="ln1461"> </a>
+<a name="ln1462">//---------------------------------------------------------</a>
+<a name="ln1463">//   updateDiagram</a>
+<a name="ln1464">//---------------------------------------------------------</a>
+<a name="ln1465"> </a>
+<a name="ln1466">void FretUndoData::updateDiagram()</a>
+<a name="ln1467">      {</a>
+<a name="ln1468">      if (!_diagram) {</a>
+<a name="ln1469">            qFatal(&quot;Tried to undo fret diagram change without ever setting diagram!&quot;);</a>
+<a name="ln1470">            return;</a>
+<a name="ln1471">            }</a>
+<a name="ln1472"> </a>
+<a name="ln1473">      // Reset every fret diagram property of the changed diagram</a>
+<a name="ln1474">      // FretUndoData is a friend of FretDiagram so has access to these private members</a>
+<a name="ln1475">      _diagram-&gt;_barres = _barres;</a>
+<a name="ln1476">      _diagram-&gt;_markers = _markers;</a>
+<a name="ln1477">      _diagram-&gt;_dots = _dots;</a>
+<a name="ln1478">      }</a>
+<a name="ln1479"> </a>
+<a name="ln1480">}</a>
+<a name="ln1481"> </a>
+
+</code></pre>
+<div class="balloon" rel="468"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!parent()' is always false.</p></div>
+<div class="balloon" rel="473"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: _harmony->parent().</p></div>
+<div class="balloon" rel="1133"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1145"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1171"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="49"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: stringLw, nutLw, stringDist, fretDist, _numPos.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

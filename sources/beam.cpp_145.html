@@ -1,0 +1,2634 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>beam.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;beam.h&quot;</a>
+<a name="ln14">#include &quot;segment.h&quot;</a>
+<a name="ln15">#include &quot;score.h&quot;</a>
+<a name="ln16">#include &quot;chord.h&quot;</a>
+<a name="ln17">#include &quot;sig.h&quot;</a>
+<a name="ln18">#include &quot;style.h&quot;</a>
+<a name="ln19">#include &quot;note.h&quot;</a>
+<a name="ln20">#include &quot;tuplet.h&quot;</a>
+<a name="ln21">#include &quot;system.h&quot;</a>
+<a name="ln22">#include &quot;tremolo.h&quot;</a>
+<a name="ln23">#include &quot;measure.h&quot;</a>
+<a name="ln24">#include &quot;undo.h&quot;</a>
+<a name="ln25">#include &quot;staff.h&quot;</a>
+<a name="ln26">#include &quot;stafftype.h&quot;</a>
+<a name="ln27">#include &quot;stem.h&quot;</a>
+<a name="ln28">#include &quot;hook.h&quot;</a>
+<a name="ln29">#include &quot;mscore.h&quot;</a>
+<a name="ln30">#include &quot;icon.h&quot;</a>
+<a name="ln31">#include &quot;stemslash.h&quot;</a>
+<a name="ln32">#include &quot;groups.h&quot;</a>
+<a name="ln33">#include &quot;xml.h&quot;</a>
+<a name="ln34">#include &quot;spanner.h&quot;</a>
+<a name="ln35"> </a>
+<a name="ln36">namespace Ms {</a>
+<a name="ln37"> </a>
+<a name="ln38">static const ElementStyle beamStyle {</a>
+<a name="ln39">      { Sid::beamNoSlope,                        Pid::BEAM_NO_SLOPE           },</a>
+<a name="ln40">      };</a>
+<a name="ln41"> </a>
+<a name="ln42">//---------------------------------------------------------</a>
+<a name="ln43">//   BeamFragment</a>
+<a name="ln44">//    position of primary beam</a>
+<a name="ln45">//    idx 0 - Direction::AUTO or Direction::DOWN</a>
+<a name="ln46">//        1 - Direction::UP</a>
+<a name="ln47">//---------------------------------------------------------</a>
+<a name="ln48"> </a>
+<a name="ln49">struct BeamFragment {</a>
+<a name="ln50">      qreal py1[2];</a>
+<a name="ln51">      qreal py2[2];</a>
+<a name="ln52">      };</a>
+<a name="ln53"> </a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55">//   Beam</a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57"> </a>
+<a name="ln58">Beam::Beam(Score* s)</a>
+<a name="ln59">   : Element(s)</a>
+<a name="ln60">      {</a>
+<a name="ln61">      initElementStyle(&amp;beamStyle);</a>
+<a name="ln62">      _direction       = Direction::AUTO;</a>
+<a name="ln63">      _up              = true;</a>
+<a name="ln64">      _distribute      = false;</a>
+<a name="ln65">      _userModified[0] = false;</a>
+<a name="ln66">      _userModified[1] = false;</a>
+<a name="ln67">      _grow1           = 1.0;</a>
+<a name="ln68">      _grow2           = 1.0;</a>
+<a name="ln69">      _isGrace         = false;</a>
+<a name="ln70">      _cross           = false;</a>
+<a name="ln71">      }</a>
+<a name="ln72"> </a>
+<a name="ln73">//---------------------------------------------------------</a>
+<a name="ln74">//   Beam</a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76"> </a>
+<a name="ln77">Beam::Beam(const Beam&amp; b)</a>
+<a name="ln78">   : Element(b)</a>
+<a name="ln79">      {</a>
+<a name="ln80">      _elements     = b._elements;</a>
+<a name="ln81">      _id           = b._id;</a>
+<a name="ln82">      for (const QLineF* bs : b.beamSegments)</a>
+<a name="ln83">            beamSegments.append(new QLineF(*bs));</a>
+<a name="ln84">      _direction       = b._direction;</a>
+<a name="ln85">      _up              = b._up;</a>
+<a name="ln86">      _distribute      = b._distribute;</a>
+<a name="ln87">      _userModified[0] = b._userModified[0];</a>
+<a name="ln88">      _userModified[1] = b._userModified[1];</a>
+<a name="ln89">      _grow1           = b._grow1;</a>
+<a name="ln90">      _grow2           = b._grow2;</a>
+<a name="ln91">      for (const BeamFragment* f : b.fragments)</a>
+<a name="ln92">            fragments.append(new BeamFragment(*f));</a>
+<a name="ln93">      minMove          = b.minMove;</a>
+<a name="ln94">      maxMove          = b.maxMove;</a>
+<a name="ln95">      _isGrace         = b._isGrace;</a>
+<a name="ln96">      _cross           = b._cross;</a>
+<a name="ln97">      maxDuration      = b.maxDuration;</a>
+<a name="ln98">      slope            = b.slope;</a>
+<a name="ln99">      _noSlope         = b._noSlope;</a>
+<a name="ln100">      }</a>
+<a name="ln101"> </a>
+<a name="ln102">//---------------------------------------------------------</a>
+<a name="ln103">//   Beam</a>
+<a name="ln104">//---------------------------------------------------------</a>
+<a name="ln105"> </a>
+<a name="ln106">Beam::~Beam()</a>
+<a name="ln107">      {</a>
+<a name="ln108">      //</a>
+<a name="ln109">      // delete all references from chords</a>
+<a name="ln110">      //</a>
+<a name="ln111">      for (ChordRest* cr : _elements)</a>
+<a name="ln112">            cr-&gt;setBeam(0);</a>
+<a name="ln113">      qDeleteAll(beamSegments);</a>
+<a name="ln114">      qDeleteAll(fragments);</a>
+<a name="ln115">      }</a>
+<a name="ln116"> </a>
+<a name="ln117">//---------------------------------------------------------</a>
+<a name="ln118">//   pagePos</a>
+<a name="ln119">//---------------------------------------------------------</a>
+<a name="ln120"> </a>
+<a name="ln121">QPointF Beam::pagePos() const</a>
+<a name="ln122">      {</a>
+<a name="ln123">      System* s = system();</a>
+<a name="ln124">      if (s == 0)</a>
+<a name="ln125">            return pos();</a>
+<a name="ln126">      qreal yp = y() + s-&gt;staff(staffIdx())-&gt;y() + s-&gt;y();</a>
+<a name="ln127">      return QPointF(pageX(), yp);</a>
+<a name="ln128">      }</a>
+<a name="ln129"> </a>
+<a name="ln130">//---------------------------------------------------------</a>
+<a name="ln131">//   canvasPos</a>
+<a name="ln132">//---------------------------------------------------------</a>
+<a name="ln133"> </a>
+<a name="ln134">QPointF Beam::canvasPos() const</a>
+<a name="ln135">      {</a>
+<a name="ln136">      QPointF p(pagePos());</a>
+<a name="ln137">      if (system() &amp;&amp; system()-&gt;parent())</a>
+<a name="ln138">            p += system()-&gt;parent()-&gt;pos();</a>
+<a name="ln139">      return p;</a>
+<a name="ln140">      }</a>
+<a name="ln141"> </a>
+<a name="ln142">//---------------------------------------------------------</a>
+<a name="ln143">//   add</a>
+<a name="ln144">//---------------------------------------------------------</a>
+<a name="ln145"> </a>
+<a name="ln146">void Beam::add(Element* e)</a>
+<a name="ln147">      {</a>
+<a name="ln148">      if (e-&gt;isChordRest())</a>
+<a name="ln149">            addChordRest(toChordRest(e));</a>
+<a name="ln150">      }</a>
+<a name="ln151"> </a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153">//   remove</a>
+<a name="ln154">//---------------------------------------------------------</a>
+<a name="ln155"> </a>
+<a name="ln156">void Beam::remove(Element* e)</a>
+<a name="ln157">      {</a>
+<a name="ln158">      if (e-&gt;isChordRest())</a>
+<a name="ln159">            removeChordRest(toChordRest(e));</a>
+<a name="ln160">      }</a>
+<a name="ln161"> </a>
+<a name="ln162">//---------------------------------------------------------</a>
+<a name="ln163">//   addChordRest</a>
+<a name="ln164">//---------------------------------------------------------</a>
+<a name="ln165"> </a>
+<a name="ln166">void Beam::addChordRest(ChordRest* a)</a>
+<a name="ln167">      {</a>
+<a name="ln168">      a-&gt;setBeam(this);</a>
+<a name="ln169">      if (!_elements.contains(a)) {</a>
+<a name="ln170">            //</a>
+<a name="ln171">            // insert element in same order as it appears</a>
+<a name="ln172">            // in the score</a>
+<a name="ln173">            //</a>
+<a name="ln174">            if (a-&gt;segment() &amp;&amp; !_elements.empty()) {</a>
+<a name="ln175">                  for (int i = 0; i &lt; _elements.size(); ++i) {</a>
+<a name="ln176">                        Segment* s = _elements[i]-&gt;segment();</a>
+<a name="ln177">                        if ((s-&gt;tick() &gt; a-&gt;segment()-&gt;tick())</a>
+<a name="ln178">                           || ((s-&gt;tick() == a-&gt;segment()-&gt;tick()) &amp;&amp; (a-&gt;segment()-&gt;next(SegmentType::ChordRest) == s))</a>
+<a name="ln179">                           )  {</a>
+<a name="ln180">                              _elements.insert(i, a);</a>
+<a name="ln181">                              return;</a>
+<a name="ln182">                              }</a>
+<a name="ln183">                        }</a>
+<a name="ln184">                  }</a>
+<a name="ln185">            _elements.append(a);</a>
+<a name="ln186">            }</a>
+<a name="ln187">      }</a>
+<a name="ln188"> </a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190">//   removeChordRest</a>
+<a name="ln191">//---------------------------------------------------------</a>
+<a name="ln192"> </a>
+<a name="ln193">void Beam::removeChordRest(ChordRest* a)</a>
+<a name="ln194">      {</a>
+<a name="ln195">      if (!_elements.removeOne(a))</a>
+<a name="ln196">            qDebug(&quot;Beam::remove(): cannot find ChordRest&quot;);</a>
+<a name="ln197">      a-&gt;setBeam(0);</a>
+<a name="ln198">      }</a>
+<a name="ln199"> </a>
+<a name="ln200">//---------------------------------------------------------</a>
+<a name="ln201">//   draw</a>
+<a name="ln202">//---------------------------------------------------------</a>
+<a name="ln203"> </a>
+<a name="ln204">void Beam::draw(QPainter* painter) const</a>
+<a name="ln205">      {</a>
+<a name="ln206">      if (beamSegments.empty())</a>
+<a name="ln207">            return;</a>
+<a name="ln208">      painter-&gt;setBrush(QBrush(curColor()));</a>
+<a name="ln209">      painter-&gt;setPen(Qt::NoPen);</a>
+<a name="ln210">      qreal lw2 = point(score()-&gt;styleS(Sid::beamWidth)) * .5 * mag();</a>
+<a name="ln211"> </a>
+<a name="ln212">      // make beam thickness independent of slant</a>
+<a name="ln213">      // (expression can be simplified?)</a>
+<a name="ln214"> </a>
+<a name="ln215">      const QLineF* bs = beamSegments.front();</a>
+<a name="ln216">      double d  = (qAbs(bs-&gt;y2() - bs-&gt;y1())) / (bs-&gt;x2() - bs-&gt;x1());</a>
+<a name="ln217">      if (beamSegments.size() &gt; 1 &amp;&amp; d &gt; M_PI/6.0)</a>
+<a name="ln218">            d = M_PI/6.0;</a>
+<a name="ln219">      double ww = lw2 / sin(M_PI_2 - atan(d));</a>
+<a name="ln220"> </a>
+<a name="ln221">      for (const QLineF* bs1 : beamSegments) {</a>
+<a name="ln222">            painter-&gt;drawPolygon(</a>
+<a name="ln223">               QPolygonF({</a>
+<a name="ln224">                  QPointF(bs1-&gt;x1(), bs1-&gt;y1() - ww),</a>
+<a name="ln225">                  QPointF(bs1-&gt;x2(), bs1-&gt;y2() - ww),</a>
+<a name="ln226">                  QPointF(bs1-&gt;x2(), bs1-&gt;y2() + ww),</a>
+<a name="ln227">                  QPointF(bs1-&gt;x1(), bs1-&gt;y1() + ww),</a>
+<a name="ln228">                  }),</a>
+<a name="ln229">            Qt::OddEvenFill);</a>
+<a name="ln230">            }</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   move</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">void Beam::move(const QPointF&amp; offset)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      Element::move(offset);</a>
+<a name="ln240">      for (QLineF* bs : beamSegments)</a>
+<a name="ln241">            bs-&gt;translate(offset);</a>
+<a name="ln242">      }</a>
+<a name="ln243"> </a>
+<a name="ln244">//---------------------------------------------------------</a>
+<a name="ln245">//   twoBeamedNotes</a>
+<a name="ln246">//    calculate stem direction of two beamed notes</a>
+<a name="ln247">//    return true if two beamed notes found</a>
+<a name="ln248">//---------------------------------------------------------</a>
+<a name="ln249"> </a>
+<a name="ln250">bool Beam::twoBeamedNotes()</a>
+<a name="ln251">      {</a>
+<a name="ln252">      // if not two elements or elements are not chords or chords have more than 1 note, return failure</a>
+<a name="ln253">      if ((_elements.size() != 2)</a>
+<a name="ln254">         || !_elements[0]-&gt;isChord()</a>
+<a name="ln255">         || !_elements[1]-&gt;isChord()) {</a>
+<a name="ln256">            return false;</a>
+<a name="ln257">            }</a>
+<a name="ln258">      const Chord* c1 = toChord(_elements[0]);</a>
+<a name="ln259">      const Chord* c2 = toChord(_elements[1]);</a>
+<a name="ln260">      if (c1-&gt;notes().size() != 1 || c2-&gt;notes().size() != 1)</a>
+<a name="ln261">            return false;</a>
+<a name="ln262"> </a>
+<a name="ln263">      int upDnLimit = staff()-&gt;lines(Fraction(0, 1)) - 1;           // was '4' hard-coded in the next 2 lines</a>
+<a name="ln264">      int dist1     = c1-&gt;upLine() - upDnLimit;</a>
+<a name="ln265">      int dist2     = c2-&gt;upLine() - upDnLimit;</a>
+<a name="ln266">      if ((dist1 == -dist2) || (-dist1 == dist2)) {</a>
+<a name="ln267">            _up = false;</a>
+<a name="ln268">            Segment* s = c1-&gt;segment();</a>
+<a name="ln269">            s = s-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln270">            if (s) {</a>
+<a name="ln271">                  Element* e = s-&gt;element(c1-&gt;track());</a>
+<a name="ln272">                  if (e &amp;&amp; e-&gt;isChord()) {</a>
+<a name="ln273">                        Chord* c = toChord(e);</a>
+<a name="ln274">                        if (c-&gt;beam())</a>
+<a name="ln275">                              _up = c-&gt;beam()-&gt;up();</a>
+<a name="ln276">                        }</a>
+<a name="ln277">                  }</a>
+<a name="ln278">            }</a>
+<a name="ln279">      else if (qAbs(dist1) &gt; qAbs(dist2))</a>
+<a name="ln280">            _up = dist1 &gt; 0;</a>
+<a name="ln281">      else</a>
+<a name="ln282">            _up = dist2 &gt; 0;</a>
+<a name="ln283">      return true;</a>
+<a name="ln284">      }</a>
+<a name="ln285"> </a>
+<a name="ln286">//---------------------------------------------------------</a>
+<a name="ln287">//   layout1</a>
+<a name="ln288">//    - remove beam segments</a>
+<a name="ln289">//    - detach from system</a>
+<a name="ln290">//    - calculate stem direction and set chord</a>
+<a name="ln291">//---------------------------------------------------------</a>
+<a name="ln292"> </a>
+<a name="ln293">void Beam::layout1()</a>
+<a name="ln294">      {</a>
+<a name="ln295">      //delete old segments</a>
+<a name="ln296">      qDeleteAll(beamSegments);</a>
+<a name="ln297">      beamSegments.clear();</a>
+<a name="ln298"> </a>
+<a name="ln299">      setParent(nullptr); // parent is System</a>
+<a name="ln300"> </a>
+<a name="ln301">      maxDuration.setType(TDuration::DurationType::V_INVALID);</a>
+<a name="ln302">      Chord* c1 = 0;</a>
+<a name="ln303">      Chord* c2 = 0;</a>
+<a name="ln304"> </a>
+<a name="ln305">      // TAB's with stem beside staves have special layout</a>
+<a name="ln306">      if (staff()-&gt;isTabStaff(Fraction(0,1)) &amp;&amp; !staff()-&gt;staffType(Fraction(0,1))-&gt;stemThrough()) {</a>
+<a name="ln307">            //TABULATURES: all beams (and related chords) are:</a>
+<a name="ln308">            //    UP or DOWN according to TAB duration position</a>
+<a name="ln309">            //    slope 0</a>
+<a name="ln310">            _up   = !staff()-&gt;staffType(Fraction(0,1))-&gt;stemsDown();</a>
+<a name="ln311">            slope   = 0.0;</a>
+<a name="ln312">            _cross  = false;</a>
+<a name="ln313">            minMove = maxMove = 0;              // no cross-beaming in TAB's!</a>
+<a name="ln314">            for (ChordRest* cr : _elements) {</a>
+<a name="ln315">                  if (cr-&gt;isChord()) {</a>
+<a name="ln316">                        // set members maxDuration, c1, c2</a>
+<a name="ln317">                        if (!maxDuration.isValid() || (maxDuration &lt; cr-&gt;durationType()))</a>
+<a name="ln318">                              maxDuration = cr-&gt;durationType();</a>
+<a name="ln319">                        c2 = toChord(cr);</a>
+<a name="ln320">                        if (c1 == 0)</a>
+<a name="ln321">                              c1 = c2;</a>
+<a name="ln322">                        }</a>
+<a name="ln323">                  }</a>
+<a name="ln324">            }</a>
+<a name="ln325">      else if (staff()-&gt;isDrumStaff(Fraction(0,1))) {</a>
+<a name="ln326">            if (_direction != Direction::AUTO)</a>
+<a name="ln327">                  _up = _direction == Direction::UP;</a>
+<a name="ln328">            else {</a>
+<a name="ln329">                  for (ChordRest* cr :_elements) {</a>
+<a name="ln330">                        if (cr-&gt;isChord()) {</a>
+<a name="ln331">                              c2 = toChord(cr);</a>
+<a name="ln332">                              _up = c2-&gt;up();</a>
+<a name="ln333">                              break;</a>
+<a name="ln334">                              }</a>
+<a name="ln335">                        }</a>
+<a name="ln336">                  }</a>
+<a name="ln337">            for (ChordRest* cr : _elements) {</a>
+<a name="ln338">                  cr-&gt;setUp(_up);</a>
+<a name="ln339">                  cr-&gt;layoutStem1();</a>
+<a name="ln340">                  }</a>
+<a name="ln341">            }</a>
+<a name="ln342">      else {</a>
+<a name="ln343">            //PITCHED STAVES (and TAB's with stems through staves)</a>
+<a name="ln344">            minMove = 1000;</a>
+<a name="ln345">            maxMove = -1000;</a>
+<a name="ln346">            _isGrace = false;</a>
+<a name="ln347">            qreal mag = 0.0;</a>
+<a name="ln348"> </a>
+<a name="ln349">            int mUp     = 0;</a>
+<a name="ln350">            int mDown   = 0;</a>
+<a name="ln351">            int upDnLimit = staff()-&gt;lines(Fraction(0,1)) - 1;           // was '4' hard-coded in following code</a>
+<a name="ln352"> </a>
+<a name="ln353">            int staffIdx = -1;</a>
+<a name="ln354">            for (ChordRest* cr : _elements) {</a>
+<a name="ln355">                  qreal m = cr-&gt;small() ? score()-&gt;styleD(Sid::smallNoteMag) : 1.0;</a>
+<a name="ln356">                  mag     = qMax(mag, m);</a>
+<a name="ln357">                  if (cr-&gt;isChord()) {</a>
+<a name="ln358">                        c2 = toChord(cr);</a>
+<a name="ln359">                        staffIdx = c2-&gt;vStaffIdx();</a>
+<a name="ln360">                        if (c1 == 0)</a>
+<a name="ln361">                              c1 = c2;</a>
+<a name="ln362">                        int i = c2-&gt;staffMove();</a>
+<a name="ln363">                        if (i &lt; minMove)</a>
+<a name="ln364">                              minMove = i;</a>
+<a name="ln365">                        if (i &gt; maxMove)</a>
+<a name="ln366">                              maxMove = i;</a>
+<a name="ln367">                        int line = c2-&gt;upLine();</a>
+<a name="ln368">                        if ((upDnLimit - line) &gt; mUp)</a>
+<a name="ln369">                              mUp = upDnLimit - line;</a>
+<a name="ln370">                        line = c2-&gt;downLine();</a>
+<a name="ln371">                        if (line - upDnLimit &gt; mDown)</a>
+<a name="ln372">                              mDown = line - upDnLimit;</a>
+<a name="ln373">                        }</a>
+<a name="ln374">                  if (!maxDuration.isValid() || (maxDuration &lt; cr-&gt;durationType()))</a>
+<a name="ln375">                        maxDuration = cr-&gt;durationType();</a>
+<a name="ln376">                  }</a>
+<a name="ln377">            setMag(mag);</a>
+<a name="ln378">            //</a>
+<a name="ln379">            // determine beam stem direction</a>
+<a name="ln380">            //</a>
+<a name="ln381">            if (_direction != Direction::AUTO) {</a>
+<a name="ln382">                  _up = _direction == Direction::UP;</a>
+<a name="ln383">                  }</a>
+<a name="ln384">            else {</a>
+<a name="ln385">                  if (maxMove &gt; 0)            // cross staff beaming down</a>
+<a name="ln386">                        _up = true;</a>
+<a name="ln387">                  else if (minMove &lt; 0)</a>
+<a name="ln388">                        _up = false;</a>
+<a name="ln389">                  else if (c1) {</a>
+<a name="ln390">                        Measure* m = c1-&gt;measure();</a>
+<a name="ln391">                        if (c1-&gt;stemDirection() != Direction::AUTO)</a>
+<a name="ln392">                              _up = c1-&gt;stemDirection() == Direction::UP;</a>
+<a name="ln393">                        else if (m-&gt;hasVoices(c1-&gt;staffIdx()))</a>
+<a name="ln394">                              _up = !(c1-&gt;voice() % 2);</a>
+<a name="ln395">                        else if (!twoBeamedNotes()) {</a>
+<a name="ln396">                              // highest or lowest note determines stem direction</a>
+<a name="ln397">                              // interval higher is bigger -&gt; downstem</a>
+<a name="ln398">                              // interval lower is  bigger -&gt; upstem</a>
+<a name="ln399">                              // down-stems is preferred if equal</a>
+<a name="ln400">                              _up = mUp &lt; mDown;</a>
+<a name="ln401">                              }</a>
+<a name="ln402">                        }</a>
+<a name="ln403">                  else</a>
+<a name="ln404">                        _up = true;</a>
+<a name="ln405">                  }</a>
+<a name="ln406"> </a>
+<a name="ln407">            _cross = minMove &lt; maxMove;</a>
+<a name="ln408">            if (minMove == 1 &amp;&amp; maxMove == 1)</a>
+<a name="ln409">                  setTrack(staffIdx * VOICES + voice());</a>
+<a name="ln410">            else if (c1)</a>
+<a name="ln411">                  setTrack(c1-&gt;staffIdx() * VOICES + voice());</a>
+<a name="ln412"> </a>
+<a name="ln413">            // int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln414">            slope = 0.0;</a>
+<a name="ln415"> </a>
+<a name="ln416">            // leave initial guess alone for moved chords within a beam that crosses staves</a>
+<a name="ln417">            // otherwise, assume beam direction is stem direction</a>
+<a name="ln418"> </a>
+<a name="ln419">            for (ChordRest* cr : _elements) {</a>
+<a name="ln420">                  const bool staffMove = cr-&gt;isChord() ? toChord(cr)-&gt;staffMove() : false;</a>
+<a name="ln421">                  if (!_cross || !staffMove) {</a>
+<a name="ln422">                        if (cr-&gt;up() != _up) {</a>
+<a name="ln423">                              cr-&gt;setUp(_up);</a>
+<a name="ln424">                              cr-&gt;layoutStem1();</a>
+<a name="ln425">                              }</a>
+<a name="ln426">                        }</a>
+<a name="ln427">                  }</a>
+<a name="ln428">            }     // end of if/else(tablature)</a>
+<a name="ln429">      }</a>
+<a name="ln430"> </a>
+<a name="ln431">//---------------------------------------------------------</a>
+<a name="ln432">//   layoutGraceNotes</a>
+<a name="ln433">//---------------------------------------------------------</a>
+<a name="ln434"> </a>
+<a name="ln435">void Beam::layoutGraceNotes()</a>
+<a name="ln436">      {</a>
+<a name="ln437">      //delete old segments</a>
+<a name="ln438">      qDeleteAll(beamSegments);</a>
+<a name="ln439">      beamSegments.clear();</a>
+<a name="ln440"> </a>
+<a name="ln441">      maxDuration.setType(TDuration::DurationType::V_INVALID);</a>
+<a name="ln442">      Chord* c1 = 0;</a>
+<a name="ln443">      Chord* c2 = 0;</a>
+<a name="ln444"> </a>
+<a name="ln445">      //PITCHED STAVES (and TAB's with stems through staves)</a>
+<a name="ln446">      minMove = 1000;</a>
+<a name="ln447">      maxMove = -1000;</a>
+<a name="ln448">      _isGrace = true;</a>
+<a name="ln449">      qreal graceMag   = score()-&gt;styleD(Sid::graceNoteMag);</a>
+<a name="ln450">      setMag(graceMag);</a>
+<a name="ln451"> </a>
+<a name="ln452">      for (ChordRest* cr : _elements) {</a>
+<a name="ln453">            c2 = toChord(cr);</a>
+<a name="ln454">            if (c1 == 0)</a>
+<a name="ln455">                  c1 = c2;</a>
+<a name="ln456">            int i = c2-&gt;staffMove();</a>
+<a name="ln457">            if (i &lt; minMove)</a>
+<a name="ln458">                  minMove = i;</a>
+<a name="ln459">            if (i &gt; maxMove)</a>
+<a name="ln460">                  maxMove = i;</a>
+<a name="ln461">            if (!maxDuration.isValid() || (maxDuration &lt; cr-&gt;durationType()))</a>
+<a name="ln462">                  maxDuration = cr-&gt;durationType();</a>
+<a name="ln463">            }</a>
+<a name="ln464">      //</a>
+<a name="ln465">      // determine beam stem direction</a>
+<a name="ln466">      //</a>
+<a name="ln467">      if (staff()-&gt;isTabStaff(Fraction(0,1))) {</a>
+<a name="ln468">            //TABULATURES: all beams (and related chords) are:</a>
+<a name="ln469">            //    UP or DOWN according to TAB duration position</a>
+<a name="ln470">            //    slope 0</a>
+<a name="ln471">            _up   = !staff()-&gt;staffType(Fraction(0,1))-&gt;stemsDown();</a>
+<a name="ln472">            }</a>
+<a name="ln473">      else {</a>
+<a name="ln474">            if (_direction != Direction::AUTO)</a>
+<a name="ln475">                  _up = _direction == Direction::UP;</a>
+<a name="ln476">            else {</a>
+<a name="ln477">                  ChordRest* cr = _elements[0];</a>
+<a name="ln478"> </a>
+<a name="ln479">                  Measure* m = cr-&gt;measure();</a>
+<a name="ln480">                  if (m-&gt;hasVoices(cr-&gt;staffIdx()))</a>
+<a name="ln481">                        _up = !(cr-&gt;voice() % 2);</a>
+<a name="ln482">                  else</a>
+<a name="ln483">                        _up = true;</a>
+<a name="ln484">                  }</a>
+<a name="ln485">            }</a>
+<a name="ln486"> </a>
+<a name="ln487">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln488">      slope   = 0.0;</a>
+<a name="ln489"> </a>
+<a name="ln490">      if (!_userModified[idx]) {</a>
+<a name="ln491">            for (ChordRest* cr : _elements) {</a>
+<a name="ln492">                  cr-&gt;setUp(_up);</a>
+<a name="ln493">                  if (cr-&gt;isChord())</a>
+<a name="ln494">                        toChord(cr)-&gt;layoutStem1();            /* create stems needed to calculate horizontal spacing */</a>
+<a name="ln495">                  }</a>
+<a name="ln496">            }</a>
+<a name="ln497">      }</a>
+<a name="ln498"> </a>
+<a name="ln499">//---------------------------------------------------------</a>
+<a name="ln500">//   layout</a>
+<a name="ln501">//---------------------------------------------------------</a>
+<a name="ln502"> </a>
+<a name="ln503">void Beam::layout()</a>
+<a name="ln504">      {</a>
+<a name="ln505">      System* system = _elements.front()-&gt;measure()-&gt;system();</a>
+<a name="ln506">      setParent(system);</a>
+<a name="ln507"> </a>
+<a name="ln508">      std::vector&lt;ChordRest*&gt; crl;</a>
+<a name="ln509"> </a>
+<a name="ln510">      int n = 0;</a>
+<a name="ln511">      for (ChordRest* cr : _elements) {</a>
+<a name="ln512">            if (cr-&gt;measure()-&gt;system() != system) {</a>
+<a name="ln513">                  SpannerSegmentType st;</a>
+<a name="ln514">                  if (n == 0)</a>
+<a name="ln515">                        st = SpannerSegmentType::BEGIN;</a>
+<a name="ln516">                  else</a>
+<a name="ln517">                        st = SpannerSegmentType::MIDDLE;</a>
+<a name="ln518">                  ++n;</a>
+<a name="ln519">                  if (fragments.size() &lt; n)</a>
+<a name="ln520">                        fragments.append(new BeamFragment);</a>
+<a name="ln521">                  layout2(crl, st, n-1);</a>
+<a name="ln522">                  crl.clear();</a>
+<a name="ln523">                  system = cr-&gt;measure()-&gt;system();</a>
+<a name="ln524">                  }</a>
+<a name="ln525">            crl.push_back(cr);</a>
+<a name="ln526">            }</a>
+<a name="ln527">      setbbox(QRectF());</a>
+<a name="ln528">      if (!crl.empty()) {</a>
+<a name="ln529">            SpannerSegmentType st;</a>
+<a name="ln530">            if (n == 0)</a>
+<a name="ln531">                  st = SpannerSegmentType::SINGLE;</a>
+<a name="ln532">            else</a>
+<a name="ln533">                  st = SpannerSegmentType::END;</a>
+<a name="ln534">            if (fragments.size() &lt; (n+1))</a>
+<a name="ln535">                  fragments.append(new BeamFragment);</a>
+<a name="ln536">            layout2(crl, st, n);</a>
+<a name="ln537"> </a>
+<a name="ln538">            qreal lw2      = point(score()-&gt;styleS(Sid::beamWidth)) * .5 * mag();</a>
+<a name="ln539">//            ChordRest* cr  = crl.front();</a>
+<a name="ln540">//            Shape&amp; s       = cr-&gt;segment()-&gt;shape(staffIdx());</a>
+<a name="ln541">//            QPointF offset = cr-&gt;pos() + cr-&gt;segment()-&gt;pos() + cr-&gt;segment()-&gt;measure()-&gt;pos();</a>
+<a name="ln542"> </a>
+<a name="ln543">            for (const QLineF* bs : beamSegments) {</a>
+<a name="ln544">                  QPolygonF a(4);</a>
+<a name="ln545">                  a[0] = QPointF(bs-&gt;x1(), bs-&gt;y1());</a>
+<a name="ln546">                  a[1] = QPointF(bs-&gt;x2(), bs-&gt;y2());</a>
+<a name="ln547">                  a[2] = QPointF(bs-&gt;x2(), bs-&gt;y2());</a>
+<a name="ln548">                  a[3] = QPointF(bs-&gt;x1(), bs-&gt;y1());</a>
+<a name="ln549">                  QRectF r(a.boundingRect().adjusted(0.0, -lw2, 0.0, lw2));</a>
+<a name="ln550">//TODO                  s.add(r.translated(-offset));</a>
+<a name="ln551">                  addbbox(r);</a>
+<a name="ln552">                  }</a>
+<a name="ln553">            }</a>
+<a name="ln554">      }</a>
+<a name="ln555"> </a>
+<a name="ln556">//---------------------------------------------------------</a>
+<a name="ln557">//   absLimit</a>
+<a name="ln558">//---------------------------------------------------------</a>
+<a name="ln559"> </a>
+<a name="ln560">inline qreal absLimit(qreal val, qreal limit)</a>
+<a name="ln561">      {</a>
+<a name="ln562">      if (val &gt; limit)</a>
+<a name="ln563">            return limit;</a>
+<a name="ln564">      if (val &lt; -limit)</a>
+<a name="ln565">            return -limit;</a>
+<a name="ln566">      return val;</a>
+<a name="ln567">      }</a>
+<a name="ln568"> </a>
+<a name="ln569">//---------------------------------------------------------</a>
+<a name="ln570">//   hasNoSlope</a>
+<a name="ln571">//---------------------------------------------------------</a>
+<a name="ln572"> </a>
+<a name="ln573">bool Beam::hasNoSlope()</a>
+<a name="ln574">      {</a>
+<a name="ln575">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln576">      return _noSlope &amp;&amp; !_userModified[idx];</a>
+<a name="ln577">      }</a>
+<a name="ln578"> </a>
+<a name="ln579">//---------------------------------------------------------</a>
+<a name="ln580">//   slopeZero</a>
+<a name="ln581">//---------------------------------------------------------</a>
+<a name="ln582"> </a>
+<a name="ln583">bool Beam::slopeZero(const std::vector&lt;ChordRest*&gt;&amp; cl)</a>
+<a name="ln584">      {</a>
+<a name="ln585">      if (hasNoSlope() || cl.size() &lt; 2)</a>
+<a name="ln586">            return true;</a>
+<a name="ln587"> </a>
+<a name="ln588">      //</a>
+<a name="ln589">      // return true if beam spans a rest</a>
+<a name="ln590">      //</a>
+<a name="ln591">      if (cl.size() == 2 &amp;&amp; (cl.front()-&gt;isRest() || cl.back()-&gt;isRest()))</a>
+<a name="ln592">            return true;</a>
+<a name="ln593"> </a>
+<a name="ln594">//      for (const ChordRest* cr : cl) {</a>
+<a name="ln595">//            if (!cr-&gt;isChord())</a>
+<a name="ln596">//                  return true;</a>
+<a name="ln597">//            }</a>
+<a name="ln598">      int l1 = cl.front()-&gt;line();</a>
+<a name="ln599">      int le = cl.back()-&gt;line();</a>
+<a name="ln600"> </a>
+<a name="ln601">      // look for some pattern</a>
+<a name="ln602">      if (cl.size() == 4) {</a>
+<a name="ln603">            int l2 = cl[1]-&gt;line();</a>
+<a name="ln604">            int l3 = cl[2]-&gt;line();</a>
+<a name="ln605"> </a>
+<a name="ln606">            if ((l1 &lt; le) &amp;&amp; (l2 &gt; l1) &amp;&amp; (l2 &gt; l3) &amp;&amp; (l3 &gt; le))</a>
+<a name="ln607">                  return true;</a>
+<a name="ln608">            if ((l1 == l3) &amp;&amp; (l2 == le))</a>
+<a name="ln609">                  return true;</a>
+<a name="ln610">            }</a>
+<a name="ln611">      else if (cl.size() == 6) {</a>
+<a name="ln612">            int l2 = cl[1]-&gt;line();</a>
+<a name="ln613">            int l3 = cl[2]-&gt;line();</a>
+<a name="ln614">            int l4 = cl[3]-&gt;line();</a>
+<a name="ln615">            int l5 = cl[4]-&gt;line();</a>
+<a name="ln616">            if ((l2 &gt; l1) &amp;&amp; (l3 &gt; l2) &amp;&amp; (l1 == l4) &amp;&amp; (l2 == l5) &amp;&amp; (l3 == le))</a>
+<a name="ln617">                  return true;</a>
+<a name="ln618">            }</a>
+<a name="ln619">      //</a>
+<a name="ln620">      //    concave beams have a slope of 0.0</a>
+<a name="ln621">      //</a>
+<a name="ln622">      bool sameLine = true;</a>
+<a name="ln623"> </a>
+<a name="ln624">      slope = 0.0;</a>
+<a name="ln625">      if (cl.size() &gt;= 3) {</a>
+<a name="ln626">            int l4 = cl[1]-&gt;line(_up);</a>
+<a name="ln627">            for (unsigned  i = 1; i &lt; cl.size()-1; ++i) {</a>
+<a name="ln628">                  // Don't consider interior rests</a>
+<a name="ln629">                  if (!cl[i]-&gt;isChord())</a>
+<a name="ln630">                        continue;</a>
+<a name="ln631">                  int l3 = cl[i]-&gt;line(_up);</a>
+<a name="ln632">                  if (_up) {</a>
+<a name="ln633">                        if (l3 &lt; l1 &amp;&amp; l3 &lt; le)</a>
+<a name="ln634">                              return true;</a>
+<a name="ln635">                        }</a>
+<a name="ln636">                  else {</a>
+<a name="ln637">                        if (l3 &gt; l1 &amp;&amp; l3 &gt; le)</a>
+<a name="ln638">                              return true;</a>
+<a name="ln639">                        }</a>
+<a name="ln640">                  sameLine = l3 == l4;</a>
+<a name="ln641">                  }</a>
+<a name="ln642">            if (sameLine &amp;&amp; (l1 == l4 || le == l4) &amp;&amp; cl[1]-&gt;isChord()) {</a>
+<a name="ln643">                  if (_up) {</a>
+<a name="ln644">                        if (l1 == l4 &amp;&amp; l1 &lt; le)</a>
+<a name="ln645">                              return true;</a>
+<a name="ln646">                        if (le == l4 &amp;&amp; le &lt; l1)</a>
+<a name="ln647">                              return true;</a>
+<a name="ln648">                        }</a>
+<a name="ln649">                  else {</a>
+<a name="ln650">                        if (l1 == l4 &amp;&amp; l1 &gt; le)</a>
+<a name="ln651">                              return true;</a>
+<a name="ln652">                        else if (le == l4 &amp;&amp; le &gt; l1)</a>
+<a name="ln653">                              return true;</a>
+<a name="ln654">                        }</a>
+<a name="ln655">                  }</a>
+<a name="ln656">            }</a>
+<a name="ln657">      return l1 == le;</a>
+<a name="ln658">      }</a>
+<a name="ln659"> </a>
+<a name="ln660">//---------------------------------------------------------</a>
+<a name="ln661">//   BeamMetric</a>
+<a name="ln662">//---------------------------------------------------------</a>
+<a name="ln663"> </a>
+<a name="ln664">struct Bm {</a>
+<a name="ln665">      signed char l;     // stem len   in 1/4 spatium units</a>
+<a name="ln666">      signed char s;     // beam slant in 1/4 spatium units</a>
+<a name="ln667">      Bm() : l(0), s(0) {}</a>
+<a name="ln668">      Bm(signed char a, signed char b) : l(a), s(b) {}</a>
+<a name="ln669">      static int key(int a, int b, int c) { return ((a &amp; 0xff) &lt;&lt; 16) | ((b &amp; 0xff) &lt;&lt; 8) | (c &amp; 0xff); }</a>
+<a name="ln670">      };</a>
+<a name="ln671"> </a>
+<a name="ln672">static QHash&lt;int, Bm&gt; bMetrics;</a>
+<a name="ln673"> </a>
+<a name="ln674">//---------------------------------------------------------</a>
+<a name="ln675">//   initBeamMetrics</a>
+<a name="ln676">//---------------------------------------------------------</a>
+<a name="ln677"> </a>
+<a name="ln678">#define B(a,b,c,d,e) bMetrics[Bm::key(a, b, c)] = Bm(d, e);</a>
+<a name="ln679"> </a>
+<a name="ln680">static void initBeamMetrics()</a>
+<a name="ln681">      {</a>
+<a name="ln682">      // up  step1 step2 stemLen1 slant</a>
+<a name="ln683">      //                 (- up)   (- up)</a>
+<a name="ln684">      // =================================== C</a>
+<a name="ln685">      B(1,  10, 10, -12,  0);</a>
+<a name="ln686">      B(0,   3,  3,  11,  0);</a>
+<a name="ln687">      B(1,   3,  3, -11,  0);</a>
+<a name="ln688"> </a>
+<a name="ln689">      B(1,  10,  9, -12, -1);</a>
+<a name="ln690">      B(1,  10,  8, -12, -4);</a>
+<a name="ln691">      B(1,  10,  7, -12, -5);</a>
+<a name="ln692">      B(1,  10,  6, -15, -5);</a>
+<a name="ln693">      B(1,  10,  5, -16, -5);</a>
+<a name="ln694">      B(1,  10,  4, -20, -4);</a>
+<a name="ln695">      B(1,  10,  3, -20, -5);</a>
+<a name="ln696"> </a>
+<a name="ln697">      B(1,  10,  11, -12, 1);</a>
+<a name="ln698">      B(1,  10,  12, -13, 2);      // F</a>
+<a name="ln699">      B(1,  10,  13, -13, 2);</a>
+<a name="ln700">      B(1,  10,  14, -13, 2);</a>
+<a name="ln701">      B(1,  10,  15, -13, 2);</a>
+<a name="ln702"> </a>
+<a name="ln703">      B(1,  3,  4, -11, 1);</a>
+<a name="ln704">      B(1,  3,  5, -11, 2);</a>
+<a name="ln705">      B(1,  3,  6, -11, 4);</a>
+<a name="ln706">      B(1,  3,  7, -11, 5);</a>
+<a name="ln707">      B(1,  3,  8, -11, 5);</a>
+<a name="ln708">      B(1,  3,  9, -11, 5);</a>
+<a name="ln709">      B(1,  3, 10, -11, 5);</a>
+<a name="ln710"> </a>
+<a name="ln711">      B(0, -4, -3,  15, 1);</a>
+<a name="ln712">      B(0, -4, -2,  15, 2);</a>
+<a name="ln713">      B(0, -4, -1,  15, 2);</a>
+<a name="ln714">      B(0, -4,  0,  15, 5);</a>
+<a name="ln715">      B(0, -4,  1,  16, 5);</a>
+<a name="ln716">      B(0, -4,  2,  20, 4);</a>
+<a name="ln717">      B(0, -4,  3,  20, 5);</a>
+<a name="ln718"> </a>
+<a name="ln719">      B(0,  3,  4,  13, 1);</a>
+<a name="ln720">      B(0,  3,  5,  13, 2);</a>
+<a name="ln721">      B(0,  3,  6,  14, 4);</a>
+<a name="ln722">      B(0,  3,  7,  14, 4);</a>
+<a name="ln723">      B(0,  3,  8,  14, 6);</a>
+<a name="ln724"> </a>
+<a name="ln725">      B(0,  3,  2,  11, -1);</a>
+<a name="ln726">      B(0,  3,  1,  11, -2);</a>
+<a name="ln727">      B(0,  3,  0,  11, -5);</a>
+<a name="ln728">      B(0,  3, -1,  11, -5);</a>
+<a name="ln729">      B(0,  3, -2,  11, -5);</a>
+<a name="ln730">      B(0,  3, -3,  11, -5);</a>
+<a name="ln731">      B(0,  3, -4,  11, -5);</a>
+<a name="ln732"> </a>
+<a name="ln733">      // =================================== D</a>
+<a name="ln734">      B(1,  9,  9,  -13, 0);</a>
+<a name="ln735">      B(0,  2,  2,   12, 0);</a>
+<a name="ln736">      B(1,  2,  2,  -11, 0);</a>
+<a name="ln737"> </a>
+<a name="ln738">      B(1,  9,  8,  -13, -1);</a>
+<a name="ln739">      B(1,  9,  7,  -13, -2);</a>
+<a name="ln740">      B(1,  9,  6,  -13, -5);</a>
+<a name="ln741">      B(1,  9,  5,  -14, -5);</a>
+<a name="ln742">      B(1,  9,  4,  -16, -6);</a>
+<a name="ln743">      B(1,  9,  3,  -17, -5);</a>
+<a name="ln744">      B(1,  9,  2,  -17, -8);</a>
+<a name="ln745"> </a>
+<a name="ln746">      B(1,  9, 10,  -11, 1);</a>
+<a name="ln747">      B(1,  9, 11,  -11, 2);</a>
+<a name="ln748">      B(1,  9, 12,  -11, 2);</a>
+<a name="ln749">      B(1,  9, 13,  -11, 2);</a>
+<a name="ln750">      B(1,  9, 14,  -11, 2);</a>
+<a name="ln751">      B(1,  9, 15,  -11, 2);</a>
+<a name="ln752"> </a>
+<a name="ln753">      B(1,  2, 3,   -12, 1);</a>
+<a name="ln754">      B(1,  2, 4,   -12, 2);</a>
+<a name="ln755">      B(1,  2, 5,   -12, 4);</a>
+<a name="ln756">      B(1,  2, 6,   -12, 5);</a>
+<a name="ln757">      B(1,  2, 7,   -11, 5);</a>
+<a name="ln758">      B(1,  2, 8,   -12, 5);</a>
+<a name="ln759">      B(1,  2, 9,   -12, 8);</a>
+<a name="ln760"> </a>
+<a name="ln761">      B(0, -5,-4,   16, 2);</a>
+<a name="ln762">      B(0, -5,-3,   16, 2);</a>
+<a name="ln763">      B(0, -5,-2,   17, 2);</a>
+<a name="ln764">      B(0, -5,-1,   17, 2);</a>
+<a name="ln765">      B(0, -5, 0,   18, 4);</a>
+<a name="ln766">      B(0, -5, 1,   18, 5);</a>
+<a name="ln767">      B(0, -5, 2,   21, 5);</a>
+<a name="ln768"> </a>
+<a name="ln769">      B(0,  2, 3,   12, 1);</a>
+<a name="ln770">      B(0,  2, 4,   12, 4);</a>
+<a name="ln771">      B(0,  2, 5,   13, 4);  // F</a>
+<a name="ln772">      B(0,  2, 6,   15, 5);</a>
+<a name="ln773">      B(0,  2, 7,   15, 6);</a>
+<a name="ln774">      B(0,  2, 8,   16, 8);</a>
+<a name="ln775">      B(0,  2, 9,   16, 8);</a>
+<a name="ln776"> </a>
+<a name="ln777">      B(0,  2,  1,   12, -1);</a>
+<a name="ln778">      B(0,  2,  0,   12, -4);</a>
+<a name="ln779">      B(0,  2, -1,   12, -5);</a>
+<a name="ln780">      B(0,  2, -2,   12, -5);</a>
+<a name="ln781">      B(0,  2, -3,   12, -4);</a>
+<a name="ln782">      B(0,  2, -4,   12, -4);</a>
+<a name="ln783">      B(0,  2, -5,   12, -5);</a>
+<a name="ln784"> </a>
+<a name="ln785">      // =================================== E</a>
+<a name="ln786">      B(1, 8, 8,  -12, 0);</a>
+<a name="ln787">      B(0, 1, 1,   13, 0);</a>
+<a name="ln788">      B(1, 1, 1,  -12, 0);</a>
+<a name="ln789"> </a>
+<a name="ln790">      B(1, 8, 7, -12, -1);</a>
+<a name="ln791">      B(1, 8, 6, -12, -4);</a>
+<a name="ln792">      B(1, 8, 5, -12, -5);</a>
+<a name="ln793">      B(1, 8, 4, -15, -5);</a>
+<a name="ln794">      B(1, 8, 3, -16, -5);</a>
+<a name="ln795">      B(1, 8, 2, -17, -6);</a>
+<a name="ln796">      B(1, 8, 1, -19, -6);</a>
+<a name="ln797"> </a>
+<a name="ln798">      B(1, 15, 11, -21, -1);</a>
+<a name="ln799">      B(1, 15, 10, -21, -1);</a>
+<a name="ln800">      B(1, 15,  9, -21, -4);</a>
+<a name="ln801">      B(1, 15,  8, -21, -5);</a>
+<a name="ln802"> </a>
+<a name="ln803">      B(1,  1,  8, -11,  6);</a>
+<a name="ln804">      B(1,  1,  7, -11,  6);</a>
+<a name="ln805">      B(1,  1,  6, -12,  6);</a>
+<a name="ln806"> </a>
+<a name="ln807">      B(1,  8,  9, -12,  1);</a>
+<a name="ln808">      B(1,  8, 10, -12,  4);</a>
+<a name="ln809">      B(1,  8, 11, -12,  5);</a>
+<a name="ln810">      B(1,  8, 12, -12,  5);</a>
+<a name="ln811">      B(1,  8, 13, -12,  4);</a>
+<a name="ln812">      B(1,  8, 14, -12,  5);</a>
+<a name="ln813">      B(1,  8, 15, -12,  5);</a>
+<a name="ln814"> </a>
+<a name="ln815">      B(0,  1,  0, 11,  -1);</a>
+<a name="ln816">      B(0,  1, -1, 11,  -2);</a>
+<a name="ln817">      B(0,  1, -2, 11,  -5);</a>
+<a name="ln818">      B(0,  1, -3, 11,  -5);</a>
+<a name="ln819">      B(0,  1, -4, 11,  -5);</a>
+<a name="ln820">      B(0,  1, -5, 11,  -5);</a>
+<a name="ln821">      B(0,  1, -6, 11,  -5);</a>
+<a name="ln822"> </a>
+<a name="ln823">      B(0, 1, 2, 13, 1);</a>
+<a name="ln824">      B(0, 1, 3, 13, 2);</a>
+<a name="ln825">      B(0, 1, 4, 13, 5);</a>
+<a name="ln826">      B(0, 1, 5, 14, 5);</a>
+<a name="ln827">      B(0, 1, 6, 15, 5);</a>
+<a name="ln828">      B(0, 1, 7, 17, 5);</a>
+<a name="ln829">      B(0, 1, 8, 17, 8);</a>
+<a name="ln830"> </a>
+<a name="ln831">      B(0, -6, -2,  19, 2);</a>
+<a name="ln832">      B(0, -6, -1,  19, 4);</a>
+<a name="ln833">      B(0, -6,  0,  20, 4);</a>
+<a name="ln834">      B(0, -6,  1,  20, 5);</a>
+<a name="ln835"> </a>
+<a name="ln836">      B(0, 8, 3, 9,  -6);</a>
+<a name="ln837">      B(0, 8, 2, 12, -8);</a>
+<a name="ln838">      B(0, 8, 1, 12, -8);</a>
+<a name="ln839"> </a>
+<a name="ln840">      // =================================== F</a>
+<a name="ln841">      B(1, 7, 7,-13, 0);      //F</a>
+<a name="ln842">      B(0, 0, 0, 12, 0);</a>
+<a name="ln843">      B(0, 7, 7, 12, 0);</a>
+<a name="ln844"> </a>
+<a name="ln845">      B(1, 7, 6, -13, -1);</a>
+<a name="ln846">      B(1, 7, 5, -13, -2);</a>
+<a name="ln847">      B(1, 7, 4, -13, -5);</a>
+<a name="ln848">      B(1, 7, 3, -14, -5);</a>
+<a name="ln849">      B(1, 7, 2, -15, -6);</a>
+<a name="ln850">      B(1, 7, 1, -17, -6);</a>
+<a name="ln851">      B(1, 7, 0, -18, -8);</a>
+<a name="ln852"> </a>
+<a name="ln853">      B(1, 14, 10, -19, -2);</a>
+<a name="ln854">      B(1, 14,  9, -19, -2);</a>
+<a name="ln855">      B(1, 14,  8, -20, -4);</a>
+<a name="ln856">      B(1, 14,  7, -20, -5);</a>
+<a name="ln857"> </a>
+<a name="ln858">      B(1,  0,  5,  -9, 6);</a>
+<a name="ln859">      B(1,  0,  6, -12, 8);</a>
+<a name="ln860">      B(1,  0,  7, -12, 8);</a>
+<a name="ln861"> </a>
+<a name="ln862">      B(1, 7,  8, -11, 1);</a>
+<a name="ln863">      B(1, 7,  9, -11, 2);</a>
+<a name="ln864">      B(1, 7, 10, -11, 5);</a>
+<a name="ln865">      B(1, 7, 11, -11, 5);</a>
+<a name="ln866">      B(1, 7, 12, -11, 5);</a>
+<a name="ln867">      B(1, 7, 13, -11, 5);</a>
+<a name="ln868">      B(1, 7, 14, -11, 5);</a>
+<a name="ln869"> </a>
+<a name="ln870">      B(0, 0, -1, 12, -1);</a>
+<a name="ln871">      B(0, 0, -2, 12, -4);</a>
+<a name="ln872">      B(0, 0, -3, 12, -5);</a>
+<a name="ln873">      B(0, 0, -4, 12, -5);</a>
+<a name="ln874">      B(0, 0, -5, 12, -4);</a>
+<a name="ln875">      B(0, 0, -6, 12, -4);</a>
+<a name="ln876">      B(0, 0, -7, 12, -4);</a>
+<a name="ln877"> </a>
+<a name="ln878">      B(0, 0, 1, 12, 1);</a>
+<a name="ln879">      B(0, 0, 2, 12, 4);</a>
+<a name="ln880">      B(0, 0, 3, 12, 5);</a>
+<a name="ln881">      B(0, 0, 4, 15, 5);</a>
+<a name="ln882">      B(0, 0, 5, 16, 5);</a>
+<a name="ln883">      B(0, 0, 6, 17, 5);</a>
+<a name="ln884">      B(0, 0, 7, 19, 6);</a>
+<a name="ln885"> </a>
+<a name="ln886">      B(0, -7, -3, 21, 2);</a>
+<a name="ln887">      B(0, -7, -2, 21, 2);</a>
+<a name="ln888">      B(0, -7, -1, 21, 2);</a>
+<a name="ln889">      B(0, -7,  0, 22, 4);</a>
+<a name="ln890"> </a>
+<a name="ln891">      B(0, 7, 2, 12, -6);</a>
+<a name="ln892">      B(0, 7, 1, 11, -6);</a>
+<a name="ln893">      B(0, 7, 0, 11, -6);</a>
+<a name="ln894"> </a>
+<a name="ln895">      // =================================== G</a>
+<a name="ln896">      B(1,  6,  6, -12, 0);</a>
+<a name="ln897">      B(0, -1, -1,  13, 0);</a>
+<a name="ln898">      B(0,  6,  6,  11, 0);</a>
+<a name="ln899"> </a>
+<a name="ln900">      B(1, 6,  5, -12, -1);</a>
+<a name="ln901">      B(1, 6,  4, -12, -4);</a>
+<a name="ln902">      B(1, 6,  3, -13, -4);</a>
+<a name="ln903">      B(1, 6,  2, -15, -5);</a>
+<a name="ln904">      B(1, 6,  1, -13, -7);</a>
+<a name="ln905">      B(1, 6,  0, -16, -8);</a>
+<a name="ln906">      B(1, 6, -1, -16, -8);</a>
+<a name="ln907"> </a>
+<a name="ln908">      B(1, 13, 10, -17, -2);</a>
+<a name="ln909">      B(1, 13,  9, -17, -2);</a>
+<a name="ln910">      B(1, 13,  8, -18, -4);</a>
+<a name="ln911">      B(1, 13,  7, -18, -5);</a>
+<a name="ln912">      B(1, 13,  6, -21, -5);</a>
+<a name="ln913"> </a>
+<a name="ln914">      B(1, -1, 6, -10, 8);</a>
+<a name="ln915"> </a>
+<a name="ln916">      B(1, 6,  7, -12, 1);</a>
+<a name="ln917">      B(1, 6,  8, -12, 4);</a>
+<a name="ln918">      B(1, 6,  9, -12, 5);</a>
+<a name="ln919">      B(1, 6, 10, -12, 5);</a>
+<a name="ln920">      B(1, 6, 11, -12, 4);</a>
+<a name="ln921">      B(1, 6, 12, -12, 5);</a>
+<a name="ln922">      B(1, 6, 13, -12, 5);</a>
+<a name="ln923"> </a>
+<a name="ln924">      B(0, -1, -2, 11, -1);</a>
+<a name="ln925">      B(0, -1, -3, 11, -2);</a>
+<a name="ln926">      B(0, -1, -4, 11, -2);</a>
+<a name="ln927">      B(0, -1, -5, 11, -2);</a>
+<a name="ln928">      B(0, -1, -6, 11, -2);</a>
+<a name="ln929">      B(0, -1, -7, 11, -2);</a>
+<a name="ln930"> </a>
+<a name="ln931">      B(0, -1,  0, 13, 1);</a>
+<a name="ln932">      B(0, -1,  1, 13, 2);</a>
+<a name="ln933">      B(0, -1,  2, 13, 5);</a>
+<a name="ln934">      B(0, -1,  3, 14, 5);</a>
+<a name="ln935">      B(0, -1,  4, 17, 6);</a>
+<a name="ln936">      B(0, -1,  5, 18, 5);</a>
+<a name="ln937">      B(0, -1,  6, 18, 8);</a>
+<a name="ln938"> </a>
+<a name="ln939">      B(0,  6,  5, 12, -4);</a>
+<a name="ln940">      B(0,  6,  4, 12, -4);</a>
+<a name="ln941">      B(0,  6,  3, 12, -4);</a>
+<a name="ln942">      B(0,  6,  2, 12, -6);</a>
+<a name="ln943">      B(0,  6,  1, 11, -6);</a>
+<a name="ln944">      B(0,  6,  0, 12, -7);</a>
+<a name="ln945">      B(0,  6, -1, 12, -8);</a>
+<a name="ln946"> </a>
+<a name="ln947">      // =================================== A</a>
+<a name="ln948">      B(1,  5,  5, -11, 0);</a>
+<a name="ln949">      B(0, -2, -2,  12, 0);</a>
+<a name="ln950">      B(0,  5,  5,  11, 0);</a>
+<a name="ln951"> </a>
+<a name="ln952">      B(1,  5,  4, -13, -1);</a>
+<a name="ln953">      B(1,  5,  3, -13, -2);</a>
+<a name="ln954">      B(1,  5,  2, -14, -4);</a>
+<a name="ln955">      B(1,  5,  1, -15, -4);</a>
+<a name="ln956">      B(1,  5,  0, -15, -6);</a>
+<a name="ln957"> </a>
+<a name="ln958">      B(1, 12, 11, -15, -1);</a>
+<a name="ln959">      B(1, 12, 10, -15, -2);</a>
+<a name="ln960">      B(1, 12,  9, -15, -2);</a>
+<a name="ln961">      B(1, 12,  8, -15, -5);</a>
+<a name="ln962">      B(1, 12,  7, -16, -5);</a>
+<a name="ln963">      B(1, 12,  6, -20, -4);</a>
+<a name="ln964">      B(1, 12,  5, -20, -5);</a>
+<a name="ln965"> </a>
+<a name="ln966">      B(1,  5,  6, -11,  1);</a>
+<a name="ln967">      B(1,  5,  7, -11,  2);</a>
+<a name="ln968">      B(1,  5,  8, -11,  5);</a>
+<a name="ln969">      B(1,  5,  9, -11,  5);</a>
+<a name="ln970">      B(1,  5, 10, -11,  5);</a>
+<a name="ln971">      B(1,  5, 11, -11,  5);</a>
+<a name="ln972">      B(1,  5, 12, -11,  5);</a>
+<a name="ln973"> </a>
+<a name="ln974">      B(0, -2, -1, 12, 1);</a>
+<a name="ln975">      B(0, -2,  0, 12, 4);</a>
+<a name="ln976">      B(0, -2,  1, 12, 5);</a>
+<a name="ln977">      B(0, -2,  2, 15, 5);</a>
+<a name="ln978">      B(0, -2,  3, 16, 5);</a>
+<a name="ln979">      B(0, -2,  4, 20, 4);</a>
+<a name="ln980">      B(0, -2,  5, 20, 5);</a>
+<a name="ln981"> </a>
+<a name="ln982">      B(0, -2, -3, 12, -1);</a>
+<a name="ln983">      B(0, -2, -4, 13, -2);</a>
+<a name="ln984">      B(0, -2, -5, 13, -2);</a>
+<a name="ln985">      B(0, -2, -6, 13, -2);</a>
+<a name="ln986">      B(0, -2, -7, 13, -2);</a>
+<a name="ln987"> </a>
+<a name="ln988">      B(0,  5,  4, 11, -1);</a>
+<a name="ln989">      B(0,  5,  3, 11, -2);</a>
+<a name="ln990">      B(0,  5,  2, 11, -4);</a>
+<a name="ln991">      B(0,  5,  1, 11, -5);</a>
+<a name="ln992">      B(0,  5,  0, 11, -5);</a>
+<a name="ln993">      B(0,  5, -1, 11, -5);</a>
+<a name="ln994">      B(0,  5, -2, 11, -5);</a>
+<a name="ln995"> </a>
+<a name="ln996">      // =================================== B</a>
+<a name="ln997">      B(1,  4,  4, -12, 0);</a>
+<a name="ln998">      B(1, 11, 11, -13, 0);</a>
+<a name="ln999">      B(0,  4,  4,  12, 0);</a>
+<a name="ln1000">      B(0, -3, -3,  13, 0);</a>
+<a name="ln1001"> </a>
+<a name="ln1002">      B(1, 11, 10, -13, -1);</a>
+<a name="ln1003">      B(1, 11,  9, -13, -2);</a>
+<a name="ln1004">      B(1, 11,  8, -13, -5);</a>
+<a name="ln1005">      B(1, 11,  7, -14, -5);</a>
+<a name="ln1006">      B(1, 11,  6, -18, -4);</a>
+<a name="ln1007">      B(1, 11,  5, -18, -5);</a>
+<a name="ln1008">      B(1, 11,  4, -21, -5);</a>
+<a name="ln1009"> </a>
+<a name="ln1010">      B(1,  4,  3, -12, -1);</a>
+<a name="ln1011">      B(1,  4,  2, -12, -4);</a>
+<a name="ln1012">      B(1,  4,  1, -14, -4);</a>
+<a name="ln1013">      B(1,  4,  0, -16, -4);</a>
+<a name="ln1014"> </a>
+<a name="ln1015">      B(1, 11, 12, -14, 1);</a>
+<a name="ln1016">      B(1, 11, 13, -14, 1);</a>
+<a name="ln1017">      B(1, 11, 14, -14, 1);</a>
+<a name="ln1018">      B(1, 11, 15, -15, 2);</a>
+<a name="ln1019">      B(1, 11, 16, -15, 2);</a>
+<a name="ln1020"> </a>
+<a name="ln1021">      B(1,  4,  5, -12, 1);</a>
+<a name="ln1022">      B(1,  4,  6, -12, 4);</a>
+<a name="ln1023">      B(1,  4,  7, -12, 5);</a>
+<a name="ln1024">      B(1,  4,  8, -12, 5);</a>
+<a name="ln1025">      B(1,  4,  9, -13, 6);</a>
+<a name="ln1026">      B(1,  4, 10, -12, 4);</a>
+<a name="ln1027">      B(1,  4, 11, -12, 5);</a>
+<a name="ln1028"> </a>
+<a name="ln1029">      B(0,  4,  3, 12, -1);</a>
+<a name="ln1030">      B(0,  4,  2, 12, -4);</a>
+<a name="ln1031">      B(0,  4,  1, 12, -5);</a>
+<a name="ln1032">      B(0,  4,  0, 12, -5);</a>
+<a name="ln1033">      B(0,  4, -1, 13, -6);</a>
+<a name="ln1034">      B(0,  4, -2, 12, -4);</a>
+<a name="ln1035">      B(0,  4, -3, 12, -5);</a>
+<a name="ln1036"> </a>
+<a name="ln1037">      B(0,  4,  5, 12, 1);</a>
+<a name="ln1038">      B(0,  4,  6, 12, 4);</a>
+<a name="ln1039"> </a>
+<a name="ln1040">      B(0, -3, -4, 14, -1);</a>
+<a name="ln1041">      B(0, -3, -5, 14, -1);</a>
+<a name="ln1042">      B(0, -3, -6, 14, -1);</a>
+<a name="ln1043">      B(0, -3, -7, 15, -2);</a>
+<a name="ln1044">      B(0, -3, -8, 15, -2);</a>
+<a name="ln1045">      B(0, -3, -9, 15, -2);</a>
+<a name="ln1046"> </a>
+<a name="ln1047">      B(0, -3, -2, 13, 1);</a>
+<a name="ln1048">      B(0, -3, -1, 13, 2);</a>
+<a name="ln1049">      B(0, -3,  0, 13, 5);</a>
+<a name="ln1050">      B(0, -3,  1, 14, 5);</a>
+<a name="ln1051">      B(0, -3,  2, 18, 4);</a>
+<a name="ln1052">      B(0, -3,  3, 18, 5);</a>
+<a name="ln1053">      B(0, -3,  4, 21, 5);</a>
+<a name="ln1054">      }</a>
+<a name="ln1055"> </a>
+<a name="ln1056">//---------------------------------------------------------</a>
+<a name="ln1057">//   beamMetric1</a>
+<a name="ln1058">//    table driven</a>
+<a name="ln1059">//---------------------------------------------------------</a>
+<a name="ln1060"> </a>
+<a name="ln1061">static Bm beamMetric1(bool up, char l1, char l2)</a>
+<a name="ln1062">      {</a>
+<a name="ln1063">      static int initialized = false;</a>
+<a name="ln1064">      if (!initialized) {</a>
+<a name="ln1065">            initBeamMetrics();</a>
+<a name="ln1066">            initialized = true;</a>
+<a name="ln1067">            }</a>
+<a name="ln1068">      return bMetrics[Bm::key(up, l1, l2)];</a>
+<a name="ln1069">      }</a>
+<a name="ln1070"> </a>
+<a name="ln1071">//---------------------------------------------------------</a>
+<a name="ln1072">//   adjust</a>
+<a name="ln1073">//    adjust stem len for notes between start-end</a>
+<a name="ln1074">//    return 1/4 spatium units</a>
+<a name="ln1075">//---------------------------------------------------------</a>
+<a name="ln1076"> </a>
+<a name="ln1077">static int adjust(qreal _spatium4, int slant, const std::vector&lt;ChordRest*&gt;&amp; cl)</a>
+<a name="ln1078">      {</a>
+<a name="ln1079">      size_t n = cl.size();</a>
+<a name="ln1080">      const ChordRest* c1 = cl[0];</a>
+<a name="ln1081">      const ChordRest* c2 = cl[n-1];</a>
+<a name="ln1082"> </a>
+<a name="ln1083">      QPointF p1(c1-&gt;stemPosBeam());   // canvas coordinates</a>
+<a name="ln1084">      qreal slope = (slant * _spatium4) / (c2-&gt;stemPosBeam().x() - p1.x());</a>
+<a name="ln1085">      int ml = -1000;</a>
+<a name="ln1086">      if (c1-&gt;up()) {</a>
+<a name="ln1087">            for (size_t i = 1; i &lt; n; ++i) {</a>
+<a name="ln1088">                  QPointF p3(cl[i]-&gt;stemPosBeam());</a>
+<a name="ln1089">                  qreal yUp   = p1.y() + (p3.x() - p1.x()) * slope;</a>
+<a name="ln1090">                  int l       = lrint((yUp - p3.y()) / (_spatium4));</a>
+<a name="ln1091">                  ml          = qMax(ml, l);</a>
+<a name="ln1092">                  }</a>
+<a name="ln1093">            }</a>
+<a name="ln1094">      else {</a>
+<a name="ln1095">            for (size_t i = 1; i &lt; n; ++i) {</a>
+<a name="ln1096">                  const ChordRest* c = cl[i];</a>
+<a name="ln1097">                  QPointF p3(c-&gt;stemPosBeam());</a>
+<a name="ln1098">                  qreal yUp   = p1.y() + (p3.x() - p1.x()) * slope;</a>
+<a name="ln1099">                  int l       = lrint((p3.y() - yUp) / (_spatium4));</a>
+<a name="ln1100">                  ml          = qMax(ml, l);</a>
+<a name="ln1101">                  }</a>
+<a name="ln1102">            }</a>
+<a name="ln1103">      // on tab staff, reduce a bit the stems (value 4 is experimental)</a>
+<a name="ln1104">      // TODO : proper fix should adapt all the numeric vaues used in Beam::computeStemLen() below</a>
+<a name="ln1105">      // to variable line distance</a>
+<a name="ln1106">      if (c1-&gt;staff() &amp;&amp; c1-&gt;staff()-&gt;isTabStaff(Fraction(0,1))) {</a>
+<a name="ln1107">            ml = (ml != 0) ? ml - 4 : 0;</a>
+<a name="ln1108">            return ml;</a>
+<a name="ln1109">            }</a>
+<a name="ln1110">      return (ml &gt; 0) ? ml : 0;</a>
+<a name="ln1111">      }</a>
+<a name="ln1112"> </a>
+<a name="ln1113">//---------------------------------------------------------</a>
+<a name="ln1114">//   adjust2</a>
+<a name="ln1115">//    adjust stem position for single beams</a>
+<a name="ln1116">//---------------------------------------------------------</a>
+<a name="ln1117"> </a>
+<a name="ln1118">static void adjust2(Bm&amp; bm, const ChordRest* c1)</a>
+<a name="ln1119">      {</a>
+<a name="ln1120">      static const int dd[4][4] = {</a>
+<a name="ln1121">            // St   H  --   S</a>
+<a name="ln1122">            {0,  0,  1,  0},     // St</a>
+<a name="ln1123">            {0,  0, -1,  0},     // S</a>
+<a name="ln1124">            {1,  1,  1, -1},     // --</a>
+<a name="ln1125">            {0,  0, -1,  0}      // H</a>
+<a name="ln1126">            };</a>
+<a name="ln1127">      int ys = bm.l + c1-&gt;line() * 2;</a>
+<a name="ln1128">      int e1 = qAbs((ys  + 1000) % 4);</a>
+<a name="ln1129">      int e2 = qAbs((ys + 1000 + bm.s) % 4);</a>
+<a name="ln1130">      bm.l  -= dd[e1][e2];</a>
+<a name="ln1131">      }</a>
+<a name="ln1132"> </a>
+<a name="ln1133">//---------------------------------------------------------</a>
+<a name="ln1134">//   minSlant</a>
+<a name="ln1135">//---------------------------------------------------------</a>
+<a name="ln1136"> </a>
+<a name="ln1137">static int minSlant(uint interval)</a>
+<a name="ln1138">      {</a>
+<a name="ln1139">      static const int minSlantTable[] = { 0, 1, 2, 4, 5 };</a>
+<a name="ln1140">      if (interval &gt; 4)</a>
+<a name="ln1141">            return 5;</a>
+<a name="ln1142">      return minSlantTable[interval];</a>
+<a name="ln1143">      }</a>
+<a name="ln1144"> </a>
+<a name="ln1145">//---------------------------------------------------------</a>
+<a name="ln1146">//   maxSlant</a>
+<a name="ln1147">//---------------------------------------------------------</a>
+<a name="ln1148"> </a>
+<a name="ln1149">static int maxSlant(uint interval)</a>
+<a name="ln1150">      {</a>
+<a name="ln1151">      static const int maxSlantTable[] = { 0, 1, 4, 5, 5, 6, 7, 8 };</a>
+<a name="ln1152">      if (interval &gt; 7)</a>
+<a name="ln1153">            return 8;</a>
+<a name="ln1154">      return maxSlantTable[interval];</a>
+<a name="ln1155">      }</a>
+<a name="ln1156"> </a>
+<a name="ln1157">//---------------------------------------------------------</a>
+<a name="ln1158">//   slantTable</a>
+<a name="ln1159">//---------------------------------------------------------</a>
+<a name="ln1160"> </a>
+<a name="ln1161">static int* slantTable(uint interval)</a>
+<a name="ln1162">      {</a>
+<a name="ln1163">      static int t[8][5] = {</a>
+<a name="ln1164">            { 0, -1,  0,  0,  0 },</a>
+<a name="ln1165">            { 1, -1,  0,  0,  0 },</a>
+<a name="ln1166">            { 3,  4,  2, -1,  0 },</a>
+<a name="ln1167">            { 4,  5, -1,  0,  0 },</a>
+<a name="ln1168">            { 5, -1,  0,  0,  0 },</a>
+<a name="ln1169">            { 5,  6, -1,  0,  0 },</a>
+<a name="ln1170">            { 6,  5,  7, -1,  0 },</a>
+<a name="ln1171">            { 6,  7,  5,  8, -1 },</a>
+<a name="ln1172">            };</a>
+<a name="ln1173">      if (interval &gt; 7)</a>
+<a name="ln1174">            interval = 7;</a>
+<a name="ln1175">      return &amp;t[interval][0] ;</a>
+<a name="ln1176">      }</a>
+<a name="ln1177"> </a>
+<a name="ln1178">//---------------------------------------------------------</a>
+<a name="ln1179">//   computeStemLen</a>
+<a name="ln1180">//---------------------------------------------------------</a>
+<a name="ln1181"> </a>
+<a name="ln1182">void Beam::computeStemLen(const std::vector&lt;ChordRest*&gt;&amp; cl, qreal&amp; py1, int beamLevels)</a>
+<a name="ln1183">      {</a>
+<a name="ln1184">      qreal _spatium      = spatium();</a>
+<a name="ln1185">      qreal _spatium4     = _spatium * .25;</a>
+<a name="ln1186">      // TAB: scale to staff line distance for vert. pos. within a staff</a>
+<a name="ln1187">      qreal _spStaff4     = staff()-&gt;isTabStaff(Fraction(0,1)) ? _spatium4 * staff()-&gt;lineDistance(Fraction(0,1)) : _spatium4;</a>
+<a name="ln1188">      const ChordRest* c1 = cl.front();</a>
+<a name="ln1189">      const ChordRest* c2 = cl.back();</a>
+<a name="ln1190">      qreal dx            = c2-&gt;pagePos().x() - c1-&gt;pagePos().x();</a>
+<a name="ln1191">      bool zeroSlant      = slopeZero(cl);</a>
+<a name="ln1192"> </a>
+<a name="ln1193">      int l1 = c1-&gt;line() * 2;</a>
+<a name="ln1194">      int l2 = c2-&gt;line() * 2;</a>
+<a name="ln1195"> </a>
+<a name="ln1196">      Bm bm;</a>
+<a name="ln1197"> </a>
+<a name="ln1198">      // shorten stem length if grace notes beam is under main notes beam.</a>
+<a name="ln1199">      // Value 4 estimated. Desired: to find a good formula.</a>
+<a name="ln1200"> </a>
+<a name="ln1201">      int graceStemLengthCorrection;</a>
+<a name="ln1202">      if (_isGrace)</a>
+<a name="ln1203">            graceStemLengthCorrection = static_cast&lt;const Chord*&gt;(c1)-&gt;underBeam() ? 4 : 3;</a>
+<a name="ln1204">      else</a>
+<a name="ln1205">            graceStemLengthCorrection = 0;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">      if (beamLevels == 1) {</a>
+<a name="ln1208">            bm = beamMetric1(_up, l1 / 2, l2 / 2);</a>
+<a name="ln1209">            if (hasNoSlope())</a>
+<a name="ln1210">                  bm.s = 0.0;</a>
+<a name="ln1211"> </a>
+<a name="ln1212">            // special case for two beamed notes: flatten to max of 1sp</a>
+<a name="ln1213">            static int maxShortSlant = 4;</a>
+<a name="ln1214">            if (bm.l &amp;&amp; elements().size() == 2) {</a>
+<a name="ln1215">                  //qDebug(&quot;computeStemLen: l = %d, s = %d&quot;, (int)bm.l, (int)bm.s);</a>
+<a name="ln1216">                  if (bm.s &gt; maxShortSlant) {</a>
+<a name="ln1217">                        // slant downward</a>
+<a name="ln1218">                        // lengthen first stem if down</a>
+<a name="ln1219">                        if (bm.l &gt; 0)</a>
+<a name="ln1220">                              bm.l += bm.s - maxShortSlant;</a>
+<a name="ln1221">                        // flatten beam</a>
+<a name="ln1222">                        bm.s = maxShortSlant;</a>
+<a name="ln1223">                        }</a>
+<a name="ln1224">                  else if (bm.s &lt; -maxShortSlant) {</a>
+<a name="ln1225">                        // slant upward</a>
+<a name="ln1226">                        // lengthen first stem if up</a>
+<a name="ln1227">                        if (bm.l &lt; 0)</a>
+<a name="ln1228">                              bm.l -= -maxShortSlant - bm.s;</a>
+<a name="ln1229">                        // flatten beam</a>
+<a name="ln1230">                        bm.s = -maxShortSlant;</a>
+<a name="ln1231">                        }</a>
+<a name="ln1232">                  }</a>
+<a name="ln1233"> </a>
+<a name="ln1234">            if (bm.l) {</a>
+<a name="ln1235">                  if (bm.l &gt; 0)</a>
+<a name="ln1236">                        bm.l -= graceStemLengthCorrection;</a>
+<a name="ln1237">                  else</a>
+<a name="ln1238">                        bm.l += graceStemLengthCorrection;</a>
+<a name="ln1239">                  }</a>
+<a name="ln1240"> </a>
+<a name="ln1241">            if (bm.l &amp;&amp; !(zeroSlant &amp;&amp; cl.size() &gt; 2)) {</a>
+<a name="ln1242">                  if (cl.size() &gt; 2) {</a>
+<a name="ln1243">                        if (_up)</a>
+<a name="ln1244">                              bm.l = -12 - adjust(_spStaff4, bm.s, cl);</a>
+<a name="ln1245">                        else</a>
+<a name="ln1246">                              bm.l = 12 + adjust(_spStaff4, bm.s, cl);</a>
+<a name="ln1247">                        adjust2(bm, c1);</a>
+<a name="ln1248">                        }</a>
+<a name="ln1249">                  }</a>
+<a name="ln1250">            else {</a>
+<a name="ln1251">                  int* st = slantTable(zeroSlant ? 0 : qAbs((l2 - l1) / 2));</a>
+<a name="ln1252">                  int ll1;</a>
+<a name="ln1253">                  if (_up) {</a>
+<a name="ln1254">                        ll1 = l1 - ((l1 &amp; 3) ? 11 : 12);</a>
+<a name="ln1255">                        int ll1m = l1 - 10;</a>
+<a name="ln1256">                        int rll1 = ll1;</a>
+<a name="ln1257">                        if ((l1 &gt; 20) &amp;&amp; (l2 &gt; 20)) {</a>
+<a name="ln1258">                              st = slantTable(zeroSlant ? 0 : 1);</a>
+<a name="ln1259">                              rll1 = (zeroSlant || (l2 &lt; l1)) ? 9 : 8;</a>
+<a name="ln1260">                              }</a>
+<a name="ln1261">                        for (int n = 0; ; ll1--) {</a>
+<a name="ln1262">                              int i;</a>
+<a name="ln1263">                              for (i = 0; st[i] != -1; ++i) {</a>
+<a name="ln1264">                                    int slant = (l2 &gt; l1) ? st[i] : -st[i];</a>
+<a name="ln1265">                                    int lll1  = qMin(rll1, ll1m - n - adjust(_spStaff4, slant, cl));</a>
+<a name="ln1266">                                    int ll2   = lll1 + slant;</a>
+<a name="ln1267">                                    static bool ba[4][4] = {</a>
+<a name="ln1268">                                          { true,  true,  false, true },</a>
+<a name="ln1269">                                          { true,  true,  false, true },</a>
+<a name="ln1270">                                          { false, false, false, true },</a>
+<a name="ln1271">                                          { true,  true,  false, true }</a>
+<a name="ln1272">                                          };</a>
+<a name="ln1273">                                    if (ba[lll1 &amp; 3][ll2 &amp; 3]) {</a>
+<a name="ln1274">                                          ll1 = lll1;</a>
+<a name="ln1275">                                          bm.s = slant;</a>
+<a name="ln1276">                                          break;</a>
+<a name="ln1277">                                          }</a>
+<a name="ln1278">                                    }</a>
+<a name="ln1279">                              if (st[i] != -1)</a>
+<a name="ln1280">                                    break;</a>
+<a name="ln1281">                              if (++n &gt; 4) {</a>
+<a name="ln1282">                                    qDebug(&quot;beam note not found 1&quot;);</a>
+<a name="ln1283">                                    break;</a>
+<a name="ln1284">                                    }</a>
+<a name="ln1285">                              }</a>
+<a name="ln1286">                        }</a>
+<a name="ln1287">                  else {</a>
+<a name="ln1288">                        ll1 = ((l1 &amp; 3) ? 11 : 12) + l1;</a>
+<a name="ln1289">                        int rll1 = ll1;</a>
+<a name="ln1290">                        if ((l1 &lt; -4) &amp;&amp; (l2 &lt; -4)) {</a>
+<a name="ln1291">                              // extend to middle line, slant is always 0 &lt;= 1</a>
+<a name="ln1292">                              st = slantTable(zeroSlant ? 0 : 1);</a>
+<a name="ln1293">                              rll1 = (zeroSlant || (l2 &gt; l1)) ? 7 : 8;</a>
+<a name="ln1294">                              }</a>
+<a name="ln1295">                        for (int n = 0;;ll1++) {</a>
+<a name="ln1296">                              int i;</a>
+<a name="ln1297">                              for (i = 0; st[i] != -1; ++i) {</a>
+<a name="ln1298">                                    int slant = (l2 &gt; l1) ? st[i] : -st[i];</a>
+<a name="ln1299">                                    int lll1  = qMax(rll1, ll1 + adjust(_spStaff4, slant, cl));</a>
+<a name="ln1300">                                    int e1    = lll1 &amp; 3;</a>
+<a name="ln1301">                                    int ll2   = lll1 + slant;</a>
+<a name="ln1302">                                    int e2    = ll2 &amp; 3;</a>
+<a name="ln1303">                                    static bool ba[4][4] = {</a>
+<a name="ln1304">                                          { true,  true,  false, true },</a>
+<a name="ln1305">                                          { true,  true,  false, true },</a>
+<a name="ln1306">                                          { false, false, false, true },</a>
+<a name="ln1307">                                          { true,  true,  false, true }</a>
+<a name="ln1308">                                          };</a>
+<a name="ln1309">                                    if (ba[e1][e2]) {</a>
+<a name="ln1310">                                          ll1 = lll1;</a>
+<a name="ln1311">                                          bm.s = slant;</a>
+<a name="ln1312">                                          break;</a>
+<a name="ln1313">                                          }</a>
+<a name="ln1314">                                    }</a>
+<a name="ln1315">                              if (st[i] != -1)</a>
+<a name="ln1316">                                    break;</a>
+<a name="ln1317">                              if (++n &gt; 4) {</a>
+<a name="ln1318">                                    qDebug(&quot;beam not found 2&quot;);</a>
+<a name="ln1319">                                    break;</a>
+<a name="ln1320">                                    }</a>
+<a name="ln1321">                              }</a>
+<a name="ln1322">                        }</a>
+<a name="ln1323">                  bm.l = ll1 - l1;</a>
+<a name="ln1324">                  }</a>
+<a name="ln1325">            }</a>
+<a name="ln1326">      else if (beamLevels == 2) {</a>
+<a name="ln1327">            int minS, maxS;</a>
+<a name="ln1328">            if (zeroSlant)</a>
+<a name="ln1329">                  minS = maxS = 0;</a>
+<a name="ln1330">            else {</a>
+<a name="ln1331">                  uint interval = qAbs((l2 - l1) / 2);</a>
+<a name="ln1332">                  minS          = minSlant(interval);</a>
+<a name="ln1333">                  maxS          = maxSlant(interval);</a>
+<a name="ln1334">                  if (elements().size() == 2) {</a>
+<a name="ln1335">                        minS = qMin(minS, 2);</a>
+<a name="ln1336">                        maxS = qMin(maxS, 4);</a>
+<a name="ln1337">                        }</a>
+<a name="ln1338">                  }</a>
+<a name="ln1339">            int ll1;</a>
+<a name="ln1340">            if (_up) {</a>
+<a name="ln1341">                  ll1 = l1 - 12;     // sp minimum to primary beam</a>
+<a name="ln1342">                  int rll1 = ll1;</a>
+<a name="ln1343">                  if ((l1 &gt; 20) &amp;&amp; (l2 &gt; 20)) {</a>
+<a name="ln1344">                        minS = zeroSlant ? 0 : 1;</a>
+<a name="ln1345">                        maxS = minS;</a>
+<a name="ln1346">                        rll1 = (zeroSlant || (l2 &lt; l1)) ? 9 : 8;</a>
+<a name="ln1347">                        }</a>
+<a name="ln1348">                  for (int n = 0; ; ll1--) {</a>
+<a name="ln1349">                        int i;</a>
+<a name="ln1350">                        for (i = minS; i &lt;= maxS; ++i) {</a>
+<a name="ln1351">                              int slant = (l2 &gt; l1) ? i : -i;</a>
+<a name="ln1352">                              int lll1  = qMin(rll1, ll1 - adjust(_spStaff4, slant, cl));</a>
+<a name="ln1353">                              int ll2   = lll1 + slant;</a>
+<a name="ln1354">                              static bool ba[4][4] = {</a>
+<a name="ln1355">                                    { true,  true,  false, false  },</a>
+<a name="ln1356">                                    { true,  true,  false, false },</a>
+<a name="ln1357">                                    { false, false, false, false },</a>
+<a name="ln1358">                                    { false, false, false, false }</a>
+<a name="ln1359">                                    };</a>
+<a name="ln1360">                              if (ba[lll1 &amp; 3][ll2 &amp; 3]) {</a>
+<a name="ln1361">                                    ll1 = lll1;</a>
+<a name="ln1362">                                    break;</a>
+<a name="ln1363">                                    }</a>
+<a name="ln1364">                              }</a>
+<a name="ln1365">                        if (i &lt;= maxS) {</a>
+<a name="ln1366">                              bm.s = l2 &gt; l1 ? i : -i;</a>
+<a name="ln1367">                              break;</a>
+<a name="ln1368">                              }</a>
+<a name="ln1369">                        if (++n &gt; 4) {</a>
+<a name="ln1370">                              qDebug(&quot;beam note not found 1 %d-%d&quot;, minS, maxS);</a>
+<a name="ln1371">                              break;</a>
+<a name="ln1372">                              }</a>
+<a name="ln1373">                        }</a>
+<a name="ln1374">                  }</a>
+<a name="ln1375">            else {</a>
+<a name="ln1376">                  ll1       = 12 + l1;</a>
+<a name="ln1377">                  int rll1  = ll1;</a>
+<a name="ln1378">                  bool down = l2 &gt; l1;</a>
+<a name="ln1379">                  if ((l1 &lt; -4) &amp;&amp; (l2 &lt; -4)) {</a>
+<a name="ln1380">                        // extend to middle line, slant is always 0 &lt;= 1</a>
+<a name="ln1381">                        minS = zeroSlant ? 0 : 1;</a>
+<a name="ln1382">                        maxS = minS;</a>
+<a name="ln1383">                        rll1 = (zeroSlant || down) ? 7 : 8;</a>
+<a name="ln1384">                        }</a>
+<a name="ln1385">                  for (int n = 0;;ll1++) {</a>
+<a name="ln1386">                        int i;</a>
+<a name="ln1387">                        for (i = minS; i &lt;= maxS; ++i) {</a>
+<a name="ln1388">                              int slant = down ? i : -i;</a>
+<a name="ln1389">                              int lll1  = qMax(rll1, ll1 + adjust(_spStaff4, slant, cl));</a>
+<a name="ln1390">                              int ll2   = lll1 + slant;</a>
+<a name="ln1391">                              static bool ba[4][4] = {</a>
+<a name="ln1392">                                    { true,  false, false, true  },</a>
+<a name="ln1393">                                    { false, false, false, false },</a>
+<a name="ln1394">                                    { false, false, false, false },</a>
+<a name="ln1395">                                    { true,  false, false, true }</a>
+<a name="ln1396">                                    };</a>
+<a name="ln1397">                              if (ba[lll1 &amp; 3][ll2 &amp; 3]) {</a>
+<a name="ln1398">                                    ll1 = lll1;</a>
+<a name="ln1399">                                    bm.s = slant;</a>
+<a name="ln1400">                                    break;</a>
+<a name="ln1401">                                    }</a>
+<a name="ln1402">                              }</a>
+<a name="ln1403">                        if (i &lt;= maxS)</a>
+<a name="ln1404">                              break;</a>
+<a name="ln1405">                        if (++n &gt; 4) {</a>
+<a name="ln1406">                              qDebug(&quot;beam not found 2&quot;);</a>
+<a name="ln1407">                              break;</a>
+<a name="ln1408">                              }</a>
+<a name="ln1409">                        }</a>
+<a name="ln1410">                  }</a>
+<a name="ln1411">            bm.l = ll1 - l1;</a>
+<a name="ln1412">            }</a>
+<a name="ln1413">      else if (beamLevels == 3) {</a>
+<a name="ln1414">            int slant;</a>
+<a name="ln1415">            bool outside;</a>
+<a name="ln1416">            if (zeroSlant) {</a>
+<a name="ln1417">                  outside = (_up &amp;&amp; qMin(l1, l2) &lt;= 10) ||</a>
+<a name="ln1418">                     (!_up &amp;&amp; qMax(l1, l2) &gt;= 6);</a>
+<a name="ln1419">                  slant = 0;</a>
+<a name="ln1420">                  }</a>
+<a name="ln1421">            else {</a>
+<a name="ln1422">                  outside = (_up &amp;&amp; (l1 &lt;= 10) &amp;&amp; (l2 &lt;= 10)) ||</a>
+<a name="ln1423">                     (!_up &amp;&amp; (l1 &gt;= 6) &amp;&amp; (l2 &gt;= 6));</a>
+<a name="ln1424">                  if (outside)</a>
+<a name="ln1425">                        slant = *slantTable(qAbs(l1-l2) / 2);</a>
+<a name="ln1426">                  else</a>
+<a name="ln1427">                        slant = 4;</a>
+<a name="ln1428">                  if (l1 &gt; l2)</a>
+<a name="ln1429">                        slant = -slant;</a>
+<a name="ln1430">                  }</a>
+<a name="ln1431">            int ll1;</a>
+<a name="ln1432">            if (_up) {</a>
+<a name="ln1433">                  static const int t[4] = { 3, 0, 1, 2 };</a>
+<a name="ln1434">                  ll1 = l1 - 15 - adjust(_spStaff4, slant, cl);</a>
+<a name="ln1435">                  ll1 = qMin(ll1, 5);</a>
+<a name="ln1436">                  if (!outside)</a>
+<a name="ln1437">                        ll1 -= t[ll1 &amp; 3];      // extend to sit on line</a>
+<a name="ln1438">                  }</a>
+<a name="ln1439">            else {</a>
+<a name="ln1440">                  ll1 = 15 + l1 + adjust(_spStaff4, slant, cl);</a>
+<a name="ln1441">                  ll1 = qMax(ll1, 11);</a>
+<a name="ln1442">                  if (!outside)</a>
+<a name="ln1443">                        ll1 += 3 - (ll1 &amp; 3);   // extend to hang on line</a>
+<a name="ln1444">                  }</a>
+<a name="ln1445">            bm.s = slant;</a>
+<a name="ln1446">            bm.l = ll1 - l1;</a>
+<a name="ln1447">            }</a>
+<a name="ln1448">      else if (beamLevels == 4) {</a>
+<a name="ln1449">            int slant = zeroSlant ? 0 : (l2 &gt; l1 ? 4 : -4);</a>
+<a name="ln1450">            int ll1;</a>
+<a name="ln1451">            if (_up) {</a>
+<a name="ln1452">                  ll1 = l1 - 17 - adjust(_spStaff4, slant, cl);</a>
+<a name="ln1453">                  ll1 = qMin(ll1, 1);</a>
+<a name="ln1454">                  static const int t[4] = { 3, 0, 1, 2 };</a>
+<a name="ln1455">                  ll1 -= t[ll1 &amp; 3];      // extend to sit on line</a>
+<a name="ln1456">                  }</a>
+<a name="ln1457">            else {</a>
+<a name="ln1458">                  ll1 = 17 + l1 + adjust(_spStaff4, slant, cl);</a>
+<a name="ln1459">                  ll1 = qMax(ll1, 15);</a>
+<a name="ln1460">                  ll1 += 3 - (ll1 &amp; 3);   // extend to hang on line</a>
+<a name="ln1461">                  }</a>
+<a name="ln1462">            bm.s = slant;</a>
+<a name="ln1463">            bm.l = ll1 - l1;</a>
+<a name="ln1464">            }</a>
+<a name="ln1465">      else { // if (beamLevels &gt; 4) {</a>
+<a name="ln1466">            //static const int t[] = { 0, 0, 4, 4, 8, 12, 15, 18, 21 }; // spatium4 added to stem len</a>
+<a name="ln1467">            //int n = t[beamLevels] + 12;</a>
+<a name="ln1468">            int n = (3 * (beamLevels - 5)) + 24;</a>
+<a name="ln1469">            bm.s = 0;</a>
+<a name="ln1470">            if (_up) {</a>
+<a name="ln1471">                  bm.l = -n;</a>
+<a name="ln1472">                  bm.l -= adjust(_spStaff4, bm.s, cl);</a>
+<a name="ln1473">                  }</a>
+<a name="ln1474">            else {</a>
+<a name="ln1475">                  bm.l += n;</a>
+<a name="ln1476">                  bm.l += adjust(_spStaff4, bm.s, cl);</a>
+<a name="ln1477">                  }</a>
+<a name="ln1478">            }</a>
+<a name="ln1479">      if (_isGrace &amp;&amp; (beamLevels &gt; 1) &amp;&amp; bm.l) {</a>
+<a name="ln1480">            if (bm.l &gt; 0)</a>
+<a name="ln1481">                  bm.l -= graceStemLengthCorrection;</a>
+<a name="ln1482">            else</a>
+<a name="ln1483">                  bm.l += graceStemLengthCorrection;</a>
+<a name="ln1484">            }</a>
+<a name="ln1485">      if (dx == 0.0)</a>
+<a name="ln1486">            slope = 0.0;</a>
+<a name="ln1487">      else</a>
+<a name="ln1488">            slope   = (bm.s * _spatium4) / dx;</a>
+<a name="ln1489">      int dy = (c1-&gt;line(_up) - c1-&gt;line(!_up)) * 2;</a>
+<a name="ln1490"> </a>
+<a name="ln1491">      // Ensure the resulting stem lengths are not less than a reasonable minimum</a>
+<a name="ln1492">      qreal firstStemLenPoints = bm.l * _spStaff4;</a>
+<a name="ln1493">      const qreal sgn = (firstStemLenPoints &lt; 0 ? -1.0 : 1.0);</a>
+<a name="ln1494">      const QPointF p1 = cl[0]-&gt;stemPosBeam();</a>
+<a name="ln1495">      for (const ChordRest* cr : cl) {</a>
+<a name="ln1496">            if (cr-&gt;isChord()) {</a>
+<a name="ln1497">                  const qreal minAbsLen = toChord(cr)-&gt;minAbsStemLength();</a>
+<a name="ln1498"> </a>
+<a name="ln1499">                  const QPointF p2 = cr-&gt;stemPosBeam();</a>
+<a name="ln1500"> </a>
+<a name="ln1501">                  const qreal crStemAbsLen = std::abs((p2.x() - p1.x()) * slope - p2.y() + p1.y() + firstStemLenPoints);</a>
+<a name="ln1502"> </a>
+<a name="ln1503">                  if (crStemAbsLen &lt; minAbsLen) {</a>
+<a name="ln1504">                        const qreal dl = minAbsLen - crStemAbsLen;</a>
+<a name="ln1505">                        firstStemLenPoints += sgn * dl;</a>
+<a name="ln1506">                        bm.l += sgn * dl / _spStaff4;</a>
+<a name="ln1507">                        }</a>
+<a name="ln1508">                  }</a>
+<a name="ln1509">            }</a>
+<a name="ln1510"> </a>
+<a name="ln1511">      py1 += (dy + bm.l) * _spStaff4;</a>
+<a name="ln1512">      }</a>
+<a name="ln1513"> </a>
+<a name="ln1514">//---------------------------------------------------------</a>
+<a name="ln1515">//   layout2</a>
+<a name="ln1516">//---------------------------------------------------------</a>
+<a name="ln1517"> </a>
+<a name="ln1518">void Beam::layout2(std::vector&lt;ChordRest*&gt;crl, SpannerSegmentType, int frag)</a>
+<a name="ln1519">      {</a>
+<a name="ln1520">      if (_distribute)</a>
+<a name="ln1521">            score()-&gt;respace(&amp;crl);       // fix horizontal spacing of stems</a>
+<a name="ln1522"> </a>
+<a name="ln1523">      if (crl.empty())                  // no beamed Elements</a>
+<a name="ln1524">            return;</a>
+<a name="ln1525">      const ChordRest* c1 = crl.front();       // first chord/rest in beam</a>
+<a name="ln1526">      const ChordRest* c2 = crl.back();        // last chord/rest in beam</a>
+<a name="ln1527"> </a>
+<a name="ln1528">      int beamLevels = 1;</a>
+<a name="ln1529">      for (const ChordRest* c : crl)</a>
+<a name="ln1530">            beamLevels = qMax(beamLevels, c-&gt;durationType().hooks());</a>
+<a name="ln1531"> </a>
+<a name="ln1532">      BeamFragment* f = fragments[frag];</a>
+<a name="ln1533">      int dIdx        = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln1534">      qreal&amp; py1      = f-&gt;py1[dIdx];</a>
+<a name="ln1535">      qreal&amp; py2      = f-&gt;py2[dIdx];</a>
+<a name="ln1536"> </a>
+<a name="ln1537">      qreal _spatium   = spatium();</a>
+<a name="ln1538">      QPointF _pagePos(pagePos());</a>
+<a name="ln1539">      qreal beamMinLen = score()-&gt;styleP(Sid::beamMinLen) * mag();</a>
+<a name="ln1540"> </a>
+<a name="ln1541">      if (beamLevels == 4)</a>
+<a name="ln1542">            _beamDist = score()-&gt;styleP(Sid::beamWidth) * (1 + score()-&gt;styleD(Sid::beamDistance)*4/3);</a>
+<a name="ln1543">      else</a>
+<a name="ln1544">            _beamDist = score()-&gt;styleP(Sid::beamWidth) * (1 + score()-&gt;styleD(Sid::beamDistance));</a>
+<a name="ln1545"> </a>
+<a name="ln1546">      _beamDist *= mag();</a>
+<a name="ln1547">      _beamDist *= c1-&gt;staff()-&gt;mag(c1-&gt;tick());</a>
+<a name="ln1548">      size_t n = crl.size();</a>
+<a name="ln1549"> </a>
+<a name="ln1550">      const StaffType* tab = 0;</a>
+<a name="ln1551">      if (staff()-&gt;isTabStaff(Fraction(0,1)) )</a>
+<a name="ln1552">            tab = staff()-&gt;staffType(Fraction(0,1));</a>
+<a name="ln1553">      if (tab &amp;&amp; !tab-&gt;stemThrough()) {</a>
+<a name="ln1554">            //</a>
+<a name="ln1555">            // TAB STAVES with stems beside staves: beam position is fixed depending on TAB parameters and chordrest up/down</a>
+<a name="ln1556">            // (all the chordrests of a beam have the same up/down, as it depends on TAB parameters if there are no voices</a>
+<a name="ln1557">            // or from the voice the beam belongs to if there are voices; then, it is enough to check only the first chordrest)</a>
+<a name="ln1558">            _up = c1-&gt;up();</a>
+<a name="ln1559">            // compute vert. pos. of beam, relative to staff (top line = 0)</a>
+<a name="ln1560">            qreal y = tab-&gt;chordRestStemPosY(c1) + (_up ? - STAFFTYPE_TAB_DEFAULTSTEMLEN_UP : STAFFTYPE_TAB_DEFAULTSTEMLEN_DN);</a>
+<a name="ln1561">            y *= _spatium;</a>
+<a name="ln1562">            py1 = py2 = y;          // in this case, beams are always horizontal: py1 = py2</a>
+<a name="ln1563">            }</a>
+<a name="ln1564">      else {</a>
+<a name="ln1565">            //</a>
+<a name="ln1566">            // PITCHED STAVES (or TAB with stems through staves)</a>
+<a name="ln1567">            //</a>
+<a name="ln1568">            qreal px1 = c1-&gt;stemPosX() + c1-&gt;pageX();</a>
+<a name="ln1569">            qreal px2 = c2-&gt;stemPosX() + c2-&gt;pageX();</a>
+<a name="ln1570"> </a>
+<a name="ln1571">            if (_userModified[dIdx]) {</a>
+<a name="ln1572">                  py1 += _pagePos.y();</a>
+<a name="ln1573">                  py2 += _pagePos.y();</a>
+<a name="ln1574"> </a>
+<a name="ln1575">                  qreal beamY = py1;</a>
+<a name="ln1576">                  slope       = (py2 - py1) / (px2 - px1);</a>
+<a name="ln1577">                  //</a>
+<a name="ln1578">                  // set stem direction for every chord</a>
+<a name="ln1579">                  //</a>
+<a name="ln1580">                  bool relayoutGrace = false;</a>
+<a name="ln1581">                  for (size_t i = 0; i &lt; n; ++i) {</a>
+<a name="ln1582">                        ChordRest* cr = crl.at(i);</a>
+<a name="ln1583">                        if (!cr-&gt;isChord())</a>
+<a name="ln1584">                              continue;</a>
+<a name="ln1585">                        Chord* c = toChord(cr);</a>
+<a name="ln1586">                        QPointF p = c-&gt;upNote()-&gt;pagePos();</a>
+<a name="ln1587">                        qreal y1  = beamY + (p.x() - px1) * slope;</a>
+<a name="ln1588">                        bool nup  = y1 &lt; p.y();</a>
+<a name="ln1589">                        if (c-&gt;up() != nup) {</a>
+<a name="ln1590">                              c-&gt;setUp(nup);</a>
+<a name="ln1591">                              // guess was wrong, have to relayout</a>
+<a name="ln1592">                              if (!_isGrace) {</a>
+<a name="ln1593">                                    score()-&gt;layoutChords1(c-&gt;segment(), c-&gt;staffIdx());</a>
+<a name="ln1594">                                    // DEBUG: attempting to layout during beam edit causes crash</a>
+<a name="ln1595">                                    // probably because ledger lines are deleted and added back</a>
+<a name="ln1596">                                    // if (editFragment == -1)</a>
+<a name="ln1597">                                          c-&gt;layout();</a>
+<a name="ln1598">                                    }</a>
+<a name="ln1599">                              else {</a>
+<a name="ln1600">                                    relayoutGrace = true;</a>
+<a name="ln1601">                                    score()-&gt;layoutChords3(c-&gt;notes(), c-&gt;staff(), 0);</a>
+<a name="ln1602">                                    }</a>
+<a name="ln1603">                              }</a>
+<a name="ln1604">                        }</a>
+<a name="ln1605">                  _up = crl.front()-&gt;up();</a>
+<a name="ln1606">                  if (relayoutGrace)</a>
+<a name="ln1607">                        c1-&gt;parent()-&gt;layout();</a>
+<a name="ln1608">                  }</a>
+<a name="ln1609">            else if (_cross) {</a>
+<a name="ln1610">                  qreal beamY   = 0.0;  // y position of main beam start</a>
+<a name="ln1611">                  qreal y1   = -200000;</a>
+<a name="ln1612">                  qreal y2   = 200000;</a>
+<a name="ln1613">                  for (size_t i = 0; i &lt; n; ++i) {</a>
+<a name="ln1614">                        const ChordRest* c = crl.at(i);</a>
+<a name="ln1615">                        qreal y;</a>
+<a name="ln1616">                        if (c-&gt;isRest())</a>
+<a name="ln1617">                              continue;   //y = c-&gt;pagePos().y();</a>
+<a name="ln1618">                        else</a>
+<a name="ln1619">                              y  = toChord(c)-&gt;upNote()-&gt;pagePos().y();</a>
+<a name="ln1620">                        y1 = qMax(y1, y);</a>
+<a name="ln1621">                        y2 = qMin(y2, y);</a>
+<a name="ln1622">                        }</a>
+<a name="ln1623">                  if (y1 &gt; y2)</a>
+<a name="ln1624">                        beamY = y2 + (y1 - y2) * .5;</a>
+<a name="ln1625">                  else</a>
+<a name="ln1626">                        beamY = _up ? y2 : y1;</a>
+<a name="ln1627">                  py1 = beamY;</a>
+<a name="ln1628"> </a>
+<a name="ln1629">                  //</a>
+<a name="ln1630">                  // set stem direction for every chord</a>
+<a name="ln1631">                  //</a>
+<a name="ln1632">                  for (ChordRest* cr : crl) {</a>
+<a name="ln1633">                        if (!cr-&gt;isChord())</a>
+<a name="ln1634">                              continue;</a>
+<a name="ln1635">                        Chord* c = toChord(cr);</a>
+<a name="ln1636">                        qreal y  = c-&gt;upNote()-&gt;pagePos().y();</a>
+<a name="ln1637">                        bool nup = beamY &lt; y;</a>
+<a name="ln1638">                        if (c-&gt;up() != nup) {</a>
+<a name="ln1639">                              c-&gt;setUp(nup);</a>
+<a name="ln1640">                              // guess was wrong, have to relayout</a>
+<a name="ln1641">                              score()-&gt;layoutChords1(c-&gt;segment(), c-&gt;staffIdx());</a>
+<a name="ln1642">                              c-&gt;layout();</a>
+<a name="ln1643">                              // TODO: this might affect chord space, which might affect segment position</a>
+<a name="ln1644">                              // we should relayout entire measure</a>
+<a name="ln1645">                              // this probably means starting over for beam as well</a>
+<a name="ln1646">                              // see https://musescore.org/en/node/71901</a>
+<a name="ln1647">                              // also see https://musescore.org/en/node/289492</a>
+<a name="ln1648">                              }</a>
+<a name="ln1649">                        }</a>
+<a name="ln1650"> </a>
+<a name="ln1651">                  qreal yDownMax = -300000;</a>
+<a name="ln1652">                  qreal yUpMin   = 300000;</a>
+<a name="ln1653"> </a>
+<a name="ln1654">                  for (ChordRest* cr : crl) {</a>
+<a name="ln1655">                        if (!cr-&gt;isChord())</a>
+<a name="ln1656">                              continue;</a>
+<a name="ln1657">                        Chord* c = toChord(cr);</a>
+<a name="ln1658">                        bool _up1 = c-&gt;up();</a>
+<a name="ln1659">                        qreal y = (_up1 ? c-&gt;upNote() : c-&gt;downNote())-&gt;pagePos().y();</a>
+<a name="ln1660">                        if (_up1)</a>
+<a name="ln1661">                              yUpMin = qMin(y, yUpMin);</a>
+<a name="ln1662">                        else</a>
+<a name="ln1663">                              yDownMax = qMax(y, yDownMax);</a>
+<a name="ln1664">                        }</a>
+<a name="ln1665">                  qreal slant = hasNoSlope() ? 0 : _spatium;</a>
+<a name="ln1666">                  if (crl.front()-&gt;up())</a>
+<a name="ln1667">                        slant = -slant;</a>
+<a name="ln1668">                  py1   = yUpMin + (yDownMax - yUpMin) * .5 - slant * .5;</a>
+<a name="ln1669">                  slope = slant / (px2 - px1);</a>
+<a name="ln1670">                  if (_direction == Direction::AUTO)</a>
+<a name="ln1671">                        _up = crl.front()-&gt;up();</a>
+<a name="ln1672">                  }</a>
+<a name="ln1673">            else {</a>
+<a name="ln1674">                  py1 = c1-&gt;stemPos().y();</a>
+<a name="ln1675">                  py2 = c2-&gt;stemPos().y();      // for debug</a>
+<a name="ln1676">                  computeStemLen(crl, py1, beamLevels);</a>
+<a name="ln1677">                  }</a>
+<a name="ln1678">            py2  = (px2 - px1) * slope + py1;   // for debug</a>
+<a name="ln1679">            py2 -= _pagePos.y();</a>
+<a name="ln1680">            py1 -= _pagePos.y();</a>
+<a name="ln1681">            }</a>
+<a name="ln1682"> </a>
+<a name="ln1683">      //---------------------------------------------</a>
+<a name="ln1684">      //   create beam segments</a>
+<a name="ln1685">      //---------------------------------------------</a>
+<a name="ln1686"> </a>
+<a name="ln1687">      qreal x1 = crl[0]-&gt;stemPosX() + crl[0]-&gt;pageX() - pageX();</a>
+<a name="ln1688"> </a>
+<a name="ln1689">      int baseLevel = 0;      // beam level that covers all notes of beam</a>
+<a name="ln1690">#if (!defined (_MSCVER) &amp;&amp; !defined (_MSC_VER))</a>
+<a name="ln1691">      int crBase[n];          // offset of beam level 0 for each chord</a>
+<a name="ln1692">#else</a>
+<a name="ln1693">      // MSVC does not support VLA. Replace with std::vector. If profiling determines that the</a>
+<a name="ln1694">      //    heap allocation is slow, an optimization might be used.</a>
+<a name="ln1695">      std::vector&lt;int&gt; crBase(n);</a>
+<a name="ln1696">#endif</a>
+<a name="ln1697">      bool growDown = _up;</a>
+<a name="ln1698"> </a>
+<a name="ln1699">      for (int beamLevel = 0; beamLevel &lt; beamLevels; ++beamLevel) {</a>
+<a name="ln1700"> </a>
+<a name="ln1701">            // loop through the different groups for this beam level</a>
+<a name="ln1702">            // inner loop will advance through chordrests within each group</a>
+<a name="ln1703">            for (size_t i = 0; i &lt; n;) {</a>
+<a name="ln1704">                  ChordRest* cr1 = crl[i];</a>
+<a name="ln1705">                  int l1 = cr1-&gt;durationType().hooks() - 1;</a>
+<a name="ln1706"> </a>
+<a name="ln1707">                  if ((cr1-&gt;type() == ElementType::REST &amp;&amp; i) || l1 &lt; beamLevel) {</a>
+<a name="ln1708">                        ++i;</a>
+<a name="ln1709">                        continue;</a>
+<a name="ln1710">                        }</a>
+<a name="ln1711"> </a>
+<a name="ln1712">                  // at the beginning of a group</a>
+<a name="ln1713">                  // loop through chordrests looking for end</a>
+<a name="ln1714">                  size_t currentChordRestIndex = i;</a>
+<a name="ln1715">                  ++i;</a>
+<a name="ln1716">                  bool b32 = false, b64 = false;</a>
+<a name="ln1717">                  for (; i &lt; n; ++i) {</a>
+<a name="ln1718">                        ChordRest* c = crl[i];</a>
+<a name="ln1719">                        ChordRest* p = i ? crl[i - 1] : 0;</a>
+<a name="ln1720">                        int l = c-&gt;durationType().hooks() - 1;</a>
+<a name="ln1721"> </a>
+<a name="ln1722">                        Mode bm = Groups::endBeam(c, p);</a>
+<a name="ln1723">                        b32 = (beamLevel &gt;= 1) &amp;&amp; (bm == Mode::BEGIN32);</a>
+<a name="ln1724">                        b64 = (beamLevel &gt;= 2) &amp;&amp; (bm == Mode::BEGIN64);</a>
+<a name="ln1725"> </a>
+<a name="ln1726">                        if ((l &gt;= beamLevel &amp;&amp; (b32 || b64)) || (l &lt; beamLevel)) {</a>
+<a name="ln1727">                              if (i &gt; 1 &amp;&amp; crl[i-1]-&gt;type() == ElementType::REST) {</a>
+<a name="ln1728">                                    --i;</a>
+<a name="ln1729">                                    }</a>
+<a name="ln1730">                              break;</a>
+<a name="ln1731">                              }</a>
+<a name="ln1732">                        }</a>
+<a name="ln1733"> </a>
+<a name="ln1734">                  // found end of group</a>
+<a name="ln1735">                  size_t chordRestEndGroupIndex = i;</a>
+<a name="ln1736">                  ChordRest* cr2 = crl[chordRestEndGroupIndex - 1];</a>
+<a name="ln1737"> </a>
+<a name="ln1738">                  // if group covers whole beam, we are still at base level</a>
+<a name="ln1739">                  if (currentChordRestIndex == 0 &amp;&amp; chordRestEndGroupIndex == n)</a>
+<a name="ln1740">                        baseLevel = beamLevel;</a>
+<a name="ln1741"> </a>
+<a name="ln1742">                  // default assumption - everything grows in same direction</a>
+<a name="ln1743">                  int bl = growDown ? beamLevel : -beamLevel;</a>
+<a name="ln1744">                  bool growDownGroup = growDown;</a>
+<a name="ln1745"> </a>
+<a name="ln1746">                  // calculate direction for this group</a>
+<a name="ln1747">                  if (beamLevel &gt; baseLevel) {</a>
+<a name="ln1748"> </a>
+<a name="ln1749">                        if ((currentChordRestIndex &amp;&amp; (cr1-&gt;up() == cr2-&gt;up()))</a>
+<a name="ln1750">                            || ((chordRestEndGroupIndex == n) &amp;&amp; (cr1-&gt;up() != cr2-&gt;up()))) {</a>
+<a name="ln1751">                              // matching direction for outer stems, not first group</a>
+<a name="ln1752">                              // or, opposing direction for outer stems, last group</a>
+<a name="ln1753">                              // recalculate beam for this group based on its *first* cr</a>
+<a name="ln1754">                              growDownGroup = cr1-&gt;up();</a>
+<a name="ln1755">                              }</a>
+<a name="ln1756"> </a>
+<a name="ln1757">                        else if (!currentChordRestIndex &amp;&amp; (chordRestEndGroupIndex &lt; n) &amp;&amp; (cr1-&gt;up() != cr2-&gt;up())) {</a>
+<a name="ln1758">                              // opposing directions for outer stems, first (but not only) group</a>
+<a name="ln1759">                              // recalculate beam for this group if necessary based on its *last* cr</a>
+<a name="ln1760">                              growDownGroup = cr2-&gt;up();</a>
+<a name="ln1761">                              }</a>
+<a name="ln1762"> </a>
+<a name="ln1763">                        // recalculate segment offset bl</a>
+<a name="ln1764">                        int base = crBase[currentChordRestIndex];</a>
+<a name="ln1765">                        if (growDownGroup &amp;&amp; base &lt;= 0)</a>
+<a name="ln1766">                              bl = base + beamLevel;</a>
+<a name="ln1767">                        else if (growDownGroup)</a>
+<a name="ln1768">                              bl = base + 1;</a>
+<a name="ln1769">                        else if (!growDownGroup &amp;&amp; base &gt;= 0)</a>
+<a name="ln1770">                              bl = base - beamLevel;</a>
+<a name="ln1771">                        else if (!growDownGroup)</a>
+<a name="ln1772">                              bl = base - 1;</a>
+<a name="ln1773"> </a>
+<a name="ln1774">                        }</a>
+<a name="ln1775"> </a>
+<a name="ln1776">                  // if there are more beam levels,</a>
+<a name="ln1777">                  // record current beam offsets for all notes of this group for re-use</a>
+<a name="ln1778">                  if (beamLevel &lt; beamLevels - 1) {</a>
+<a name="ln1779">                        for (size_t i1 = currentChordRestIndex; i1 &lt; chordRestEndGroupIndex; ++i1)</a>
+<a name="ln1780">                              crBase[i1] = bl;</a>
+<a name="ln1781">                        }</a>
+<a name="ln1782"> </a>
+<a name="ln1783">                  qreal stemWidth  = cr1-&gt;isChord() ? toChord(cr1)-&gt;stem()-&gt;lineWidthMag() : 0.0;</a>
+<a name="ln1784">                  qreal x2         = cr1-&gt;stemPosX() + cr1-&gt;pageX() - _pagePos.x();</a>
+<a name="ln1785">                  qreal x3;</a>
+<a name="ln1786"> </a>
+<a name="ln1787">                  if ((chordRestEndGroupIndex - currentChordRestIndex) &gt; 1) {</a>
+<a name="ln1788">                        ChordRest* chordRest2 = crl[chordRestEndGroupIndex-1];</a>
+<a name="ln1789">                        // create segment</a>
+<a name="ln1790">                        x3 = chordRest2-&gt;stemPosX() + chordRest2-&gt;pageX() - _pagePos.x();</a>
+<a name="ln1791"> </a>
+<a name="ln1792">                        if (tab) {</a>
+<a name="ln1793">                              x2 -= stemWidth * 0.5;</a>
+<a name="ln1794">                              x3 += stemWidth * 0.5;</a>
+<a name="ln1795">                              }</a>
+<a name="ln1796">                        else {</a>
+<a name="ln1797">                              if (cr1-&gt;up())</a>
+<a name="ln1798">                                    x2 -= stemWidth;</a>
+<a name="ln1799">                              if (!chordRest2-&gt;up())</a>
+<a name="ln1800">                                    x3 += chordRest2-&gt;isChord() ? toChord(chordRest2)-&gt;stem()-&gt;lineWidthMag() : 0.0;</a>
+<a name="ln1801">                              }</a>
+<a name="ln1802">                        }</a>
+<a name="ln1803">                  else {</a>
+<a name="ln1804">                        // create broken segment</a>
+<a name="ln1805">                        if (cr1-&gt;type() == ElementType::REST)</a>
+<a name="ln1806">                              continue;</a>
+<a name="ln1807"> </a>
+<a name="ln1808">                        size_t sizeChordRests = crl.size();</a>
+<a name="ln1809">                        qreal len = beamMinLen;</a>
+<a name="ln1810">                        //</a>
+<a name="ln1811">                        // find direction (by default, segment points to right)</a>
+<a name="ln1812">                        //</a>
+<a name="ln1813">                        // if first or last of group (including tuplet groups)</a>
+<a name="ln1814">                        // unconditionally set beam at right or left side</a>
+<a name="ln1815">                        Tuplet* tuplet = cr1-&gt;tuplet();</a>
+<a name="ln1816">                        if (currentChordRestIndex == 0)</a>
+<a name="ln1817">                              ;</a>
+<a name="ln1818">                        else if (currentChordRestIndex == sizeChordRests - 1)</a>
+<a name="ln1819">                              len = -len;</a>
+<a name="ln1820">                        else if (tuplet &amp;&amp; cr1 == tuplet-&gt;elements().front())</a>
+<a name="ln1821">                              ;</a>
+<a name="ln1822">                        else if (tuplet &amp;&amp; cr1 == tuplet-&gt;elements().back())</a>
+<a name="ln1823">                              len = -len;</a>
+<a name="ln1824">                        else if (b32 || b64)          // end of a sub-beam group</a>
+<a name="ln1825">                              len = -len;</a>
+<a name="ln1826">                        else if (!(cr1-&gt;isGrace())) {</a>
+<a name="ln1827">                              // inside group - here it gets more complex</a>
+<a name="ln1828">                              // see http://musescore.org/en/node/42856, http://musescore.org/en/node/40806</a>
+<a name="ln1829">                              // our strategy:</a>
+<a name="ln1830">                              // decide if we have reached the end of a &quot;logical&quot; grouping</a>
+<a name="ln1831">                              // even if we are not literally at the end of a beam group</a>
+<a name="ln1832">                              // we do this two ways:</a>
+<a name="ln1833">                              // 1) see if beam groups would have indicated a break or sub-beam if the next chord were same length as this</a>
+<a name="ln1834">                              // 2) see if next note is on a &quot;sub-beat&quot; as defined by 2 * current note duration</a>
+<a name="ln1835">                              // in either case, broken segment should point left; otherwise right</a>
+<a name="ln1836">                              // however, we should try to be careful to avoid &quot;floating&quot; segments</a>
+<a name="ln1837">                              // caused by mismatches between number of incoming versus outgoing beams</a>
+<a name="ln1838">                              // so, we favor the side with more beams (to the extent we can count reliably)</a>
+<a name="ln1839">                              // if there is a corner case missed, this would probably be where</a>
+<a name="ln1840">                              ChordRest* prevCR = crl[currentChordRestIndex-1];</a>
+<a name="ln1841">                              ChordRest* nextCR = crl[currentChordRestIndex+1];</a>
+<a name="ln1842">                              TDuration currentDuration = cr1-&gt;durationType();</a>
+<a name="ln1843">                              int currentHooks = currentDuration.hooks();</a>
+<a name="ln1844"> </a>
+<a name="ln1845">                              // since we have already established that we are not at end of sub-beam,</a>
+<a name="ln1846">                              // outgoing beams should always be # hooks of next chord</a>
+<a name="ln1847">                              int beamsOut = nextCR-&gt;durationType().hooks();</a>
+<a name="ln1848"> </a>
+<a name="ln1849">                              // incoming beams is normally # hooks of previous chord</a>
+<a name="ln1850">                              // unless this is start of sub-beam</a>
+<a name="ln1851">                              const Groups&amp; g = cr1-&gt;staff()-&gt;group(cr1-&gt;measure()-&gt;tick());</a>
+<a name="ln1852">                              Fraction stretch = cr1-&gt;staff()-&gt;timeStretch(cr1-&gt;measure()-&gt;tick());</a>
+<a name="ln1853">                              int currentTick = (cr1-&gt;rtick() * stretch).ticks();</a>
+<a name="ln1854">                              Beam::Mode bm = g.beamMode(currentTick, currentDuration.type());</a>
+<a name="ln1855">                              int beamsIn;</a>
+<a name="ln1856">                              if (bm == Beam::Mode::BEGIN32)</a>
+<a name="ln1857">                                    beamsIn = 1;</a>
+<a name="ln1858">                              else if (bm == Beam::Mode::BEGIN64)</a>
+<a name="ln1859">                                    beamsIn = 2;</a>
+<a name="ln1860">                              else</a>
+<a name="ln1861">                                    beamsIn = prevCR-&gt;durationType().hooks();</a>
+<a name="ln1862"> </a>
+<a name="ln1863">                              // remember, we are checking whether nextCR would have started sub-beam *if* same duration as this</a>
+<a name="ln1864">                              int nextTick = (nextCR-&gt;rtick() * stretch).ticks();</a>
+<a name="ln1865">                              bm = g.beamMode(nextTick, currentDuration.type());</a>
+<a name="ln1866"> </a>
+<a name="ln1867">                              if (currentHooks - beamsOut &gt; 1 &amp;&amp; beamsIn &gt; beamsOut &amp;&amp; currentHooks &gt; beamsIn) {</a>
+<a name="ln1868">                                    // point left to avoid floating segment</a>
+<a name="ln1869">                                    len = -len;</a>
+<a name="ln1870">                                    }</a>
+<a name="ln1871">                              else if (beamsIn &lt; beamsOut) {</a>
+<a name="ln1872">                                    // point right to avoid floating segment</a>
+<a name="ln1873">                                    ;</a>
+<a name="ln1874">                                    }</a>
+<a name="ln1875">                              else if (bm != Beam::Mode::AUTO) {</a>
+<a name="ln1876">                                    // beam group info suggests this is a logical group end as per 1) above</a>
+<a name="ln1877">                                    len = -len;</a>
+<a name="ln1878">                                    }</a>
+<a name="ln1879">                              else {</a>
+<a name="ln1880">                                    // determine if this is a logical group end as per 2) above</a>
+<a name="ln1881"> </a>
+<a name="ln1882">                                    Fraction baseTick = tuplet ? tuplet-&gt;tick() : cr1-&gt;measure()-&gt;tick();</a>
+<a name="ln1883">                                    Fraction tickNext = nextCR-&gt;tick() - baseTick;</a>
+<a name="ln1884">                                    if (tuplet) {</a>
+<a name="ln1885">                                          // for tuplets with odd ratios, apply ratio</a>
+<a name="ln1886">                                          // thus, we are performing calculation relative to apparent rather than actual beat</a>
+<a name="ln1887">                                          // for tuplets with even ratios, use actual beat</a>
+<a name="ln1888">                                          // see https://musescore.org/en/node/58061</a>
+<a name="ln1889">                                          Fraction r = tuplet-&gt;ratio();</a>
+<a name="ln1890">                                          if (r.numerator() &amp; 1)</a>
+<a name="ln1891">                                                tickNext = tickNext * r;</a>
+<a name="ln1892">                                          }</a>
+<a name="ln1893"> </a>
+<a name="ln1894">                                    // determine the tick length of a chord with one beam level less than this</a>
+<a name="ln1895">                                    // (i.e. twice the ticks of this)</a>
+<a name="ln1896"> </a>
+<a name="ln1897">                                    int tickMod  = cr1-&gt;ticks().ticks() * 2;     // (tickNext - (crl[c1]-&gt;tick() - baseTick)) * 2;</a>
+<a name="ln1898"> </a>
+<a name="ln1899">                                    // if this completes, within the measure or tuplet, a unit of tickMod length, flip beam to left</a>
+<a name="ln1900">                                    // (allow some tolerance for tick rounding in tuplets</a>
+<a name="ln1901">                                    // without tuplet tolerance, could be simplified)</a>
+<a name="ln1902"> </a>
+<a name="ln1903">                                    static const int BEAM_TUPLET_TOLERANCE = 6;</a>
+<a name="ln1904">                                    int mod = tickNext.ticks() % tickMod;</a>
+<a name="ln1905">                                    if (mod &lt;= BEAM_TUPLET_TOLERANCE || (tickMod - mod) &lt;= BEAM_TUPLET_TOLERANCE)</a>
+<a name="ln1906">                                          len = -len;</a>
+<a name="ln1907">                                    }</a>
+<a name="ln1908">                              }</a>
+<a name="ln1909">                        if (tab) {</a>
+<a name="ln1910">                              if (len &gt; 0)</a>
+<a name="ln1911">                                    x2 -= stemWidth * 0.5;</a>
+<a name="ln1912">                              else</a>
+<a name="ln1913">                                    x2 += stemWidth * 0.5;</a>
+<a name="ln1914">                              }</a>
+<a name="ln1915">                        else {</a>
+<a name="ln1916">                              bool stemUp = cr1-&gt;up();</a>
+<a name="ln1917">                              if (stemUp &amp;&amp; len &gt; 0)</a>
+<a name="ln1918">                                    x2 -= stemWidth;</a>
+<a name="ln1919">                              else if (!stemUp &amp;&amp; len &lt; 0)</a>
+<a name="ln1920">                                    x2 += stemWidth;</a>
+<a name="ln1921">                              }</a>
+<a name="ln1922">                        x3 = x2 + len;</a>
+<a name="ln1923">                        }</a>
+<a name="ln1924">                  //feathered beams</a>
+<a name="ln1925">                  qreal yo   = py1 + bl * _beamDist * _grow1;</a>
+<a name="ln1926">                  qreal yoo  = py1 + bl * _beamDist * _grow2;</a>
+<a name="ln1927">                  qreal ly1  = (x2 - x1) * slope + yo;</a>
+<a name="ln1928">                  qreal ly2  = (x3 - x1) * slope + yoo;</a>
+<a name="ln1929"> </a>
+<a name="ln1930">                  if (!qIsFinite(x2) || !qIsFinite(ly1)</a>
+<a name="ln1931">                     || !qIsFinite(x3) || !qIsFinite(ly2)) {</a>
+<a name="ln1932">                        qDebug(&quot;bad beam segment: slope %f&quot;, slope);</a>
+<a name="ln1933">                        }</a>
+<a name="ln1934">                  else {</a>
+<a name="ln1935">                        beamSegments.push_back(new QLineF(x2, ly1, x3, ly2));</a>
+<a name="ln1936">                        }</a>
+<a name="ln1937">                  }</a>
+<a name="ln1938">            }</a>
+<a name="ln1939"> </a>
+<a name="ln1940">      //</a>
+<a name="ln1941">      //  calculate stem length</a>
+<a name="ln1942">      //</a>
+<a name="ln1943">      for (ChordRest* cr : crl) {</a>
+<a name="ln1944">            if (!cr-&gt;isChord())</a>
+<a name="ln1945">                  continue;</a>
+<a name="ln1946">            Chord* c = toChord(cr);</a>
+<a name="ln1947">            if (c-&gt;hook())</a>
+<a name="ln1948">                  score()-&gt;undoRemoveElement(c-&gt;hook());</a>
+<a name="ln1949"> </a>
+<a name="ln1950">            QPointF stemPos(c-&gt;stemPosX() + c-&gt;pagePos().x(), c-&gt;stemPos().y());</a>
+<a name="ln1951">            qreal x2   = stemPos.x() - _pagePos.x();</a>
+<a name="ln1952">            qreal y1   = (x2 - x1) * slope + py1 + _pagePos.y();</a>
+<a name="ln1953">            qreal y2   = stemPos.y();</a>
+<a name="ln1954">            // qreal fuzz = _spatium * .1;</a>
+<a name="ln1955">            qreal fuzz = _spatium * .4;   // something is wrong</a>
+<a name="ln1956"> </a>
+<a name="ln1957">            qreal by = y2 &lt; y1 ? -1000000 : 1000000;</a>
+<a name="ln1958">            for (const QLineF* l : beamSegments) {</a>
+<a name="ln1959">                  if ((x2+fuzz) &gt;= l-&gt;x1() &amp;&amp; (x2-fuzz) &lt;= l-&gt;x2()) {</a>
+<a name="ln1960">                        qreal y = (x2 - l-&gt;x1()) * slope + l-&gt;y1();</a>
+<a name="ln1961">                        by = y2 &lt; y1 ? qMax(by, y) : qMin(by, y);</a>
+<a name="ln1962">                        }</a>
+<a name="ln1963">                  }</a>
+<a name="ln1964">            if (by == -1000000 || by == 1000000) {</a>
+<a name="ln1965">                  if (beamSegments.empty())</a>
+<a name="ln1966">                        qDebug(&quot;no BeamSegments&quot;);</a>
+<a name="ln1967">                  else {</a>
+<a name="ln1968">                        qDebug(&quot;BeamSegment not found: x %f  %f-%f&quot;,</a>
+<a name="ln1969">                           x2, beamSegments.front()-&gt;x1(),</a>
+<a name="ln1970">                           beamSegments.back()-&gt;x2());</a>
+<a name="ln1971">                        }</a>
+<a name="ln1972">                  by = 0;</a>
+<a name="ln1973">                  }</a>
+<a name="ln1974"> </a>
+<a name="ln1975">            Stem* stem = c-&gt;stem();</a>
+<a name="ln1976">            if (stem) {</a>
+<a name="ln1977">                  bool useTablature = staff() &amp;&amp; staff()-&gt;isTabStaff(cr-&gt;tick());</a>
+<a name="ln1978">                  qreal sw2  = useTablature ? 0.f : stem-&gt;lineWidthMag() * .5;</a>
+<a name="ln1979">                  if (c-&gt;up())</a>
+<a name="ln1980">                        sw2 = -sw2;</a>
+<a name="ln1981">                  stem-&gt;rxpos() = c-&gt;stemPosX() + sw2;</a>
+<a name="ln1982">                  qreal l       = y2 - (by + _pagePos.y());</a>
+<a name="ln1983">                  stem-&gt;setLen(l);</a>
+<a name="ln1984"> </a>
+<a name="ln1985">                  StemSlash* stemSlash = c-&gt;stemSlash();</a>
+<a name="ln1986">                  if (stemSlash)</a>
+<a name="ln1987">                        stemSlash-&gt;layout();</a>
+<a name="ln1988">                  Tremolo* tremolo = c-&gt;tremolo();</a>
+<a name="ln1989">                  if (tremolo)</a>
+<a name="ln1990">                        tremolo-&gt;layout();</a>
+<a name="ln1991">                  c-&gt;segment()-&gt;createShape(c-&gt;vStaffIdx());      // recreate shape</a>
+<a name="ln1992">                  }</a>
+<a name="ln1993">            }</a>
+<a name="ln1994">      }</a>
+<a name="ln1995"> </a>
+<a name="ln1996">//---------------------------------------------------------</a>
+<a name="ln1997">//   spatiumChanged</a>
+<a name="ln1998">//---------------------------------------------------------</a>
+<a name="ln1999"> </a>
+<a name="ln2000">void Beam::spatiumChanged(qreal oldValue, qreal newValue)</a>
+<a name="ln2001">      {</a>
+<a name="ln2002">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2003">      if (_userModified[idx]) {</a>
+<a name="ln2004">            qreal diff = newValue / oldValue;</a>
+<a name="ln2005">            for (BeamFragment* f : fragments) {</a>
+<a name="ln2006">                  f-&gt;py1[idx] = f-&gt;py1[idx] * diff;</a>
+<a name="ln2007">                  f-&gt;py2[idx] = f-&gt;py2[idx] * diff;</a>
+<a name="ln2008">                  }</a>
+<a name="ln2009">            }</a>
+<a name="ln2010">      }</a>
+<a name="ln2011"> </a>
+<a name="ln2012">//---------------------------------------------------------</a>
+<a name="ln2013">//   write</a>
+<a name="ln2014">//---------------------------------------------------------</a>
+<a name="ln2015"> </a>
+<a name="ln2016">void Beam::write(XmlWriter&amp; xml) const</a>
+<a name="ln2017">      {</a>
+<a name="ln2018">      if (_elements.empty())</a>
+<a name="ln2019">            return;</a>
+<a name="ln2020">      xml.stag(this);</a>
+<a name="ln2021">      Element::writeProperties(xml);</a>
+<a name="ln2022"> </a>
+<a name="ln2023">      writeProperty(xml, Pid::STEM_DIRECTION);</a>
+<a name="ln2024">      writeProperty(xml, Pid::DISTRIBUTE);</a>
+<a name="ln2025">      writeProperty(xml, Pid::BEAM_NO_SLOPE);</a>
+<a name="ln2026">      writeProperty(xml, Pid::GROW_LEFT);</a>
+<a name="ln2027">      writeProperty(xml, Pid::GROW_RIGHT);</a>
+<a name="ln2028"> </a>
+<a name="ln2029">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2030">      if (_userModified[idx]) {</a>
+<a name="ln2031">            qreal _spatium = spatium();</a>
+<a name="ln2032">            for (BeamFragment* f : fragments) {</a>
+<a name="ln2033">                  xml.stag(&quot;Fragment&quot;);</a>
+<a name="ln2034">                  xml.tag(&quot;y1&quot;, f-&gt;py1[idx] / _spatium);</a>
+<a name="ln2035">                  xml.tag(&quot;y2&quot;, f-&gt;py2[idx] / _spatium);</a>
+<a name="ln2036">                  xml.etag();</a>
+<a name="ln2037">                  }</a>
+<a name="ln2038">            }</a>
+<a name="ln2039"> </a>
+<a name="ln2040">      // this info is used for regression testing</a>
+<a name="ln2041">      // l1/l2 is the beam position of the layout engine</a>
+<a name="ln2042">      if (MScore::testMode) {</a>
+<a name="ln2043">            qreal _spatium4 = spatium() * .25;</a>
+<a name="ln2044">            for (BeamFragment* f : fragments) {</a>
+<a name="ln2045">                  xml.tag(&quot;l1&quot;, int(lrint(f-&gt;py1[idx] / _spatium4)));</a>
+<a name="ln2046">                  xml.tag(&quot;l2&quot;, int(lrint(f-&gt;py2[idx] / _spatium4)));</a>
+<a name="ln2047">                  }</a>
+<a name="ln2048">            }</a>
+<a name="ln2049"> </a>
+<a name="ln2050">      xml.etag();</a>
+<a name="ln2051">      }</a>
+<a name="ln2052"> </a>
+<a name="ln2053">//---------------------------------------------------------</a>
+<a name="ln2054">//   read</a>
+<a name="ln2055">//---------------------------------------------------------</a>
+<a name="ln2056"> </a>
+<a name="ln2057">void Beam::read(XmlReader&amp; e)</a>
+<a name="ln2058">      {</a>
+<a name="ln2059">      qreal _spatium = spatium();</a>
+<a name="ln2060">      if (score()-&gt;mscVersion() &lt; 301)</a>
+<a name="ln2061">            _id = e.intAttribute(&quot;id&quot;);</a>
+<a name="ln2062">      while (e.readNextStartElement()) {</a>
+<a name="ln2063">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln2064">            if (tag == &quot;StemDirection&quot;) {</a>
+<a name="ln2065">                  readProperty(e, Pid::STEM_DIRECTION);</a>
+<a name="ln2066">                  e.readNext();</a>
+<a name="ln2067">                  }</a>
+<a name="ln2068">            else if (tag == &quot;distribute&quot;)</a>
+<a name="ln2069">                  setDistribute(e.readInt());</a>
+<a name="ln2070">            else if (readStyledProperty(e, tag))</a>
+<a name="ln2071">                  ;</a>
+<a name="ln2072">            else if (tag == &quot;growLeft&quot;)</a>
+<a name="ln2073">                  setGrowLeft(e.readDouble());</a>
+<a name="ln2074">            else if (tag == &quot;growRight&quot;)</a>
+<a name="ln2075">                  setGrowRight(e.readDouble());</a>
+<a name="ln2076">            else if (tag == &quot;y1&quot;) {</a>
+<a name="ln2077">                  if (fragments.empty())</a>
+<a name="ln2078">                        fragments.append(new BeamFragment);</a>
+<a name="ln2079">                  BeamFragment* f = fragments.back();</a>
+<a name="ln2080">                  int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2081">                  _userModified[idx] = true;</a>
+<a name="ln2082">                  f-&gt;py1[idx] = e.readDouble() * _spatium;</a>
+<a name="ln2083">                  }</a>
+<a name="ln2084">            else if (tag == &quot;y2&quot;) {</a>
+<a name="ln2085">                  if (fragments.empty())</a>
+<a name="ln2086">                        fragments.append(new BeamFragment);</a>
+<a name="ln2087">                  BeamFragment* f = fragments.back();</a>
+<a name="ln2088">                  int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2089">                  _userModified[idx] = true;</a>
+<a name="ln2090">                  f-&gt;py2[idx] = e.readDouble() * _spatium;</a>
+<a name="ln2091">                  }</a>
+<a name="ln2092">            else if (tag == &quot;Fragment&quot;) {</a>
+<a name="ln2093">                  BeamFragment* f = new BeamFragment;</a>
+<a name="ln2094">                  int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2095">                  _userModified[idx] = true;</a>
+<a name="ln2096">                  qreal _spatium1 = spatium();</a>
+<a name="ln2097"> </a>
+<a name="ln2098">                  while (e.readNextStartElement()) {</a>
+<a name="ln2099">                        const QStringRef&amp; tag1(e.name());</a>
+<a name="ln2100">                        if (tag1 == &quot;y1&quot;)</a>
+<a name="ln2101">                              f-&gt;py1[idx] = e.readDouble() * _spatium1;</a>
+<a name="ln2102">                        else if (tag1 == &quot;y2&quot;)</a>
+<a name="ln2103">                              f-&gt;py2[idx] = e.readDouble() * _spatium1;</a>
+<a name="ln2104">                        else</a>
+<a name="ln2105">                              e.unknown();</a>
+<a name="ln2106">                        }</a>
+<a name="ln2107">                  fragments.append(f);</a>
+<a name="ln2108">                  }</a>
+<a name="ln2109">            else if (tag == &quot;l1&quot; || tag == &quot;l2&quot;)      // ignore</a>
+<a name="ln2110">                  e.skipCurrentElement();</a>
+<a name="ln2111">            else if (tag == &quot;subtype&quot;)          // obsolete</a>
+<a name="ln2112">                  e.skipCurrentElement();</a>
+<a name="ln2113">            else if (!Element::readProperties(e))</a>
+<a name="ln2114">                  e.unknown();</a>
+<a name="ln2115">            }</a>
+<a name="ln2116">      }</a>
+<a name="ln2117"> </a>
+<a name="ln2118">//---------------------------------------------------------</a>
+<a name="ln2119">//   BeamEditData</a>
+<a name="ln2120">//---------------------------------------------------------</a>
+<a name="ln2121"> </a>
+<a name="ln2122">class BeamEditData : public ElementEditData {</a>
+<a name="ln2123">   public:</a>
+<a name="ln2124">      int editFragment;</a>
+<a name="ln2125">      virtual EditDataType type() override      { return EditDataType::BeamEditData; }</a>
+<a name="ln2126">      };</a>
+<a name="ln2127"> </a>
+<a name="ln2128">//---------------------------------------------------------</a>
+<a name="ln2129">//   editDrag</a>
+<a name="ln2130">//---------------------------------------------------------</a>
+<a name="ln2131"> </a>
+<a name="ln2132">void Beam::editDrag(EditData&amp; ed)</a>
+<a name="ln2133">      {</a>
+<a name="ln2134">      int idx  = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2135">      qreal dy = ed.delta.y();</a>
+<a name="ln2136">      BeamEditData* bed = static_cast&lt;BeamEditData*&gt;(ed.getData(this));</a>
+<a name="ln2137">      BeamFragment* f = fragments[bed-&gt;editFragment];</a>
+<a name="ln2138">      qreal y1 = f-&gt;py1[idx];</a>
+<a name="ln2139">      qreal y2 = f-&gt;py2[idx];</a>
+<a name="ln2140"> </a>
+<a name="ln2141">      if (ed.curGrip == Grip::START)</a>
+<a name="ln2142">            y1 += dy;</a>
+<a name="ln2143">      else if (ed.curGrip == Grip::END)</a>
+<a name="ln2144">            y2 += dy;</a>
+<a name="ln2145">      else if (ed.curGrip == Grip::MIDDLE) {</a>
+<a name="ln2146">            y1 += dy;</a>
+<a name="ln2147">            y2 += dy;</a>
+<a name="ln2148">            }</a>
+<a name="ln2149"> </a>
+<a name="ln2150">      qreal _spatium = spatium();</a>
+<a name="ln2151">      // Because of the logic in Beam::setProperty(),</a>
+<a name="ln2152">      // changing Pid::BEAM_POS only has an effect if Pid::USER_MODIFIED is true.</a>
+<a name="ln2153">      undoChangeProperty(Pid::USER_MODIFIED, true);</a>
+<a name="ln2154">      undoChangeProperty(Pid::BEAM_POS, QPointF(y1 / _spatium, y2 / _spatium));</a>
+<a name="ln2155">      undoChangeProperty(Pid::GENERATED, false);</a>
+<a name="ln2156"> </a>
+<a name="ln2157">      triggerLayout();</a>
+<a name="ln2158">      }</a>
+<a name="ln2159"> </a>
+<a name="ln2160">//---------------------------------------------------------</a>
+<a name="ln2161">//   gripsPositions</a>
+<a name="ln2162">//---------------------------------------------------------</a>
+<a name="ln2163"> </a>
+<a name="ln2164">std::vector&lt;QPointF&gt; Beam::gripsPositions(const EditData&amp; ed) const</a>
+<a name="ln2165">      {</a>
+<a name="ln2166">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2167">      BeamEditData* bed = static_cast&lt;BeamEditData*&gt;(ed.getData(this));</a>
+<a name="ln2168">      BeamFragment* f = fragments[bed-&gt;editFragment];</a>
+<a name="ln2169"> </a>
+<a name="ln2170">      ChordRest* c1 = nullptr;</a>
+<a name="ln2171">      ChordRest* c2 = nullptr;</a>
+<a name="ln2172">      int n = _elements.size();</a>
+<a name="ln2173">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln2174">            if (_elements[i]-&gt;isChordRest()) {</a>
+<a name="ln2175">                  c1 = toChordRest(_elements[i]);</a>
+<a name="ln2176">                  break;</a>
+<a name="ln2177">                  }</a>
+<a name="ln2178">            }</a>
+<a name="ln2179">      for (int i = n-1; i &gt;= 0; --i) {</a>
+<a name="ln2180">            if (_elements[i]-&gt;isChordRest()) {</a>
+<a name="ln2181">                  c2 = toChordRest(_elements[i]);</a>
+<a name="ln2182">                  break;</a>
+<a name="ln2183">                  }</a>
+<a name="ln2184">            }</a>
+<a name="ln2185"> </a>
+<a name="ln2186">      int y = pagePos().y();</a>
+<a name="ln2187"> </a>
+<a name="ln2188">      qreal middleX = (c1-&gt;stemPosX() + c1-&gt;pageX() + c2-&gt;stemPosX() + c2-&gt;pageX()) / 2;</a>
+<a name="ln2189">      qreal middleY = (f-&gt;py1[idx] + y + f-&gt;py2[idx] + y) / 2;</a>
+<a name="ln2190"> </a>
+<a name="ln2191">      return {</a>
+<a name="ln2192">            QPointF(c1-&gt;stemPosX() + c1-&gt;pageX(), f-&gt;py1[idx] + y),</a>
+<a name="ln2193">            QPointF(c2-&gt;stemPosX() + c2-&gt;pageX(), f-&gt;py2[idx] + y),</a>
+<a name="ln2194">            QPointF(middleX, middleY)</a>
+<a name="ln2195">            };</a>
+<a name="ln2196">      }</a>
+<a name="ln2197"> </a>
+<a name="ln2198">//---------------------------------------------------------</a>
+<a name="ln2199">//   setBeamDirection</a>
+<a name="ln2200">//---------------------------------------------------------</a>
+<a name="ln2201"> </a>
+<a name="ln2202">void Beam::setBeamDirection(Direction d)</a>
+<a name="ln2203">      {</a>
+<a name="ln2204">      _direction = d;</a>
+<a name="ln2205">      if (d != Direction::AUTO)</a>
+<a name="ln2206">            _up = d == Direction::UP;</a>
+<a name="ln2207">      }</a>
+<a name="ln2208"> </a>
+<a name="ln2209">//---------------------------------------------------------</a>
+<a name="ln2210">//   reset</a>
+<a name="ln2211">//---------------------------------------------------------</a>
+<a name="ln2212"> </a>
+<a name="ln2213">void Beam::reset()</a>
+<a name="ln2214">      {</a>
+<a name="ln2215">      if (distribute())</a>
+<a name="ln2216">            undoChangeProperty(Pid::DISTRIBUTE, false);</a>
+<a name="ln2217">      if (growLeft() != 1.0)</a>
+<a name="ln2218">            undoChangeProperty(Pid::GROW_LEFT, 1.0);</a>
+<a name="ln2219">      if (growRight() != 1.0)</a>
+<a name="ln2220">            undoChangeProperty(Pid::GROW_RIGHT, 1.0);</a>
+<a name="ln2221">      if (userModified()) {</a>
+<a name="ln2222">            undoChangeProperty(Pid::BEAM_POS, QVariant(beamPos()));</a>
+<a name="ln2223">            undoChangeProperty(Pid::USER_MODIFIED, false);</a>
+<a name="ln2224">            }</a>
+<a name="ln2225">      undoChangeProperty(Pid::STEM_DIRECTION, QVariant::fromValue&lt;Direction&gt;(Direction::AUTO));</a>
+<a name="ln2226">      resetProperty(Pid::BEAM_NO_SLOPE);</a>
+<a name="ln2227">      setGenerated(true);</a>
+<a name="ln2228">      }</a>
+<a name="ln2229"> </a>
+<a name="ln2230">//---------------------------------------------------------</a>
+<a name="ln2231">//   startEdit</a>
+<a name="ln2232">//---------------------------------------------------------</a>
+<a name="ln2233"> </a>
+<a name="ln2234">void Beam::startEdit(EditData&amp; ed)</a>
+<a name="ln2235">      {</a>
+<a name="ln2236">      initBeamEditData(ed);</a>
+<a name="ln2237">      }</a>
+<a name="ln2238"> </a>
+<a name="ln2239">//---------------------------------------------------------</a>
+<a name="ln2240">//   endEdit</a>
+<a name="ln2241">//---------------------------------------------------------</a>
+<a name="ln2242"> </a>
+<a name="ln2243">void Beam::endEdit(EditData&amp; ed)</a>
+<a name="ln2244">      {</a>
+<a name="ln2245">      Element::endEdit(ed);</a>
+<a name="ln2246">      }</a>
+<a name="ln2247"> </a>
+<a name="ln2248">//---------------------------------------------------------</a>
+<a name="ln2249">//   triggerLayout</a>
+<a name="ln2250">//---------------------------------------------------------</a>
+<a name="ln2251"> </a>
+<a name="ln2252">void Beam::triggerLayout() const</a>
+<a name="ln2253">      {</a>
+<a name="ln2254">      if (!_elements.empty()) {</a>
+<a name="ln2255">            _elements.front()-&gt;triggerLayout();</a>
+<a name="ln2256">            _elements.back()-&gt;triggerLayout();</a>
+<a name="ln2257">            }</a>
+<a name="ln2258">      }</a>
+<a name="ln2259"> </a>
+<a name="ln2260">//---------------------------------------------------------</a>
+<a name="ln2261">//   acceptDrop</a>
+<a name="ln2262">//---------------------------------------------------------</a>
+<a name="ln2263"> </a>
+<a name="ln2264">bool Beam::acceptDrop(EditData&amp; data) const</a>
+<a name="ln2265">      {</a>
+<a name="ln2266">      return (data.dropElement-&gt;type() == ElementType::ICON)</a>
+<a name="ln2267">         &amp;&amp; ((toIcon(data.dropElement)-&gt;iconType() == IconType::FBEAM1)</a>
+<a name="ln2268">         || (toIcon(data.dropElement)-&gt;iconType() == IconType::FBEAM2));</a>
+<a name="ln2269">      }</a>
+<a name="ln2270"> </a>
+<a name="ln2271">//---------------------------------------------------------</a>
+<a name="ln2272">//   drop</a>
+<a name="ln2273">//---------------------------------------------------------</a>
+<a name="ln2274"> </a>
+<a name="ln2275">Element* Beam::drop(EditData&amp; data)</a>
+<a name="ln2276">      {</a>
+<a name="ln2277">      if (!data.dropElement-&gt;isIcon())</a>
+<a name="ln2278">            return 0;</a>
+<a name="ln2279">      Icon* e = toIcon(data.dropElement);</a>
+<a name="ln2280">      qreal g1;</a>
+<a name="ln2281">      qreal g2;</a>
+<a name="ln2282"> </a>
+<a name="ln2283">      if (e-&gt;iconType() == IconType::FBEAM1) {</a>
+<a name="ln2284">            g1 = 1.0;</a>
+<a name="ln2285">            g2 = 0.0;</a>
+<a name="ln2286">            }</a>
+<a name="ln2287">      else if (e-&gt;iconType() == IconType::FBEAM2) {</a>
+<a name="ln2288">            g1 = 0.0;</a>
+<a name="ln2289">            g2 = 1.0;</a>
+<a name="ln2290">            }</a>
+<a name="ln2291">      else</a>
+<a name="ln2292">            return 0;</a>
+<a name="ln2293">      if (g1 != growLeft())</a>
+<a name="ln2294">            undoChangeProperty(Pid::GROW_LEFT, g1);</a>
+<a name="ln2295">      if (g2 != growRight())</a>
+<a name="ln2296">            undoChangeProperty(Pid::GROW_RIGHT, g2);</a>
+<a name="ln2297">      return 0;</a>
+<a name="ln2298">      }</a>
+<a name="ln2299"> </a>
+<a name="ln2300">//---------------------------------------------------------</a>
+<a name="ln2301">//   beamPos</a>
+<a name="ln2302">//    misuse QPointF for y1-y2 real values</a>
+<a name="ln2303">//---------------------------------------------------------</a>
+<a name="ln2304"> </a>
+<a name="ln2305">QPointF Beam::beamPos() const</a>
+<a name="ln2306">      {</a>
+<a name="ln2307">      if (fragments.empty())</a>
+<a name="ln2308">            return QPointF(0.0, 0.0);</a>
+<a name="ln2309">      BeamFragment* f = fragments.back();</a>
+<a name="ln2310">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2311">      qreal _spatium = spatium();</a>
+<a name="ln2312">      return QPointF(f-&gt;py1[idx] / _spatium, f-&gt;py2[idx] / _spatium);</a>
+<a name="ln2313">      }</a>
+<a name="ln2314"> </a>
+<a name="ln2315">//---------------------------------------------------------</a>
+<a name="ln2316">//   setBeamPos</a>
+<a name="ln2317">//---------------------------------------------------------</a>
+<a name="ln2318"> </a>
+<a name="ln2319">void Beam::setBeamPos(const QPointF&amp; bp)</a>
+<a name="ln2320">      {</a>
+<a name="ln2321">      if (fragments.empty())</a>
+<a name="ln2322">            fragments.append(new BeamFragment);</a>
+<a name="ln2323">      BeamFragment* f = fragments.back();</a>
+<a name="ln2324">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2325">      _userModified[idx] = true;</a>
+<a name="ln2326">      setGenerated(false);</a>
+<a name="ln2327">      qreal _spatium = spatium();</a>
+<a name="ln2328">      f-&gt;py1[idx] = bp.x() * _spatium;</a>
+<a name="ln2329">      f-&gt;py2[idx] = bp.y() * _spatium;</a>
+<a name="ln2330">      }</a>
+<a name="ln2331"> </a>
+<a name="ln2332">//---------------------------------------------------------</a>
+<a name="ln2333">//   userModified</a>
+<a name="ln2334">//---------------------------------------------------------</a>
+<a name="ln2335"> </a>
+<a name="ln2336">bool Beam::userModified() const</a>
+<a name="ln2337">      {</a>
+<a name="ln2338">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2339">      return _userModified[idx];</a>
+<a name="ln2340">      }</a>
+<a name="ln2341"> </a>
+<a name="ln2342">//---------------------------------------------------------</a>
+<a name="ln2343">//   setUserModified</a>
+<a name="ln2344">//---------------------------------------------------------</a>
+<a name="ln2345"> </a>
+<a name="ln2346">void Beam::setUserModified(bool val)</a>
+<a name="ln2347">      {</a>
+<a name="ln2348">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2349">      _userModified[idx] = val;</a>
+<a name="ln2350">      }</a>
+<a name="ln2351"> </a>
+<a name="ln2352">//---------------------------------------------------------</a>
+<a name="ln2353">//   getProperty</a>
+<a name="ln2354">//---------------------------------------------------------</a>
+<a name="ln2355"> </a>
+<a name="ln2356">QVariant Beam::getProperty(Pid propertyId) const</a>
+<a name="ln2357">      {</a>
+<a name="ln2358">      switch (propertyId) {</a>
+<a name="ln2359">            case Pid::STEM_DIRECTION: return QVariant::fromValue&lt;Direction&gt;(beamDirection());</a>
+<a name="ln2360">            case Pid::DISTRIBUTE:     return distribute();</a>
+<a name="ln2361">            case Pid::GROW_LEFT:      return growLeft();</a>
+<a name="ln2362">            case Pid::GROW_RIGHT:     return growRight();</a>
+<a name="ln2363">            case Pid::USER_MODIFIED:  return userModified();</a>
+<a name="ln2364">            case Pid::BEAM_POS:       return beamPos();</a>
+<a name="ln2365">            case Pid::BEAM_NO_SLOPE:  return noSlope();</a>
+<a name="ln2366">            default:</a>
+<a name="ln2367">                  return Element::getProperty(propertyId);</a>
+<a name="ln2368">            }</a>
+<a name="ln2369">      }</a>
+<a name="ln2370"> </a>
+<a name="ln2371">//---------------------------------------------------------</a>
+<a name="ln2372">//   setProperty</a>
+<a name="ln2373">//---------------------------------------------------------</a>
+<a name="ln2374"> </a>
+<a name="ln2375">bool Beam::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln2376">      {</a>
+<a name="ln2377">      switch (propertyId) {</a>
+<a name="ln2378">            case Pid::STEM_DIRECTION:</a>
+<a name="ln2379">                  setBeamDirection(v.value&lt;Direction&gt;());</a>
+<a name="ln2380">                  break;</a>
+<a name="ln2381">            case Pid::DISTRIBUTE:</a>
+<a name="ln2382">                  setDistribute(v.toBool());</a>
+<a name="ln2383">                  break;</a>
+<a name="ln2384">            case Pid::GROW_LEFT:</a>
+<a name="ln2385">                  setGrowLeft(v.toDouble());</a>
+<a name="ln2386">                  break;</a>
+<a name="ln2387">            case Pid::GROW_RIGHT:</a>
+<a name="ln2388">                  setGrowRight(v.toDouble());</a>
+<a name="ln2389">                  break;</a>
+<a name="ln2390">            case Pid::USER_MODIFIED:</a>
+<a name="ln2391">                  setUserModified(v.toBool());</a>
+<a name="ln2392">                  break;</a>
+<a name="ln2393">            case Pid::BEAM_POS:</a>
+<a name="ln2394">                  if (userModified())</a>
+<a name="ln2395">                        setBeamPos(v.toPointF());</a>
+<a name="ln2396">                  break;</a>
+<a name="ln2397">            case Pid::BEAM_NO_SLOPE:</a>
+<a name="ln2398">                  setNoSlope(v.toBool());</a>
+<a name="ln2399">                  break;</a>
+<a name="ln2400">            default:</a>
+<a name="ln2401">                  if (!Element::setProperty(propertyId, v))</a>
+<a name="ln2402">                        return false;</a>
+<a name="ln2403">                  break;</a>
+<a name="ln2404">            }</a>
+<a name="ln2405">      triggerLayout();</a>
+<a name="ln2406">      setGenerated(false);</a>
+<a name="ln2407">      return true;</a>
+<a name="ln2408">      }</a>
+<a name="ln2409"> </a>
+<a name="ln2410">//---------------------------------------------------------</a>
+<a name="ln2411">//   propertyDefault</a>
+<a name="ln2412">//---------------------------------------------------------</a>
+<a name="ln2413"> </a>
+<a name="ln2414">QVariant Beam::propertyDefault(Pid id) const</a>
+<a name="ln2415">      {</a>
+<a name="ln2416">      switch (id) {</a>
+<a name="ln2417">//            case Pid::SUB_STYLE:      return int(Tid::BEAM);</a>
+<a name="ln2418">            case Pid::STEM_DIRECTION: return QVariant::fromValue&lt;Direction&gt;(Direction::AUTO);</a>
+<a name="ln2419">            case Pid::DISTRIBUTE:     return false;</a>
+<a name="ln2420">            case Pid::GROW_LEFT:      return 1.0;</a>
+<a name="ln2421">            case Pid::GROW_RIGHT:     return 1.0;</a>
+<a name="ln2422">            case Pid::USER_MODIFIED:  return false;</a>
+<a name="ln2423">            case Pid::BEAM_POS:       return beamPos();</a>
+<a name="ln2424">            default:                   return Element::propertyDefault(id);</a>
+<a name="ln2425">            }</a>
+<a name="ln2426">      }</a>
+<a name="ln2427"> </a>
+<a name="ln2428">//---------------------------------------------------------</a>
+<a name="ln2429">//   addSkyline</a>
+<a name="ln2430">//    add beam shape to skyline</a>
+<a name="ln2431">//---------------------------------------------------------</a>
+<a name="ln2432"> </a>
+<a name="ln2433">void Beam::addSkyline(Skyline&amp; sk)</a>
+<a name="ln2434">      {</a>
+<a name="ln2435">      if (beamSegments.empty() || !addToSkyline())</a>
+<a name="ln2436">            return;</a>
+<a name="ln2437">      qreal lw2 = point(score()-&gt;styleS(Sid::beamWidth)) * .5 * mag();</a>
+<a name="ln2438">      const QLineF* bs = beamSegments.front();</a>
+<a name="ln2439">      double d  = (qAbs(bs-&gt;y2() - bs-&gt;y1())) / (bs-&gt;x2() - bs-&gt;x1());</a>
+<a name="ln2440">      if (beamSegments.size() &gt; 1 &amp;&amp; d &gt; M_PI/6.0)</a>
+<a name="ln2441">            d = M_PI/6.0;</a>
+<a name="ln2442">      double ww      = lw2 / sin(M_PI_2 - atan(d));</a>
+<a name="ln2443">      qreal _spatium = spatium();</a>
+<a name="ln2444"> </a>
+<a name="ln2445">      for (const QLineF* beamSegment : beamSegments) {</a>
+<a name="ln2446">            qreal x = beamSegment-&gt;x1();</a>
+<a name="ln2447">            qreal y = beamSegment-&gt;y1();</a>
+<a name="ln2448">            qreal w = beamSegment-&gt;x2() - x;</a>
+<a name="ln2449">            int n   = (d &lt; 0.01) ? 1 : int(ceil(w / _spatium));</a>
+<a name="ln2450"> </a>
+<a name="ln2451">            qreal s = (beamSegment-&gt;y2() - y) / w;</a>
+<a name="ln2452">            w /= n;</a>
+<a name="ln2453">            for (int i = 1; i &lt;= n; ++i) {</a>
+<a name="ln2454">                  qreal y2 = y + w * s;</a>
+<a name="ln2455">                  qreal yn, ys;</a>
+<a name="ln2456">                  if (y2 &gt; y) {</a>
+<a name="ln2457">                        yn = y;</a>
+<a name="ln2458">                        ys = y2;</a>
+<a name="ln2459">                        }</a>
+<a name="ln2460">                  else {</a>
+<a name="ln2461">                        yn = y2;</a>
+<a name="ln2462">                        ys = y;</a>
+<a name="ln2463">                        }</a>
+<a name="ln2464">                  sk.north().add(x, yn - ww, w);</a>
+<a name="ln2465">                  sk.south().add(x, ys + ww, w);</a>
+<a name="ln2466">                  x += w;</a>
+<a name="ln2467">                  y = y2;</a>
+<a name="ln2468">                  }</a>
+<a name="ln2469">            }</a>
+<a name="ln2470">      }</a>
+<a name="ln2471"> </a>
+<a name="ln2472">//---------------------------------------------------------</a>
+<a name="ln2473">//   tick</a>
+<a name="ln2474">//---------------------------------------------------------</a>
+<a name="ln2475"> </a>
+<a name="ln2476">Fraction Beam::tick() const</a>
+<a name="ln2477">      {</a>
+<a name="ln2478">      return _elements.empty() ? Fraction(0, 1) : _elements.front()-&gt;segment()-&gt;tick();</a>
+<a name="ln2479">      }</a>
+<a name="ln2480"> </a>
+<a name="ln2481">//---------------------------------------------------------</a>
+<a name="ln2482">//   rtick</a>
+<a name="ln2483">//---------------------------------------------------------</a>
+<a name="ln2484"> </a>
+<a name="ln2485">Fraction Beam::rtick() const</a>
+<a name="ln2486">      {</a>
+<a name="ln2487">      return _elements.empty() ? Fraction(0, 1) : _elements.front()-&gt;segment()-&gt;rtick();</a>
+<a name="ln2488">      }</a>
+<a name="ln2489"> </a>
+<a name="ln2490">//---------------------------------------------------------</a>
+<a name="ln2491">//   iconType</a>
+<a name="ln2492">//---------------------------------------------------------</a>
+<a name="ln2493"> </a>
+<a name="ln2494">IconType Beam::iconType(Mode mode)</a>
+<a name="ln2495">      {</a>
+<a name="ln2496">      switch (mode) {</a>
+<a name="ln2497">            case Mode::BEGIN:</a>
+<a name="ln2498">                  return IconType::SBEAM;</a>
+<a name="ln2499">            case Mode::MID:</a>
+<a name="ln2500">                  return IconType::MBEAM;</a>
+<a name="ln2501">            case Mode::NONE:</a>
+<a name="ln2502">                  return IconType::NBEAM;</a>
+<a name="ln2503">            case Mode::BEGIN32:</a>
+<a name="ln2504">                  return IconType::BEAM32;</a>
+<a name="ln2505">            case Mode::BEGIN64:</a>
+<a name="ln2506">                  return IconType::BEAM64;</a>
+<a name="ln2507">            case Mode::AUTO:</a>
+<a name="ln2508">                  return IconType::AUTOBEAM;</a>
+<a name="ln2509">            default:</a>
+<a name="ln2510">                  break;</a>
+<a name="ln2511">            }</a>
+<a name="ln2512">      return IconType::NONE;</a>
+<a name="ln2513">}</a>
+<a name="ln2514"> </a>
+<a name="ln2515">//---------------------------------------------------------</a>
+<a name="ln2516">//   drag</a>
+<a name="ln2517">//---------------------------------------------------------</a>
+<a name="ln2518"> </a>
+<a name="ln2519">QRectF Beam::drag(EditData&amp; ed)</a>
+<a name="ln2520">      {</a>
+<a name="ln2521">      int idx  = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2522">      qreal dy = ed.pos.y() - ed.lastPos.y();</a>
+<a name="ln2523">      BeamEditData* bed = static_cast&lt;BeamEditData*&gt;(ed.getData(this));</a>
+<a name="ln2524">      BeamFragment* f = fragments[bed-&gt;editFragment];</a>
+<a name="ln2525"> </a>
+<a name="ln2526">      qreal y1 = f-&gt;py1[idx];</a>
+<a name="ln2527">      qreal y2 = f-&gt;py2[idx];</a>
+<a name="ln2528"> </a>
+<a name="ln2529">      y1 += dy;</a>
+<a name="ln2530">      y2 += dy;</a>
+<a name="ln2531"> </a>
+<a name="ln2532">      qreal _spatium = spatium();</a>
+<a name="ln2533">      // Because of the logic in Beam::setProperty(),</a>
+<a name="ln2534">      // changing Pid::BEAM_POS only has an effect if Pid::USER_MODIFIED is true.</a>
+<a name="ln2535">      undoChangeProperty(Pid::USER_MODIFIED, true);</a>
+<a name="ln2536">      undoChangeProperty(Pid::BEAM_POS, QPointF(y1 / _spatium, y2 / _spatium));</a>
+<a name="ln2537">      undoChangeProperty(Pid::GENERATED, false);</a>
+<a name="ln2538"> </a>
+<a name="ln2539">      triggerLayout();</a>
+<a name="ln2540"> </a>
+<a name="ln2541">      return canvasBoundingRect();</a>
+<a name="ln2542">      }</a>
+<a name="ln2543"> </a>
+<a name="ln2544">//---------------------------------------------------------</a>
+<a name="ln2545">//   isMovable</a>
+<a name="ln2546">//---------------------------------------------------------</a>
+<a name="ln2547">bool Beam::isMovable() const</a>
+<a name="ln2548">      {</a>
+<a name="ln2549">      return true;</a>
+<a name="ln2550">      }</a>
+<a name="ln2551"> </a>
+<a name="ln2552">//---------------------------------------------------------</a>
+<a name="ln2553">//   initBeamEditData</a>
+<a name="ln2554">//---------------------------------------------------------</a>
+<a name="ln2555">void Beam::initBeamEditData(EditData&amp; ed)</a>
+<a name="ln2556">      {</a>
+<a name="ln2557">      BeamEditData* bed = new BeamEditData();</a>
+<a name="ln2558">      bed-&gt;e    = this;</a>
+<a name="ln2559">      bed-&gt;editFragment = 0;</a>
+<a name="ln2560">      ed.addData(bed);</a>
+<a name="ln2561"> </a>
+<a name="ln2562">      QPointF pt(ed.startMove - pagePos());</a>
+<a name="ln2563">      qreal ydiff = 100000000.0;</a>
+<a name="ln2564">      int idx = (_direction == Direction::AUTO || _direction == Direction::DOWN) ? 0 : 1;</a>
+<a name="ln2565">      int i = 0;</a>
+<a name="ln2566">      for (BeamFragment* f : fragments) {</a>
+<a name="ln2567">            qreal d = fabs(f-&gt;py1[idx] - pt.y());</a>
+<a name="ln2568">            if (d &lt; ydiff) {</a>
+<a name="ln2569">                  ydiff = d;</a>
+<a name="ln2570">                  bed-&gt;editFragment = i;</a>
+<a name="ln2571">                  }</a>
+<a name="ln2572">            ++i;</a>
+<a name="ln2573">            }</a>
+<a name="ln2574">      }</a>
+<a name="ln2575"> </a>
+<a name="ln2576">//---------------------------------------------------------</a>
+<a name="ln2577">//   startDrag</a>
+<a name="ln2578">//---------------------------------------------------------</a>
+<a name="ln2579">void Beam::startDrag(EditData&amp; editData)</a>
+<a name="ln2580">      {</a>
+<a name="ln2581">      initBeamEditData(editData);</a>
+<a name="ln2582">      }</a>
+<a name="ln2583"> </a>
+<a name="ln2584">}</a>
+
+</code></pre>
+<div class="balloon" rel="1719"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'i' is always true.</p></div>
+<div class="balloon" rel="1769"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: !growDownGroup.</p></div>
+<div class="balloon" rel="58"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _noSlope, _beamDist, _id, minMove, maxMove.</p></div>
+<div class="balloon" rel="77"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _beamDist.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

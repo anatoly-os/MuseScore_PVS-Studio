@@ -1,0 +1,856 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>pitchspelling.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2007-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">//  This file contains the implementation of an pitch spelling</a>
+<a name="ln14">//  algorithmus from Emilios Cambouropoulos as published in:</a>
+<a name="ln15">//  &quot;Automatic Pitch Spelling: From Numbers to Sharps and Flats&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &quot;synthesizer/event.h&quot;</a>
+<a name="ln18">#include &quot;note.h&quot;</a>
+<a name="ln19">#include &quot;key.h&quot;</a>
+<a name="ln20">#include &quot;pitchspelling.h&quot;</a>
+<a name="ln21">#include &quot;staff.h&quot;</a>
+<a name="ln22">#include &quot;chord.h&quot;</a>
+<a name="ln23">#include &quot;score.h&quot;</a>
+<a name="ln24">#include &quot;part.h&quot;</a>
+<a name="ln25">#include &quot;utils.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">namespace Ms {</a>
+<a name="ln28"> </a>
+<a name="ln29">//---------------------------------------------------------</a>
+<a name="ln30">//   tpcIsValid</a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32"> </a>
+<a name="ln33">bool tpcIsValid(int val)</a>
+<a name="ln34">      {</a>
+<a name="ln35">      return val &gt;= Tpc::TPC_MIN &amp;&amp; val &lt;= Tpc::TPC_MAX;</a>
+<a name="ln36">      }</a>
+<a name="ln37"> </a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39">//   step2tpc</a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41"> </a>
+<a name="ln42">int step2tpc(int step, AccidentalVal alter)</a>
+<a name="ln43">      {</a>
+<a name="ln44">      //    TPC - tonal pitch classes</a>
+<a name="ln45">      //    &quot;line of fifth's&quot; LOF</a>
+<a name="ln46"> </a>
+<a name="ln47">      static const int spellings[] = {</a>
+<a name="ln48">      //     bb  b   -   #  ##</a>
+<a name="ln49">             0,  7, 14, 21, 28,  // C</a>
+<a name="ln50">             2,  9, 16, 23, 30,  // D</a>
+<a name="ln51">             4, 11, 18, 25, 32,  // E</a>
+<a name="ln52">            -1,  6, 13, 20, 27,  // F</a>
+<a name="ln53">             1,  8, 15, 22, 29,  // G</a>
+<a name="ln54">             3, 10, 17, 24, 31,  // A</a>
+<a name="ln55">             5, 12, 19, 26, 33,  // B</a>
+<a name="ln56">             };</a>
+<a name="ln57"> </a>
+<a name="ln58">      int i = step*5 + int(alter)+2;</a>
+<a name="ln59">      Q_ASSERT(i &gt;= 0 &amp;&amp; (i &lt; int(sizeof(spellings)/sizeof(*spellings))));</a>
+<a name="ln60">      return spellings[i];</a>
+<a name="ln61">      }</a>
+<a name="ln62"> </a>
+<a name="ln63">static const int tpcByStepAndKey[int(Key::NUM_OF)][STEP_DELTA_OCTAVE] = {</a>
+<a name="ln64">// step          C             D             E             F             G             A             B        Key</a>
+<a name="ln65">      { Tpc::TPC_C_B, Tpc::TPC_D_B, Tpc::TPC_E_B, Tpc::TPC_F_B, Tpc::TPC_G_B, Tpc::TPC_A_B, Tpc::TPC_B_B}, // Cb</a>
+<a name="ln66">      { Tpc::TPC_C_B, Tpc::TPC_D_B, Tpc::TPC_E_B, Tpc::TPC_F,   Tpc::TPC_G_B, Tpc::TPC_A_B, Tpc::TPC_B_B}, // Gb</a>
+<a name="ln67">      { Tpc::TPC_C,   Tpc::TPC_D_B, Tpc::TPC_E_B, Tpc::TPC_F,   TPC_G_B,      Tpc::TPC_A_B, Tpc::TPC_B_B}, // Db</a>
+<a name="ln68">      { Tpc::TPC_C,   Tpc::TPC_D_B, Tpc::TPC_E_B, Tpc::TPC_F,   Tpc::TPC_G,   Tpc::TPC_A_B, Tpc::TPC_B_B}, // Ab</a>
+<a name="ln69">      { Tpc::TPC_C,   Tpc::TPC_D,   Tpc::TPC_E_B, Tpc::TPC_F,   Tpc::TPC_G,   Tpc::TPC_A_B, Tpc::TPC_B_B}, // Eb</a>
+<a name="ln70">      { Tpc::TPC_C,   Tpc::TPC_D,   Tpc::TPC_E_B, Tpc::TPC_F,   Tpc::TPC_G,   Tpc::TPC_A,   Tpc::TPC_B_B}, // B</a>
+<a name="ln71">      { Tpc::TPC_C,   Tpc::TPC_D,   Tpc::TPC_E,   Tpc::TPC_F,   Tpc::TPC_G,   Tpc::TPC_A,   Tpc::TPC_B_B}, // F</a>
+<a name="ln72">      { Tpc::TPC_C,   Tpc::TPC_D,   Tpc::TPC_E,   Tpc::TPC_F,   Tpc::TPC_G,   Tpc::TPC_A,   Tpc::TPC_B},   // C</a>
+<a name="ln73">      { Tpc::TPC_C,   Tpc::TPC_D,   Tpc::TPC_E,   Tpc::TPC_F_S, Tpc::TPC_G,   Tpc::TPC_A,   Tpc::TPC_B},   // G</a>
+<a name="ln74">      { Tpc::TPC_C_S, Tpc::TPC_D,   Tpc::TPC_E,   Tpc::TPC_F_S, Tpc::TPC_G,   Tpc::TPC_A,   Tpc::TPC_B},   // D</a>
+<a name="ln75">      { Tpc::TPC_C_S, Tpc::TPC_D,   Tpc::TPC_E,   Tpc::TPC_F_S, Tpc::TPC_G_S, Tpc::TPC_A,   Tpc::TPC_B},   // A</a>
+<a name="ln76">      { Tpc::TPC_C_S, Tpc::TPC_D_S, Tpc::TPC_E,   Tpc::TPC_F_S, Tpc::TPC_G_S, Tpc::TPC_A,   Tpc::TPC_B},   // E</a>
+<a name="ln77">      { Tpc::TPC_C_S, Tpc::TPC_D_S, Tpc::TPC_E,   Tpc::TPC_F_S, Tpc::TPC_G_S, Tpc::TPC_A_S, Tpc::TPC_B},   // H</a>
+<a name="ln78">      { Tpc::TPC_C_S, Tpc::TPC_D_S, Tpc::TPC_E_S, Tpc::TPC_F_S, Tpc::TPC_G_S, Tpc::TPC_A_S, Tpc::TPC_B},   // F#</a>
+<a name="ln79">      { Tpc::TPC_C_S, Tpc::TPC_D_S, Tpc::TPC_E_S, Tpc::TPC_F_S, Tpc::TPC_G_S, Tpc::TPC_A_S, Tpc::TPC_B_S}, // C#</a>
+<a name="ln80">};</a>
+<a name="ln81"> </a>
+<a name="ln82">int step2tpcByKey(int step, Key key)</a>
+<a name="ln83">      {</a>
+<a name="ln84">      while (step &lt; 0)</a>
+<a name="ln85">            step += STEP_DELTA_OCTAVE;</a>
+<a name="ln86">      while (key &lt; Key::MIN)</a>
+<a name="ln87">            key  += Key::DELTA_ENHARMONIC;</a>
+<a name="ln88">      while (key &gt; Key::MAX)</a>
+<a name="ln89">            key  -= Key::DELTA_ENHARMONIC;</a>
+<a name="ln90">      return tpcByStepAndKey[int(key) - int(Key::MIN)][step % STEP_DELTA_OCTAVE];</a>
+<a name="ln91">      }</a>
+<a name="ln92"> </a>
+<a name="ln93">//---------------------------------------------------------</a>
+<a name="ln94">//   tpc2step</a>
+<a name="ln95">//---------------------------------------------------------</a>
+<a name="ln96"> </a>
+<a name="ln97">int tpc2step(int tpc)</a>
+<a name="ln98">      {</a>
+<a name="ln99">      // 14 - C</a>
+<a name="ln100">      // 15 % 7 = 1</a>
+<a name="ln101">      //                                            f  c  g  d  a  e  b</a>
+<a name="ln102">      static const int steps[STEP_DELTA_OCTAVE] = { 3, 0, 4, 1, 5, 2, 6 };</a>
+<a name="ln103">      // TODO: optimize -TCP_MIN</a>
+<a name="ln104">      return steps[(tpc-Tpc::TPC_MIN) % STEP_DELTA_OCTAVE];</a>
+<a name="ln105">// without a table, could also be rendered as:</a>
+<a name="ln106">//      return ((tpc-Tpc::TPC_MIN) * STEP_DELTA_TPC) / STEP_DELTA_OCTAVE + TPC_FIRST_STEP;</a>
+<a name="ln107">      }</a>
+<a name="ln108"> </a>
+<a name="ln109">//---------------------------------------------------------</a>
+<a name="ln110">//   tpc2stepByKey</a>
+<a name="ln111">//---------------------------------------------------------</a>
+<a name="ln112"> </a>
+<a name="ln113">int tpc2stepByKey(int tpc, Key key, int* pAlter)</a>
+<a name="ln114">      {</a>
+<a name="ln115">      if (pAlter)</a>
+<a name="ln116">            *pAlter = tpc2alterByKey(tpc, key);</a>
+<a name="ln117">      return tpc2step(tpc);</a>
+<a name="ln118">      }</a>
+<a name="ln119"> </a>
+<a name="ln120">//---------------------------------------------------------</a>
+<a name="ln121">//   step2tpc</a>
+<a name="ln122">//---------------------------------------------------------</a>
+<a name="ln123"> </a>
+<a name="ln124">int step2tpc(const QString&amp; stepName, AccidentalVal alter)</a>
+<a name="ln125">      {</a>
+<a name="ln126">      if (stepName.isEmpty())</a>
+<a name="ln127">            return Tpc::TPC_INVALID;</a>
+<a name="ln128">      int r;</a>
+<a name="ln129">      switch (stepName[0].toLower().toLatin1()) {</a>
+<a name="ln130">            case 'c': r = 0; break;</a>
+<a name="ln131">            case 'd': r = 1; break;</a>
+<a name="ln132">            case 'e': r = 2; break;</a>
+<a name="ln133">            case 'f': r = 3; break;</a>
+<a name="ln134">            case 'g': r = 4; break;</a>
+<a name="ln135">            case 'a': r = 5; break;</a>
+<a name="ln136">            case 'b': r = 6; break;</a>
+<a name="ln137">            default:</a>
+<a name="ln138">                  return Tpc::TPC_INVALID;</a>
+<a name="ln139">            }</a>
+<a name="ln140">      return step2tpc(r, alter);</a>
+<a name="ln141">      }</a>
+<a name="ln142"> </a>
+<a name="ln143">//---------------------------------------------------------</a>
+<a name="ln144">//   step2deltaPitchByKey</a>
+<a name="ln145">//</a>
+<a name="ln146">// returns the delta pitch above natural C for the given step in the given key</a>
+<a name="ln147">// step: 0 - 6</a>
+<a name="ln148">// key: -7 - +7</a>
+<a name="ln149">//---------------------------------------------------------</a>
+<a name="ln150"> </a>
+<a name="ln151">static const int pitchByStepAndKey[int(Key::NUM_OF)][STEP_DELTA_OCTAVE] = {</a>
+<a name="ln152">// step  C   D   E   F   G   A   B           Key</a>
+<a name="ln153">      { -1,  1,  3,  4,  6,  8, 10},      // Cb</a>
+<a name="ln154">      { -1,  1,  3,  5,  6,  8, 10},      // Gb</a>
+<a name="ln155">      {  0,  1,  3,  5,  6,  8, 10},      // Db</a>
+<a name="ln156">      {  0,  1,  3,  5,  7,  8, 10},      // Ab</a>
+<a name="ln157">      {  0,  2,  3,  5,  7,  8, 10},      // Eb</a>
+<a name="ln158">      {  0,  2,  3,  5,  7,  9, 10},      // B</a>
+<a name="ln159">      {  0,  2,  4,  5,  7,  9, 10},      // F</a>
+<a name="ln160">      {  0,  2,  4,  5,  7,  9, 11},      // C</a>
+<a name="ln161">      {  0,  2,  4,  6,  7,  9, 11},      // G</a>
+<a name="ln162">      {  1,  2,  4,  6,  7,  9, 11},      // D</a>
+<a name="ln163">      {  1,  2,  4,  6,  8,  9, 11},      // A</a>
+<a name="ln164">      {  1,  3,  4,  6,  8,  9, 11},      // E</a>
+<a name="ln165">      {  1,  3,  4,  6,  8, 10, 11},      // H</a>
+<a name="ln166">      {  1,  3,  5,  6,  8, 10, 11},      // F#</a>
+<a name="ln167">      {  1,  3,  5,  6,  8, 10, 12},      // C#</a>
+<a name="ln168">};</a>
+<a name="ln169"> </a>
+<a name="ln170">int step2deltaPitchByKey(int step, Key key)</a>
+<a name="ln171">      {</a>
+<a name="ln172">      while (step &lt; 0)</a>
+<a name="ln173">            step+= STEP_DELTA_OCTAVE;</a>
+<a name="ln174">      while (key &lt; Key::MIN)</a>
+<a name="ln175">            key += Key::DELTA_ENHARMONIC;</a>
+<a name="ln176">      while (key &gt; Key::MAX)</a>
+<a name="ln177">            key -= Key::DELTA_ENHARMONIC;</a>
+<a name="ln178">      return pitchByStepAndKey[int(key)-int(Key::MIN)][step % STEP_DELTA_OCTAVE];</a>
+<a name="ln179">      }</a>
+<a name="ln180"> </a>
+<a name="ln181">//---------------------------------------------------------</a>
+<a name="ln182">//   tpc2pitch</a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184"> </a>
+<a name="ln185">int tpc2pitch(int tpc)</a>
+<a name="ln186">      {</a>
+<a name="ln187">      Q_ASSERT(tpcIsValid(tpc));</a>
+<a name="ln188"> </a>
+<a name="ln189">      static int pitches[] = {</a>
+<a name="ln190">//step:     F   C   G   D   A   E   B</a>
+<a name="ln191">            3, -2,  5,  0,  7,  2,  9,     // bb</a>
+<a name="ln192">            4, -1,  6,  1,  8,  3, 10,     // b</a>
+<a name="ln193">            5,  0,  7,  2,  9,  4, 11,     // -</a>
+<a name="ln194">            6,  1,  8,  3, 10,  5, 12,     // #</a>
+<a name="ln195">            7,  2,  9,  4, 11,  6, 13      // ##</a>
+<a name="ln196">            };</a>
+<a name="ln197">      return pitches[tpc + 1];</a>
+<a name="ln198">      }</a>
+<a name="ln199"> </a>
+<a name="ln200">//---------------------------------------------------------</a>
+<a name="ln201">//   tpc2alterByKey</a>
+<a name="ln202">//</a>
+<a name="ln203">// returns the alteration (-3 to 3) of a given tpc in the given key</a>
+<a name="ln204">// to understand the formula:</a>
+<a name="ln205">//    in the highest key (C#Maj), each of the first 7 tpcs (Fbb to Bbb; tpc-Tpc::TPC_MIN: 0 to 7)</a>
+<a name="ln206">//          is 3 semitones below its key degree (alter = -3)</a>
+<a name="ln207">//    the second 7 tpcs (Fb to Bb; tpc-Tpc::TPC_MIN: 8 to 13) are 2 semitones below (alter = -2) and so on up to 1</a>
+<a name="ln208">//    thus, for C#Maj:</a>
+<a name="ln209">// (1)      (tpc-Tpc::TPC_MIN) - 0         =  0 to 34 (for tcp-TCP_MIN from 0 to 34)</a>
+<a name="ln210">// (2)      (tpc-Tpc::TPC_MIN) - 0) / 7    =  0 to 4  (for each settuple of tcp's) and finally</a>
+<a name="ln211">// (3)      (tcp-Tpc::TPC_MIN) - 0) / 7 -3 = -3 to 1  (for each settuple of tcp's)</a>
+<a name="ln212">//          where 0 = Key::C_S - Key::MAX</a>
+<a name="ln213">//    for each previous key, the result of (1) increases by 1 and the classes of alter are shifted 1 TPC 'up':</a>
+<a name="ln214">//          F#Maj: Fbb-Ebb =&gt; -3, Bbb to Eb =&gt; -2 and so on</a>
+<a name="ln215">//          BMaj:  Fbb-Abb =&gt; -3, Ebb to Ab =&gt; -2 and so on</a>
+<a name="ln216">//          and so on</a>
+<a name="ln217">//    thus, for any 'key', the formula is:</a>
+<a name="ln218">//          ((tcp-Tpc::TPC_MIN) - (key-Key::MAX)) / TCP_DELTA_SEMITONE - 3</a>
+<a name="ln219">//---------------------------------------------------------</a>
+<a name="ln220"> </a>
+<a name="ln221">int tpc2alterByKey(int tpc, Key key) {</a>
+<a name="ln222">      return (tpc - int(key) - int(Tpc::TPC_MIN) + int(Key::MAX)) / TPC_DELTA_SEMITONE - 3;</a>
+<a name="ln223">      }</a>
+<a name="ln224"> </a>
+<a name="ln225">//---------------------------------------------------------</a>
+<a name="ln226">//   tpc2name</a>
+<a name="ln227">//    return note name</a>
+<a name="ln228">//---------------------------------------------------------</a>
+<a name="ln229"> </a>
+<a name="ln230">QString tpc2name(int tpc, NoteSpellingType noteSpelling, NoteCaseType noteCase, bool explicitAccidental)</a>
+<a name="ln231">      {</a>
+<a name="ln232">      QString s;</a>
+<a name="ln233">      QString acc;</a>
+<a name="ln234">      tpc2name(tpc, noteSpelling, noteCase, s, acc, explicitAccidental);</a>
+<a name="ln235">      return s + (explicitAccidental ? &quot; &quot; : &quot;&quot;) + acc;</a>
+<a name="ln236">      }</a>
+<a name="ln237"> </a>
+<a name="ln238">//---------------------------------------------------------</a>
+<a name="ln239">//   tpc2name</a>
+<a name="ln240">//---------------------------------------------------------</a>
+<a name="ln241"> </a>
+<a name="ln242">void tpc2name(int tpc, NoteSpellingType noteSpelling, NoteCaseType noteCase, QString&amp; s, QString&amp; acc, bool explicitAccidental)</a>
+<a name="ln243">      {</a>
+<a name="ln244">      int n;</a>
+<a name="ln245">      tpc2name(tpc, noteSpelling, noteCase, s, n);</a>
+<a name="ln246">      switch (n) {</a>
+<a name="ln247">            case -2:</a>
+<a name="ln248">                  if (explicitAccidental) {</a>
+<a name="ln249">                        acc = QObject::tr(&quot;double ♭&quot;);</a>
+<a name="ln250">                        }</a>
+<a name="ln251">                  else if (noteSpelling == NoteSpellingType::GERMAN_PURE) {</a>
+<a name="ln252">                        switch (tpc) {</a>
+<a name="ln253">                              case TPC_A_BB: acc = &quot;sas&quot;; break;</a>
+<a name="ln254">                              case TPC_E_BB: acc = &quot;ses&quot;; break;</a>
+<a name="ln255">                              default: acc = &quot;eses&quot;;</a>
+<a name="ln256">                              }</a>
+<a name="ln257">                        }</a>
+<a name="ln258">                  else {</a>
+<a name="ln259">                        acc = &quot;bb&quot;;</a>
+<a name="ln260">                        }</a>
+<a name="ln261">                  break;</a>
+<a name="ln262">            case -1:</a>
+<a name="ln263">                  if (explicitAccidental)</a>
+<a name="ln264">                        acc = QObject::tr(&quot;♭&quot;);</a>
+<a name="ln265">                  else if (noteSpelling == NoteSpellingType::GERMAN_PURE)</a>
+<a name="ln266">                        acc = (tpc == TPC_A_B || tpc == TPC_E_B) ? &quot;s&quot; : &quot;es&quot;;</a>
+<a name="ln267">                  else</a>
+<a name="ln268">                        acc = &quot;b&quot;;</a>
+<a name="ln269">                  break;</a>
+<a name="ln270">            case  0: acc = &quot;&quot;; break;</a>
+<a name="ln271">            case  1:</a>
+<a name="ln272">                  if (explicitAccidental)</a>
+<a name="ln273">                        acc = QObject::tr(&quot;♯&quot;);</a>
+<a name="ln274">                  else</a>
+<a name="ln275">                        acc = (noteSpelling == NoteSpellingType::GERMAN_PURE) ? &quot;is&quot; : &quot;#&quot;;</a>
+<a name="ln276">                  break;</a>
+<a name="ln277">            case  2:</a>
+<a name="ln278">                  if (explicitAccidental)</a>
+<a name="ln279">                        acc = QObject::tr(&quot;double ♯&quot;);</a>
+<a name="ln280">                  else</a>
+<a name="ln281">                        acc = (noteSpelling == NoteSpellingType::GERMAN_PURE) ? &quot;isis&quot; : &quot;##&quot;;</a>
+<a name="ln282">                  break;</a>
+<a name="ln283">            default:</a>
+<a name="ln284">                  qDebug(&quot;tpc2name(%d): acc %d&quot;, tpc, n);</a>
+<a name="ln285">                  acc = &quot;&quot;;</a>
+<a name="ln286">                  break;</a>
+<a name="ln287">            }</a>
+<a name="ln288">      }</a>
+<a name="ln289"> </a>
+<a name="ln290">//---------------------------------------------------------</a>
+<a name="ln291">//   tpc2name</a>
+<a name="ln292">//---------------------------------------------------------</a>
+<a name="ln293"> </a>
+<a name="ln294">void tpc2name(int tpc, NoteSpellingType noteSpelling, NoteCaseType noteCase, QString&amp; s, int&amp; acc)</a>
+<a name="ln295">      {</a>
+<a name="ln296">      const char names[]  = &quot;FCGDAEB&quot;;</a>
+<a name="ln297">      const char gnames[] = &quot;FCGDAEH&quot;;</a>
+<a name="ln298">      const QString snames[] = { &quot;Fa&quot;, &quot;Do&quot;, &quot;Sol&quot;, &quot;Re&quot;, &quot;La&quot;, &quot;Mi&quot;, &quot;Si&quot; };</a>
+<a name="ln299"> </a>
+<a name="ln300">      acc = ((tpc+1) / 7) - 2;</a>
+<a name="ln301">      int idx = (tpc + 1) % 7;</a>
+<a name="ln302">      switch (noteSpelling) {</a>
+<a name="ln303">            case NoteSpellingType::GERMAN:</a>
+<a name="ln304">            case NoteSpellingType::GERMAN_PURE:</a>
+<a name="ln305">                  s = gnames[idx];</a>
+<a name="ln306">                  if (s == &quot;H&quot; &amp;&amp; acc == -1) {</a>
+<a name="ln307">                        s = &quot;B&quot;;</a>
+<a name="ln308">                        if (noteSpelling == NoteSpellingType::GERMAN_PURE)</a>
+<a name="ln309">                              acc = 0;</a>
+<a name="ln310">                        }</a>
+<a name="ln311">                  break;</a>
+<a name="ln312">            case NoteSpellingType::SOLFEGGIO:</a>
+<a name="ln313">                  s = snames[idx];</a>
+<a name="ln314">                  break;</a>
+<a name="ln315">            case NoteSpellingType::FRENCH:</a>
+<a name="ln316">                  s = snames[idx];</a>
+<a name="ln317">                  if (s == &quot;Re&quot;)</a>
+<a name="ln318">                        s = &quot;Ré&quot;;</a>
+<a name="ln319">                  break;</a>
+<a name="ln320">            default:</a>
+<a name="ln321">                  s = names[idx];</a>
+<a name="ln322">                  break;</a>
+<a name="ln323">            }</a>
+<a name="ln324">      switch (noteCase) {</a>
+<a name="ln325">            case NoteCaseType::LOWER: s = s.toLower(); break;</a>
+<a name="ln326">            case NoteCaseType::UPPER: s = s.toUpper(); break;</a>
+<a name="ln327">            case NoteCaseType::CAPITAL:</a>
+<a name="ln328">            case NoteCaseType::AUTO:</a>
+<a name="ln329">            default:</a>
+<a name="ln330">                  break;</a>
+<a name="ln331">            }</a>
+<a name="ln332">      }</a>
+<a name="ln333"> </a>
+<a name="ln334">//---------------------------------------------------------</a>
+<a name="ln335">//   tpc2stepName</a>
+<a name="ln336">//---------------------------------------------------------</a>
+<a name="ln337"> </a>
+<a name="ln338">QString tpc2stepName(int tpc)</a>
+<a name="ln339">      {</a>
+<a name="ln340">      const char names[] = &quot;FCGDAEB&quot;;</a>
+<a name="ln341">      return QString(names[(tpc + 1) % 7]);</a>
+<a name="ln342">      }</a>
+<a name="ln343"> </a>
+<a name="ln344">// table of alternative spellings for one octave</a>
+<a name="ln345">// each entry is the TPC of the note</a>
+<a name="ln346">//    tab1 does not contain double sharps</a>
+<a name="ln347">//    tab2 does not contain double flats</a>
+<a name="ln348"> </a>
+<a name="ln349">static const int tab1[24] = {</a>
+<a name="ln350">      14,  2,  // 60  C   Dbb</a>
+<a name="ln351">      21,  9,  // 61  C#  Db</a>
+<a name="ln352">      16,  4,  // 62  D   Ebb</a>
+<a name="ln353">      23, 11,  // 63  D#  Eb</a>
+<a name="ln354">      18,  6,  // 64  E   Fb</a>
+<a name="ln355">      13,  1,  // 65  F   Gbb</a>
+<a name="ln356">      20,  8,  // 66  F#  Gb</a>
+<a name="ln357">      15,  3,  // 67  G   Abb</a>
+<a name="ln358">      22, 10,  // 68  G#  Ab</a>
+<a name="ln359">      17,  5,  // 69  A   Bbb</a>
+<a name="ln360">      24, 12,  // 70  A#  Bb</a>
+<a name="ln361">      19,  7,  // 71  B   Cb</a>
+<a name="ln362">      };</a>
+<a name="ln363"> </a>
+<a name="ln364">static const int tab2[24] = {</a>
+<a name="ln365">      26, 14,  // 60  B#  C</a>
+<a name="ln366">      21,  9,  // 61  C#  Db</a>
+<a name="ln367">      28, 16,  // 62  C## D</a>
+<a name="ln368">      23, 11,  // 63  D#  Eb</a>
+<a name="ln369">      30, 18,  // 64  D## E</a>
+<a name="ln370">      25, 13,  // 65  E#  F</a>
+<a name="ln371">      20,  8,  // 66  F#  Gb</a>
+<a name="ln372">      27, 15,  // 67  F## G</a>
+<a name="ln373">      22, 10,  // 68  G#  Ab</a>
+<a name="ln374">      29, 17,  // 69  G## A</a>
+<a name="ln375">      24, 12,  // 70  A#  Bb</a>
+<a name="ln376">      31, 19,  // 71  A## B</a>
+<a name="ln377">      };</a>
+<a name="ln378"> </a>
+<a name="ln379">int intervalPenalty[13] = {</a>
+<a name="ln380">      0, 0, 0, 0, 0, 0, 1, 3, 1, 1, 1, 3, 3</a>
+<a name="ln381">      };</a>
+<a name="ln382"> </a>
+<a name="ln383">//---------------------------------------------------------</a>
+<a name="ln384">//   enharmonicSpelling</a>
+<a name="ln385">//---------------------------------------------------------</a>
+<a name="ln386"> </a>
+<a name="ln387">static const int enharmonicSpelling[15][34] = {</a>
+<a name="ln388">      {</a>
+<a name="ln389">//Ces f  c  g  d  a  e  b</a>
+<a name="ln390">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln391">      0, 0, 0, 0, 0, 0, 0, // b</a>
+<a name="ln392">      1, 1, 1, 1, 1, 1, 1,</a>
+<a name="ln393">      1, 1, 1, 1, 1, 1, 1, // #</a>
+<a name="ln394">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln395">      },</a>
+<a name="ln396">      {</a>
+<a name="ln397">//Ges f  c  g  d  a  e  b</a>
+<a name="ln398">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln399">      1, 0, 0, 0, 0, 0, 0, // b</a>
+<a name="ln400">      0, 1, 1, 1, 1, 1, 1,</a>
+<a name="ln401">      1, 1, 1, 1, 1, 1, 1, // #</a>
+<a name="ln402">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln403">      },</a>
+<a name="ln404">      {</a>
+<a name="ln405">//Des f  c  g  d  a  e  b</a>
+<a name="ln406">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln407">      1, 1, 0, 0, 0, 0, 0, // b</a>
+<a name="ln408">      0, 0, 1, 1, 1, 1, 1,</a>
+<a name="ln409">      1, 1, 1, 1, 1, 1, 1, // #</a>
+<a name="ln410">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln411">      },</a>
+<a name="ln412">      {</a>
+<a name="ln413">//As  f  c  g  d  a  e  b</a>
+<a name="ln414">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln415">      1, 1, 0, 0, 0, 0, 0, // b</a>
+<a name="ln416">      0, 0, 0, 0, 0, 0, 0,</a>
+<a name="ln417">      0, 1, 1, 1, 1, 1, 1, // #</a>
+<a name="ln418">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln419">      },</a>
+<a name="ln420">      {</a>
+<a name="ln421">//Es  f  c  g  d  a  e  b</a>
+<a name="ln422">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln423">      1, 1, 0, 0, 0, 0, 0, // b</a>
+<a name="ln424">      0, 0, 0, 0, 1, 1, 1,</a>
+<a name="ln425">      0, 0, 1, 1, 1, 1, 1, // #</a>
+<a name="ln426">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln427">      },</a>
+<a name="ln428">      {</a>
+<a name="ln429">//Bb  f  c  g  d  a  e  b</a>
+<a name="ln430">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln431">      1, 1, 0, 0, 0, 0, 0, // b</a>
+<a name="ln432">      0, 0, 0, 0, 0, 1, 1,</a>
+<a name="ln433">      1, 0, 0, 1, 1, 1, 1, // #     // (ws) penalty for f#</a>
+<a name="ln434">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln435">      },</a>
+<a name="ln436">      {</a>
+<a name="ln437">//F   f  c  g  d  a  e  b           // extra penalty for a# b</a>
+<a name="ln438">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln439">      1, 1, 0, 0, 0, 0, 0, // b</a>
+<a name="ln440">      0, 0, 0, 0, 0, 0, 1,</a>
+<a name="ln441">      0, 0, 0, 0, 1, 1, 1, // #</a>
+<a name="ln442">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln443">      },</a>
+<a name="ln444">      {</a>
+<a name="ln445">//C   f  c  g  d  a  e  b</a>
+<a name="ln446">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln447">      1, 1, 0, 0, 0, 0, 0, // b</a>
+<a name="ln448">      0, 0, 0, 0, 0, 0, 0,</a>
+<a name="ln449">      0, 0, 0, 0, 0, 1, 1, // #</a>
+<a name="ln450">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln451">      },</a>
+<a name="ln452">      {</a>
+<a name="ln453">//G   f  c  g  d  a  e  b</a>
+<a name="ln454">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln455">      1, 1, 1, 0, 0, 0, 0, // b</a>
+<a name="ln456">      1, 0, 0, 0, 0, 0, 0,</a>
+<a name="ln457">      0, 0, 0, 0, 0, 1, 1, // #</a>
+<a name="ln458">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln459">      },</a>
+<a name="ln460">      {</a>
+<a name="ln461">//D   f  c  g  d  a  e  b</a>
+<a name="ln462">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln463">      1, 1, 1, 1, 0, 0, 0, // b</a>
+<a name="ln464">      1, 1, 0, 0, 0, 0, 0,</a>
+<a name="ln465">      0, 0, 0, 0, 0, 1, 1, // #</a>
+<a name="ln466">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln467">      },</a>
+<a name="ln468">      {</a>
+<a name="ln469">//A   f  c  g  d  a  e  b</a>
+<a name="ln470">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln471">      1, 1, 1, 1, 1, 0, 0, // b</a>
+<a name="ln472">      1, 1, 1, 0, 0, 0, 0,</a>
+<a name="ln473">      0, 0, 0, 0, 0, 1, 1, // #</a>
+<a name="ln474">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln475">      },</a>
+<a name="ln476">      {</a>
+<a name="ln477">//E   f  c  g  d  a  e  b</a>
+<a name="ln478">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln479">      1, 1, 1, 1, 1, 1, 0, // b</a>
+<a name="ln480">      1, 1, 1, 1, 0, 0, 0,</a>
+<a name="ln481">      0, 0, 0, 0, 0, 1, 1, // #</a>
+<a name="ln482">      0, 0, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln483">      },</a>
+<a name="ln484">      {</a>
+<a name="ln485">//H   f  c  g  d  a  e  b</a>
+<a name="ln486">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln487">      1, 1, 1, 1, 1, 1, 1, // b</a>
+<a name="ln488">      1, 1, 1, 1, 1, 0, 0,</a>
+<a name="ln489">      0, 0, 0, 0, 0, 1, 1, // #</a>
+<a name="ln490">      1, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln491">      },</a>
+<a name="ln492">      {</a>
+<a name="ln493">//Fis f  c  g  d  a  e  b</a>
+<a name="ln494">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln495">      1, 1, 1, 1, 1, 1, 1, // b</a>
+<a name="ln496">      100, 1, 1, 1, 1, 1, 0,</a>
+<a name="ln497">      0, 0, 0, 0, 0, 0, 0, // #</a>
+<a name="ln498">      0, 1, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln499">      },</a>
+<a name="ln500">      {</a>
+<a name="ln501">//Cis f  c  g  d  a  e  b</a>
+<a name="ln502">         1, 1, 1, 1, 1, 1, // bb</a>
+<a name="ln503">      1, 1, 0, 0, 0, 0, 0, // b  //Fis</a>
+<a name="ln504">      100, 1, 1, 1, 1, 0, 0,</a>
+<a name="ln505">      0, 0, 0, 0, 0, 0, 0, // #</a>
+<a name="ln506">      0, 0, 1, 1, 1, 1, 1  // ##</a>
+<a name="ln507">      }</a>
+<a name="ln508">      };</a>
+<a name="ln509"> </a>
+<a name="ln510">//---------------------------------------------------------</a>
+<a name="ln511">//   penalty</a>
+<a name="ln512">//---------------------------------------------------------</a>
+<a name="ln513"> </a>
+<a name="ln514">static int penalty(int lof1, int lof2, int k)</a>
+<a name="ln515">      {</a>
+<a name="ln516">      if (k &lt; 0 || k &gt;= 15)</a>
+<a name="ln517">            qFatal(&quot;Illegal key %d &gt;= 15&quot;, k);</a>
+<a name="ln518">      Q_ASSERT(lof1 &gt;= 0 &amp;&amp; lof1 &lt; 34);</a>
+<a name="ln519">      Q_ASSERT(lof2 &gt;= 0 &amp;&amp; lof2 &lt; 34);</a>
+<a name="ln520">      int penalty  = enharmonicSpelling[k][lof1] * 4 + enharmonicSpelling[k][lof2] * 4;</a>
+<a name="ln521">      int distance = lof2 &gt; lof1 ? lof2 - lof1 : lof1 - lof2;</a>
+<a name="ln522">      if (distance &gt; 12)</a>
+<a name="ln523">            penalty += 3;</a>
+<a name="ln524">      else</a>
+<a name="ln525">            penalty += intervalPenalty[distance];</a>
+<a name="ln526">      return penalty;</a>
+<a name="ln527">      }</a>
+<a name="ln528"> </a>
+<a name="ln529">static const int WINDOW       = 9;</a>
+<a name="ln530">#if 0 // yet(?) unused</a>
+<a name="ln531">static const int WINDOW_SHIFT = 3;</a>
+<a name="ln532">static const int ASIZE        = 1024;   // 2 ** WINDOW</a>
+<a name="ln533">#endif</a>
+<a name="ln534"> </a>
+<a name="ln535">//---------------------------------------------------------</a>
+<a name="ln536">//   tpc</a>
+<a name="ln537">//---------------------------------------------------------</a>
+<a name="ln538"> </a>
+<a name="ln539">int tpc(int idx, int pitch, int opt)</a>
+<a name="ln540">      {</a>
+<a name="ln541">      const int* tab;</a>
+<a name="ln542">      if (opt &lt; 0) {</a>
+<a name="ln543">            tab = tab2;</a>
+<a name="ln544">            opt *= -1;</a>
+<a name="ln545">            }</a>
+<a name="ln546">      else</a>
+<a name="ln547">            tab = tab1;</a>
+<a name="ln548">      int i = (pitch % 12) * 2 + ((opt &amp; (1 &lt;&lt; idx)) &gt;&gt; idx);</a>
+<a name="ln549">      Q_ASSERT(i &gt;= 0 &amp;&amp; i &lt; 24);</a>
+<a name="ln550">      return tab[i];</a>
+<a name="ln551">      }</a>
+<a name="ln552"> </a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554">//   computeWindow</a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556"> </a>
+<a name="ln557">int computeWindow(const std::vector&lt;Note*&gt;&amp; notes, int start, int end)</a>
+<a name="ln558">      {</a>
+<a name="ln559">      int p   = 10000;</a>
+<a name="ln560">      int idx = -1;</a>
+<a name="ln561">      int pitch[10];</a>
+<a name="ln562">      int key[10];</a>
+<a name="ln563"> </a>
+<a name="ln564">      int i = start;</a>
+<a name="ln565">      int k = 0;</a>
+<a name="ln566">      while (i &lt; end) {</a>
+<a name="ln567">            pitch[k] = notes[i]-&gt;pitch() % 12;</a>
+<a name="ln568">            Fraction tick = notes[i]-&gt;chord()-&gt;tick();</a>
+<a name="ln569">            key[k]   = int(notes[i]-&gt;staff()-&gt;key(tick)) + 7;</a>
+<a name="ln570">            if (key[k] &lt; 0 || key[k] &gt; 14) {</a>
+<a name="ln571">                  qDebug(&quot;illegal key at tick %d: %d, window %d-%d&quot;,</a>
+<a name="ln572">                     tick.ticks(), key[k] - 7, start, end);</a>
+<a name="ln573">                  return 0;</a>
+<a name="ln574">                  // abort();</a>
+<a name="ln575">                  }</a>
+<a name="ln576">            ++k;</a>
+<a name="ln577">            ++i;</a>
+<a name="ln578">            }</a>
+<a name="ln579"> </a>
+<a name="ln580">      for (; k &lt; 10; ++k) {</a>
+<a name="ln581">            pitch[k] = pitch[k-1];</a>
+<a name="ln582">            key[k]   = key[k-1];</a>
+<a name="ln583">            }</a>
+<a name="ln584"> </a>
+<a name="ln585">      for (i = 0; i &lt; 512; ++i) {</a>
+<a name="ln586">            int pa    = 0;</a>
+<a name="ln587">            int pb    = 0;</a>
+<a name="ln588">            int l     = pitch[0] * 2 + (i &amp; 1);</a>
+<a name="ln589">            Q_ASSERT(l &gt;= 0 &amp;&amp; l &lt;= static_cast&lt;int&gt;(sizeof(tab1)/sizeof(*tab1)));</a>
+<a name="ln590">            int lof1a = tab1[l];</a>
+<a name="ln591">            int lof1b = tab2[l];</a>
+<a name="ln592"> </a>
+<a name="ln593">            for (k = 1; k &lt; 10; ++k) {</a>
+<a name="ln594">                  int l1 = pitch[k] * 2 + ((i &amp; (1 &lt;&lt; k)) &gt;&gt; k);</a>
+<a name="ln595">                  Q_ASSERT(l1 &gt;= 0 &amp;&amp; l1 &lt;= static_cast&lt;int&gt;(sizeof(tab1)/sizeof(*tab1)));</a>
+<a name="ln596">                  int lof2a = tab1[l1];</a>
+<a name="ln597">                  int lof2b = tab2[l1];</a>
+<a name="ln598">                  pa += penalty(lof1a, lof2a, key[k]);</a>
+<a name="ln599">                  pb += penalty(lof1b, lof2b, key[k]);</a>
+<a name="ln600">                  lof1a = lof2a;</a>
+<a name="ln601">                  lof1b = lof2b;</a>
+<a name="ln602">                  }</a>
+<a name="ln603">            if (pa &lt; pb) {</a>
+<a name="ln604">                  if (pa &lt; p) {</a>
+<a name="ln605">                        p   = pa;</a>
+<a name="ln606">                        idx = i;</a>
+<a name="ln607">                        }</a>
+<a name="ln608">                  }</a>
+<a name="ln609">            else {</a>
+<a name="ln610">                  if (pb &lt; p) {</a>
+<a name="ln611">                        p   = pb;</a>
+<a name="ln612">                        idx = i * -1;</a>
+<a name="ln613">                        }</a>
+<a name="ln614">                  }</a>
+<a name="ln615">            }</a>
+<a name="ln616">/*      qDebug(&quot;compute window\n   &quot;);</a>
+<a name="ln617">      for (int i = 0; i &lt; 10; ++i)</a>
+<a name="ln618">            qDebug(&quot;%2d &quot;, pitch[i]);</a>
+<a name="ln619">      qDebug(&quot;\n   &quot;);</a>
+<a name="ln620">      for (int i = 0; i &lt; 10; ++i)</a>
+<a name="ln621">            qDebug(&quot;%2d &quot;, key[i]);</a>
+<a name="ln622">      qDebug(&quot;\n   &quot;);</a>
+<a name="ln623">      for (int i = 0; i &lt; 10; ++i)</a>
+<a name="ln624">            qDebug(&quot;%2d &quot;, tpc(i, pitch[i], idx));</a>
+<a name="ln625">*/</a>
+<a name="ln626">      return idx;</a>
+<a name="ln627">      }</a>
+<a name="ln628"> </a>
+<a name="ln629">//---------------------------------------------------------</a>
+<a name="ln630">//   changeAllTpcs</a>
+<a name="ln631">//---------------------------------------------------------</a>
+<a name="ln632"> </a>
+<a name="ln633">void changeAllTpcs(Note* n, int tpc1)</a>
+<a name="ln634">      {</a>
+<a name="ln635">      Interval v;</a>
+<a name="ln636">      Fraction tick = n &amp;&amp; n-&gt;chord() ? n-&gt;chord()-&gt;tick() : Fraction(-1,1);</a>
+<a name="ln637">      if (n &amp;&amp; n-&gt;part() &amp;&amp; n-&gt;part()-&gt;instrument()) {</a>
+<a name="ln638">            v = n-&gt;part()-&gt;instrument(tick)-&gt;transpose();</a>
+<a name="ln639">            v.flip();</a>
+<a name="ln640">            }</a>
+<a name="ln641">      int tpc2 = Ms::transposeTpc(tpc1, v, true);</a>
+<a name="ln642">      n-&gt;undoChangeProperty(Pid::TPC1, tpc1);</a>
+<a name="ln643">      n-&gt;undoChangeProperty(Pid::TPC2, tpc2);</a>
+<a name="ln644">      }</a>
+<a name="ln645"> </a>
+<a name="ln646">//---------------------------------------------------------</a>
+<a name="ln647">//   spell</a>
+<a name="ln648">//---------------------------------------------------------</a>
+<a name="ln649"> </a>
+<a name="ln650">void Score::spellNotelist(std::vector&lt;Note*&gt;&amp; notes)</a>
+<a name="ln651">      {</a>
+<a name="ln652">      int n = int(notes.size());</a>
+<a name="ln653"> </a>
+<a name="ln654">      int start = 0;</a>
+<a name="ln655">      while (start &lt; n) {</a>
+<a name="ln656">            int end = start + WINDOW;</a>
+<a name="ln657">            if (end &gt; n)</a>
+<a name="ln658">                  end = n;</a>
+<a name="ln659">            int opt = computeWindow(notes, start, end);</a>
+<a name="ln660">            const int* tab;</a>
+<a name="ln661">            if (opt &lt; 0) {</a>
+<a name="ln662">                  tab = tab2;</a>
+<a name="ln663">                  opt *= -1;</a>
+<a name="ln664">                  }</a>
+<a name="ln665">            else</a>
+<a name="ln666">                  tab = tab1;</a>
+<a name="ln667"> </a>
+<a name="ln668">            if (start == 0) {</a>
+<a name="ln669">                  changeAllTpcs(notes[0], tab[(notes[0]-&gt;pitch() % 12) * 2 + (opt &amp; 1)]);</a>
+<a name="ln670">                  if (n &gt; 1)</a>
+<a name="ln671">                        changeAllTpcs(notes[1], tab[(notes[1]-&gt;pitch() % 12) * 2 + ((opt &amp; 2)&gt;&gt;1)]);</a>
+<a name="ln672">                  if (n &gt; 2)</a>
+<a name="ln673">                        changeAllTpcs(notes[2], tab[(notes[2]-&gt;pitch() % 12) * 2 + ((opt &amp; 4)&gt;&gt;2)]);</a>
+<a name="ln674">                  }</a>
+<a name="ln675">            if ((end - start) &gt;= 6) {</a>
+<a name="ln676">                  changeAllTpcs(notes[start+3], tab[(notes[start+3]-&gt;pitch() % 12) * 2 + ((opt &amp;  8) &gt;&gt; 3)]);</a>
+<a name="ln677">                  changeAllTpcs(notes[start+4], tab[(notes[start+4]-&gt;pitch() % 12) * 2 + ((opt &amp; 16) &gt;&gt; 4)]);</a>
+<a name="ln678">                  changeAllTpcs(notes[start+5], tab[(notes[start+5]-&gt;pitch() % 12) * 2 + ((opt &amp; 32) &gt;&gt; 5)]);</a>
+<a name="ln679">                  }</a>
+<a name="ln680">            if (end == n) {</a>
+<a name="ln681">                  int n1 = end - start;</a>
+<a name="ln682">                  int k;</a>
+<a name="ln683">                  switch(n1 - 6) {</a>
+<a name="ln684">                        case 3:</a>
+<a name="ln685">                              k = end - start - 3;</a>
+<a name="ln686">                              changeAllTpcs(notes[end-3], tab[(notes[end-3]-&gt;pitch() % 12) * 2 + ((opt &amp; (1&lt;&lt;k)) &gt;&gt; k)]);</a>
+<a name="ln687">                              Q_FALLTHROUGH();</a>
+<a name="ln688">                        case 2:</a>
+<a name="ln689">                              k = end - start - 2;</a>
+<a name="ln690">                              changeAllTpcs(notes[end-2], tab[(notes[end-2]-&gt;pitch() % 12) * 2 + ((opt &amp; (1&lt;&lt;k)) &gt;&gt; k)]);</a>
+<a name="ln691">                              Q_FALLTHROUGH();</a>
+<a name="ln692">                        case 1:</a>
+<a name="ln693">                              k = end - start - 1;</a>
+<a name="ln694">                              changeAllTpcs(notes[end-1], tab[(notes[end-1]-&gt;pitch() % 12) * 2 + ((opt &amp; (1&lt;&lt;k)) &gt;&gt; k)]);</a>
+<a name="ln695">                        }</a>
+<a name="ln696">                  break;</a>
+<a name="ln697">                  }</a>
+<a name="ln698">            // advance to next window</a>
+<a name="ln699">            start += 3;</a>
+<a name="ln700">            }</a>
+<a name="ln701">      }</a>
+<a name="ln702"> </a>
+<a name="ln703">//---------------------------------------------------------</a>
+<a name="ln704">//   pitch2tpc2</a>
+<a name="ln705">//---------------------------------------------------------</a>
+<a name="ln706"> </a>
+<a name="ln707">// pitch2tpc2(pitch, false) replaced by pitch2tpc(pitch, Key::C, Prefer::FLATS)</a>
+<a name="ln708">// pitch2tpc2(pitch, true) replaced by pitch2tpc(pitch, Key::C, Prefer::SHARPS)</a>
+<a name="ln709"> </a>
+<a name="ln710">//---------------------------------------------------------</a>
+<a name="ln711">//   pitch2tpc</a>
+<a name="ln712">//    preferred pitch spelling depending on key</a>
+<a name="ln713">//    key -7 to +7</a>
+<a name="ln714">//</a>
+<a name="ln715">// The value of prefer sets the preferred mix of flats and sharps</a>
+<a name="ln716">// for pitches that are non-diatonic in the key specified, by</a>
+<a name="ln717">// positioning the window along the tpc sequence.</a>
+<a name="ln718">//</a>
+<a name="ln719">// Scale tones are the range shown in [ ].</a>
+<a name="ln720">// A value of 8 (Prefer::FLATS) specifies 5b 2b 6b 3b 7b [4 1 5 2 6 3 7]</a>
+<a name="ln721">// A value of 11 (Prefer::NEAREST) specifies 3b 7b [4 1 5 2 6 3 7] 4# 1# 5#</a>
+<a name="ln722">// A value of 13 (Prefer::SHARPS) specifies [4 1 5 2 6 3 7] 4# 1# 5# 2# 6#</a>
+<a name="ln723">//</a>
+<a name="ln724">// Examples for Prefer::NEAREST (n indicates explicit natural):</a>
+<a name="ln725">// C major will use Eb Bb [F C G D A E B] F# C# G#.</a>
+<a name="ln726">// E major will use Gn Dn [A E B F# C# G# D#] A# E# B#.</a>
+<a name="ln727">// F# major will use An En [B F# C# G# D# A# E#] B# Fx Cx.</a>
+<a name="ln728">// Eb major will use Gb Db [Ab Eb Bb F C G D] An En Bn.</a>
+<a name="ln729">// Gb major will use Bbb Fb [Cb Gb Db Ab Eb Bb F] Cn Gn Dn.</a>
+<a name="ln730">//---------------------------------------------------------</a>
+<a name="ln731"> </a>
+<a name="ln732">int pitch2tpc(int pitch, Key key, Prefer prefer)</a>
+<a name="ln733">      {</a>
+<a name="ln734">      return (pitch * 7 + 26 - (int(prefer) + int(key))) % 12 + (int(prefer) + int(key));</a>
+<a name="ln735">      }</a>
+<a name="ln736"> </a>
+<a name="ln737">//---------------------------------------------------------</a>
+<a name="ln738">//   pitch2absStepByKey</a>
+<a name="ln739">//    absolute step (C0 = 0, D0 = 1, ... C1 = 7, D2 = 8, ...) for a pitch/tpc according to key</a>
+<a name="ln740">//    if pAlter not null, returns in it the alteration with respect to the corresponding key degree (-3 to 3)</a>
+<a name="ln741">//    (for instance, an F in GMaj yields alteration -1 i.e. 1 semitone below corresp. deg. of GMaj which is F#)</a>
+<a name="ln742">//    key: between Key::MIN and Key::MAX</a>
+<a name="ln743">//---------------------------------------------------------</a>
+<a name="ln744"> </a>
+<a name="ln745">int pitch2absStepByKey(int pitch, int tpc, Key key, int *pAlter)</a>
+<a name="ln746">      {</a>
+<a name="ln747">      // sanitize input data</a>
+<a name="ln748">      if (pitch &lt; 0)</a>
+<a name="ln749">            pitch += PITCH_DELTA_OCTAVE;</a>
+<a name="ln750">      if (pitch &gt; 127)</a>
+<a name="ln751">            pitch -= PITCH_DELTA_OCTAVE;</a>
+<a name="ln752">      if (tpc &lt; Tpc::TPC_MIN)</a>
+<a name="ln753">            tpc   += TPC_DELTA_ENHARMONIC;</a>
+<a name="ln754">      if (tpc &gt; Tpc::TPC_MAX)</a>
+<a name="ln755">            tpc   -= TPC_DELTA_ENHARMONIC;</a>
+<a name="ln756">      if (key &lt; Key::MIN)</a>
+<a name="ln757">            key   += Key::DELTA_ENHARMONIC;</a>
+<a name="ln758">      if (key &gt; Key::MAX)</a>
+<a name="ln759">            key   -= Key::DELTA_ENHARMONIC;</a>
+<a name="ln760"> </a>
+<a name="ln761">      int octave = pitch / PITCH_DELTA_OCTAVE;</a>
+<a name="ln762">      if (tpc == Tpc::TPC_C_BB || tpc == Tpc::TPC_C_B)</a>
+<a name="ln763">            ++octave;</a>
+<a name="ln764">      else if (tpc == Tpc::TPC_B_S || tpc == Tpc::TPC_B_SS)</a>
+<a name="ln765">            --octave;</a>
+<a name="ln766">      int step = tpc2step(tpc);</a>
+<a name="ln767">      if (pAlter)</a>
+<a name="ln768">            *pAlter = tpc2alterByKey(tpc, key);</a>
+<a name="ln769">      return octave * STEP_DELTA_OCTAVE + step;</a>
+<a name="ln770">      }</a>
+<a name="ln771"> </a>
+<a name="ln772">//---------------------------------------------------------</a>
+<a name="ln773">//   absStep2pitchByKey</a>
+<a name="ln774">//    the default pitch for the given absolute step in the given key</a>
+<a name="ln775">//---------------------------------------------------------</a>
+<a name="ln776"> </a>
+<a name="ln777">int absStep2pitchByKey(int step, Key key)</a>
+<a name="ln778">      {</a>
+<a name="ln779">      // sanitize input data</a>
+<a name="ln780">      if (step &lt; 0)</a>
+<a name="ln781">            step += STEP_DELTA_OCTAVE;</a>
+<a name="ln782">      if (step &gt; 74)</a>
+<a name="ln783">            step -= STEP_DELTA_OCTAVE;</a>
+<a name="ln784">      if (key &lt; Key::MIN)</a>
+<a name="ln785">            key  += Key::DELTA_ENHARMONIC;</a>
+<a name="ln786">      if (key &gt; Key::MAX)</a>
+<a name="ln787">            key  -= Key::DELTA_ENHARMONIC;</a>
+<a name="ln788"> </a>
+<a name="ln789">      int octave = step / STEP_DELTA_OCTAVE;</a>
+<a name="ln790">      int deltaPitch = step2deltaPitchByKey(step % STEP_DELTA_OCTAVE, key);</a>
+<a name="ln791">      return octave * PITCH_DELTA_OCTAVE + deltaPitch;</a>
+<a name="ln792">      }</a>
+<a name="ln793"> </a>
+<a name="ln794">//---------------------------------------------------------</a>
+<a name="ln795">//   tpc2degree</a>
+<a name="ln796">//    the scale degree of a TPC for a given Key</a>
+<a name="ln797">//---------------------------------------------------------</a>
+<a name="ln798"> </a>
+<a name="ln799">int tpc2degree(int tpc, Key key)</a>
+<a name="ln800">      {</a>
+<a name="ln801">      const QString names(&quot;CDEFGAB&quot;);</a>
+<a name="ln802">      const QString scales(&quot;CGDAEBFCGDAEBFC&quot;);</a>
+<a name="ln803">      QString scale = scales[int(key)+7];</a>
+<a name="ln804">      QString stepName = tpc2stepName(tpc);</a>
+<a name="ln805">      return (names.indexOf(stepName) - names.indexOf(scale) +28) % 7;</a>
+<a name="ln806">      }</a>
+<a name="ln807"> </a>
+<a name="ln808">}</a>
+<a name="ln809"> </a>
+
+</code></pre>
+<div class="balloon" rel="642"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1004/" target="_blank">V1004</a> The 'n' pointer was used unsafely after it was verified against nullptr. Check lines: 636, 642.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

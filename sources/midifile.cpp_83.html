@@ -1,0 +1,980 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>midifile.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2007-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;midifile.h&quot;</a>
+<a name="ln14">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln15">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln17">#include &quot;libmscore/drumset.h&quot;</a>
+<a name="ln18">#include &quot;libmscore/utils.h&quot;</a>
+<a name="ln19"> </a>
+<a name="ln20">namespace Ms {</a>
+<a name="ln21"> </a>
+<a name="ln22">static const uchar gmOnMsg[] = {</a>
+<a name="ln23">      0x7e,       // Non-Real Time header</a>
+<a name="ln24">      0x7f,       // ID of target device (7f = all devices)</a>
+<a name="ln25">      0x09,</a>
+<a name="ln26">      0x01</a>
+<a name="ln27">      };</a>
+<a name="ln28">static const uchar gsOnMsg[] = {</a>
+<a name="ln29">      0x41,       // roland id</a>
+<a name="ln30">      0x10,       // Id of target device (default = 10h for roland)</a>
+<a name="ln31">      0x42,       // model id (42h = gs devices)</a>
+<a name="ln32">      0x12,       // command id (12h = data set)</a>
+<a name="ln33">      0x40,       // address &amp; value</a>
+<a name="ln34">      0x00,</a>
+<a name="ln35">      0x7f,</a>
+<a name="ln36">      0x00,</a>
+<a name="ln37">      0x41        // checksum?</a>
+<a name="ln38">      };</a>
+<a name="ln39">static const uchar xgOnMsg[] = {</a>
+<a name="ln40">      0x43,       // yamaha id</a>
+<a name="ln41">      0x10,       // device number (0)</a>
+<a name="ln42">      0x4c,       // model id</a>
+<a name="ln43">      0x00,       // address (high, mid, low)</a>
+<a name="ln44">      0x00,</a>
+<a name="ln45">      0x7e,</a>
+<a name="ln46">      0x00        // data</a>
+<a name="ln47">      };</a>
+<a name="ln48"> </a>
+<a name="ln49">const int gmOnMsgLen = sizeof(gmOnMsg);</a>
+<a name="ln50">const int gsOnMsgLen = sizeof(gsOnMsg);</a>
+<a name="ln51">const int xgOnMsgLen = sizeof(xgOnMsg);</a>
+<a name="ln52"> </a>
+<a name="ln53">//---------------------------------------------------------</a>
+<a name="ln54">//   MidiFile</a>
+<a name="ln55">//---------------------------------------------------------</a>
+<a name="ln56"> </a>
+<a name="ln57">MidiFile::MidiFile()</a>
+<a name="ln58">      {</a>
+<a name="ln59">      fp               = 0;</a>
+<a name="ln60">      _isDivisionInTps = false;</a>
+<a name="ln61">      _format          = 1;</a>
+<a name="ln62">      _midiType        = MidiType::UNKNOWN;</a>
+<a name="ln63">      _noRunningStatus = false;</a>
+<a name="ln64">      }</a>
+<a name="ln65"> </a>
+<a name="ln66">//---------------------------------------------------------</a>
+<a name="ln67">//   write</a>
+<a name="ln68">//    returns true on error</a>
+<a name="ln69">//---------------------------------------------------------</a>
+<a name="ln70"> </a>
+<a name="ln71">bool MidiFile::write(QIODevice* out)</a>
+<a name="ln72">      {</a>
+<a name="ln73">      fp = out;</a>
+<a name="ln74">      write(&quot;MThd&quot;, 4);</a>
+<a name="ln75">      writeLong(6);                 // header len</a>
+<a name="ln76">      writeShort(_format);          // format</a>
+<a name="ln77">      writeShort(_tracks.size());</a>
+<a name="ln78">      writeShort(_division);</a>
+<a name="ln79">      for (const auto &amp;t: _tracks) {</a>
+<a name="ln80">            if (writeTrack(t))</a>
+<a name="ln81">                  return true;</a>
+<a name="ln82">            }</a>
+<a name="ln83">      return false;</a>
+<a name="ln84">      }</a>
+<a name="ln85"> </a>
+<a name="ln86">//---------------------------------------------------------</a>
+<a name="ln87">//   write</a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89"> </a>
+<a name="ln90">void MidiFile::writeEvent(const MidiEvent&amp; event)</a>
+<a name="ln91">      {</a>
+<a name="ln92">      switch(event.type()) {</a>
+<a name="ln93">            case ME_NOTEON:</a>
+<a name="ln94">                  writeStatus(ME_NOTEON, event.channel());</a>
+<a name="ln95">                  put(event.pitch());</a>
+<a name="ln96">                  put(event.velo());</a>
+<a name="ln97">                  break;</a>
+<a name="ln98"> </a>
+<a name="ln99">            case ME_NOTEOFF:</a>
+<a name="ln100">                  writeStatus(ME_NOTEOFF, event.channel());</a>
+<a name="ln101">                  put(event.pitch());</a>
+<a name="ln102">                  put(event.velo());</a>
+<a name="ln103">                  break;</a>
+<a name="ln104"> </a>
+<a name="ln105">            case ME_PITCHBEND:</a>
+<a name="ln106">                  writeStatus(ME_PITCHBEND, event.channel());</a>
+<a name="ln107">                  put(event.dataA());</a>
+<a name="ln108">                  put(event.dataB());</a>
+<a name="ln109">                  break;</a>
+<a name="ln110"> </a>
+<a name="ln111">            case ME_CONTROLLER:</a>
+<a name="ln112">                  switch(event.controller()) {</a>
+<a name="ln113">                        case CTRL_PROGRAM:</a>
+<a name="ln114">                              writeStatus(ME_PROGRAM, event.channel());</a>
+<a name="ln115">                              put(event.value() &amp; 0x7f);</a>
+<a name="ln116">                              break;</a>
+<a name="ln117">                        case CTRL_PRESS:</a>
+<a name="ln118">                              writeStatus(ME_AFTERTOUCH, event.channel());</a>
+<a name="ln119">                              put(event.value() &amp; 0x7f);</a>
+<a name="ln120">                              break;</a>
+<a name="ln121">                        default:</a>
+<a name="ln122">                              writeStatus(ME_CONTROLLER, event.channel());</a>
+<a name="ln123">                              put(event.controller());</a>
+<a name="ln124">                              put(event.value() &amp; 0x7f);</a>
+<a name="ln125">                              break;</a>
+<a name="ln126">                        }</a>
+<a name="ln127">                  break;</a>
+<a name="ln128"> </a>
+<a name="ln129">            case ME_META:</a>
+<a name="ln130">                  put(ME_META);</a>
+<a name="ln131">                  put(event.metaType());</a>
+<a name="ln132">                  putvl(event.len());</a>
+<a name="ln133">                  write(event.edata(), event.len());</a>
+<a name="ln134">                  resetRunningStatus();     // really ?!</a>
+<a name="ln135">                  break;</a>
+<a name="ln136"> </a>
+<a name="ln137">            case ME_SYSEX:</a>
+<a name="ln138">                  put(ME_SYSEX);</a>
+<a name="ln139">                  putvl(event.len() + 1);  // including 0xf7</a>
+<a name="ln140">                  write(event.edata(), event.len());</a>
+<a name="ln141">                  put(ME_ENDSYSEX);</a>
+<a name="ln142">                  resetRunningStatus();</a>
+<a name="ln143">                  break;</a>
+<a name="ln144">            }</a>
+<a name="ln145">      }</a>
+<a name="ln146"> </a>
+<a name="ln147">//---------------------------------------------------------</a>
+<a name="ln148">//   writeTrack</a>
+<a name="ln149">//---------------------------------------------------------</a>
+<a name="ln150"> </a>
+<a name="ln151">bool MidiFile::writeTrack(const MidiTrack &amp;t)</a>
+<a name="ln152">      {</a>
+<a name="ln153">      write(&quot;MTrk&quot;, 4);</a>
+<a name="ln154">      qint64 lenpos = fp-&gt;pos();</a>
+<a name="ln155">      writeLong(0);                 // dummy len</a>
+<a name="ln156"> </a>
+<a name="ln157">      status   = -1;</a>
+<a name="ln158">      int tick = 0;</a>
+<a name="ln159">      for (auto i : t.events()) {</a>
+<a name="ln160">            int ntick = i.first;</a>
+<a name="ln161">            putvl(ntick - tick);    // write tick delta</a>
+<a name="ln162">            //</a>
+<a name="ln163">            // if track channel != -1, then use this</a>
+<a name="ln164">            //    channel for all events in this track</a>
+<a name="ln165">            //</a>
+<a name="ln166">            if (t.outChannel() != -1)</a>
+<a name="ln167">                  writeEvent(i.second);</a>
+<a name="ln168">            tick = ntick;</a>
+<a name="ln169">            }</a>
+<a name="ln170"> </a>
+<a name="ln171">      //---------------------------------------------------</a>
+<a name="ln172">      //    write &quot;End Of Track&quot; Meta</a>
+<a name="ln173">      //    write Track Len</a>
+<a name="ln174">      //</a>
+<a name="ln175"> </a>
+<a name="ln176">      putvl(1);</a>
+<a name="ln177">      put(0xff);        // Meta</a>
+<a name="ln178">      put(0x2f);        // EOT</a>
+<a name="ln179">      putvl(0);         // len 0</a>
+<a name="ln180">      qint64 endpos = fp-&gt;pos();</a>
+<a name="ln181">      fp-&gt;seek(lenpos);</a>
+<a name="ln182">      writeLong(endpos-lenpos-4);   // tracklen</a>
+<a name="ln183">      fp-&gt;seek(endpos);</a>
+<a name="ln184">      return false;</a>
+<a name="ln185">      }</a>
+<a name="ln186"> </a>
+<a name="ln187">//---------------------------------------------------------</a>
+<a name="ln188">//   writeStatus</a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190"> </a>
+<a name="ln191">void MidiFile::writeStatus(int nstat, int c)</a>
+<a name="ln192">      {</a>
+<a name="ln193">      nstat |= (c &amp; 0xf);</a>
+<a name="ln194">      //</a>
+<a name="ln195">      //  running status; except for Sysex- and Meta Events</a>
+<a name="ln196">      //</a>
+<a name="ln197">      if (_noRunningStatus || (((nstat &amp; 0xf0) != 0xf0) &amp;&amp; (nstat != status))) {</a>
+<a name="ln198">            status = nstat;</a>
+<a name="ln199">            put(nstat);</a>
+<a name="ln200">            }</a>
+<a name="ln201">      }</a>
+<a name="ln202"> </a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204">//   readMidi</a>
+<a name="ln205">//    return false on error</a>
+<a name="ln206">//---------------------------------------------------------</a>
+<a name="ln207"> </a>
+<a name="ln208">bool MidiFile::read(QIODevice* in)</a>
+<a name="ln209">     {</a>
+<a name="ln210">      fp = in;</a>
+<a name="ln211">      _tracks.clear();</a>
+<a name="ln212">      curPos    = 0;</a>
+<a name="ln213"> </a>
+<a name="ln214">      // === Read header_chunk = &quot;MThd&quot; + &lt;header_length&gt; + &lt;format&gt; + &lt;n&gt; + &lt;division&gt;</a>
+<a name="ln215">      //</a>
+<a name="ln216">      // &quot;MThd&quot; 4 bytes</a>
+<a name="ln217">      //    the literal string MThd, or in hexadecimal notation: 0x4d546864.</a>
+<a name="ln218">      //    These four characters at the start of the MIDI file</a>
+<a name="ln219">      //    indicate that this is a MIDI file.</a>
+<a name="ln220">      // &lt;header_length&gt; 4 bytes</a>
+<a name="ln221">      //    length of the header chunk (always =6 bytes long - the size of the next</a>
+<a name="ln222">      //    three fields which are considered the header chunk).</a>
+<a name="ln223">      //    Although the header chunk currently always contains 6 bytes of data,</a>
+<a name="ln224">      //    this should not be assumed, this value should always be read and acted upon,</a>
+<a name="ln225">      //    to allow for possible future extension to the standard.</a>
+<a name="ln226">      // &lt;format&gt; 2 bytes</a>
+<a name="ln227">      //    0 = single track file format</a>
+<a name="ln228">      //    1 = multiple track file format</a>
+<a name="ln229">      //    2 = multiple song file format (i.e., a series of type 0 files)</a>
+<a name="ln230">      // &lt;n&gt; 2 bytes</a>
+<a name="ln231">      //    number of track chunks that follow the header chunk</a>
+<a name="ln232">      // &lt;division&gt; 2 bytes</a>
+<a name="ln233">      //    unit of time for delta timing. If the value is positive, then it represents</a>
+<a name="ln234">      //    the units per beat. For example, +96 would mean 96 ticks per beat.</a>
+<a name="ln235">      //    If the value is negative, delta times are in SMPTE compatible units.</a>
+<a name="ln236"> </a>
+<a name="ln237">      char tmp[4];</a>
+<a name="ln238"> </a>
+<a name="ln239">      read(tmp, 4);</a>
+<a name="ln240">      int len = readLong();</a>
+<a name="ln241">      if (memcmp(tmp, &quot;MThd&quot;, 4) || len &lt; 6)</a>
+<a name="ln242">            throw(QString(&quot;bad midifile: MThd expected&quot;));</a>
+<a name="ln243"> </a>
+<a name="ln244">      if (len &gt; 6)</a>
+<a name="ln245">            throw(QString(&quot;unsupported MIDI header data size: %1 instead of 6&quot;).arg(len));</a>
+<a name="ln246"> </a>
+<a name="ln247">      _format     = readShort();</a>
+<a name="ln248">      int ntracks = readShort();</a>
+<a name="ln249"> </a>
+<a name="ln250">      // ================ Read MIDI division =================</a>
+<a name="ln251">      //</a>
+<a name="ln252">      //                        2 bytes</a>
+<a name="ln253">      //  +-------+---+-------------------+-----------------+</a>
+<a name="ln254">      //  |  bit  |15 | 14              8 | 7             0 |</a>
+<a name="ln255">      //  +-------+---+-------------------------------------+</a>
+<a name="ln256">      //  |       | 0 |       ticks per quarter note        |</a>
+<a name="ln257">      //  | value +---+-------------------------------------+</a>
+<a name="ln258">      //  |       | 1 |  -frames/second   |   ticks/frame   |</a>
+<a name="ln259">      //  +-------+---+-------------------+-----------------+</a>
+<a name="ln260"> </a>
+<a name="ln261">      char firstByte;</a>
+<a name="ln262">      fp-&gt;getChar(&amp;firstByte);</a>
+<a name="ln263">      char secondByte;</a>
+<a name="ln264">      fp-&gt;getChar(&amp;secondByte);</a>
+<a name="ln265">      const char topBit = (firstByte &amp; 0x80) &gt;&gt; 7;</a>
+<a name="ln266"> </a>
+<a name="ln267">      if (topBit == 0) {            // ticks per beat</a>
+<a name="ln268">            _isDivisionInTps = false;</a>
+<a name="ln269">            _division = (firstByte &lt;&lt; 8) | (secondByte &amp; 0xff);</a>
+<a name="ln270">            }</a>
+<a name="ln271">      else {                        // ticks per second = fps * ticks per frame</a>
+<a name="ln272">            _isDivisionInTps = true;</a>
+<a name="ln273">            const int framesPerSecond = -((signed char) firstByte);</a>
+<a name="ln274">            const int ticksPerFrame = secondByte;</a>
+<a name="ln275">            if (framesPerSecond == 29)</a>
+<a name="ln276">                  _division = qRound(29.97 * ticksPerFrame);</a>
+<a name="ln277">            else</a>
+<a name="ln278">                  _division = framesPerSecond * ticksPerFrame;</a>
+<a name="ln279">            }</a>
+<a name="ln280"> </a>
+<a name="ln281">      // =====================================================</a>
+<a name="ln282"> </a>
+<a name="ln283">      switch (_format) {</a>
+<a name="ln284">            case 0:</a>
+<a name="ln285">                  if (readTrack())</a>
+<a name="ln286">                        return false;</a>
+<a name="ln287">                  break;</a>
+<a name="ln288">            case 1:</a>
+<a name="ln289">                  for (int i = 0; i &lt; ntracks; i++) {</a>
+<a name="ln290">                        if (readTrack())</a>
+<a name="ln291">                              return false;</a>
+<a name="ln292">                        }</a>
+<a name="ln293">                  break;</a>
+<a name="ln294">            default:</a>
+<a name="ln295">                  throw(QString(&quot;midi file format %1 not implemented&quot;).arg(_format));</a>
+<a name="ln296"> </a>
+<a name="ln297">                  // Prevent &quot;unreachable code&quot; warning </a>
+<a name="ln298">                  // return false;</a>
+<a name="ln299">            }</a>
+<a name="ln300">      return true;</a>
+<a name="ln301">      }</a>
+<a name="ln302"> </a>
+<a name="ln303">//---------------------------------------------------------</a>
+<a name="ln304">//   readTrack</a>
+<a name="ln305">//    return true on error</a>
+<a name="ln306">//---------------------------------------------------------</a>
+<a name="ln307"> </a>
+<a name="ln308">bool MidiFile::readTrack()</a>
+<a name="ln309">      {</a>
+<a name="ln310">      char tmp[4];</a>
+<a name="ln311">      read(tmp, 4);</a>
+<a name="ln312">      if (memcmp(tmp, &quot;MTrk&quot;, 4))</a>
+<a name="ln313">            throw(QString(&quot;bad midifile: MTrk expected&quot;));</a>
+<a name="ln314">      int len       = readLong();       // len</a>
+<a name="ln315">      qint64 endPos = curPos + len;</a>
+<a name="ln316">      status        = -1;</a>
+<a name="ln317">      sstatus       = -1;  // running status, will not be reset on meta or sysex</a>
+<a name="ln318">      click         =  0;</a>
+<a name="ln319">      _tracks.push_back(MidiTrack());</a>
+<a name="ln320"> </a>
+<a name="ln321">      int port = 0;</a>
+<a name="ln322">      _tracks.back().setOutPort(port);</a>
+<a name="ln323">      _tracks.back().setOutChannel(-1);</a>
+<a name="ln324"> </a>
+<a name="ln325">      for (;;) {</a>
+<a name="ln326">            MidiEvent event;</a>
+<a name="ln327">            if (!readEvent(&amp;event))</a>
+<a name="ln328">                  return true;</a>
+<a name="ln329"> </a>
+<a name="ln330">            // check for end of track:</a>
+<a name="ln331">            if ((event.type() == ME_META) &amp;&amp; (event.metaType() == META_EOT))</a>
+<a name="ln332">                  break;</a>
+<a name="ln333">            _tracks.back().insert(click, event);</a>
+<a name="ln334">            }</a>
+<a name="ln335">      if (curPos != endPos) {</a>
+<a name="ln336">            qWarning(&quot;bad track len: %lld != %lld, %lld bytes too much\n&quot;, endPos, curPos, endPos - curPos);</a>
+<a name="ln337">            if (curPos &lt; endPos) {</a>
+<a name="ln338">                  qWarning(&quot;  skip %lld\n&quot;, endPos-curPos);</a>
+<a name="ln339">                  skip(endPos - curPos);</a>
+<a name="ln340">                  }</a>
+<a name="ln341">            }</a>
+<a name="ln342">      return false;</a>
+<a name="ln343">      }</a>
+<a name="ln344"> </a>
+<a name="ln345">/*---------------------------------------------------------</a>
+<a name="ln346"> *    read</a>
+<a name="ln347"> *    return false on error</a>
+<a name="ln348"> *---------------------------------------------------------*/</a>
+<a name="ln349"> </a>
+<a name="ln350">void MidiFile::read(void* p, qint64 len)</a>
+<a name="ln351">      {</a>
+<a name="ln352">      curPos += len;</a>
+<a name="ln353">      qint64 rv = fp-&gt;read((char*)p, len);</a>
+<a name="ln354">      if (rv != len)</a>
+<a name="ln355">            throw(QString(&quot;bad midifile: unexpected EOF&quot;));</a>
+<a name="ln356">      }</a>
+<a name="ln357"> </a>
+<a name="ln358">//---------------------------------------------------------</a>
+<a name="ln359">//   write</a>
+<a name="ln360">//---------------------------------------------------------</a>
+<a name="ln361"> </a>
+<a name="ln362">bool MidiFile::write(const void* p, qint64 len)</a>
+<a name="ln363">      {</a>
+<a name="ln364">      qint64 rv = fp-&gt;write((char*)p, len);</a>
+<a name="ln365">      if (rv == len)</a>
+<a name="ln366">            return false;</a>
+<a name="ln367">      qDebug(&quot;write midifile failed: %s&quot;, fp-&gt;errorString().toLatin1().data());</a>
+<a name="ln368">      return true;</a>
+<a name="ln369">      }</a>
+<a name="ln370"> </a>
+<a name="ln371">//---------------------------------------------------------</a>
+<a name="ln372">//   readShort</a>
+<a name="ln373">//---------------------------------------------------------</a>
+<a name="ln374"> </a>
+<a name="ln375">int MidiFile::readShort()</a>
+<a name="ln376">      {</a>
+<a name="ln377">      char c;</a>
+<a name="ln378">      int val = 0;</a>
+<a name="ln379">      for (int i = 0; i &lt; 2; ++i) {</a>
+<a name="ln380">            fp-&gt;getChar(&amp;c);</a>
+<a name="ln381">            val &lt;&lt;= 8;</a>
+<a name="ln382">            val += (c &amp; 0xff);</a>
+<a name="ln383">            }</a>
+<a name="ln384">      return val;</a>
+<a name="ln385">      }</a>
+<a name="ln386"> </a>
+<a name="ln387">//---------------------------------------------------------</a>
+<a name="ln388">//   writeShort</a>
+<a name="ln389">//---------------------------------------------------------</a>
+<a name="ln390"> </a>
+<a name="ln391">void MidiFile::writeShort(int i)</a>
+<a name="ln392">      {</a>
+<a name="ln393">      fp-&gt;putChar(i &gt;&gt; 8);</a>
+<a name="ln394">      fp-&gt;putChar(i);</a>
+<a name="ln395">      }</a>
+<a name="ln396"> </a>
+<a name="ln397">//---------------------------------------------------------</a>
+<a name="ln398">//   readLong</a>
+<a name="ln399">//   writeLong</a>
+<a name="ln400">//---------------------------------------------------------</a>
+<a name="ln401"> </a>
+<a name="ln402">int MidiFile::readLong()</a>
+<a name="ln403">      {</a>
+<a name="ln404">      char c;</a>
+<a name="ln405">      int val = 0;</a>
+<a name="ln406">      for (int i = 0; i &lt; 4; ++i) {</a>
+<a name="ln407">            fp-&gt;getChar(&amp;c);</a>
+<a name="ln408">            val &lt;&lt;= 8;</a>
+<a name="ln409">            val += (c &amp; 0xff);</a>
+<a name="ln410">            }</a>
+<a name="ln411">      return val;</a>
+<a name="ln412">      }</a>
+<a name="ln413"> </a>
+<a name="ln414">//---------------------------------------------------------</a>
+<a name="ln415">//   writeLong</a>
+<a name="ln416">//---------------------------------------------------------</a>
+<a name="ln417"> </a>
+<a name="ln418">void MidiFile::writeLong(int i)</a>
+<a name="ln419">      {</a>
+<a name="ln420">      fp-&gt;putChar(i &gt;&gt; 24);</a>
+<a name="ln421">      fp-&gt;putChar(i &gt;&gt; 16);</a>
+<a name="ln422">      fp-&gt;putChar(i &gt;&gt; 8);</a>
+<a name="ln423">      fp-&gt;putChar(i);</a>
+<a name="ln424">      }</a>
+<a name="ln425"> </a>
+<a name="ln426">/*---------------------------------------------------------</a>
+<a name="ln427"> *    skip</a>
+<a name="ln428"> *    This is meant for skipping a few bytes in a</a>
+<a name="ln429"> *    file or fifo.</a>
+<a name="ln430"> *---------------------------------------------------------*/</a>
+<a name="ln431"> </a>
+<a name="ln432">void MidiFile::skip(qint64 len)</a>
+<a name="ln433">      {</a>
+<a name="ln434">      // Note: if MS is updated to use Qt 5.10, this can be implemented with QIODevice::skip(), which should be more efficient</a>
+<a name="ln435">      //       as bytes do not need to be moved around.</a>
+<a name="ln436">      if (len &lt;= 0)</a>
+<a name="ln437">            return;</a>
+<a name="ln438">#if (!defined (_MSCVER) &amp;&amp; !defined (_MSC_VER))</a>
+<a name="ln439">      char tmp[len];</a>
+<a name="ln440">      read(tmp, len);</a>
+<a name="ln441">#else</a>
+<a name="ln442">      const int tmp_size = 256;  // Size of fixed-length temporary buffer. MSVC does not support VLA.</a>
+<a name="ln443">      char tmp[tmp_size];</a>
+<a name="ln444">      while(len &gt; tmp_size) {</a>
+<a name="ln445">            read(tmp, len);</a>
+<a name="ln446">            len -= tmp_size;</a>
+<a name="ln447">            }</a>
+<a name="ln448">      // Now len is &lt;= tmp_size, last read fits in the buffer.</a>
+<a name="ln449">      read(tmp, tmp_size);</a>
+<a name="ln450">#endif</a>
+<a name="ln451">      }</a>
+<a name="ln452"> </a>
+<a name="ln453">/*---------------------------------------------------------</a>
+<a name="ln454"> *    getvl</a>
+<a name="ln455"> *    Read variable-length number (7 bits per byte, MSB first)</a>
+<a name="ln456"> *---------------------------------------------------------*/</a>
+<a name="ln457"> </a>
+<a name="ln458">int MidiFile::getvl()</a>
+<a name="ln459">      {</a>
+<a name="ln460">      int l = 0;</a>
+<a name="ln461">      for (int i = 0; i &lt; 16; i++) {</a>
+<a name="ln462">            uchar c;</a>
+<a name="ln463">            read(&amp;c, 1);</a>
+<a name="ln464">            l += (c &amp; 0x7f);</a>
+<a name="ln465">            if (!(c &amp; 0x80)) {</a>
+<a name="ln466">                  return l;</a>
+<a name="ln467">                  }</a>
+<a name="ln468">            l &lt;&lt;= 7;</a>
+<a name="ln469">            }</a>
+<a name="ln470">      return -1;</a>
+<a name="ln471">      }</a>
+<a name="ln472"> </a>
+<a name="ln473">/*---------------------------------------------------------</a>
+<a name="ln474"> *    putvl</a>
+<a name="ln475"> *    Write variable-length number (7 bits per byte, MSB first)</a>
+<a name="ln476"> *---------------------------------------------------------*/</a>
+<a name="ln477"> </a>
+<a name="ln478">void MidiFile::putvl(unsigned val)</a>
+<a name="ln479">      {</a>
+<a name="ln480">      unsigned long buf = val &amp; 0x7f;</a>
+<a name="ln481">      while ((val &gt;&gt;= 7) &gt; 0) {</a>
+<a name="ln482">            buf &lt;&lt;= 8;</a>
+<a name="ln483">            buf |= 0x80;</a>
+<a name="ln484">            buf += (val &amp; 0x7f);</a>
+<a name="ln485">            }</a>
+<a name="ln486">      for (;;) {</a>
+<a name="ln487">            put(buf);</a>
+<a name="ln488">            if (buf &amp; 0x80)</a>
+<a name="ln489">                  buf &gt;&gt;= 8;</a>
+<a name="ln490">            else</a>
+<a name="ln491">                  break;</a>
+<a name="ln492">            }</a>
+<a name="ln493">      }</a>
+<a name="ln494"> </a>
+<a name="ln495">//---------------------------------------------------------</a>
+<a name="ln496">//   MidiTrack</a>
+<a name="ln497">//---------------------------------------------------------</a>
+<a name="ln498"> </a>
+<a name="ln499">MidiTrack::MidiTrack()</a>
+<a name="ln500">      {</a>
+<a name="ln501">      _outChannel = -1;</a>
+<a name="ln502">      _outPort    = -1;</a>
+<a name="ln503">      _drumTrack  = false;</a>
+<a name="ln504">      }</a>
+<a name="ln505"> </a>
+<a name="ln506">MidiTrack::~MidiTrack()</a>
+<a name="ln507">      {</a>
+<a name="ln508">      }</a>
+<a name="ln509"> </a>
+<a name="ln510">//---------------------------------------------------------</a>
+<a name="ln511">//   insert</a>
+<a name="ln512">//---------------------------------------------------------</a>
+<a name="ln513"> </a>
+<a name="ln514">void MidiTrack::insert(int tick, const MidiEvent&amp; event)</a>
+<a name="ln515">      {</a>
+<a name="ln516">      _events.insert({tick, event});</a>
+<a name="ln517">      }</a>
+<a name="ln518"> </a>
+<a name="ln519">//---------------------------------------------------------</a>
+<a name="ln520">//   readEvent</a>
+<a name="ln521">//    return true on success</a>
+<a name="ln522">//---------------------------------------------------------</a>
+<a name="ln523"> </a>
+<a name="ln524">bool MidiFile::readEvent(MidiEvent* event)</a>
+<a name="ln525">      {</a>
+<a name="ln526">      uchar me, a, b;</a>
+<a name="ln527"> </a>
+<a name="ln528">      int nclick = getvl();</a>
+<a name="ln529">      if (nclick == -1) {</a>
+<a name="ln530">            qDebug(&quot;readEvent: error 1(getvl)&quot;);</a>
+<a name="ln531">            return false;</a>
+<a name="ln532">            }</a>
+<a name="ln533">      click += nclick;</a>
+<a name="ln534">      for (;;) {</a>
+<a name="ln535">            read(&amp;me, 1);</a>
+<a name="ln536">            if (me &gt;= 0xf1 &amp;&amp; me &lt;= 0xfe &amp;&amp; me != 0xf7) {</a>
+<a name="ln537">                  qDebug(&quot;Midi: Unknown Message 0x%02x&quot;, me &amp; 0xff);</a>
+<a name="ln538">                  }</a>
+<a name="ln539">            else</a>
+<a name="ln540">                  break;</a>
+<a name="ln541">            }</a>
+<a name="ln542"> </a>
+<a name="ln543">      unsigned char* data;</a>
+<a name="ln544">      int dataLen;</a>
+<a name="ln545"> </a>
+<a name="ln546">      if (me == 0xf0 || me == 0xf7) {</a>
+<a name="ln547">            status  = -1;                  // no running status</a>
+<a name="ln548">            int len = getvl();</a>
+<a name="ln549">            if (len == -1) {</a>
+<a name="ln550">                  qDebug(&quot;readEvent: error 3&quot;);</a>
+<a name="ln551">                  return false;</a>
+<a name="ln552">                  }</a>
+<a name="ln553">            data    = new unsigned char[len+1];</a>
+<a name="ln554">            dataLen = len;</a>
+<a name="ln555">            read(data, len);</a>
+<a name="ln556">            data[dataLen] = 0;    // always terminate with zero</a>
+<a name="ln557">            if (data[len-1] != 0xf7) {</a>
+<a name="ln558">                  qDebug(&quot;SYSEX does not end with 0xf7!&quot;);</a>
+<a name="ln559">                  // more to come?</a>
+<a name="ln560">                  }</a>
+<a name="ln561">            else</a>
+<a name="ln562">                  dataLen--;      // don't count 0xf7</a>
+<a name="ln563">            event-&gt;setType(ME_SYSEX);</a>
+<a name="ln564">            event-&gt;setEData(data);</a>
+<a name="ln565">            event-&gt;setLen(dataLen);</a>
+<a name="ln566">            return true;</a>
+<a name="ln567">            }</a>
+<a name="ln568"> </a>
+<a name="ln569">      if (me == ME_META) {</a>
+<a name="ln570">            status = -1;                  // no running status</a>
+<a name="ln571">            uchar type;</a>
+<a name="ln572">            read(&amp;type, 1);</a>
+<a name="ln573">            dataLen = getvl();                // read len</a>
+<a name="ln574">            if (dataLen == -1) {</a>
+<a name="ln575">                  qDebug(&quot;readEvent: error 6&quot;);</a>
+<a name="ln576">                  return false;</a>
+<a name="ln577">                  }</a>
+<a name="ln578">            data = new unsigned char[dataLen + 1];</a>
+<a name="ln579">            if (dataLen)</a>
+<a name="ln580">                  read(data, dataLen);</a>
+<a name="ln581">            data[dataLen] = 0;      // always terminate with zero so we get valid C++ strings</a>
+<a name="ln582"> </a>
+<a name="ln583">            event-&gt;setType(ME_META);</a>
+<a name="ln584">            event-&gt;setMetaType(type);</a>
+<a name="ln585">            event-&gt;setLen(dataLen);</a>
+<a name="ln586">            event-&gt;setEData(data);</a>
+<a name="ln587">            return true;</a>
+<a name="ln588">            }</a>
+<a name="ln589"> </a>
+<a name="ln590">      if (me &amp; 0x80) {                     // status byte</a>
+<a name="ln591">            status   = me;</a>
+<a name="ln592">            sstatus  = status;</a>
+<a name="ln593">            read(&amp;a, 1);</a>
+<a name="ln594">            }</a>
+<a name="ln595">      else {</a>
+<a name="ln596">            if (status == -1) {</a>
+<a name="ln597">                  qDebug(&quot;readEvent: no running status, read 0x%02x&quot;, me);</a>
+<a name="ln598">                  qDebug(&quot;sstatus ist 0x%02x&quot;, sstatus);</a>
+<a name="ln599">                  if (sstatus == -1) {</a>
+<a name="ln600">                        return 0;</a>
+<a name="ln601">                        }</a>
+<a name="ln602">                  status = sstatus;</a>
+<a name="ln603">                  }</a>
+<a name="ln604">            a = me;</a>
+<a name="ln605">            }</a>
+<a name="ln606">      int channel = status &amp; 0x0f;</a>
+<a name="ln607">      b           = 0;</a>
+<a name="ln608">      switch (status &amp; 0xf0) {</a>
+<a name="ln609">            case ME_NOTEOFF:</a>
+<a name="ln610">            case ME_NOTEON:</a>
+<a name="ln611">            case ME_POLYAFTER:</a>
+<a name="ln612">            case ME_CONTROLLER:        // controller</a>
+<a name="ln613">            case ME_PITCHBEND:        // pitch bend</a>
+<a name="ln614">                  read(&amp;b, 1);</a>
+<a name="ln615">                  break;</a>
+<a name="ln616">            }</a>
+<a name="ln617">      event-&gt;setType(status &amp; 0xf0);</a>
+<a name="ln618">      event-&gt;setChannel(channel);</a>
+<a name="ln619">      switch (status &amp; 0xf0) {</a>
+<a name="ln620">            case ME_NOTEOFF:</a>
+<a name="ln621">                  event-&gt;setDataA(a &amp; 0x7f);</a>
+<a name="ln622">                  event-&gt;setDataB(b &amp; 0x7f);</a>
+<a name="ln623">                  break;</a>
+<a name="ln624">            case ME_NOTEON:</a>
+<a name="ln625">                  event-&gt;setDataA(a &amp; 0x7f);</a>
+<a name="ln626">                  event-&gt;setDataB(b &amp; 0x7f);</a>
+<a name="ln627">                  break;</a>
+<a name="ln628">            case ME_POLYAFTER:</a>
+<a name="ln629">                  event-&gt;setType(ME_CONTROLLER);</a>
+<a name="ln630">                  event-&gt;setController(CTRL_POLYAFTER);</a>
+<a name="ln631">                  event-&gt;setValue(((a &amp; 0x7f) &lt;&lt; 8) + (b &amp; 0x7f));</a>
+<a name="ln632">                  break;</a>
+<a name="ln633">            case ME_CONTROLLER:        // controller</a>
+<a name="ln634">                  event-&gt;setController(a &amp; 0x7f);</a>
+<a name="ln635">                  event-&gt;setValue(b &amp; 0x7f);</a>
+<a name="ln636">                  break;</a>
+<a name="ln637">            case ME_PITCHBEND:        // pitch bend</a>
+<a name="ln638">                  event-&gt;setDataA(a &amp; 0x7f);</a>
+<a name="ln639">                  event-&gt;setDataB(b &amp; 0x7f);</a>
+<a name="ln640">                  break;</a>
+<a name="ln641">            case ME_PROGRAM:</a>
+<a name="ln642">                  event-&gt;setValue(a &amp; 0x7f);</a>
+<a name="ln643">                  break;</a>
+<a name="ln644">            case ME_AFTERTOUCH:</a>
+<a name="ln645">                  event-&gt;setType(ME_CONTROLLER);</a>
+<a name="ln646">                  event-&gt;setController(CTRL_PRESS);</a>
+<a name="ln647">                  event-&gt;setValue(a &amp; 0x7f);</a>
+<a name="ln648">                  break;</a>
+<a name="ln649">            default:          // f1 f2 f3 f4 f5 f6 f7 f8 f9</a>
+<a name="ln650">                  qDebug(&quot;BAD STATUS 0x%02x, me 0x%02x&quot;, status, me);</a>
+<a name="ln651">                  return false;</a>
+<a name="ln652">            }</a>
+<a name="ln653"> </a>
+<a name="ln654">      if ((a &amp; 0x80) || (b &amp; 0x80)) {</a>
+<a name="ln655">            qDebug(&quot;8't bit in data set(%02x %02x): tick %d read 0x%02x  status:0x%02x&quot;,</a>
+<a name="ln656">              a &amp; 0xff, b &amp; 0xff, click, me, status);</a>
+<a name="ln657">            qDebug(&quot;readEvent: error 16&quot;);</a>
+<a name="ln658">            if (b &amp; 0x80) {</a>
+<a name="ln659">                  // Try to fix: interpret as channel byte</a>
+<a name="ln660">                  status   = b;</a>
+<a name="ln661">                  sstatus  = status;</a>
+<a name="ln662">                  return true;</a>
+<a name="ln663">                  }</a>
+<a name="ln664">            return false;</a>
+<a name="ln665">            }</a>
+<a name="ln666">      return true;</a>
+<a name="ln667">      }</a>
+<a name="ln668"> </a>
+<a name="ln669">//---------------------------------------------------------</a>
+<a name="ln670">//   setOutChannel</a>
+<a name="ln671">//---------------------------------------------------------</a>
+<a name="ln672"> </a>
+<a name="ln673">void MidiTrack::setOutChannel(int n)</a>
+<a name="ln674">      {</a>
+<a name="ln675">      _outChannel = n;</a>
+<a name="ln676">      if (_outChannel == 9)</a>
+<a name="ln677">            _drumTrack = true;</a>
+<a name="ln678">      }</a>
+<a name="ln679"> </a>
+<a name="ln680">//---------------------------------------------------------</a>
+<a name="ln681">//   mergeNoteOnOffAndFindMidiType</a>
+<a name="ln682">//    - find matching note on / note off events and merge</a>
+<a name="ln683">//      into a note event with tick duration</a>
+<a name="ln684">//    - find MIDI type</a>
+<a name="ln685">//---------------------------------------------------------</a>
+<a name="ln686"> </a>
+<a name="ln687">void MidiTrack::mergeNoteOnOffAndFindMidiType(MidiType *mt)</a>
+<a name="ln688">      {</a>
+<a name="ln689">      std::multimap&lt;int, MidiEvent&gt; el;</a>
+<a name="ln690"> </a>
+<a name="ln691">      int hbank = 0xff;</a>
+<a name="ln692">      int lbank = 0xff;</a>
+<a name="ln693">      int rpnh  = -1;</a>
+<a name="ln694">      int rpnl  = -1;</a>
+<a name="ln695">      int datah = 0;</a>
+<a name="ln696">      int datal = 0;</a>
+<a name="ln697">      int dataType = 0; // 0 : disabled, 0x20000 : rpn, 0x30000 : nrpn;</a>
+<a name="ln698"> </a>
+<a name="ln699">      for (auto i = _events.begin(); i != _events.end(); ++i) {</a>
+<a name="ln700">            MidiEvent&amp; ev = i-&gt;second;</a>
+<a name="ln701">            if (ev.type() == ME_INVALID)</a>
+<a name="ln702">                  continue;</a>
+<a name="ln703">            if ((ev.type() != ME_NOTEON) &amp;&amp; (ev.type() != ME_NOTEOFF)) {</a>
+<a name="ln704">                  if (ev.type() == ME_CONTROLLER) {</a>
+<a name="ln705">                        int val  = ev.value();</a>
+<a name="ln706">                        int cn   = ev.controller();</a>
+<a name="ln707">                        if (cn == CTRL_HBANK) {</a>
+<a name="ln708">                              hbank = val;</a>
+<a name="ln709">                              ev.setType(ME_INVALID);</a>
+<a name="ln710">                              continue;</a>
+<a name="ln711">                              }</a>
+<a name="ln712">                        else if (cn == CTRL_LBANK) {</a>
+<a name="ln713">                              lbank = val;</a>
+<a name="ln714">                              ev.setType(ME_INVALID);</a>
+<a name="ln715">                              continue;</a>
+<a name="ln716">                              }</a>
+<a name="ln717">                        else if (cn == CTRL_HDATA) {</a>
+<a name="ln718">                              datah = val;</a>
+<a name="ln719"> </a>
+<a name="ln720">                              // check if a CTRL_LDATA follows</a>
+<a name="ln721">                              // e.g. wie have a 14 bit controller:</a>
+<a name="ln722">                              auto ii = i;</a>
+<a name="ln723">                              ++ii;</a>
+<a name="ln724">                              bool found = false;</a>
+<a name="ln725">                              for (; ii != _events.end(); ++ii) {</a>
+<a name="ln726">                                    MidiEvent&amp; ev1 = ii-&gt;second;</a>
+<a name="ln727">                                    if (ev1.type() == ME_CONTROLLER) {</a>
+<a name="ln728">                                          if (ev1.controller() == CTRL_LDATA) {</a>
+<a name="ln729">                                                // handle later</a>
+<a name="ln730">                                                found = true;</a>
+<a name="ln731">                                                }</a>
+<a name="ln732">                                          break;</a>
+<a name="ln733">                                          }</a>
+<a name="ln734">                                    }</a>
+<a name="ln735">                              if (!found) {</a>
+<a name="ln736">                                    if (rpnh == -1 || rpnl == -1) {</a>
+<a name="ln737">                                          qDebug(&quot;parameter number not defined, data 0x%x&quot;, datah);</a>
+<a name="ln738">                                          ev.setType(ME_INVALID);</a>
+<a name="ln739">                                          continue;</a>
+<a name="ln740">                                          }</a>
+<a name="ln741">                                    else {</a>
+<a name="ln742">                                          ev.setController(dataType | (rpnh &lt;&lt; 8) | rpnl);</a>
+<a name="ln743">                                          ev.setValue(datah);</a>
+<a name="ln744">                                          }</a>
+<a name="ln745">                                    }</a>
+<a name="ln746">                              else {</a>
+<a name="ln747">                                    ev.setType(ME_INVALID);</a>
+<a name="ln748">                                    continue;</a>
+<a name="ln749">                                    }</a>
+<a name="ln750">                              }</a>
+<a name="ln751">                        else if (cn == CTRL_LDATA) {</a>
+<a name="ln752">                              datal = val;</a>
+<a name="ln753"> </a>
+<a name="ln754">                              if (rpnh == -1 || rpnl == -1) {</a>
+<a name="ln755">                                    qDebug(&quot;parameter number not defined, data 0x%x 0x%x, tick %d, channel %d&quot;,</a>
+<a name="ln756">                                       datah, datal, i-&gt;first, ev.channel());</a>
+<a name="ln757">                                    continue;</a>
+<a name="ln758">                                    }</a>
+<a name="ln759">                              // assume that the sequence is always</a>
+<a name="ln760">                              //    CTRL_HDATA - CTRL_LDATA</a>
+<a name="ln761">                              // eg. that LDATA is always send last</a>
+<a name="ln762"> </a>
+<a name="ln763">                              // 14 Bit RPN/NRPN</a>
+<a name="ln764">                              ev.setController((dataType+0x30000) | (rpnh &lt;&lt; 8) | rpnl);</a>
+<a name="ln765">                              ev.setValue((datah &lt;&lt; 7) | datal);</a>
+<a name="ln766">                              }</a>
+<a name="ln767">                        else if (cn == CTRL_HRPN) {</a>
+<a name="ln768">                              rpnh = val;</a>
+<a name="ln769">                              dataType = 0x20000;</a>
+<a name="ln770">                              ev.setType(ME_INVALID);</a>
+<a name="ln771">                              continue;</a>
+<a name="ln772">                              }</a>
+<a name="ln773">                        else if (cn == CTRL_LRPN) {</a>
+<a name="ln774">                              rpnl = val;</a>
+<a name="ln775">                              dataType = 0x20000;</a>
+<a name="ln776">                              ev.setType(ME_INVALID);</a>
+<a name="ln777">                              continue;</a>
+<a name="ln778">                              }</a>
+<a name="ln779">                        else if (cn == CTRL_HNRPN) {</a>
+<a name="ln780">                              rpnh = val;</a>
+<a name="ln781">                              dataType = 0x30000;</a>
+<a name="ln782">                              ev.setType(ME_INVALID);</a>
+<a name="ln783">                              continue;</a>
+<a name="ln784">                              }</a>
+<a name="ln785">                        else if (cn == CTRL_LNRPN) {</a>
+<a name="ln786">                              rpnl = val;</a>
+<a name="ln787">                              dataType = 0x30000;</a>
+<a name="ln788">                              ev.setType(ME_INVALID);</a>
+<a name="ln789">                              continue;</a>
+<a name="ln790">                              }</a>
+<a name="ln791">                        else if (cn == CTRL_PROGRAM) {</a>
+<a name="ln792">                              ev.setValue((hbank &lt;&lt; 16) | (lbank &lt;&lt; 8) | ev.value());</a>
+<a name="ln793">                              // TODO el.insert(ev);</a>
+<a name="ln794">                              ev.setType(ME_INVALID);</a>
+<a name="ln795">                              continue;</a>
+<a name="ln796">                              }</a>
+<a name="ln797">                        }</a>
+<a name="ln798">                  else if (ev.type() == ME_SYSEX) {</a>
+<a name="ln799">                        int len = ev.len();</a>
+<a name="ln800">                        const uchar* buffer = ev.edata();</a>
+<a name="ln801">                        if ((len == gmOnMsgLen) &amp;&amp; memcmp(buffer, gmOnMsg, gmOnMsgLen) == 0) {</a>
+<a name="ln802">                              *mt = MidiType::GM;</a>
+<a name="ln803">                              ev.setType(ME_INVALID);</a>
+<a name="ln804">                              continue;</a>
+<a name="ln805">                              }</a>
+<a name="ln806">                        if ((len == gsOnMsgLen) &amp;&amp; memcmp(buffer, gsOnMsg, gsOnMsgLen) == 0) {</a>
+<a name="ln807">                              *mt = MidiType::GS;</a>
+<a name="ln808">                              ev.setType(ME_INVALID);</a>
+<a name="ln809">                              continue;</a>
+<a name="ln810">                              }</a>
+<a name="ln811">                        if ((len == xgOnMsgLen) &amp;&amp; memcmp(buffer, xgOnMsg, xgOnMsgLen) == 0) {</a>
+<a name="ln812">                              *mt = MidiType::XG;</a>
+<a name="ln813">                              ev.setType(ME_INVALID);</a>
+<a name="ln814">                              continue;</a>
+<a name="ln815">                              }</a>
+<a name="ln816">                        if (buffer[0] == 0x43) {    // Yamaha</a>
+<a name="ln817">                              *mt = MidiType::XG;</a>
+<a name="ln818">                              int type   = buffer[1] &amp; 0xf0;</a>
+<a name="ln819">                              if (type == 0x10) {</a>
+<a name="ln820">//TODO                                    if (buffer[1] != 0x10) {</a>
+<a name="ln821">//                                          buffer[1] = 0x10;    // fix to Device 1</a>
+<a name="ln822">//                                          }</a>
+<a name="ln823">                                    if ((len == xgOnMsgLen) &amp;&amp; memcmp(buffer, xgOnMsg, xgOnMsgLen) == 0) {</a>
+<a name="ln824">                                          *mt = MidiType::XG;</a>
+<a name="ln825">                                          ev.setType(ME_INVALID);</a>
+<a name="ln826">                                          continue;</a>
+<a name="ln827">                                          }</a>
+<a name="ln828">                                    if (len == 7 &amp;&amp; buffer[2] == 0x4c &amp;&amp; buffer[3] == 0x08 &amp;&amp; buffer[5] == 7) {</a>
+<a name="ln829">                                          // part mode</a>
+<a name="ln830">                                          // 0 - normal</a>
+<a name="ln831">                                          // 1 - DRUM</a>
+<a name="ln832">                                          // 2 - DRUM 1</a>
+<a name="ln833">                                          // 3 - DRUM 2</a>
+<a name="ln834">                                          // 4 - DRUM 3</a>
+<a name="ln835">                                          // 5 - DRUM 4</a>
+<a name="ln836">                                          if (buffer[6] != 0 &amp;&amp; buffer[4] == ev.channel()) {</a>
+<a name="ln837">                                                _drumTrack = true;</a>
+<a name="ln838">                                                }</a>
+<a name="ln839">                                          ev.setType(ME_INVALID);</a>
+<a name="ln840">                                          continue;</a>
+<a name="ln841">                                          }</a>
+<a name="ln842">                                    }</a>
+<a name="ln843">                              }</a>
+<a name="ln844">                        }</a>
+<a name="ln845">                  el.insert(std::pair&lt;int,MidiEvent&gt;(i-&gt;first, ev));</a>
+<a name="ln846">                  ev.setType(ME_INVALID);</a>
+<a name="ln847">                  continue;</a>
+<a name="ln848">                  }</a>
+<a name="ln849">            int tick = i-&gt;first;</a>
+<a name="ln850">            if (ev.type() == ME_NOTEOFF || ev.velo() == 0) {</a>
+<a name="ln851">                  qDebug(&quot;-extra note off at %d&quot;, tick);</a>
+<a name="ln852">                  ev.setType(ME_INVALID);</a>
+<a name="ln853">                  continue;</a>
+<a name="ln854">                  }</a>
+<a name="ln855">            MidiEvent note(ME_NOTE, ev.channel(), ev.dataA(), ev.dataB());</a>
+<a name="ln856"> </a>
+<a name="ln857">            auto k = i;</a>
+<a name="ln858">            ++k;</a>
+<a name="ln859">            for (; k != _events.end(); ++k) {</a>
+<a name="ln860">                  MidiEvent&amp; e = k-&gt;second;</a>
+<a name="ln861">                  if (e.type() != ME_NOTEON &amp;&amp; e.type() != ME_NOTEOFF)</a>
+<a name="ln862">                        continue;</a>
+<a name="ln863">                  if ((e.type() == ME_NOTEOFF || (e.type() == ME_NOTEON &amp;&amp; e.velo() == 0))</a>
+<a name="ln864">                     &amp;&amp; (e.pitch() == note.pitch())) {</a>
+<a name="ln865">                        int t = k-&gt;first - tick;</a>
+<a name="ln866">                        if (t &lt;= 0)</a>
+<a name="ln867">                              t = 1;</a>
+<a name="ln868">                        note.setLen(t);</a>
+<a name="ln869">                        e.setType(ME_INVALID);</a>
+<a name="ln870">                        break;</a>
+<a name="ln871">                        }</a>
+<a name="ln872">                  }</a>
+<a name="ln873">            if (k == _events.end()) {</a>
+<a name="ln874">                  qDebug(&quot;-no note-off for note at %d&quot;, tick);</a>
+<a name="ln875">                  note.setLen(1);</a>
+<a name="ln876">                  }</a>
+<a name="ln877">            el.insert(std::pair&lt;int,MidiEvent&gt;(tick, note));</a>
+<a name="ln878">            ev.setType(ME_INVALID);</a>
+<a name="ln879">            }</a>
+<a name="ln880">      _events = el;</a>
+<a name="ln881">      }</a>
+<a name="ln882"> </a>
+<a name="ln883">//---------------------------------------------------------</a>
+<a name="ln884">//   separateChannel</a>
+<a name="ln885">//    if a track contains events for different midi channels,</a>
+<a name="ln886">//    then split events into separate tracks</a>
+<a name="ln887">//---------------------------------------------------------</a>
+<a name="ln888"> </a>
+<a name="ln889">void MidiFile::separateChannel()</a>
+<a name="ln890">      {</a>
+<a name="ln891">      for (int i = 0; i &lt; _tracks.size(); ++i) {</a>
+<a name="ln892">                        // create a list of channels used in current track</a>
+<a name="ln893">            QList&lt;int&gt; channel;</a>
+<a name="ln894">            MidiTrack &amp;mt = _tracks[i];      // current track</a>
+<a name="ln895">            for (const auto&amp; ie : mt.events()) {</a>
+<a name="ln896">                  const MidiEvent&amp; e = ie.second;</a>
+<a name="ln897">                  if (e.isChannelEvent() &amp;&amp; !channel.contains(e.channel()))</a>
+<a name="ln898">                        channel.append(e.channel());</a>
+<a name="ln899">                  }</a>
+<a name="ln900">            mt.setOutChannel(channel.empty() ? 0 : channel[0]);</a>
+<a name="ln901">            int nn = channel.size();</a>
+<a name="ln902">            if (nn &lt;= 1)</a>
+<a name="ln903">                  continue;</a>
+<a name="ln904">            qSort(channel);</a>
+<a name="ln905">                        // -- split --</a>
+<a name="ln906">                        // insert additional tracks, assign to them found channels</a>
+<a name="ln907">            for (int ii = 1; ii &lt; nn; ++ii) {</a>
+<a name="ln908">                  MidiTrack t;</a>
+<a name="ln909">                  t.setOutChannel(channel[ii]);</a>
+<a name="ln910">                  _tracks.insert(i + ii, t);</a>
+<a name="ln911">                  }</a>
+<a name="ln912">                        // extract all different channel events from current track to inserted tracks</a>
+<a name="ln913">            for (auto ie = mt.events().begin(); ie != mt.events().end(); ) {</a>
+<a name="ln914">                  const MidiEvent&amp; e = ie-&gt;second;</a>
+<a name="ln915">                  if (e.isChannelEvent()) {</a>
+<a name="ln916">                        int ch  = e.channel();</a>
+<a name="ln917">                        int idx = channel.indexOf(ch);</a>
+<a name="ln918">                        MidiTrack &amp;t = _tracks[i + idx];</a>
+<a name="ln919">                        if (&amp;t != &amp;mt) {</a>
+<a name="ln920">                              t.insert(ie-&gt;first, e);</a>
+<a name="ln921">                              ie = mt.events().erase(ie);</a>
+<a name="ln922">                              continue;</a>
+<a name="ln923">                              }</a>
+<a name="ln924">                        }</a>
+<a name="ln925">                  ++ie;</a>
+<a name="ln926">                  }</a>
+<a name="ln927">            i += nn - 1;</a>
+<a name="ln928">            }</a>
+<a name="ln929">      }</a>
+<a name="ln930"> </a>
+<a name="ln931">} // namespace Ms</a>
+
+</code></pre>
+<div class="balloon" rel="367"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="621"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 621, 625, 638</p></div>
+<div class="balloon" rel="57"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _division, status, sstatus, click, curPos.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,555 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mixer.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2016 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;musescore.h&quot;</a>
+<a name="ln21">#include &quot;parteditbase.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">#include &quot;libmscore/excerpt.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln26">#include &quot;mixer.h&quot;</a>
+<a name="ln27">#include &quot;seq.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln29">#include &quot;synthcontrol.h&quot;</a>
+<a name="ln30">#include &quot;synthesizer/msynthesizer.h&quot;</a>
+<a name="ln31">#include &quot;preferences.h&quot;</a>
+<a name="ln32">#include &lt;QtGlobal&gt;</a>
+<a name="ln33">#include &lt;qmessagebox.h&gt;</a>
+<a name="ln34">#include &lt;accessibletoolbutton.h&gt;</a>
+<a name="ln35">#include &quot;mixerdetails.h&quot;</a>
+<a name="ln36">#include &quot;mixertrack.h&quot;</a>
+<a name="ln37">#include &quot;mixertrackchannel.h&quot;</a>
+<a name="ln38">#include &quot;mixertrackpart.h&quot;</a>
+<a name="ln39">#include &quot;mixertrackitem.h&quot;</a>
+<a name="ln40"> </a>
+<a name="ln41">namespace Ms {</a>
+<a name="ln42"> </a>
+<a name="ln43">#define _setValue(__x, __y) \</a>
+<a name="ln44">      __x-&gt;blockSignals(true); \</a>
+<a name="ln45">      __x-&gt;setValue(__y); \</a>
+<a name="ln46">      __x-&gt;blockSignals(false);</a>
+<a name="ln47"> </a>
+<a name="ln48">#define _setChecked(__x, __y) \</a>
+<a name="ln49">      __x-&gt;blockSignals(true); \</a>
+<a name="ln50">      __x-&gt;setChecked(__y); \</a>
+<a name="ln51">      __x-&gt;blockSignals(false);</a>
+<a name="ln52"> </a>
+<a name="ln53"> </a>
+<a name="ln54">double volumeToUserRange(char v) { return v * 100.0 / 128.0; }</a>
+<a name="ln55">double panToUserRange(char v) { return (v / 128.0) * 360.0; }</a>
+<a name="ln56">double chorusToUserRange(char v) { return v * 100.0 / 128.0; }</a>
+<a name="ln57">double reverbToUserRange(char v) { return v * 100.0 / 128.0; }</a>
+<a name="ln58"> </a>
+<a name="ln59">//0 to 100</a>
+<a name="ln60">char userRangeToVolume(double v) { return (char)qBound(0, static_cast&lt;int&gt;(v / 100.0 * 128.0), 127); }</a>
+<a name="ln61">//-180 to 180</a>
+<a name="ln62">char userRangeToPan(double v) { return (char)qBound(0, static_cast&lt;int&gt;((v / 360.0) * 128.0), 127); }</a>
+<a name="ln63">//0 to 100</a>
+<a name="ln64">char userRangeToChorus(double v) { return (char)qBound(0, static_cast&lt;int&gt;(v / 100.0 * 128.0), 127); }</a>
+<a name="ln65">//0 to 100</a>
+<a name="ln66">char userRangeToReverb(double v) { return (char)qBound(0, static_cast&lt;int&gt;(v / 100.0 * 128.0), 127); }</a>
+<a name="ln67"> </a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69">//   Mixer</a>
+<a name="ln70">//---------------------------------------------------------</a>
+<a name="ln71"> </a>
+<a name="ln72">Mixer::Mixer(QWidget* parent)</a>
+<a name="ln73">    : QDockWidget(qApp-&gt;translate(&quot;Mixer&quot;, &quot;Mixer&quot;), parent),</a>
+<a name="ln74">      showDetails(true),</a>
+<a name="ln75">      trackHolder(nullptr)</a>
+<a name="ln76">      {</a>
+<a name="ln77"> </a>
+<a name="ln78">      // note: because of setupUi side-effects (generating a showEvent) it's critical</a>
+<a name="ln79">      // that enablePlay is created first.</a>
+<a name="ln80">      enablePlay = new EnablePlayForWidget(this);</a>
+<a name="ln81"> </a>
+<a name="ln82">      setupUi(this);</a>
+<a name="ln83">      setAllowedAreas(Qt::DockWidgetAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));</a>
+<a name="ln84"> </a>
+<a name="ln85">      trackAreaLayout = new QHBoxLayout;</a>
+<a name="ln86">      trackAreaLayout-&gt;setMargin(0);</a>
+<a name="ln87">      trackAreaLayout-&gt;setSpacing(0);</a>
+<a name="ln88">      trackArea-&gt;setLayout(trackAreaLayout);</a>
+<a name="ln89"> </a>
+<a name="ln90">      mixerDetails = new MixerDetails(this);</a>
+<a name="ln91">      detailsLayout = new QGridLayout();</a>
+<a name="ln92"> </a>
+<a name="ln93">      detailsLayout-&gt;addWidget(mixerDetails);</a>
+<a name="ln94">      detailsLayout-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln95">      detailsArea-&gt;setLayout(detailsLayout);</a>
+<a name="ln96"> </a>
+<a name="ln97">      //Range in decibels</a>
+<a name="ln98">      float minDecibels = synti-&gt;minGainAsDecibels;</a>
+<a name="ln99">      float maxDecibels = synti-&gt;maxGainAsDecibels;</a>
+<a name="ln100">      float currentDecibels = synti-&gt;gainAsDecibels();</a>
+<a name="ln101">      masterSlider-&gt;setMaxValue(maxDecibels);</a>
+<a name="ln102">      masterSlider-&gt;setMinValue(minDecibels);</a>
+<a name="ln103">      masterSlider-&gt;setNumMinorTicks(4);</a>
+<a name="ln104">      masterSlider-&gt;setNumMajorTicks(3);</a>
+<a name="ln105">      masterSlider-&gt;setHilightColor(QColor(51, 153, 255));</a>
+<a name="ln106">      masterSlider-&gt;setValue(currentDecibels);</a>
+<a name="ln107">      masterSlider-&gt;setDoubleClickValue(synti-&gt;defaultGainAsDecibels);</a>
+<a name="ln108"> </a>
+<a name="ln109">      masterSpin-&gt;setMaximum(maxDecibels);</a>
+<a name="ln110">      masterSpin-&gt;setMinimum(minDecibels);</a>
+<a name="ln111">      masterSpin-&gt;setSingleStep(1);</a>
+<a name="ln112">      masterSpin-&gt;setValue(currentDecibels);</a>
+<a name="ln113"> </a>
+<a name="ln114"> </a>
+<a name="ln115">      QIcon iconSliderHead;</a>
+<a name="ln116">      iconSliderHead.addFile(QStringLiteral(&quot;:/data/icons/mixer-slider-handle-vertical.svg&quot;), QSize(), QIcon::Normal, QIcon::Off);</a>
+<a name="ln117">      masterSlider-&gt;setSliderHeadIcon(iconSliderHead);</a>
+<a name="ln118"> </a>
+<a name="ln119">      connect(toggleDetailsButton, &amp;QPushButton::toggled, this, &amp;Mixer::showDetailsToggled);</a>
+<a name="ln120">      connect(masterSlider, SIGNAL(valueChanged(double)), SLOT(masterVolumeChanged(double)));</a>
+<a name="ln121">      connect(masterSpin, SIGNAL(valueChanged(double)), SLOT(masterVolumeChanged(double)));</a>
+<a name="ln122">      connect(synti, SIGNAL(gainChanged(float)), SLOT(synthGainChanged(float)));</a>
+<a name="ln123">      connect(tracks_scrollArea-&gt;horizontalScrollBar(), SIGNAL(rangeChanged(int, int)), SLOT(adjustScrollPosition(int, int)));</a>
+<a name="ln124">      connect(tracks_scrollArea-&gt;horizontalScrollBar(), SIGNAL(valueChanged(int)), SLOT(checkKeptScrollValue(int)));</a>
+<a name="ln125"> </a>
+<a name="ln126">      retranslate(true);</a>
+<a name="ln127">      }</a>
+<a name="ln128"> </a>
+<a name="ln129">//---------------------------------------------------------</a>
+<a name="ln130">//   showDetailsToggled</a>
+<a name="ln131">//---------------------------------------------------------</a>
+<a name="ln132"> </a>
+<a name="ln133">void Mixer::showDetailsToggled(bool shown)</a>
+<a name="ln134">      {</a>
+<a name="ln135">      showDetails = shown;</a>
+<a name="ln136">      if (showDetails)</a>
+<a name="ln137">            detailsLayout-&gt;addWidget(mixerDetails);</a>
+<a name="ln138">      else</a>
+<a name="ln139">            detailsLayout-&gt;removeWidget(mixerDetails);</a>
+<a name="ln140">      }</a>
+<a name="ln141"> </a>
+<a name="ln142">//---------------------------------------------------------</a>
+<a name="ln143">//   synthGainChanged</a>
+<a name="ln144">//---------------------------------------------------------</a>
+<a name="ln145"> </a>
+<a name="ln146">void Mixer::synthGainChanged(float)</a>
+<a name="ln147">      {</a>
+<a name="ln148">      float decibels = synti-&gt;gainAsDecibels();</a>
+<a name="ln149"> </a>
+<a name="ln150">      masterSlider-&gt;blockSignals(true);</a>
+<a name="ln151">      masterSlider-&gt;setValue(decibels);</a>
+<a name="ln152">      masterSlider-&gt;blockSignals(false);</a>
+<a name="ln153"> </a>
+<a name="ln154">      masterSpin-&gt;blockSignals(true);</a>
+<a name="ln155">      masterSpin-&gt;setValue(decibels);</a>
+<a name="ln156">      masterSpin-&gt;blockSignals(false);</a>
+<a name="ln157">      }</a>
+<a name="ln158"> </a>
+<a name="ln159">void Mixer::adjustScrollPosition(int, int)</a>
+<a name="ln160">      {</a>
+<a name="ln161">      if (_needToKeepScrollPosition)</a>
+<a name="ln162">            tracks_scrollArea-&gt;horizontalScrollBar()-&gt;setValue(_scrollPosition);</a>
+<a name="ln163">      }</a>
+<a name="ln164"> </a>
+<a name="ln165">void Mixer::checkKeptScrollValue(int scrollPos)</a>
+<a name="ln166">      {</a>
+<a name="ln167">      if (_needToKeepScrollPosition) {</a>
+<a name="ln168">            tracks_scrollArea-&gt;horizontalScrollBar()-&gt;setValue(_scrollPosition);</a>
+<a name="ln169">            if (_scrollPosition == scrollPos)</a>
+<a name="ln170">                  _needToKeepScrollPosition = false;</a>
+<a name="ln171">            }</a>
+<a name="ln172">      }</a>
+<a name="ln173"> </a>
+<a name="ln174">void Mixer::keepScrollPosition()</a>
+<a name="ln175">      {</a>
+<a name="ln176">      _scrollPosition = tracks_scrollArea-&gt;horizontalScrollBar()-&gt;sliderPosition();</a>
+<a name="ln177">      _needToKeepScrollPosition = true;</a>
+<a name="ln178">      }</a>
+<a name="ln179"> </a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181">//   masterVolumeChanged</a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183"> </a>
+<a name="ln184">void Mixer::masterVolumeChanged(double decibels)</a>
+<a name="ln185">      {</a>
+<a name="ln186">      synti-&gt;setGainAsDecibels(decibels);</a>
+<a name="ln187"> </a>
+<a name="ln188">      masterSlider-&gt;blockSignals(true);</a>
+<a name="ln189">      masterSlider-&gt;setValue(decibels);</a>
+<a name="ln190">      masterSlider-&gt;blockSignals(false);</a>
+<a name="ln191"> </a>
+<a name="ln192">      masterSpin-&gt;blockSignals(true);</a>
+<a name="ln193">      masterSpin-&gt;setValue(decibels);</a>
+<a name="ln194">      masterSpin-&gt;blockSignals(false);</a>
+<a name="ln195">      }</a>
+<a name="ln196"> </a>
+<a name="ln197">//---------------------------------------------------------</a>
+<a name="ln198">//   on_partOnlyCheckBox_toggled</a>
+<a name="ln199">//---------------------------------------------------------</a>
+<a name="ln200"> </a>
+<a name="ln201">void Mixer::on_partOnlyCheckBox_toggled(bool checked)</a>
+<a name="ln202">      {</a>
+<a name="ln203"> </a>
+<a name="ln204">      if (!_activeScore || !_activeScore-&gt;excerpt())</a>
+<a name="ln205">            return;</a>
+<a name="ln206"> </a>
+<a name="ln207">      mscore-&gt;setPlayPartOnly(checked);</a>
+<a name="ln208">      setPlaybackScore(_activeScore-&gt;masterScore()-&gt;playbackScore());</a>
+<a name="ln209"> </a>
+<a name="ln210">      // Prevent muted channels from sounding</a>
+<a name="ln211">      for (const MidiMapping&amp; mm : _activeScore-&gt;masterScore()-&gt;midiMapping()) {</a>
+<a name="ln212">            const Channel* ch = mm.articulation();</a>
+<a name="ln213">            if (ch &amp;&amp; (ch-&gt;mute() || ch-&gt;soloMute()))</a>
+<a name="ln214">                  seq-&gt;stopNotes(ch-&gt;channel());</a>
+<a name="ln215">            }</a>
+<a name="ln216">      }</a>
+<a name="ln217"> </a>
+<a name="ln218">//---------------------------------------------------------</a>
+<a name="ln219">//   retranslate</a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221"> </a>
+<a name="ln222">void Mixer::retranslate(bool firstTime)</a>
+<a name="ln223">      {</a>
+<a name="ln224">      setWindowTitle(qApp-&gt;translate(&quot;Mixer&quot;, &quot;Mixer&quot;));</a>
+<a name="ln225">      if (!firstTime) {</a>
+<a name="ln226">            for (int i = 0; i &lt; trackAreaLayout-&gt;count(); i++) {</a>
+<a name="ln227">                  PartEdit* p = getPartAtIndex(i);</a>
+<a name="ln228">                  if (p) p-&gt;retranslateUi(p);</a>
+<a name="ln229">                  }</a>
+<a name="ln230">            }</a>
+<a name="ln231">      }</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   closeEvent</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">void Mixer::closeEvent(QCloseEvent* ev)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      emit closed(false);</a>
+<a name="ln240">      QWidget::closeEvent(ev);</a>
+<a name="ln241">      }</a>
+<a name="ln242"> </a>
+<a name="ln243">//---------------------------------------------------------</a>
+<a name="ln244">//   showEvent</a>
+<a name="ln245">//---------------------------------------------------------</a>
+<a name="ln246"> </a>
+<a name="ln247">void Mixer::showEvent(QShowEvent* e)</a>
+<a name="ln248">      {</a>
+<a name="ln249">      enablePlay-&gt;showEvent(e);</a>
+<a name="ln250">      QWidget::showEvent(e);</a>
+<a name="ln251">      activateWindow();</a>
+<a name="ln252">      setFocus();</a>
+<a name="ln253">      getAction(&quot;toggle-mixer&quot;)-&gt;setChecked(true);</a>
+<a name="ln254">      }</a>
+<a name="ln255"> </a>
+<a name="ln256"> </a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258">//   hideEvent</a>
+<a name="ln259">//---------------------------------------------------------</a>
+<a name="ln260"> </a>
+<a name="ln261">void Mixer::hideEvent(QHideEvent* e)</a>
+<a name="ln262">      {</a>
+<a name="ln263">      QWidget::hideEvent(e);</a>
+<a name="ln264">      getAction(&quot;toggle-mixer&quot;)-&gt;setChecked(false);</a>
+<a name="ln265">      }</a>
+<a name="ln266"> </a>
+<a name="ln267"> </a>
+<a name="ln268">//---------------------------------------------------------</a>
+<a name="ln269">//   eventFilter</a>
+<a name="ln270">//---------------------------------------------------------</a>
+<a name="ln271"> </a>
+<a name="ln272">bool Mixer::eventFilter(QObject* obj, QEvent* e)</a>
+<a name="ln273">      {</a>
+<a name="ln274">      if (enablePlay-&gt;eventFilter(obj, e))</a>
+<a name="ln275">            return true;</a>
+<a name="ln276">      return QWidget::eventFilter(obj, e);</a>
+<a name="ln277">      }</a>
+<a name="ln278"> </a>
+<a name="ln279">//---------------------------------------------------------</a>
+<a name="ln280">//   keyPressEvent</a>
+<a name="ln281">//---------------------------------------------------------</a>
+<a name="ln282"> </a>
+<a name="ln283">void Mixer::keyPressEvent(QKeyEvent* ev) {</a>
+<a name="ln284">      if (ev-&gt;key() == Qt::Key_Escape &amp;&amp; ev-&gt;modifiers() == Qt::NoModifier) {</a>
+<a name="ln285">            close();</a>
+<a name="ln286">            return;</a>
+<a name="ln287">            }</a>
+<a name="ln288">      QWidget::keyPressEvent(ev);</a>
+<a name="ln289">      }</a>
+<a name="ln290"> </a>
+<a name="ln291">//---------------------------------------------------------</a>
+<a name="ln292">//   changeEvent</a>
+<a name="ln293">//---------------------------------------------------------</a>
+<a name="ln294"> </a>
+<a name="ln295">void Mixer::changeEvent(QEvent *event)</a>
+<a name="ln296">      {</a>
+<a name="ln297">      QWidget::changeEvent(event);</a>
+<a name="ln298">      if (event-&gt;type() == QEvent::LanguageChange)</a>
+<a name="ln299">            retranslate();</a>
+<a name="ln300">      }</a>
+<a name="ln301"> </a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303">//   partEdit</a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305"> </a>
+<a name="ln306">PartEdit* Mixer::getPartAtIndex(int)</a>
+<a name="ln307">      {</a>
+<a name="ln308">      return 0;</a>
+<a name="ln309">      }</a>
+<a name="ln310"> </a>
+<a name="ln311">//---------------------------------------------------------</a>
+<a name="ln312">//   setPlaybackScore</a>
+<a name="ln313">//---------------------------------------------------------</a>
+<a name="ln314"> </a>
+<a name="ln315">void Mixer::setPlaybackScore(Score* score)</a>
+<a name="ln316">      {</a>
+<a name="ln317">      if (_score != score) {</a>
+<a name="ln318">            _score = score;</a>
+<a name="ln319">            mixerDetails-&gt;setTrack(0);</a>
+<a name="ln320">            }</a>
+<a name="ln321">      updateTracks();</a>
+<a name="ln322">      }</a>
+<a name="ln323"> </a>
+<a name="ln324">//---------------------------------------------------------</a>
+<a name="ln325">//   setScore</a>
+<a name="ln326">//---------------------------------------------------------</a>
+<a name="ln327"> </a>
+<a name="ln328">void Mixer::setScore(Score* score)</a>
+<a name="ln329">      {</a>
+<a name="ln330">      // No equality check, this function seems to need to cause</a>
+<a name="ln331">      // mixer update every time it gets called.</a>
+<a name="ln332">      _activeScore = score;</a>
+<a name="ln333">      setPlaybackScore(_activeScore ? _activeScore-&gt;masterScore()-&gt;playbackScore() : nullptr);</a>
+<a name="ln334"> </a>
+<a name="ln335">      partOnlyCheckBox-&gt;setChecked(mscore-&gt;playPartOnly());</a>
+<a name="ln336">      partOnlyCheckBox-&gt;setEnabled(_activeScore &amp;&amp; !_activeScore-&gt;isMaster());</a>
+<a name="ln337">      }</a>
+<a name="ln338"> </a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340">//   updateTracks</a>
+<a name="ln341">//---------------------------------------------------------</a>
+<a name="ln342"> </a>
+<a name="ln343">void Mixer::updateTracks()</a>
+<a name="ln344">      {</a>
+<a name="ln345">      MixerTrackItem* oldSel = mixerDetails-&gt;track().get();</a>
+<a name="ln346"> </a>
+<a name="ln347">      Part* selPart = oldSel ? oldSel-&gt;part() : 0;</a>
+<a name="ln348">      Channel* selChan = oldSel ? oldSel-&gt;chan() : 0;</a>
+<a name="ln349"> </a>
+<a name="ln350">      if (_score &amp;&amp; !selPart) {</a>
+<a name="ln351">            //If nothing selected, select first available track</a>
+<a name="ln352">            if (!_score-&gt;parts().isEmpty())</a>
+<a name="ln353">                  {</a>
+<a name="ln354">                  selPart = _score-&gt;parts()[0]-&gt;masterPart();</a>
+<a name="ln355">                  selChan = selPart-&gt;instrument(Fraction(0,1))-&gt;playbackChannel(0, _score-&gt;masterScore());</a>
+<a name="ln356">                  }</a>
+<a name="ln357"> </a>
+<a name="ln358">            }</a>
+<a name="ln359"> </a>
+<a name="ln360"> </a>
+<a name="ln361">      if (trackHolder) {</a>
+<a name="ln362">            trackAreaLayout-&gt;removeWidget(trackHolder);</a>
+<a name="ln363">            trackHolder-&gt;deleteLater();</a>
+<a name="ln364">            trackHolder = 0;</a>
+<a name="ln365">            }</a>
+<a name="ln366"> </a>
+<a name="ln367">      trackList.clear();</a>
+<a name="ln368">      mixerDetails-&gt;setTrack(0);</a>
+<a name="ln369"> </a>
+<a name="ln370"> </a>
+<a name="ln371">      if (!_score)</a>
+<a name="ln372">            return;</a>
+<a name="ln373"> </a>
+<a name="ln374">      trackHolder = new QWidget();</a>
+<a name="ln375">      QHBoxLayout* holderLayout = new QHBoxLayout();</a>
+<a name="ln376">      holderLayout-&gt;setContentsMargins(0, 0, 0, 0);</a>
+<a name="ln377">      holderLayout-&gt;setSpacing(0);</a>
+<a name="ln378">      trackHolder-&gt;setLayout(holderLayout);</a>
+<a name="ln379"> </a>
+<a name="ln380">      trackAreaLayout-&gt;addWidget(trackHolder);</a>
+<a name="ln381"> </a>
+<a name="ln382">      for (Part* localPart : _score-&gt;parts()) {</a>
+<a name="ln383">            Part* part = localPart-&gt;masterPart();</a>
+<a name="ln384">            //Add per part tracks</a>
+<a name="ln385">            bool expanded = expandedParts.contains(part);</a>
+<a name="ln386">            const InstrumentList* il = part-&gt;instruments();</a>
+<a name="ln387">            Instrument* proxyInstr = nullptr;</a>
+<a name="ln388">            Channel* proxyChan = nullptr;</a>
+<a name="ln389">            if (!il-&gt;empty()) {</a>
+<a name="ln390">                  il-&gt;begin();</a>
+<a name="ln391">                  proxyInstr = il-&gt;begin()-&gt;second;</a>
+<a name="ln392">                  proxyChan = proxyInstr-&gt;playbackChannel(0, _score-&gt;masterScore());</a>
+<a name="ln393">                  }</a>
+<a name="ln394"> </a>
+<a name="ln395">            MixerTrackItemPtr mti = std::make_shared&lt;MixerTrackItem&gt;(</a>
+<a name="ln396">                              MixerTrackItem::TrackType::PART, part, proxyInstr, proxyChan);</a>
+<a name="ln397"> </a>
+<a name="ln398">            MixerTrackPart* track = new MixerTrackPart(this, mti, expanded);</a>
+<a name="ln399">            track-&gt;setGroup(this);</a>
+<a name="ln400">            trackList.append(track);</a>
+<a name="ln401">            holderLayout-&gt;addWidget(track);</a>
+<a name="ln402"> </a>
+<a name="ln403">            if (selPart == part &amp;&amp;</a>
+<a name="ln404">                (selChan == 0 || !expanded)) {</a>
+<a name="ln405">                  track-&gt;setSelected(true);</a>
+<a name="ln406">                  mixerDetails-&gt;setTrack(mti);</a>
+<a name="ln407">                  }</a>
+<a name="ln408"> </a>
+<a name="ln409">            if (expanded) {</a>
+<a name="ln410">                  //Add per channel tracks</a>
+<a name="ln411">                  const InstrumentList* il1 = part-&gt;instruments();</a>
+<a name="ln412">                  for (auto it = il1-&gt;begin(); it != il1-&gt;end(); ++it) {</a>
+<a name="ln413">                        Instrument* instr = it-&gt;second;</a>
+<a name="ln414">                        for (int i = 0; i &lt; instr-&gt;channel().size(); ++i) {</a>
+<a name="ln415">                              Channel* chan = instr-&gt;playbackChannel(i, _score-&gt;masterScore());</a>
+<a name="ln416">                              MixerTrackItemPtr mti1 = std::make_shared&lt;MixerTrackItem&gt;(</a>
+<a name="ln417">                                                MixerTrackItem::TrackType::CHANNEL, part, instr, chan);</a>
+<a name="ln418">//                              MixerTrackItemPtr mti = new MixerTrackItem(</a>
+<a name="ln419">//                                                MixerTrackItem::TrackType::CHANNEL, part, instr, chan);</a>
+<a name="ln420">                              MixerTrackChannel* track1 = new MixerTrackChannel(this, mti1);</a>
+<a name="ln421">                              track1-&gt;setGroup(this);</a>
+<a name="ln422">                              trackList.append(track1);</a>
+<a name="ln423">                              holderLayout-&gt;addWidget(track1);</a>
+<a name="ln424"> </a>
+<a name="ln425">                              if (selPart == part &amp;&amp;</a>
+<a name="ln426">                                  selChan == chan) {</a>
+<a name="ln427">                                    track1-&gt;setSelected(true);</a>
+<a name="ln428">                                    mixerDetails-&gt;setTrack(mti1);</a>
+<a name="ln429">                                    }</a>
+<a name="ln430">                              }</a>
+<a name="ln431">                        }</a>
+<a name="ln432">                  }</a>
+<a name="ln433">            }</a>
+<a name="ln434"> </a>
+<a name="ln435">      holderLayout-&gt;addSpacerItem(new QSpacerItem(1, 1, QSizePolicy::Expanding, QSizePolicy::Fixed));</a>
+<a name="ln436">      keepScrollPosition();</a>
+<a name="ln437">      }</a>
+<a name="ln438"> </a>
+<a name="ln439">//---------------------------------------------------------</a>
+<a name="ln440">//   midiPrefsChanged</a>
+<a name="ln441">//---------------------------------------------------------</a>
+<a name="ln442"> </a>
+<a name="ln443">void Mixer::midiPrefsChanged(bool)</a>
+<a name="ln444">      {</a>
+<a name="ln445">      updateTracks();</a>
+<a name="ln446">      }</a>
+<a name="ln447"> </a>
+<a name="ln448">//---------------------------------------------------------</a>
+<a name="ln449">//   notifyTrackSelected</a>
+<a name="ln450">//---------------------------------------------------------</a>
+<a name="ln451"> </a>
+<a name="ln452">void Mixer::expandToggled(Part* part, bool expanded)</a>
+<a name="ln453">      {</a>
+<a name="ln454">      if (expanded)</a>
+<a name="ln455">            expandedParts.insert(part);</a>
+<a name="ln456">      else</a>
+<a name="ln457">            expandedParts.remove(part);</a>
+<a name="ln458"> </a>
+<a name="ln459">      updateTracks();</a>
+<a name="ln460">      }</a>
+<a name="ln461"> </a>
+<a name="ln462">//---------------------------------------------------------</a>
+<a name="ln463">//   notifyTrackSelected</a>
+<a name="ln464">//---------------------------------------------------------</a>
+<a name="ln465"> </a>
+<a name="ln466">void Mixer::notifyTrackSelected(MixerTrack* track)</a>
+<a name="ln467">      {</a>
+<a name="ln468">      for (MixerTrack *mt: trackList) {</a>
+<a name="ln469">            if (!(mt-&gt;mti()-&gt;part() == track-&gt;mti()-&gt;part() &amp;&amp;</a>
+<a name="ln470">                  mt-&gt;mti()-&gt;chan() == track-&gt;mti()-&gt;chan() &amp;&amp;</a>
+<a name="ln471">                  mt-&gt;mti()-&gt;trackType() == track-&gt;mti()-&gt;trackType())) {</a>
+<a name="ln472">                  mt-&gt;setSelected(false);</a>
+<a name="ln473">                  }</a>
+<a name="ln474">            }</a>
+<a name="ln475">      mixerDetails-&gt;setTrack(track-&gt;mti());</a>
+<a name="ln476">      }</a>
+<a name="ln477"> </a>
+<a name="ln478"> </a>
+<a name="ln479">//---------------------------------------------------------</a>
+<a name="ln480">//   showMixer</a>
+<a name="ln481">//---------------------------------------------------------</a>
+<a name="ln482"> </a>
+<a name="ln483">void MuseScore::showMixer(bool visible)</a>
+<a name="ln484">      {</a>
+<a name="ln485">      QAction* toggleMixerAction = getAction(&quot;toggle-mixer&quot;);</a>
+<a name="ln486"> </a>
+<a name="ln487">      if (!synti) {</a>
+<a name="ln488">            toggleMixerAction-&gt;setChecked(false);</a>
+<a name="ln489">            return;</a>
+<a name="ln490">            }</a>
+<a name="ln491"> </a>
+<a name="ln492">      if (mixer == 0) {</a>
+<a name="ln493">            mixer = new Mixer(this);</a>
+<a name="ln494">            mscore-&gt;stackUnder(mixer);</a>
+<a name="ln495">            if (synthControl)</a>
+<a name="ln496">                  connect(synthControl, SIGNAL(soundFontChanged()), mixer, SLOT(updateTrack()));</a>
+<a name="ln497">            connect(synti, SIGNAL(soundFontChanged()), mixer, SLOT(updateTracks()));</a>
+<a name="ln498">            connect(mixer, SIGNAL(closed(bool)), toggleMixerAction, SLOT(setChecked(bool)));</a>
+<a name="ln499">            mixer-&gt;setFloating(false);</a>
+<a name="ln500">            addDockWidget(Qt::RightDockWidgetArea, mixer);</a>
+<a name="ln501">            }</a>
+<a name="ln502">      reDisplayDockWidget(mixer, visible);</a>
+<a name="ln503">      toggleMixerAction-&gt;setChecked(visible);</a>
+<a name="ln504">      mixer-&gt;setScore(cs);</a>
+<a name="ln505">      }</a>
+<a name="ln506"> </a>
+<a name="ln507">}</a>
+
+</code></pre>
+<div class="balloon" rel="228"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v678/" target="_blank">V678</a> An object is used as an argument to its own method. Consider checking the first actual argument of the 'retranslateUi' function.</p></div>
+<div class="balloon" rel="390"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v530/" target="_blank">V530</a> The return value of function 'begin' is required to be utilized.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

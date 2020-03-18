@@ -1,0 +1,2613 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ttgload.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  ttgload.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    TrueType Glyph Loader (body).                                        */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln21">#include FT_INTERNAL_CALC_H</a>
+<a name="ln22">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln23">#include FT_INTERNAL_SFNT_H</a>
+<a name="ln24">#include FT_TRUETYPE_TAGS_H</a>
+<a name="ln25">#include FT_OUTLINE_H</a>
+<a name="ln26">#include FT_TRUETYPE_DRIVER_H</a>
+<a name="ln27"> </a>
+<a name="ln28">#include &quot;ttgload.h&quot;</a>
+<a name="ln29">#include &quot;ttpload.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT</a>
+<a name="ln32">#include &quot;ttgxvar.h&quot;</a>
+<a name="ln33">#endif</a>
+<a name="ln34"> </a>
+<a name="ln35">#include &quot;tterrors.h&quot;</a>
+<a name="ln36">#include &quot;ttsubpix.h&quot;</a>
+<a name="ln37"> </a>
+<a name="ln38"> </a>
+<a name="ln39">  /*************************************************************************/</a>
+<a name="ln40">  /*                                                                       */</a>
+<a name="ln41">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln42">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln43">  /* messages during execution.                                            */</a>
+<a name="ln44">  /*                                                                       */</a>
+<a name="ln45">#undef  FT_COMPONENT</a>
+<a name="ln46">#define FT_COMPONENT  trace_ttgload</a>
+<a name="ln47"> </a>
+<a name="ln48"> </a>
+<a name="ln49">  /*************************************************************************/</a>
+<a name="ln50">  /*                                                                       */</a>
+<a name="ln51">  /* Composite glyph flags.                                                */</a>
+<a name="ln52">  /*                                                                       */</a>
+<a name="ln53">#define ARGS_ARE_WORDS             0x0001</a>
+<a name="ln54">#define ARGS_ARE_XY_VALUES         0x0002</a>
+<a name="ln55">#define ROUND_XY_TO_GRID           0x0004</a>
+<a name="ln56">#define WE_HAVE_A_SCALE            0x0008</a>
+<a name="ln57">/* reserved                        0x0010 */</a>
+<a name="ln58">#define MORE_COMPONENTS            0x0020</a>
+<a name="ln59">#define WE_HAVE_AN_XY_SCALE        0x0040</a>
+<a name="ln60">#define WE_HAVE_A_2X2              0x0080</a>
+<a name="ln61">#define WE_HAVE_INSTR              0x0100</a>
+<a name="ln62">#define USE_MY_METRICS             0x0200</a>
+<a name="ln63">#define OVERLAP_COMPOUND           0x0400</a>
+<a name="ln64">#define SCALED_COMPONENT_OFFSET    0x0800</a>
+<a name="ln65">#define UNSCALED_COMPONENT_OFFSET  0x1000</a>
+<a name="ln66"> </a>
+<a name="ln67"> </a>
+<a name="ln68">  /*************************************************************************/</a>
+<a name="ln69">  /*                                                                       */</a>
+<a name="ln70">  /* Return the horizontal metrics in font units for a given glyph.        */</a>
+<a name="ln71">  /*                                                                       */</a>
+<a name="ln72">  FT_LOCAL_DEF( void )</a>
+<a name="ln73">  TT_Get_HMetrics( TT_Face     face,</a>
+<a name="ln74">                   FT_UInt     idx,</a>
+<a name="ln75">                   FT_Short*   lsb,</a>
+<a name="ln76">                   FT_UShort*  aw )</a>
+<a name="ln77">  {</a>
+<a name="ln78">    ( (SFNT_Service)face-&gt;sfnt )-&gt;get_metrics( face, 0, idx, lsb, aw );</a>
+<a name="ln79"> </a>
+<a name="ln80">    FT_TRACE5(( &quot;  advance width (font units): %d\n&quot;, *aw ));</a>
+<a name="ln81">    FT_TRACE5(( &quot;  left side bearing (font units): %d\n&quot;, *lsb ));</a>
+<a name="ln82">  }</a>
+<a name="ln83"> </a>
+<a name="ln84"> </a>
+<a name="ln85">  /*************************************************************************/</a>
+<a name="ln86">  /*                                                                       */</a>
+<a name="ln87">  /* Return the vertical metrics in font units for a given glyph.          */</a>
+<a name="ln88">  /* See macro `TT_LOADER_SET_PP' below for explanations.                  */</a>
+<a name="ln89">  /*                                                                       */</a>
+<a name="ln90">  FT_LOCAL_DEF( void )</a>
+<a name="ln91">  TT_Get_VMetrics( TT_Face     face,</a>
+<a name="ln92">                   FT_UInt     idx,</a>
+<a name="ln93">                   FT_Pos      yMax,</a>
+<a name="ln94">                   FT_Short*   tsb,</a>
+<a name="ln95">                   FT_UShort*  ah )</a>
+<a name="ln96">  {</a>
+<a name="ln97">    if ( face-&gt;vertical_info )</a>
+<a name="ln98">      ( (SFNT_Service)face-&gt;sfnt )-&gt;get_metrics( face, 1, idx, tsb, ah );</a>
+<a name="ln99"> </a>
+<a name="ln100">    else if ( face-&gt;os2.version != 0xFFFFU )</a>
+<a name="ln101">    {</a>
+<a name="ln102">      *tsb = (FT_Short)( face-&gt;os2.sTypoAscender - yMax );</a>
+<a name="ln103">      *ah  = (FT_UShort)FT_ABS( face-&gt;os2.sTypoAscender -</a>
+<a name="ln104">                                face-&gt;os2.sTypoDescender );</a>
+<a name="ln105">    }</a>
+<a name="ln106"> </a>
+<a name="ln107">    else</a>
+<a name="ln108">    {</a>
+<a name="ln109">      *tsb = (FT_Short)( face-&gt;horizontal.Ascender - yMax );</a>
+<a name="ln110">      *ah  = (FT_UShort)FT_ABS( face-&gt;horizontal.Ascender -</a>
+<a name="ln111">                                face-&gt;horizontal.Descender );</a>
+<a name="ln112">    }</a>
+<a name="ln113"> </a>
+<a name="ln114">    FT_TRACE5(( &quot;  advance height (font units): %d\n&quot;, *ah ));</a>
+<a name="ln115">    FT_TRACE5(( &quot;  top side bearing (font units): %d\n&quot;, *tsb ));</a>
+<a name="ln116">  }</a>
+<a name="ln117"> </a>
+<a name="ln118"> </a>
+<a name="ln119">  static FT_Error</a>
+<a name="ln120">  tt_get_metrics( TT_Loader  loader,</a>
+<a name="ln121">                  FT_UInt    glyph_index )</a>
+<a name="ln122">  {</a>
+<a name="ln123">    TT_Face    face   = loader-&gt;face;</a>
+<a name="ln124">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln125">    TT_Driver  driver = (TT_Driver)FT_FACE_DRIVER( face );</a>
+<a name="ln126">#endif</a>
+<a name="ln127"> </a>
+<a name="ln128">    FT_Error   error;</a>
+<a name="ln129">    FT_Stream  stream = loader-&gt;stream;</a>
+<a name="ln130"> </a>
+<a name="ln131">    FT_Short   left_bearing = 0, top_bearing = 0;</a>
+<a name="ln132">    FT_UShort  advance_width = 0, advance_height = 0;</a>
+<a name="ln133"> </a>
+<a name="ln134">    /* we must preserve the stream position          */</a>
+<a name="ln135">    /* (which gets altered by the metrics functions) */</a>
+<a name="ln136">    FT_ULong  pos = FT_STREAM_POS();</a>
+<a name="ln137"> </a>
+<a name="ln138"> </a>
+<a name="ln139">    TT_Get_HMetrics( face, glyph_index,</a>
+<a name="ln140">                     &amp;left_bearing,</a>
+<a name="ln141">                     &amp;advance_width );</a>
+<a name="ln142">    TT_Get_VMetrics( face, glyph_index,</a>
+<a name="ln143">                     loader-&gt;bbox.yMax,</a>
+<a name="ln144">                     &amp;top_bearing,</a>
+<a name="ln145">                     &amp;advance_height );</a>
+<a name="ln146"> </a>
+<a name="ln147">    if ( FT_STREAM_SEEK( pos ) )</a>
+<a name="ln148">      return error;</a>
+<a name="ln149"> </a>
+<a name="ln150">    loader-&gt;left_bearing = left_bearing;</a>
+<a name="ln151">    loader-&gt;advance      = advance_width;</a>
+<a name="ln152">    loader-&gt;top_bearing  = top_bearing;</a>
+<a name="ln153">    loader-&gt;vadvance     = advance_height;</a>
+<a name="ln154"> </a>
+<a name="ln155">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln156">    if ( driver-&gt;interpreter_version == TT_INTERPRETER_VERSION_38 &amp;&amp;</a>
+<a name="ln157">         loader-&gt;exec                                             )</a>
+<a name="ln158">    {</a>
+<a name="ln159">      loader-&gt;exec-&gt;sph_tweak_flags = 0;</a>
+<a name="ln160"> </a>
+<a name="ln161">      /* This may not be the right place for this, but it works...  */</a>
+<a name="ln162">      /* Note that we have to unconditionally load the tweaks since */</a>
+<a name="ln163">      /* it is possible that glyphs individually switch ClearType's */</a>
+<a name="ln164">      /* backwards compatibility mode on and off.                   */</a>
+<a name="ln165">      sph_set_tweaks( loader, glyph_index );</a>
+<a name="ln166">    }</a>
+<a name="ln167">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln168"> </a>
+<a name="ln169">    if ( !loader-&gt;linear_def )</a>
+<a name="ln170">    {</a>
+<a name="ln171">      loader-&gt;linear_def = 1;</a>
+<a name="ln172">      loader-&gt;linear     = advance_width;</a>
+<a name="ln173">    }</a>
+<a name="ln174"> </a>
+<a name="ln175">    return FT_Err_Ok;</a>
+<a name="ln176">  }</a>
+<a name="ln177"> </a>
+<a name="ln178"> </a>
+<a name="ln179">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln180"> </a>
+<a name="ln181">  static void</a>
+<a name="ln182">  tt_get_metrics_incr_overrides( TT_Loader  loader,</a>
+<a name="ln183">                                 FT_UInt    glyph_index )</a>
+<a name="ln184">  {</a>
+<a name="ln185">    TT_Face  face = loader-&gt;face;</a>
+<a name="ln186"> </a>
+<a name="ln187">    FT_Short   left_bearing = 0, top_bearing = 0;</a>
+<a name="ln188">    FT_UShort  advance_width = 0, advance_height = 0;</a>
+<a name="ln189"> </a>
+<a name="ln190"> </a>
+<a name="ln191">    /* If this is an incrementally loaded font check whether there are */</a>
+<a name="ln192">    /* overriding metrics for this glyph.                              */</a>
+<a name="ln193">    if ( face-&gt;root.internal-&gt;incremental_interface                           &amp;&amp;</a>
+<a name="ln194">         face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;get_glyph_metrics )</a>
+<a name="ln195">    {</a>
+<a name="ln196">      FT_Incremental_MetricsRec  metrics;</a>
+<a name="ln197">      FT_Error                   error;</a>
+<a name="ln198"> </a>
+<a name="ln199"> </a>
+<a name="ln200">      metrics.bearing_x = loader-&gt;left_bearing;</a>
+<a name="ln201">      metrics.bearing_y = 0;</a>
+<a name="ln202">      metrics.advance   = loader-&gt;advance;</a>
+<a name="ln203">      metrics.advance_v = 0;</a>
+<a name="ln204"> </a>
+<a name="ln205">      error = face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;get_glyph_metrics(</a>
+<a name="ln206">                face-&gt;root.internal-&gt;incremental_interface-&gt;object,</a>
+<a name="ln207">                glyph_index, FALSE, &amp;metrics );</a>
+<a name="ln208">      if ( error )</a>
+<a name="ln209">        goto Exit;</a>
+<a name="ln210"> </a>
+<a name="ln211">      left_bearing  = (FT_Short)metrics.bearing_x;</a>
+<a name="ln212">      advance_width = (FT_UShort)metrics.advance;</a>
+<a name="ln213"> </a>
+<a name="ln214">#if 0</a>
+<a name="ln215"> </a>
+<a name="ln216">      /* GWW: Do I do the same for vertical metrics? */</a>
+<a name="ln217">      metrics.bearing_x = 0;</a>
+<a name="ln218">      metrics.bearing_y = loader-&gt;top_bearing;</a>
+<a name="ln219">      metrics.advance   = loader-&gt;vadvance;</a>
+<a name="ln220"> </a>
+<a name="ln221">      error = face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;get_glyph_metrics(</a>
+<a name="ln222">                face-&gt;root.internal-&gt;incremental_interface-&gt;object,</a>
+<a name="ln223">                glyph_index, TRUE, &amp;metrics );</a>
+<a name="ln224">      if ( error )</a>
+<a name="ln225">        goto Exit;</a>
+<a name="ln226"> </a>
+<a name="ln227">      top_bearing    = (FT_Short)metrics.bearing_y;</a>
+<a name="ln228">      advance_height = (FT_UShort)metrics.advance;</a>
+<a name="ln229"> </a>
+<a name="ln230">#endif /* 0 */</a>
+<a name="ln231"> </a>
+<a name="ln232">      loader-&gt;left_bearing = left_bearing;</a>
+<a name="ln233">      loader-&gt;advance      = advance_width;</a>
+<a name="ln234">      loader-&gt;top_bearing  = top_bearing;</a>
+<a name="ln235">      loader-&gt;vadvance     = advance_height;</a>
+<a name="ln236"> </a>
+<a name="ln237">      if ( !loader-&gt;linear_def )</a>
+<a name="ln238">      {</a>
+<a name="ln239">        loader-&gt;linear_def = 1;</a>
+<a name="ln240">        loader-&gt;linear     = advance_width;</a>
+<a name="ln241">      }</a>
+<a name="ln242">    }</a>
+<a name="ln243"> </a>
+<a name="ln244">  Exit:</a>
+<a name="ln245">    return;</a>
+<a name="ln246">  }</a>
+<a name="ln247"> </a>
+<a name="ln248">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln249"> </a>
+<a name="ln250"> </a>
+<a name="ln251">  /*************************************************************************/</a>
+<a name="ln252">  /*                                                                       */</a>
+<a name="ln253">  /* The following functions are used by default with TrueType fonts.      */</a>
+<a name="ln254">  /* However, they can be replaced by alternatives if we need to support   */</a>
+<a name="ln255">  /* TrueType-compressed formats (like MicroType) in the future.           */</a>
+<a name="ln256">  /*                                                                       */</a>
+<a name="ln257">  /*************************************************************************/</a>
+<a name="ln258"> </a>
+<a name="ln259">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln260">  TT_Access_Glyph_Frame( TT_Loader  loader,</a>
+<a name="ln261">                         FT_UInt    glyph_index,</a>
+<a name="ln262">                         FT_ULong   offset,</a>
+<a name="ln263">                         FT_UInt    byte_count )</a>
+<a name="ln264">  {</a>
+<a name="ln265">    FT_Error   error;</a>
+<a name="ln266">    FT_Stream  stream = loader-&gt;stream;</a>
+<a name="ln267"> </a>
+<a name="ln268">    /* for non-debug mode */</a>
+<a name="ln269">    FT_UNUSED( glyph_index );</a>
+<a name="ln270"> </a>
+<a name="ln271"> </a>
+<a name="ln272">    FT_TRACE4(( &quot;Glyph %ld\n&quot;, glyph_index ));</a>
+<a name="ln273"> </a>
+<a name="ln274">    /* the following line sets the `error' variable through macros! */</a>
+<a name="ln275">    if ( FT_STREAM_SEEK( offset ) || FT_FRAME_ENTER( byte_count ) )</a>
+<a name="ln276">      return error;</a>
+<a name="ln277"> </a>
+<a name="ln278">    loader-&gt;cursor = stream-&gt;cursor;</a>
+<a name="ln279">    loader-&gt;limit  = stream-&gt;limit;</a>
+<a name="ln280"> </a>
+<a name="ln281">    return FT_Err_Ok;</a>
+<a name="ln282">  }</a>
+<a name="ln283"> </a>
+<a name="ln284"> </a>
+<a name="ln285">  FT_CALLBACK_DEF( void )</a>
+<a name="ln286">  TT_Forget_Glyph_Frame( TT_Loader  loader )</a>
+<a name="ln287">  {</a>
+<a name="ln288">    FT_Stream  stream = loader-&gt;stream;</a>
+<a name="ln289"> </a>
+<a name="ln290"> </a>
+<a name="ln291">    FT_FRAME_EXIT();</a>
+<a name="ln292">  }</a>
+<a name="ln293"> </a>
+<a name="ln294"> </a>
+<a name="ln295">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln296">  TT_Load_Glyph_Header( TT_Loader  loader )</a>
+<a name="ln297">  {</a>
+<a name="ln298">    FT_Byte*  p     = loader-&gt;cursor;</a>
+<a name="ln299">    FT_Byte*  limit = loader-&gt;limit;</a>
+<a name="ln300"> </a>
+<a name="ln301"> </a>
+<a name="ln302">    if ( p + 10 &gt; limit )</a>
+<a name="ln303">      return FT_THROW( Invalid_Outline );</a>
+<a name="ln304"> </a>
+<a name="ln305">    loader-&gt;n_contours = FT_NEXT_SHORT( p );</a>
+<a name="ln306"> </a>
+<a name="ln307">    loader-&gt;bbox.xMin = FT_NEXT_SHORT( p );</a>
+<a name="ln308">    loader-&gt;bbox.yMin = FT_NEXT_SHORT( p );</a>
+<a name="ln309">    loader-&gt;bbox.xMax = FT_NEXT_SHORT( p );</a>
+<a name="ln310">    loader-&gt;bbox.yMax = FT_NEXT_SHORT( p );</a>
+<a name="ln311"> </a>
+<a name="ln312">    FT_TRACE5(( &quot;  # of contours: %d\n&quot;, loader-&gt;n_contours ));</a>
+<a name="ln313">    FT_TRACE5(( &quot;  xMin: %4d  xMax: %4d\n&quot;, loader-&gt;bbox.xMin,</a>
+<a name="ln314">                                            loader-&gt;bbox.xMax ));</a>
+<a name="ln315">    FT_TRACE5(( &quot;  yMin: %4d  yMax: %4d\n&quot;, loader-&gt;bbox.yMin,</a>
+<a name="ln316">                                            loader-&gt;bbox.yMax ));</a>
+<a name="ln317">    loader-&gt;cursor = p;</a>
+<a name="ln318"> </a>
+<a name="ln319">    return FT_Err_Ok;</a>
+<a name="ln320">  }</a>
+<a name="ln321"> </a>
+<a name="ln322"> </a>
+<a name="ln323">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln324">  TT_Load_Simple_Glyph( TT_Loader  load )</a>
+<a name="ln325">  {</a>
+<a name="ln326">    FT_Error        error;</a>
+<a name="ln327">    FT_Byte*        p          = load-&gt;cursor;</a>
+<a name="ln328">    FT_Byte*        limit      = load-&gt;limit;</a>
+<a name="ln329">    FT_GlyphLoader  gloader    = load-&gt;gloader;</a>
+<a name="ln330">    FT_Int          n_contours = load-&gt;n_contours;</a>
+<a name="ln331">    FT_Outline*     outline;</a>
+<a name="ln332">    FT_UShort       n_ins;</a>
+<a name="ln333">    FT_Int          n_points;</a>
+<a name="ln334">    FT_ULong        tmp;</a>
+<a name="ln335"> </a>
+<a name="ln336">    FT_Byte         *flag, *flag_limit;</a>
+<a name="ln337">    FT_Byte         c, count;</a>
+<a name="ln338">    FT_Vector       *vec, *vec_limit;</a>
+<a name="ln339">    FT_Pos          x;</a>
+<a name="ln340">    FT_Short        *cont, *cont_limit, prev_cont;</a>
+<a name="ln341">    FT_Int          xy_size = 0;</a>
+<a name="ln342"> </a>
+<a name="ln343"> </a>
+<a name="ln344">    /* check that we can add the contours to the glyph */</a>
+<a name="ln345">    error = FT_GLYPHLOADER_CHECK_POINTS( gloader, 0, n_contours );</a>
+<a name="ln346">    if ( error )</a>
+<a name="ln347">      goto Fail;</a>
+<a name="ln348"> </a>
+<a name="ln349">    /* reading the contours' endpoints &amp; number of points */</a>
+<a name="ln350">    cont       = gloader-&gt;current.outline.contours;</a>
+<a name="ln351">    cont_limit = cont + n_contours;</a>
+<a name="ln352"> </a>
+<a name="ln353">    /* check space for contours array + instructions count */</a>
+<a name="ln354">    if ( n_contours &gt;= 0xFFF || p + ( n_contours + 1 ) * 2 &gt; limit )</a>
+<a name="ln355">      goto Invalid_Outline;</a>
+<a name="ln356"> </a>
+<a name="ln357">    prev_cont = FT_NEXT_SHORT( p );</a>
+<a name="ln358"> </a>
+<a name="ln359">    if ( n_contours &gt; 0 )</a>
+<a name="ln360">      cont[0] = prev_cont;</a>
+<a name="ln361"> </a>
+<a name="ln362">    if ( prev_cont &lt; 0 )</a>
+<a name="ln363">      goto Invalid_Outline;</a>
+<a name="ln364"> </a>
+<a name="ln365">    for ( cont++; cont &lt; cont_limit; cont++ )</a>
+<a name="ln366">    {</a>
+<a name="ln367">      cont[0] = FT_NEXT_SHORT( p );</a>
+<a name="ln368">      if ( cont[0] &lt;= prev_cont )</a>
+<a name="ln369">      {</a>
+<a name="ln370">        /* unordered contours: this is invalid */</a>
+<a name="ln371">        goto Invalid_Outline;</a>
+<a name="ln372">      }</a>
+<a name="ln373">      prev_cont = cont[0];</a>
+<a name="ln374">    }</a>
+<a name="ln375"> </a>
+<a name="ln376">    n_points = 0;</a>
+<a name="ln377">    if ( n_contours &gt; 0 )</a>
+<a name="ln378">    {</a>
+<a name="ln379">      n_points = cont[-1] + 1;</a>
+<a name="ln380">      if ( n_points &lt; 0 )</a>
+<a name="ln381">        goto Invalid_Outline;</a>
+<a name="ln382">    }</a>
+<a name="ln383"> </a>
+<a name="ln384">    /* note that we will add four phantom points later */</a>
+<a name="ln385">    error = FT_GLYPHLOADER_CHECK_POINTS( gloader, n_points + 4, 0 );</a>
+<a name="ln386">    if ( error )</a>
+<a name="ln387">      goto Fail;</a>
+<a name="ln388"> </a>
+<a name="ln389">    /* reading the bytecode instructions */</a>
+<a name="ln390">    load-&gt;glyph-&gt;control_len  = 0;</a>
+<a name="ln391">    load-&gt;glyph-&gt;control_data = NULL;</a>
+<a name="ln392"> </a>
+<a name="ln393">    if ( p + 2 &gt; limit )</a>
+<a name="ln394">      goto Invalid_Outline;</a>
+<a name="ln395"> </a>
+<a name="ln396">    n_ins = FT_NEXT_USHORT( p );</a>
+<a name="ln397"> </a>
+<a name="ln398">    FT_TRACE5(( &quot;  Instructions size: %u\n&quot;, n_ins ));</a>
+<a name="ln399"> </a>
+<a name="ln400">    /* check it */</a>
+<a name="ln401">    if ( ( limit - p ) &lt; n_ins )</a>
+<a name="ln402">    {</a>
+<a name="ln403">      FT_TRACE0(( &quot;TT_Load_Simple_Glyph: instruction count mismatch\n&quot; ));</a>
+<a name="ln404">      error = FT_THROW( Too_Many_Hints );</a>
+<a name="ln405">      goto Fail;</a>
+<a name="ln406">    }</a>
+<a name="ln407"> </a>
+<a name="ln408">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln409"> </a>
+<a name="ln410">    if ( IS_HINTED( load-&gt;load_flags ) )</a>
+<a name="ln411">    {</a>
+<a name="ln412">      /* we don't trust `maxSizeOfInstructions' in the `maxp' table */</a>
+<a name="ln413">      /* and thus update the bytecode array size by ourselves       */</a>
+<a name="ln414"> </a>
+<a name="ln415">      tmp   = load-&gt;exec-&gt;glyphSize;</a>
+<a name="ln416">      error = Update_Max( load-&gt;exec-&gt;memory,</a>
+<a name="ln417">                          &amp;tmp,</a>
+<a name="ln418">                          sizeof ( FT_Byte ),</a>
+<a name="ln419">                          (void*)&amp;load-&gt;exec-&gt;glyphIns,</a>
+<a name="ln420">                          n_ins );</a>
+<a name="ln421"> </a>
+<a name="ln422">      load-&gt;exec-&gt;glyphSize = (FT_UShort)tmp;</a>
+<a name="ln423">      if ( error )</a>
+<a name="ln424">        return error;</a>
+<a name="ln425"> </a>
+<a name="ln426">      load-&gt;glyph-&gt;control_len  = n_ins;</a>
+<a name="ln427">      load-&gt;glyph-&gt;control_data = load-&gt;exec-&gt;glyphIns;</a>
+<a name="ln428"> </a>
+<a name="ln429">      FT_MEM_COPY( load-&gt;exec-&gt;glyphIns, p, (FT_Long)n_ins );</a>
+<a name="ln430">    }</a>
+<a name="ln431"> </a>
+<a name="ln432">#endif /* TT_USE_BYTECODE_INTERPRETER */</a>
+<a name="ln433"> </a>
+<a name="ln434">    p += n_ins;</a>
+<a name="ln435"> </a>
+<a name="ln436">    outline = &amp;gloader-&gt;current.outline;</a>
+<a name="ln437"> </a>
+<a name="ln438">    /* reading the point tags */</a>
+<a name="ln439">    flag       = (FT_Byte*)outline-&gt;tags;</a>
+<a name="ln440">    flag_limit = flag + n_points;</a>
+<a name="ln441"> </a>
+<a name="ln442">    FT_ASSERT( flag != NULL );</a>
+<a name="ln443"> </a>
+<a name="ln444">    while ( flag &lt; flag_limit )</a>
+<a name="ln445">    {</a>
+<a name="ln446">      if ( p + 1 &gt; limit )</a>
+<a name="ln447">        goto Invalid_Outline;</a>
+<a name="ln448"> </a>
+<a name="ln449">      *flag++ = c = FT_NEXT_BYTE( p );</a>
+<a name="ln450">      if ( c &amp; 8 )</a>
+<a name="ln451">      {</a>
+<a name="ln452">        if ( p + 1 &gt; limit )</a>
+<a name="ln453">          goto Invalid_Outline;</a>
+<a name="ln454"> </a>
+<a name="ln455">        count = FT_NEXT_BYTE( p );</a>
+<a name="ln456">        if ( flag + (FT_Int)count &gt; flag_limit )</a>
+<a name="ln457">          goto Invalid_Outline;</a>
+<a name="ln458"> </a>
+<a name="ln459">        for ( ; count &gt; 0; count-- )</a>
+<a name="ln460">          *flag++ = c;</a>
+<a name="ln461">      }</a>
+<a name="ln462">    }</a>
+<a name="ln463"> </a>
+<a name="ln464">    /* reading the X coordinates */</a>
+<a name="ln465"> </a>
+<a name="ln466">    vec       = outline-&gt;points;</a>
+<a name="ln467">    vec_limit = vec + n_points;</a>
+<a name="ln468">    flag      = (FT_Byte*)outline-&gt;tags;</a>
+<a name="ln469">    x         = 0;</a>
+<a name="ln470"> </a>
+<a name="ln471">    if ( p + xy_size &gt; limit )</a>
+<a name="ln472">      goto Invalid_Outline;</a>
+<a name="ln473"> </a>
+<a name="ln474">    for ( ; vec &lt; vec_limit; vec++, flag++ )</a>
+<a name="ln475">    {</a>
+<a name="ln476">      FT_Pos   y = 0;</a>
+<a name="ln477">      FT_Byte  f = *flag;</a>
+<a name="ln478"> </a>
+<a name="ln479"> </a>
+<a name="ln480">      if ( f &amp; 2 )</a>
+<a name="ln481">      {</a>
+<a name="ln482">        if ( p + 1 &gt; limit )</a>
+<a name="ln483">          goto Invalid_Outline;</a>
+<a name="ln484"> </a>
+<a name="ln485">        y = (FT_Pos)FT_NEXT_BYTE( p );</a>
+<a name="ln486">        if ( ( f &amp; 16 ) == 0 )</a>
+<a name="ln487">          y = -y;</a>
+<a name="ln488">      }</a>
+<a name="ln489">      else if ( ( f &amp; 16 ) == 0 )</a>
+<a name="ln490">      {</a>
+<a name="ln491">        if ( p + 2 &gt; limit )</a>
+<a name="ln492">          goto Invalid_Outline;</a>
+<a name="ln493"> </a>
+<a name="ln494">        y = (FT_Pos)FT_NEXT_SHORT( p );</a>
+<a name="ln495">      }</a>
+<a name="ln496"> </a>
+<a name="ln497">      x     += y;</a>
+<a name="ln498">      vec-&gt;x = x;</a>
+<a name="ln499">      /* the cast is for stupid compilers */</a>
+<a name="ln500">      *flag  = (FT_Byte)( f &amp; ~( 2 | 16 ) );</a>
+<a name="ln501">    }</a>
+<a name="ln502"> </a>
+<a name="ln503">    /* reading the Y coordinates */</a>
+<a name="ln504"> </a>
+<a name="ln505">    vec       = gloader-&gt;current.outline.points;</a>
+<a name="ln506">    vec_limit = vec + n_points;</a>
+<a name="ln507">    flag      = (FT_Byte*)outline-&gt;tags;</a>
+<a name="ln508">    x         = 0;</a>
+<a name="ln509"> </a>
+<a name="ln510">    for ( ; vec &lt; vec_limit; vec++, flag++ )</a>
+<a name="ln511">    {</a>
+<a name="ln512">      FT_Pos   y = 0;</a>
+<a name="ln513">      FT_Byte  f = *flag;</a>
+<a name="ln514"> </a>
+<a name="ln515"> </a>
+<a name="ln516">      if ( f &amp; 4 )</a>
+<a name="ln517">      {</a>
+<a name="ln518">        if ( p + 1 &gt; limit )</a>
+<a name="ln519">          goto Invalid_Outline;</a>
+<a name="ln520"> </a>
+<a name="ln521">        y = (FT_Pos)FT_NEXT_BYTE( p );</a>
+<a name="ln522">        if ( ( f &amp; 32 ) == 0 )</a>
+<a name="ln523">          y = -y;</a>
+<a name="ln524">      }</a>
+<a name="ln525">      else if ( ( f &amp; 32 ) == 0 )</a>
+<a name="ln526">      {</a>
+<a name="ln527">        if ( p + 2 &gt; limit )</a>
+<a name="ln528">          goto Invalid_Outline;</a>
+<a name="ln529"> </a>
+<a name="ln530">        y = (FT_Pos)FT_NEXT_SHORT( p );</a>
+<a name="ln531">      }</a>
+<a name="ln532"> </a>
+<a name="ln533">      x     += y;</a>
+<a name="ln534">      vec-&gt;y = x;</a>
+<a name="ln535">      /* the cast is for stupid compilers */</a>
+<a name="ln536">      *flag  = (FT_Byte)( f &amp; FT_CURVE_TAG_ON );</a>
+<a name="ln537">    }</a>
+<a name="ln538"> </a>
+<a name="ln539">    outline-&gt;n_points   = (FT_Short)n_points;</a>
+<a name="ln540">    outline-&gt;n_contours = (FT_Short)n_contours;</a>
+<a name="ln541"> </a>
+<a name="ln542">    load-&gt;cursor = p;</a>
+<a name="ln543"> </a>
+<a name="ln544">  Fail:</a>
+<a name="ln545">    return error;</a>
+<a name="ln546"> </a>
+<a name="ln547">  Invalid_Outline:</a>
+<a name="ln548">    error = FT_THROW( Invalid_Outline );</a>
+<a name="ln549">    goto Fail;</a>
+<a name="ln550">  }</a>
+<a name="ln551"> </a>
+<a name="ln552"> </a>
+<a name="ln553">  FT_CALLBACK_DEF( FT_Error )</a>
+<a name="ln554">  TT_Load_Composite_Glyph( TT_Loader  loader )</a>
+<a name="ln555">  {</a>
+<a name="ln556">    FT_Error        error;</a>
+<a name="ln557">    FT_Byte*        p       = loader-&gt;cursor;</a>
+<a name="ln558">    FT_Byte*        limit   = loader-&gt;limit;</a>
+<a name="ln559">    FT_GlyphLoader  gloader = loader-&gt;gloader;</a>
+<a name="ln560">    FT_SubGlyph     subglyph;</a>
+<a name="ln561">    FT_UInt         num_subglyphs;</a>
+<a name="ln562"> </a>
+<a name="ln563"> </a>
+<a name="ln564">    num_subglyphs = 0;</a>
+<a name="ln565"> </a>
+<a name="ln566">    do</a>
+<a name="ln567">    {</a>
+<a name="ln568">      FT_Fixed  xx, xy, yy, yx;</a>
+<a name="ln569">      FT_UInt   count;</a>
+<a name="ln570"> </a>
+<a name="ln571"> </a>
+<a name="ln572">      /* check that we can load a new subglyph */</a>
+<a name="ln573">      error = FT_GlyphLoader_CheckSubGlyphs( gloader, num_subglyphs + 1 );</a>
+<a name="ln574">      if ( error )</a>
+<a name="ln575">        goto Fail;</a>
+<a name="ln576"> </a>
+<a name="ln577">      /* check space */</a>
+<a name="ln578">      if ( p + 4 &gt; limit )</a>
+<a name="ln579">        goto Invalid_Composite;</a>
+<a name="ln580"> </a>
+<a name="ln581">      subglyph = gloader-&gt;current.subglyphs + num_subglyphs;</a>
+<a name="ln582"> </a>
+<a name="ln583">      subglyph-&gt;arg1 = subglyph-&gt;arg2 = 0;</a>
+<a name="ln584"> </a>
+<a name="ln585">      subglyph-&gt;flags = FT_NEXT_USHORT( p );</a>
+<a name="ln586">      subglyph-&gt;index = FT_NEXT_USHORT( p );</a>
+<a name="ln587"> </a>
+<a name="ln588">      /* check space */</a>
+<a name="ln589">      count = 2;</a>
+<a name="ln590">      if ( subglyph-&gt;flags &amp; ARGS_ARE_WORDS )</a>
+<a name="ln591">        count += 2;</a>
+<a name="ln592">      if ( subglyph-&gt;flags &amp; WE_HAVE_A_SCALE )</a>
+<a name="ln593">        count += 2;</a>
+<a name="ln594">      else if ( subglyph-&gt;flags &amp; WE_HAVE_AN_XY_SCALE )</a>
+<a name="ln595">        count += 4;</a>
+<a name="ln596">      else if ( subglyph-&gt;flags &amp; WE_HAVE_A_2X2 )</a>
+<a name="ln597">        count += 8;</a>
+<a name="ln598"> </a>
+<a name="ln599">      if ( p + count &gt; limit )</a>
+<a name="ln600">        goto Invalid_Composite;</a>
+<a name="ln601"> </a>
+<a name="ln602">      /* read arguments */</a>
+<a name="ln603">      if ( subglyph-&gt;flags &amp; ARGS_ARE_XY_VALUES )</a>
+<a name="ln604">      {</a>
+<a name="ln605">        if ( subglyph-&gt;flags &amp; ARGS_ARE_WORDS )</a>
+<a name="ln606">        {</a>
+<a name="ln607">          subglyph-&gt;arg1 = FT_NEXT_SHORT( p );</a>
+<a name="ln608">          subglyph-&gt;arg2 = FT_NEXT_SHORT( p );</a>
+<a name="ln609">        }</a>
+<a name="ln610">        else</a>
+<a name="ln611">        {</a>
+<a name="ln612">          subglyph-&gt;arg1 = FT_NEXT_CHAR( p );</a>
+<a name="ln613">          subglyph-&gt;arg2 = FT_NEXT_CHAR( p );</a>
+<a name="ln614">        }</a>
+<a name="ln615">      }</a>
+<a name="ln616">      else</a>
+<a name="ln617">      {</a>
+<a name="ln618">        if ( subglyph-&gt;flags &amp; ARGS_ARE_WORDS )</a>
+<a name="ln619">        {</a>
+<a name="ln620">          subglyph-&gt;arg1 = (FT_Int)FT_NEXT_USHORT( p );</a>
+<a name="ln621">          subglyph-&gt;arg2 = (FT_Int)FT_NEXT_USHORT( p );</a>
+<a name="ln622">        }</a>
+<a name="ln623">        else</a>
+<a name="ln624">        {</a>
+<a name="ln625">          subglyph-&gt;arg1 = (FT_Int)FT_NEXT_BYTE( p );</a>
+<a name="ln626">          subglyph-&gt;arg2 = (FT_Int)FT_NEXT_BYTE( p );</a>
+<a name="ln627">        }</a>
+<a name="ln628">      }</a>
+<a name="ln629"> </a>
+<a name="ln630">      /* read transform */</a>
+<a name="ln631">      xx = yy = 0x10000L;</a>
+<a name="ln632">      xy = yx = 0;</a>
+<a name="ln633"> </a>
+<a name="ln634">      if ( subglyph-&gt;flags &amp; WE_HAVE_A_SCALE )</a>
+<a name="ln635">      {</a>
+<a name="ln636">        xx = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln637">        yy = xx;</a>
+<a name="ln638">      }</a>
+<a name="ln639">      else if ( subglyph-&gt;flags &amp; WE_HAVE_AN_XY_SCALE )</a>
+<a name="ln640">      {</a>
+<a name="ln641">        xx = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln642">        yy = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln643">      }</a>
+<a name="ln644">      else if ( subglyph-&gt;flags &amp; WE_HAVE_A_2X2 )</a>
+<a name="ln645">      {</a>
+<a name="ln646">        xx = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln647">        yx = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln648">        xy = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln649">        yy = (FT_Fixed)FT_NEXT_SHORT( p ) * 4;</a>
+<a name="ln650">      }</a>
+<a name="ln651"> </a>
+<a name="ln652">      subglyph-&gt;transform.xx = xx;</a>
+<a name="ln653">      subglyph-&gt;transform.xy = xy;</a>
+<a name="ln654">      subglyph-&gt;transform.yx = yx;</a>
+<a name="ln655">      subglyph-&gt;transform.yy = yy;</a>
+<a name="ln656"> </a>
+<a name="ln657">      num_subglyphs++;</a>
+<a name="ln658"> </a>
+<a name="ln659">    } while ( subglyph-&gt;flags &amp; MORE_COMPONENTS );</a>
+<a name="ln660"> </a>
+<a name="ln661">    gloader-&gt;current.num_subglyphs = num_subglyphs;</a>
+<a name="ln662"> </a>
+<a name="ln663">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln664"> </a>
+<a name="ln665">    {</a>
+<a name="ln666">      FT_Stream  stream = loader-&gt;stream;</a>
+<a name="ln667"> </a>
+<a name="ln668"> </a>
+<a name="ln669">      /* we must undo the FT_FRAME_ENTER in order to point */</a>
+<a name="ln670">      /* to the composite instructions, if we find some.   */</a>
+<a name="ln671">      /* We will process them later.                       */</a>
+<a name="ln672">      /*                                                   */</a>
+<a name="ln673">      loader-&gt;ins_pos = (FT_ULong)( FT_STREAM_POS() +</a>
+<a name="ln674">                                    p - limit );</a>
+<a name="ln675">    }</a>
+<a name="ln676"> </a>
+<a name="ln677">#endif</a>
+<a name="ln678"> </a>
+<a name="ln679">    loader-&gt;cursor = p;</a>
+<a name="ln680"> </a>
+<a name="ln681">  Fail:</a>
+<a name="ln682">    return error;</a>
+<a name="ln683"> </a>
+<a name="ln684">  Invalid_Composite:</a>
+<a name="ln685">    error = FT_THROW( Invalid_Composite );</a>
+<a name="ln686">    goto Fail;</a>
+<a name="ln687">  }</a>
+<a name="ln688"> </a>
+<a name="ln689"> </a>
+<a name="ln690">  FT_LOCAL_DEF( void )</a>
+<a name="ln691">  TT_Init_Glyph_Loading( TT_Face  face )</a>
+<a name="ln692">  {</a>
+<a name="ln693">    face-&gt;access_glyph_frame   = TT_Access_Glyph_Frame;</a>
+<a name="ln694">    face-&gt;read_glyph_header    = TT_Load_Glyph_Header;</a>
+<a name="ln695">    face-&gt;read_simple_glyph    = TT_Load_Simple_Glyph;</a>
+<a name="ln696">    face-&gt;read_composite_glyph = TT_Load_Composite_Glyph;</a>
+<a name="ln697">    face-&gt;forget_glyph_frame   = TT_Forget_Glyph_Frame;</a>
+<a name="ln698">  }</a>
+<a name="ln699"> </a>
+<a name="ln700"> </a>
+<a name="ln701">  static void</a>
+<a name="ln702">  tt_prepare_zone( TT_GlyphZone  zone,</a>
+<a name="ln703">                   FT_GlyphLoad  load,</a>
+<a name="ln704">                   FT_UInt       start_point,</a>
+<a name="ln705">                   FT_UInt       start_contour )</a>
+<a name="ln706">  {</a>
+<a name="ln707">    zone-&gt;n_points    = (FT_UShort)load-&gt;outline.n_points -</a>
+<a name="ln708">                          (FT_UShort)start_point;</a>
+<a name="ln709">    zone-&gt;n_contours  = load-&gt;outline.n_contours -</a>
+<a name="ln710">                          (FT_Short)start_contour;</a>
+<a name="ln711">    zone-&gt;org         = load-&gt;extra_points + start_point;</a>
+<a name="ln712">    zone-&gt;cur         = load-&gt;outline.points + start_point;</a>
+<a name="ln713">    zone-&gt;orus        = load-&gt;extra_points2 + start_point;</a>
+<a name="ln714">    zone-&gt;tags        = (FT_Byte*)load-&gt;outline.tags + start_point;</a>
+<a name="ln715">    zone-&gt;contours    = (FT_UShort*)load-&gt;outline.contours + start_contour;</a>
+<a name="ln716">    zone-&gt;first_point = (FT_UShort)start_point;</a>
+<a name="ln717">  }</a>
+<a name="ln718"> </a>
+<a name="ln719"> </a>
+<a name="ln720">  /*************************************************************************/</a>
+<a name="ln721">  /*                                                                       */</a>
+<a name="ln722">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln723">  /*    TT_Hint_Glyph                                                      */</a>
+<a name="ln724">  /*                                                                       */</a>
+<a name="ln725">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln726">  /*    Hint the glyph using the zone prepared by the caller.  Note that   */</a>
+<a name="ln727">  /*    the zone is supposed to include four phantom points.               */</a>
+<a name="ln728">  /*                                                                       */</a>
+<a name="ln729">  static FT_Error</a>
+<a name="ln730">  TT_Hint_Glyph( TT_Loader  loader,</a>
+<a name="ln731">                 FT_Bool    is_composite )</a>
+<a name="ln732">  {</a>
+<a name="ln733">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln734">    TT_Face    face   = loader-&gt;face;</a>
+<a name="ln735">    TT_Driver  driver = (TT_Driver)FT_FACE_DRIVER( face );</a>
+<a name="ln736">#endif</a>
+<a name="ln737"> </a>
+<a name="ln738">    TT_GlyphZone  zone = &amp;loader-&gt;zone;</a>
+<a name="ln739"> </a>
+<a name="ln740">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln741">    FT_Long       n_ins;</a>
+<a name="ln742">#else</a>
+<a name="ln743">    FT_UNUSED( is_composite );</a>
+<a name="ln744">#endif</a>
+<a name="ln745"> </a>
+<a name="ln746"> </a>
+<a name="ln747">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln748">    if ( loader-&gt;glyph-&gt;control_len &gt; 0xFFFFL )</a>
+<a name="ln749">    {</a>
+<a name="ln750">      FT_TRACE1(( &quot;TT_Hint_Glyph: too long instructions&quot; ));</a>
+<a name="ln751">      FT_TRACE1(( &quot; (0x%lx byte) is truncated\n&quot;,</a>
+<a name="ln752">                 loader-&gt;glyph-&gt;control_len ));</a>
+<a name="ln753">    }</a>
+<a name="ln754">    n_ins = loader-&gt;glyph-&gt;control_len;</a>
+<a name="ln755"> </a>
+<a name="ln756">    /* save original point position in org */</a>
+<a name="ln757">    if ( n_ins &gt; 0 )</a>
+<a name="ln758">      FT_ARRAY_COPY( zone-&gt;org, zone-&gt;cur, zone-&gt;n_points );</a>
+<a name="ln759"> </a>
+<a name="ln760">    /* Reset graphics state. */</a>
+<a name="ln761">    loader-&gt;exec-&gt;GS = loader-&gt;size-&gt;GS;</a>
+<a name="ln762"> </a>
+<a name="ln763">    /* XXX: UNDOCUMENTED! Hinting instructions of a composite glyph */</a>
+<a name="ln764">    /*      completely refer to the (already) hinted subglyphs.     */</a>
+<a name="ln765">    if ( is_composite )</a>
+<a name="ln766">    {</a>
+<a name="ln767">      loader-&gt;exec-&gt;metrics.x_scale = 1 &lt;&lt; 16;</a>
+<a name="ln768">      loader-&gt;exec-&gt;metrics.y_scale = 1 &lt;&lt; 16;</a>
+<a name="ln769"> </a>
+<a name="ln770">      FT_ARRAY_COPY( zone-&gt;orus, zone-&gt;cur, zone-&gt;n_points );</a>
+<a name="ln771">    }</a>
+<a name="ln772">    else</a>
+<a name="ln773">    {</a>
+<a name="ln774">      loader-&gt;exec-&gt;metrics.x_scale = loader-&gt;size-&gt;metrics.x_scale;</a>
+<a name="ln775">      loader-&gt;exec-&gt;metrics.y_scale = loader-&gt;size-&gt;metrics.y_scale;</a>
+<a name="ln776">    }</a>
+<a name="ln777">#endif</a>
+<a name="ln778"> </a>
+<a name="ln779">    /* round phantom points */</a>
+<a name="ln780">    zone-&gt;cur[zone-&gt;n_points - 4].x =</a>
+<a name="ln781">      FT_PIX_ROUND( zone-&gt;cur[zone-&gt;n_points - 4].x );</a>
+<a name="ln782">    zone-&gt;cur[zone-&gt;n_points - 3].x =</a>
+<a name="ln783">      FT_PIX_ROUND( zone-&gt;cur[zone-&gt;n_points - 3].x );</a>
+<a name="ln784">    zone-&gt;cur[zone-&gt;n_points - 2].y =</a>
+<a name="ln785">      FT_PIX_ROUND( zone-&gt;cur[zone-&gt;n_points - 2].y );</a>
+<a name="ln786">    zone-&gt;cur[zone-&gt;n_points - 1].y =</a>
+<a name="ln787">      FT_PIX_ROUND( zone-&gt;cur[zone-&gt;n_points - 1].y );</a>
+<a name="ln788"> </a>
+<a name="ln789">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln790"> </a>
+<a name="ln791">    if ( n_ins &gt; 0 )</a>
+<a name="ln792">    {</a>
+<a name="ln793">      FT_Error  error;</a>
+<a name="ln794"> </a>
+<a name="ln795">      FT_GlyphLoader  gloader         = loader-&gt;gloader;</a>
+<a name="ln796">      FT_Outline      current_outline = gloader-&gt;current.outline;</a>
+<a name="ln797"> </a>
+<a name="ln798"> </a>
+<a name="ln799">      TT_Set_CodeRange( loader-&gt;exec, tt_coderange_glyph,</a>
+<a name="ln800">                        loader-&gt;exec-&gt;glyphIns, n_ins );</a>
+<a name="ln801"> </a>
+<a name="ln802">      loader-&gt;exec-&gt;is_composite = is_composite;</a>
+<a name="ln803">      loader-&gt;exec-&gt;pts          = *zone;</a>
+<a name="ln804"> </a>
+<a name="ln805">      error = TT_Run_Context( loader-&gt;exec );</a>
+<a name="ln806">      if ( error &amp;&amp; loader-&gt;exec-&gt;pedantic_hinting )</a>
+<a name="ln807">        return error;</a>
+<a name="ln808"> </a>
+<a name="ln809">      /* store drop-out mode in bits 5-7; set bit 2 also as a marker */</a>
+<a name="ln810">      current_outline.tags[0] |=</a>
+<a name="ln811">        ( loader-&gt;exec-&gt;GS.scan_type &lt;&lt; 5 ) | FT_CURVE_TAG_HAS_SCANMODE;</a>
+<a name="ln812">    }</a>
+<a name="ln813"> </a>
+<a name="ln814">#endif</a>
+<a name="ln815"> </a>
+<a name="ln816">    /* save glyph phantom points */</a>
+<a name="ln817">    loader-&gt;pp1 = zone-&gt;cur[zone-&gt;n_points - 4];</a>
+<a name="ln818">    loader-&gt;pp2 = zone-&gt;cur[zone-&gt;n_points - 3];</a>
+<a name="ln819">    loader-&gt;pp3 = zone-&gt;cur[zone-&gt;n_points - 2];</a>
+<a name="ln820">    loader-&gt;pp4 = zone-&gt;cur[zone-&gt;n_points - 1];</a>
+<a name="ln821"> </a>
+<a name="ln822">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln823">    if ( driver-&gt;interpreter_version == TT_INTERPRETER_VERSION_38 )</a>
+<a name="ln824">    {</a>
+<a name="ln825">      if ( loader-&gt;exec-&gt;sph_tweak_flags &amp; SPH_TWEAK_DEEMBOLDEN )</a>
+<a name="ln826">        FT_Outline_EmboldenXY( &amp;loader-&gt;gloader-&gt;current.outline, -24, 0 );</a>
+<a name="ln827"> </a>
+<a name="ln828">      else if ( loader-&gt;exec-&gt;sph_tweak_flags &amp; SPH_TWEAK_EMBOLDEN )</a>
+<a name="ln829">        FT_Outline_EmboldenXY( &amp;loader-&gt;gloader-&gt;current.outline, 24, 0 );</a>
+<a name="ln830">    }</a>
+<a name="ln831">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln832"> </a>
+<a name="ln833">    return FT_Err_Ok;</a>
+<a name="ln834">  }</a>
+<a name="ln835"> </a>
+<a name="ln836"> </a>
+<a name="ln837">  /*************************************************************************/</a>
+<a name="ln838">  /*                                                                       */</a>
+<a name="ln839">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln840">  /*    TT_Process_Simple_Glyph                                            */</a>
+<a name="ln841">  /*                                                                       */</a>
+<a name="ln842">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln843">  /*    Once a simple glyph has been loaded, it needs to be processed.     */</a>
+<a name="ln844">  /*    Usually, this means scaling and hinting through bytecode           */</a>
+<a name="ln845">  /*    interpretation.                                                    */</a>
+<a name="ln846">  /*                                                                       */</a>
+<a name="ln847">  static FT_Error</a>
+<a name="ln848">  TT_Process_Simple_Glyph( TT_Loader  loader )</a>
+<a name="ln849">  {</a>
+<a name="ln850">    FT_GlyphLoader  gloader = loader-&gt;gloader;</a>
+<a name="ln851">    FT_Error        error   = FT_Err_Ok;</a>
+<a name="ln852">    FT_Outline*     outline;</a>
+<a name="ln853">    FT_Int          n_points;</a>
+<a name="ln854"> </a>
+<a name="ln855"> </a>
+<a name="ln856">    outline  = &amp;gloader-&gt;current.outline;</a>
+<a name="ln857">    n_points = outline-&gt;n_points;</a>
+<a name="ln858"> </a>
+<a name="ln859">    /* set phantom points */</a>
+<a name="ln860"> </a>
+<a name="ln861">    outline-&gt;points[n_points    ] = loader-&gt;pp1;</a>
+<a name="ln862">    outline-&gt;points[n_points + 1] = loader-&gt;pp2;</a>
+<a name="ln863">    outline-&gt;points[n_points + 2] = loader-&gt;pp3;</a>
+<a name="ln864">    outline-&gt;points[n_points + 3] = loader-&gt;pp4;</a>
+<a name="ln865"> </a>
+<a name="ln866">    outline-&gt;tags[n_points    ] = 0;</a>
+<a name="ln867">    outline-&gt;tags[n_points + 1] = 0;</a>
+<a name="ln868">    outline-&gt;tags[n_points + 2] = 0;</a>
+<a name="ln869">    outline-&gt;tags[n_points + 3] = 0;</a>
+<a name="ln870"> </a>
+<a name="ln871">    n_points += 4;</a>
+<a name="ln872"> </a>
+<a name="ln873">#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT</a>
+<a name="ln874"> </a>
+<a name="ln875">    if ( loader-&gt;face-&gt;doblend )</a>
+<a name="ln876">    {</a>
+<a name="ln877">      /* Deltas apply to the unscaled data. */</a>
+<a name="ln878">      error = TT_Vary_Apply_Glyph_Deltas( loader-&gt;face,</a>
+<a name="ln879">                                          loader-&gt;glyph_index,</a>
+<a name="ln880">                                          outline,</a>
+<a name="ln881">                                          (FT_UInt)n_points );</a>
+<a name="ln882">      if ( error )</a>
+<a name="ln883">        return error;</a>
+<a name="ln884">    }</a>
+<a name="ln885"> </a>
+<a name="ln886">#endif /* TT_CONFIG_OPTION_GX_VAR_SUPPORT */</a>
+<a name="ln887"> </a>
+<a name="ln888">    if ( IS_HINTED( loader-&gt;load_flags ) )</a>
+<a name="ln889">    {</a>
+<a name="ln890">      tt_prepare_zone( &amp;loader-&gt;zone, &amp;gloader-&gt;current, 0, 0 );</a>
+<a name="ln891"> </a>
+<a name="ln892">      FT_ARRAY_COPY( loader-&gt;zone.orus, loader-&gt;zone.cur,</a>
+<a name="ln893">                     loader-&gt;zone.n_points + 4 );</a>
+<a name="ln894">    }</a>
+<a name="ln895"> </a>
+<a name="ln896">    {</a>
+<a name="ln897">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln898">      TT_Face    face   = loader-&gt;face;</a>
+<a name="ln899">      TT_Driver  driver = (TT_Driver)FT_FACE_DRIVER( face );</a>
+<a name="ln900"> </a>
+<a name="ln901">      FT_String*  family         = face-&gt;root.family_name;</a>
+<a name="ln902">      FT_UInt     ppem           = loader-&gt;size-&gt;metrics.x_ppem;</a>
+<a name="ln903">      FT_String*  style          = face-&gt;root.style_name;</a>
+<a name="ln904">      FT_UInt     x_scale_factor = 1000;</a>
+<a name="ln905">#endif</a>
+<a name="ln906"> </a>
+<a name="ln907">      FT_Vector*  vec   = outline-&gt;points;</a>
+<a name="ln908">      FT_Vector*  limit = outline-&gt;points + n_points;</a>
+<a name="ln909"> </a>
+<a name="ln910">      FT_Fixed  x_scale = 0; /* pacify compiler */</a>
+<a name="ln911">      FT_Fixed  y_scale = 0;</a>
+<a name="ln912"> </a>
+<a name="ln913">      FT_Bool  do_scale = FALSE;</a>
+<a name="ln914"> </a>
+<a name="ln915"> </a>
+<a name="ln916">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln917"> </a>
+<a name="ln918">      if ( driver-&gt;interpreter_version == TT_INTERPRETER_VERSION_38 )</a>
+<a name="ln919">      {</a>
+<a name="ln920">        /* scale, but only if enabled and only if TT hinting is being used */</a>
+<a name="ln921">        if ( IS_HINTED( loader-&gt;load_flags ) )</a>
+<a name="ln922">          x_scale_factor = sph_test_tweak_x_scaling( face,</a>
+<a name="ln923">                                                     family,</a>
+<a name="ln924">                                                     ppem,</a>
+<a name="ln925">                                                     style,</a>
+<a name="ln926">                                                     loader-&gt;glyph_index );</a>
+<a name="ln927">        /* scale the glyph */</a>
+<a name="ln928">        if ( ( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) == 0 ||</a>
+<a name="ln929">             x_scale_factor != 1000                         )</a>
+<a name="ln930">        {</a>
+<a name="ln931">          x_scale = FT_MulDiv( loader-&gt;size-&gt;metrics.x_scale,</a>
+<a name="ln932">                               (FT_Long)x_scale_factor, 1000 );</a>
+<a name="ln933">          y_scale = loader-&gt;size-&gt;metrics.y_scale;</a>
+<a name="ln934"> </a>
+<a name="ln935">          /* compensate for any scaling by de/emboldening; */</a>
+<a name="ln936">          /* the amount was determined via experimentation */</a>
+<a name="ln937">          if ( x_scale_factor != 1000 &amp;&amp; ppem &gt; 11 )</a>
+<a name="ln938">            FT_Outline_EmboldenXY( outline,</a>
+<a name="ln939">                                   FT_MulFix( 1280 * ppem,</a>
+<a name="ln940">                                              1000 - x_scale_factor ),</a>
+<a name="ln941">                                   0 );</a>
+<a name="ln942">          do_scale = TRUE;</a>
+<a name="ln943">        }</a>
+<a name="ln944">      }</a>
+<a name="ln945">      else</a>
+<a name="ln946"> </a>
+<a name="ln947">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln948"> </a>
+<a name="ln949">      {</a>
+<a name="ln950">        /* scale the glyph */</a>
+<a name="ln951">        if ( ( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) == 0 )</a>
+<a name="ln952">        {</a>
+<a name="ln953">          x_scale = loader-&gt;size-&gt;metrics.x_scale;</a>
+<a name="ln954">          y_scale = loader-&gt;size-&gt;metrics.y_scale;</a>
+<a name="ln955"> </a>
+<a name="ln956">          do_scale = TRUE;</a>
+<a name="ln957">        }</a>
+<a name="ln958">      }</a>
+<a name="ln959"> </a>
+<a name="ln960">      if ( do_scale )</a>
+<a name="ln961">      {</a>
+<a name="ln962">        for ( ; vec &lt; limit; vec++ )</a>
+<a name="ln963">        {</a>
+<a name="ln964">          vec-&gt;x = FT_MulFix( vec-&gt;x, x_scale );</a>
+<a name="ln965">          vec-&gt;y = FT_MulFix( vec-&gt;y, y_scale );</a>
+<a name="ln966">        }</a>
+<a name="ln967"> </a>
+<a name="ln968">        loader-&gt;pp1 = outline-&gt;points[n_points - 4];</a>
+<a name="ln969">        loader-&gt;pp2 = outline-&gt;points[n_points - 3];</a>
+<a name="ln970">        loader-&gt;pp3 = outline-&gt;points[n_points - 2];</a>
+<a name="ln971">        loader-&gt;pp4 = outline-&gt;points[n_points - 1];</a>
+<a name="ln972">      }</a>
+<a name="ln973">    }</a>
+<a name="ln974"> </a>
+<a name="ln975">    if ( IS_HINTED( loader-&gt;load_flags ) )</a>
+<a name="ln976">    {</a>
+<a name="ln977">      loader-&gt;zone.n_points += 4;</a>
+<a name="ln978"> </a>
+<a name="ln979">      error = TT_Hint_Glyph( loader, 0 );</a>
+<a name="ln980">    }</a>
+<a name="ln981"> </a>
+<a name="ln982">    return error;</a>
+<a name="ln983">  }</a>
+<a name="ln984"> </a>
+<a name="ln985"> </a>
+<a name="ln986">  /*************************************************************************/</a>
+<a name="ln987">  /*                                                                       */</a>
+<a name="ln988">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln989">  /*    TT_Process_Composite_Component                                     */</a>
+<a name="ln990">  /*                                                                       */</a>
+<a name="ln991">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln992">  /*    Once a composite component has been loaded, it needs to be         */</a>
+<a name="ln993">  /*    processed.  Usually, this means transforming and translating.      */</a>
+<a name="ln994">  /*                                                                       */</a>
+<a name="ln995">  static FT_Error</a>
+<a name="ln996">  TT_Process_Composite_Component( TT_Loader    loader,</a>
+<a name="ln997">                                  FT_SubGlyph  subglyph,</a>
+<a name="ln998">                                  FT_UInt      start_point,</a>
+<a name="ln999">                                  FT_UInt      num_base_points )</a>
+<a name="ln1000">  {</a>
+<a name="ln1001">    FT_GlyphLoader  gloader = loader-&gt;gloader;</a>
+<a name="ln1002">    FT_Outline      current;</a>
+<a name="ln1003">    FT_Bool         have_scale;</a>
+<a name="ln1004">    FT_Pos          x, y;</a>
+<a name="ln1005"> </a>
+<a name="ln1006"> </a>
+<a name="ln1007">    current.points   = gloader-&gt;base.outline.points +</a>
+<a name="ln1008">                         num_base_points;</a>
+<a name="ln1009">    current.n_points = gloader-&gt;base.outline.n_points -</a>
+<a name="ln1010">                         (short)num_base_points;</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    have_scale = FT_BOOL( subglyph-&gt;flags &amp; ( WE_HAVE_A_SCALE     |</a>
+<a name="ln1013">                                              WE_HAVE_AN_XY_SCALE |</a>
+<a name="ln1014">                                              WE_HAVE_A_2X2       ) );</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    /* perform the transform required for this subglyph */</a>
+<a name="ln1017">    if ( have_scale )</a>
+<a name="ln1018">      FT_Outline_Transform( &amp;current, &amp;subglyph-&gt;transform );</a>
+<a name="ln1019"> </a>
+<a name="ln1020">    /* get offset */</a>
+<a name="ln1021">    if ( !( subglyph-&gt;flags &amp; ARGS_ARE_XY_VALUES ) )</a>
+<a name="ln1022">    {</a>
+<a name="ln1023">      FT_UInt     num_points = (FT_UInt)gloader-&gt;base.outline.n_points;</a>
+<a name="ln1024">      FT_UInt     k = (FT_UInt)subglyph-&gt;arg1;</a>
+<a name="ln1025">      FT_UInt     l = (FT_UInt)subglyph-&gt;arg2;</a>
+<a name="ln1026">      FT_Vector*  p1;</a>
+<a name="ln1027">      FT_Vector*  p2;</a>
+<a name="ln1028"> </a>
+<a name="ln1029"> </a>
+<a name="ln1030">      /* match l-th point of the newly loaded component to the k-th point */</a>
+<a name="ln1031">      /* of the previously loaded components.                             */</a>
+<a name="ln1032"> </a>
+<a name="ln1033">      /* change to the point numbers used by our outline */</a>
+<a name="ln1034">      k += start_point;</a>
+<a name="ln1035">      l += num_base_points;</a>
+<a name="ln1036">      if ( k &gt;= num_base_points ||</a>
+<a name="ln1037">           l &gt;= num_points      )</a>
+<a name="ln1038">        return FT_THROW( Invalid_Composite );</a>
+<a name="ln1039"> </a>
+<a name="ln1040">      p1 = gloader-&gt;base.outline.points + k;</a>
+<a name="ln1041">      p2 = gloader-&gt;base.outline.points + l;</a>
+<a name="ln1042"> </a>
+<a name="ln1043">      x = p1-&gt;x - p2-&gt;x;</a>
+<a name="ln1044">      y = p1-&gt;y - p2-&gt;y;</a>
+<a name="ln1045">    }</a>
+<a name="ln1046">    else</a>
+<a name="ln1047">    {</a>
+<a name="ln1048">      x = subglyph-&gt;arg1;</a>
+<a name="ln1049">      y = subglyph-&gt;arg2;</a>
+<a name="ln1050"> </a>
+<a name="ln1051">      if ( !x &amp;&amp; !y )</a>
+<a name="ln1052">        return FT_Err_Ok;</a>
+<a name="ln1053"> </a>
+<a name="ln1054">      /* Use a default value dependent on                                  */</a>
+<a name="ln1055">      /* TT_CONFIG_OPTION_COMPONENT_OFFSET_SCALED.  This is useful for old */</a>
+<a name="ln1056">      /* TT fonts which don't set the xxx_COMPONENT_OFFSET bit.            */</a>
+<a name="ln1057"> </a>
+<a name="ln1058">      if ( have_scale &amp;&amp;</a>
+<a name="ln1059">#ifdef TT_CONFIG_OPTION_COMPONENT_OFFSET_SCALED</a>
+<a name="ln1060">           !( subglyph-&gt;flags &amp; UNSCALED_COMPONENT_OFFSET ) )</a>
+<a name="ln1061">#else</a>
+<a name="ln1062">            ( subglyph-&gt;flags &amp; SCALED_COMPONENT_OFFSET ) )</a>
+<a name="ln1063">#endif</a>
+<a name="ln1064">      {</a>
+<a name="ln1065"> </a>
+<a name="ln1066">#if 0</a>
+<a name="ln1067"> </a>
+<a name="ln1068">        /*******************************************************************/</a>
+<a name="ln1069">        /*                                                                 */</a>
+<a name="ln1070">        /* This algorithm is what Apple documents.  But it doesn't work.   */</a>
+<a name="ln1071">        /*                                                                 */</a>
+<a name="ln1072">        int  a = subglyph-&gt;transform.xx &gt; 0 ?  subglyph-&gt;transform.xx</a>
+<a name="ln1073">                                            : -subglyph-&gt;transform.xx;</a>
+<a name="ln1074">        int  b = subglyph-&gt;transform.yx &gt; 0 ?  subglyph-&gt;transform.yx</a>
+<a name="ln1075">                                            : -subglyph-&gt;transform.yx;</a>
+<a name="ln1076">        int  c = subglyph-&gt;transform.xy &gt; 0 ?  subglyph-&gt;transform.xy</a>
+<a name="ln1077">                                            : -subglyph-&gt;transform.xy;</a>
+<a name="ln1078">        int  d = subglyph-&gt;transform.yy &gt; 0 ? subglyph-&gt;transform.yy</a>
+<a name="ln1079">                                            : -subglyph-&gt;transform.yy;</a>
+<a name="ln1080">        int  m = a &gt; b ? a : b;</a>
+<a name="ln1081">        int  n = c &gt; d ? c : d;</a>
+<a name="ln1082"> </a>
+<a name="ln1083"> </a>
+<a name="ln1084">        if ( a - b &lt;= 33 &amp;&amp; a - b &gt;= -33 )</a>
+<a name="ln1085">          m *= 2;</a>
+<a name="ln1086">        if ( c - d &lt;= 33 &amp;&amp; c - d &gt;= -33 )</a>
+<a name="ln1087">          n *= 2;</a>
+<a name="ln1088">        x = FT_MulFix( x, m );</a>
+<a name="ln1089">        y = FT_MulFix( y, n );</a>
+<a name="ln1090"> </a>
+<a name="ln1091">#else /* 1 */</a>
+<a name="ln1092"> </a>
+<a name="ln1093">        /*******************************************************************/</a>
+<a name="ln1094">        /*                                                                 */</a>
+<a name="ln1095">        /* This algorithm is a guess and works much better than the above. */</a>
+<a name="ln1096">        /*                                                                 */</a>
+<a name="ln1097">        FT_Fixed  mac_xscale = FT_Hypot( subglyph-&gt;transform.xx,</a>
+<a name="ln1098">                                         subglyph-&gt;transform.xy );</a>
+<a name="ln1099">        FT_Fixed  mac_yscale = FT_Hypot( subglyph-&gt;transform.yy,</a>
+<a name="ln1100">                                         subglyph-&gt;transform.yx );</a>
+<a name="ln1101"> </a>
+<a name="ln1102"> </a>
+<a name="ln1103">        x = FT_MulFix( x, mac_xscale );</a>
+<a name="ln1104">        y = FT_MulFix( y, mac_yscale );</a>
+<a name="ln1105"> </a>
+<a name="ln1106">#endif /* 1 */</a>
+<a name="ln1107"> </a>
+<a name="ln1108">      }</a>
+<a name="ln1109"> </a>
+<a name="ln1110">      if ( !( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) )</a>
+<a name="ln1111">      {</a>
+<a name="ln1112">        FT_Fixed  x_scale = loader-&gt;size-&gt;metrics.x_scale;</a>
+<a name="ln1113">        FT_Fixed  y_scale = loader-&gt;size-&gt;metrics.y_scale;</a>
+<a name="ln1114"> </a>
+<a name="ln1115"> </a>
+<a name="ln1116">        x = FT_MulFix( x, x_scale );</a>
+<a name="ln1117">        y = FT_MulFix( y, y_scale );</a>
+<a name="ln1118"> </a>
+<a name="ln1119">        if ( subglyph-&gt;flags &amp; ROUND_XY_TO_GRID )</a>
+<a name="ln1120">        {</a>
+<a name="ln1121">          x = FT_PIX_ROUND( x );</a>
+<a name="ln1122">          y = FT_PIX_ROUND( y );</a>
+<a name="ln1123">        }</a>
+<a name="ln1124">      }</a>
+<a name="ln1125">    }</a>
+<a name="ln1126"> </a>
+<a name="ln1127">    if ( x || y )</a>
+<a name="ln1128">      FT_Outline_Translate( &amp;current, x, y );</a>
+<a name="ln1129"> </a>
+<a name="ln1130">    return FT_Err_Ok;</a>
+<a name="ln1131">  }</a>
+<a name="ln1132"> </a>
+<a name="ln1133"> </a>
+<a name="ln1134">  /*************************************************************************/</a>
+<a name="ln1135">  /*                                                                       */</a>
+<a name="ln1136">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln1137">  /*    TT_Process_Composite_Glyph                                         */</a>
+<a name="ln1138">  /*                                                                       */</a>
+<a name="ln1139">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln1140">  /*    This is slightly different from TT_Process_Simple_Glyph, in that   */</a>
+<a name="ln1141">  /*    its sole purpose is to hint the glyph.  Thus this function is      */</a>
+<a name="ln1142">  /*    only available when bytecode interpreter is enabled.               */</a>
+<a name="ln1143">  /*                                                                       */</a>
+<a name="ln1144">  static FT_Error</a>
+<a name="ln1145">  TT_Process_Composite_Glyph( TT_Loader  loader,</a>
+<a name="ln1146">                              FT_UInt    start_point,</a>
+<a name="ln1147">                              FT_UInt    start_contour )</a>
+<a name="ln1148">  {</a>
+<a name="ln1149">    FT_Error     error;</a>
+<a name="ln1150">    FT_Outline*  outline;</a>
+<a name="ln1151">    FT_UInt      i;</a>
+<a name="ln1152"> </a>
+<a name="ln1153"> </a>
+<a name="ln1154">    outline = &amp;loader-&gt;gloader-&gt;base.outline;</a>
+<a name="ln1155"> </a>
+<a name="ln1156">    /* make room for phantom points */</a>
+<a name="ln1157">    error = FT_GLYPHLOADER_CHECK_POINTS( loader-&gt;gloader,</a>
+<a name="ln1158">                                         outline-&gt;n_points + 4,</a>
+<a name="ln1159">                                         0 );</a>
+<a name="ln1160">    if ( error )</a>
+<a name="ln1161">      return error;</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    outline-&gt;points[outline-&gt;n_points    ] = loader-&gt;pp1;</a>
+<a name="ln1164">    outline-&gt;points[outline-&gt;n_points + 1] = loader-&gt;pp2;</a>
+<a name="ln1165">    outline-&gt;points[outline-&gt;n_points + 2] = loader-&gt;pp3;</a>
+<a name="ln1166">    outline-&gt;points[outline-&gt;n_points + 3] = loader-&gt;pp4;</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    outline-&gt;tags[outline-&gt;n_points    ] = 0;</a>
+<a name="ln1169">    outline-&gt;tags[outline-&gt;n_points + 1] = 0;</a>
+<a name="ln1170">    outline-&gt;tags[outline-&gt;n_points + 2] = 0;</a>
+<a name="ln1171">    outline-&gt;tags[outline-&gt;n_points + 3] = 0;</a>
+<a name="ln1172"> </a>
+<a name="ln1173">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln1174"> </a>
+<a name="ln1175">    {</a>
+<a name="ln1176">      FT_Stream  stream = loader-&gt;stream;</a>
+<a name="ln1177">      FT_UShort  n_ins, max_ins;</a>
+<a name="ln1178">      FT_ULong   tmp;</a>
+<a name="ln1179"> </a>
+<a name="ln1180"> </a>
+<a name="ln1181">      /* TT_Load_Composite_Glyph only gives us the offset of instructions */</a>
+<a name="ln1182">      /* so we read them here                                             */</a>
+<a name="ln1183">      if ( FT_STREAM_SEEK( loader-&gt;ins_pos ) ||</a>
+<a name="ln1184">           FT_READ_USHORT( n_ins )           )</a>
+<a name="ln1185">        return error;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">      FT_TRACE5(( &quot;  Instructions size = %d\n&quot;, n_ins ));</a>
+<a name="ln1188"> </a>
+<a name="ln1189">      /* check it */</a>
+<a name="ln1190">      max_ins = loader-&gt;face-&gt;max_profile.maxSizeOfInstructions;</a>
+<a name="ln1191">      if ( n_ins &gt; max_ins )</a>
+<a name="ln1192">      {</a>
+<a name="ln1193">        /* don't trust `maxSizeOfInstructions'; */</a>
+<a name="ln1194">        /* only do a rough safety check         */</a>
+<a name="ln1195">        if ( (FT_Int)n_ins &gt; loader-&gt;byte_len )</a>
+<a name="ln1196">        {</a>
+<a name="ln1197">          FT_TRACE1(( &quot;TT_Process_Composite_Glyph:&quot;</a>
+<a name="ln1198">                      &quot; too many instructions (%d) for glyph with length %d\n&quot;,</a>
+<a name="ln1199">                      n_ins, loader-&gt;byte_len ));</a>
+<a name="ln1200">          return FT_THROW( Too_Many_Hints );</a>
+<a name="ln1201">        }</a>
+<a name="ln1202"> </a>
+<a name="ln1203">        tmp   = loader-&gt;exec-&gt;glyphSize;</a>
+<a name="ln1204">        error = Update_Max( loader-&gt;exec-&gt;memory,</a>
+<a name="ln1205">                            &amp;tmp,</a>
+<a name="ln1206">                            sizeof ( FT_Byte ),</a>
+<a name="ln1207">                            (void*)&amp;loader-&gt;exec-&gt;glyphIns,</a>
+<a name="ln1208">                            n_ins );</a>
+<a name="ln1209"> </a>
+<a name="ln1210">        loader-&gt;exec-&gt;glyphSize = (FT_UShort)tmp;</a>
+<a name="ln1211">        if ( error )</a>
+<a name="ln1212">          return error;</a>
+<a name="ln1213">      }</a>
+<a name="ln1214">      else if ( n_ins == 0 )</a>
+<a name="ln1215">        return FT_Err_Ok;</a>
+<a name="ln1216"> </a>
+<a name="ln1217">      if ( FT_STREAM_READ( loader-&gt;exec-&gt;glyphIns, n_ins ) )</a>
+<a name="ln1218">        return error;</a>
+<a name="ln1219"> </a>
+<a name="ln1220">      loader-&gt;glyph-&gt;control_data = loader-&gt;exec-&gt;glyphIns;</a>
+<a name="ln1221">      loader-&gt;glyph-&gt;control_len  = n_ins;</a>
+<a name="ln1222">    }</a>
+<a name="ln1223"> </a>
+<a name="ln1224">#endif</a>
+<a name="ln1225"> </a>
+<a name="ln1226">    tt_prepare_zone( &amp;loader-&gt;zone, &amp;loader-&gt;gloader-&gt;base,</a>
+<a name="ln1227">                     start_point, start_contour );</a>
+<a name="ln1228"> </a>
+<a name="ln1229">    /* Some points are likely touched during execution of  */</a>
+<a name="ln1230">    /* instructions on components.  So let's untouch them. */</a>
+<a name="ln1231">    for ( i = 0; i &lt; loader-&gt;zone.n_points; i++ )</a>
+<a name="ln1232">      loader-&gt;zone.tags[i] &amp;= ~FT_CURVE_TAG_TOUCH_BOTH;</a>
+<a name="ln1233"> </a>
+<a name="ln1234">    loader-&gt;zone.n_points += 4;</a>
+<a name="ln1235"> </a>
+<a name="ln1236">    return TT_Hint_Glyph( loader, 1 );</a>
+<a name="ln1237">  }</a>
+<a name="ln1238"> </a>
+<a name="ln1239"> </a>
+<a name="ln1240">  /*</a>
+<a name="ln1241">   * Calculate the phantom points</a>
+<a name="ln1242">   *</a>
+<a name="ln1243">   * Defining the right side bearing (rsb) as</a>
+<a name="ln1244">   *</a>
+<a name="ln1245">   *   rsb = aw - (lsb + xmax - xmin)</a>
+<a name="ln1246">   *</a>
+<a name="ln1247">   * (with `aw' the advance width, `lsb' the left side bearing, and `xmin'</a>
+<a name="ln1248">   * and `xmax' the glyph's minimum and maximum x value), the OpenType</a>
+<a name="ln1249">   * specification defines the initial position of horizontal phantom points</a>
+<a name="ln1250">   * as</a>
+<a name="ln1251">   *</a>
+<a name="ln1252">   *   pp1 = (round(xmin - lsb), 0)      ,</a>
+<a name="ln1253">   *   pp2 = (round(pp1 + aw), 0)        .</a>
+<a name="ln1254">   *</a>
+<a name="ln1255">   * Note that the rounding to the grid (in the device space) is not</a>
+<a name="ln1256">   * documented currently in the specification.</a>
+<a name="ln1257">   *</a>
+<a name="ln1258">   * However, the specification lacks the precise definition of vertical</a>
+<a name="ln1259">   * phantom points.  Greg Hitchcock provided the following explanation.</a>
+<a name="ln1260">   *</a>
+<a name="ln1261">   * - a `vmtx' table is present</a>
+<a name="ln1262">   *</a>
+<a name="ln1263">   *   For any glyph, the minimum and maximum y values (`ymin' and `ymax')</a>
+<a name="ln1264">   *   are given in the `glyf' table, the top side bearing (tsb) and advance</a>
+<a name="ln1265">   *   height (ah) are given in the `vmtx' table.  The bottom side bearing</a>
+<a name="ln1266">   *   (bsb) is then calculated as</a>
+<a name="ln1267">   *</a>
+<a name="ln1268">   *     bsb = ah - (tsb + ymax - ymin)       ,</a>
+<a name="ln1269">   *</a>
+<a name="ln1270">   *   and the initial position of vertical phantom points is</a>
+<a name="ln1271">   *</a>
+<a name="ln1272">   *     pp3 = (x, round(ymax + tsb))       ,</a>
+<a name="ln1273">   *     pp4 = (x, round(pp3 - ah))         .</a>
+<a name="ln1274">   *</a>
+<a name="ln1275">   *   See below for value `x'.</a>
+<a name="ln1276">   *</a>
+<a name="ln1277">   * - no `vmtx' table in the font</a>
+<a name="ln1278">   *</a>
+<a name="ln1279">   *   If there is an `OS/2' table, we set</a>
+<a name="ln1280">   *</a>
+<a name="ln1281">   *     DefaultAscender = sTypoAscender       ,</a>
+<a name="ln1282">   *     DefaultDescender = sTypoDescender     ,</a>
+<a name="ln1283">   *</a>
+<a name="ln1284">   *   otherwise we use data from the `hhea' table:</a>
+<a name="ln1285">   *</a>
+<a name="ln1286">   *     DefaultAscender = Ascender         ,</a>
+<a name="ln1287">   *     DefaultDescender = Descender       .</a>
+<a name="ln1288">   *</a>
+<a name="ln1289">   *   With these two variables we can now set</a>
+<a name="ln1290">   *</a>
+<a name="ln1291">   *     ah = DefaultAscender - sDefaultDescender    ,</a>
+<a name="ln1292">   *     tsb = DefaultAscender - yMax                ,</a>
+<a name="ln1293">   *</a>
+<a name="ln1294">   *   and proceed as if a `vmtx' table was present.</a>
+<a name="ln1295">   *</a>
+<a name="ln1296">   * Usually we have</a>
+<a name="ln1297">   *</a>
+<a name="ln1298">   *   x = aw / 2      ,                                                (1)</a>
+<a name="ln1299">   *</a>
+<a name="ln1300">   * but there is one compatibility case where it can be set to</a>
+<a name="ln1301">   *</a>
+<a name="ln1302">   *   x = -DefaultDescender -</a>
+<a name="ln1303">   *         ((DefaultAscender - DefaultDescender - aw) / 2)     .      (2)</a>
+<a name="ln1304">   *</a>
+<a name="ln1305">   * and another one with</a>
+<a name="ln1306">   *</a>
+<a name="ln1307">   *   x = 0     .                                                      (3)</a>
+<a name="ln1308">   *</a>
+<a name="ln1309">   * In Windows, the history of those values is quite complicated,</a>
+<a name="ln1310">   * depending on the hinting engine (that is, the graphics framework).</a>
+<a name="ln1311">   *</a>
+<a name="ln1312">   *   framework        from                 to       formula</a>
+<a name="ln1313">   *  ----------------------------------------------------------</a>
+<a name="ln1314">   *    GDI       Windows 98               current      (1)</a>
+<a name="ln1315">   *              (Windows 2000 for NT)</a>
+<a name="ln1316">   *    GDI+      Windows XP               Windows 7    (2)</a>
+<a name="ln1317">   *    GDI+      Windows 8                current      (3)</a>
+<a name="ln1318">   *    DWrite    Windows 7                current      (3)</a>
+<a name="ln1319">   *</a>
+<a name="ln1320">   * For simplicity, FreeType uses (1) for grayscale subpixel hinting and</a>
+<a name="ln1321">   * (3) for everything else.</a>
+<a name="ln1322">   *</a>
+<a name="ln1323">   */</a>
+<a name="ln1324">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln1325"> </a>
+<a name="ln1326">#define TT_LOADER_SET_PP( loader )                                          \</a>
+<a name="ln1327">          do                                                                \</a>
+<a name="ln1328">          {                                                                 \</a>
+<a name="ln1329">            FT_Bool  subpixel_hinting_ = loader-&gt;exec                       \</a>
+<a name="ln1330">                                           ? loader-&gt;exec-&gt;subpixel_hinting \</a>
+<a name="ln1331">                                           : 0;                             \</a>
+<a name="ln1332">            FT_Bool  grayscale_        = loader-&gt;exec                       \</a>
+<a name="ln1333">                                           ? loader-&gt;exec-&gt;grayscale        \</a>
+<a name="ln1334">                                           : 0;                             \</a>
+<a name="ln1335">            FT_Bool  use_aw_2_         = (FT_Bool)( subpixel_hinting_ &amp;&amp;    \</a>
+<a name="ln1336">                                                    grayscale_        );    \</a>
+<a name="ln1337">                                                                            \</a>
+<a name="ln1338">                                                                            \</a>
+<a name="ln1339">            (loader)-&gt;pp1.x = (loader)-&gt;bbox.xMin - (loader)-&gt;left_bearing; \</a>
+<a name="ln1340">            (loader)-&gt;pp1.y = 0;                                            \</a>
+<a name="ln1341">            (loader)-&gt;pp2.x = (loader)-&gt;pp1.x + (loader)-&gt;advance;          \</a>
+<a name="ln1342">            (loader)-&gt;pp2.y = 0;                                            \</a>
+<a name="ln1343">                                                                            \</a>
+<a name="ln1344">            (loader)-&gt;pp3.x = use_aw_2_ ? (loader)-&gt;advance / 2 : 0;        \</a>
+<a name="ln1345">            (loader)-&gt;pp3.y = (loader)-&gt;bbox.yMax + (loader)-&gt;top_bearing;  \</a>
+<a name="ln1346">            (loader)-&gt;pp4.x = use_aw_2_ ? (loader)-&gt;advance / 2 : 0;        \</a>
+<a name="ln1347">            (loader)-&gt;pp4.y = (loader)-&gt;pp3.y - (loader)-&gt;vadvance;         \</a>
+<a name="ln1348">          } while ( 0 )</a>
+<a name="ln1349"> </a>
+<a name="ln1350">#else /* !TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln1351"> </a>
+<a name="ln1352">#define TT_LOADER_SET_PP( loader )                                          \</a>
+<a name="ln1353">          do                                                                \</a>
+<a name="ln1354">          {                                                                 \</a>
+<a name="ln1355">            (loader)-&gt;pp1.x = (loader)-&gt;bbox.xMin - (loader)-&gt;left_bearing; \</a>
+<a name="ln1356">            (loader)-&gt;pp1.y = 0;                                            \</a>
+<a name="ln1357">            (loader)-&gt;pp2.x = (loader)-&gt;pp1.x + (loader)-&gt;advance;          \</a>
+<a name="ln1358">            (loader)-&gt;pp2.y = 0;                                            \</a>
+<a name="ln1359">                                                                            \</a>
+<a name="ln1360">            (loader)-&gt;pp3.x = 0;                                            \</a>
+<a name="ln1361">            (loader)-&gt;pp3.y = (loader)-&gt;bbox.yMax + (loader)-&gt;top_bearing;  \</a>
+<a name="ln1362">            (loader)-&gt;pp4.x = 0;                                            \</a>
+<a name="ln1363">            (loader)-&gt;pp4.y = (loader)-&gt;pp3.y - (loader)-&gt;vadvance;         \</a>
+<a name="ln1364">          } while ( 0 )</a>
+<a name="ln1365"> </a>
+<a name="ln1366">#endif /* !TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln1367"> </a>
+<a name="ln1368"> </a>
+<a name="ln1369">  /*************************************************************************/</a>
+<a name="ln1370">  /*                                                                       */</a>
+<a name="ln1371">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln1372">  /*    load_truetype_glyph                                                */</a>
+<a name="ln1373">  /*                                                                       */</a>
+<a name="ln1374">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln1375">  /*    Loads a given truetype glyph.  Handles composites and uses a       */</a>
+<a name="ln1376">  /*    TT_Loader object.                                                  */</a>
+<a name="ln1377">  /*                                                                       */</a>
+<a name="ln1378">  static FT_Error</a>
+<a name="ln1379">  load_truetype_glyph( TT_Loader  loader,</a>
+<a name="ln1380">                       FT_UInt    glyph_index,</a>
+<a name="ln1381">                       FT_UInt    recurse_count,</a>
+<a name="ln1382">                       FT_Bool    header_only )</a>
+<a name="ln1383">  {</a>
+<a name="ln1384">    FT_Error        error        = FT_Err_Ok;</a>
+<a name="ln1385">    FT_Fixed        x_scale, y_scale;</a>
+<a name="ln1386">    FT_ULong        offset;</a>
+<a name="ln1387">    TT_Face         face         = loader-&gt;face;</a>
+<a name="ln1388">    FT_GlyphLoader  gloader      = loader-&gt;gloader;</a>
+<a name="ln1389">    FT_Bool         opened_frame = 0;</a>
+<a name="ln1390"> </a>
+<a name="ln1391">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1392">    FT_StreamRec    inc_stream;</a>
+<a name="ln1393">    FT_Data         glyph_data;</a>
+<a name="ln1394">    FT_Bool         glyph_data_loaded = 0;</a>
+<a name="ln1395">#endif</a>
+<a name="ln1396"> </a>
+<a name="ln1397"> </a>
+<a name="ln1398">    /* some fonts have an incorrect value of `maxComponentDepth', */</a>
+<a name="ln1399">    /* thus we allow depth 1 to catch the majority of them        */</a>
+<a name="ln1400">    if ( recurse_count &gt; 1                                   &amp;&amp;</a>
+<a name="ln1401">         recurse_count &gt; face-&gt;max_profile.maxComponentDepth )</a>
+<a name="ln1402">    {</a>
+<a name="ln1403">      error = FT_THROW( Invalid_Composite );</a>
+<a name="ln1404">      goto Exit;</a>
+<a name="ln1405">    }</a>
+<a name="ln1406"> </a>
+<a name="ln1407">#ifndef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1408">    /* check glyph index */</a>
+<a name="ln1409">    if ( glyph_index &gt;= (FT_UInt)face-&gt;root.num_glyphs )</a>
+<a name="ln1410">    {</a>
+<a name="ln1411">      error = FT_THROW( Invalid_Glyph_Index );</a>
+<a name="ln1412">      goto Exit;</a>
+<a name="ln1413">    }</a>
+<a name="ln1414">#endif</a>
+<a name="ln1415"> </a>
+<a name="ln1416">    loader-&gt;glyph_index = glyph_index;</a>
+<a name="ln1417"> </a>
+<a name="ln1418">    if ( ( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) == 0 )</a>
+<a name="ln1419">    {</a>
+<a name="ln1420">      x_scale = loader-&gt;size-&gt;metrics.x_scale;</a>
+<a name="ln1421">      y_scale = loader-&gt;size-&gt;metrics.y_scale;</a>
+<a name="ln1422">    }</a>
+<a name="ln1423">    else</a>
+<a name="ln1424">    {</a>
+<a name="ln1425">      x_scale = 0x10000L;</a>
+<a name="ln1426">      y_scale = 0x10000L;</a>
+<a name="ln1427">    }</a>
+<a name="ln1428"> </a>
+<a name="ln1429">    /* Set `offset' to the start of the glyph relative to the start of */</a>
+<a name="ln1430">    /* the `glyf' table, and `byte_len' to the length of the glyph in  */</a>
+<a name="ln1431">    /* bytes.                                                          */</a>
+<a name="ln1432"> </a>
+<a name="ln1433">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1434"> </a>
+<a name="ln1435">    /* If we are loading glyph data via the incremental interface, set */</a>
+<a name="ln1436">    /* the loader stream to a memory stream reading the data returned  */</a>
+<a name="ln1437">    /* by the interface.                                               */</a>
+<a name="ln1438">    if ( face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln1439">    {</a>
+<a name="ln1440">      error = face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;get_glyph_data(</a>
+<a name="ln1441">                face-&gt;root.internal-&gt;incremental_interface-&gt;object,</a>
+<a name="ln1442">                glyph_index, &amp;glyph_data );</a>
+<a name="ln1443">      if ( error )</a>
+<a name="ln1444">        goto Exit;</a>
+<a name="ln1445"> </a>
+<a name="ln1446">      glyph_data_loaded = 1;</a>
+<a name="ln1447">      offset            = 0;</a>
+<a name="ln1448">      loader-&gt;byte_len  = glyph_data.length;</a>
+<a name="ln1449"> </a>
+<a name="ln1450">      FT_MEM_ZERO( &amp;inc_stream, sizeof ( inc_stream ) );</a>
+<a name="ln1451">      FT_Stream_OpenMemory( &amp;inc_stream,</a>
+<a name="ln1452">                            glyph_data.pointer,</a>
+<a name="ln1453">                            (FT_ULong)glyph_data.length );</a>
+<a name="ln1454"> </a>
+<a name="ln1455">      loader-&gt;stream = &amp;inc_stream;</a>
+<a name="ln1456">    }</a>
+<a name="ln1457">    else</a>
+<a name="ln1458"> </a>
+<a name="ln1459">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln1460"> </a>
+<a name="ln1461">      offset = tt_face_get_location( face, glyph_index,</a>
+<a name="ln1462">                                     (FT_UInt*)&amp;loader-&gt;byte_len );</a>
+<a name="ln1463"> </a>
+<a name="ln1464">    if ( loader-&gt;byte_len &gt; 0 )</a>
+<a name="ln1465">    {</a>
+<a name="ln1466">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1467">      /* for the incremental interface, `glyf_offset' is always zero */</a>
+<a name="ln1468">      if ( !loader-&gt;glyf_offset                        &amp;&amp;</a>
+<a name="ln1469">           !face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln1470">#else</a>
+<a name="ln1471">      if ( !loader-&gt;glyf_offset )</a>
+<a name="ln1472">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln1473">      {</a>
+<a name="ln1474">        FT_TRACE2(( &quot;no `glyf' table but non-zero `loca' entry\n&quot; ));</a>
+<a name="ln1475">        error = FT_THROW( Invalid_Table );</a>
+<a name="ln1476">        goto Exit;</a>
+<a name="ln1477">      }</a>
+<a name="ln1478"> </a>
+<a name="ln1479">      error = face-&gt;access_glyph_frame( loader, glyph_index,</a>
+<a name="ln1480">                                        loader-&gt;glyf_offset + offset,</a>
+<a name="ln1481">                                        (FT_UInt)loader-&gt;byte_len );</a>
+<a name="ln1482">      if ( error )</a>
+<a name="ln1483">        goto Exit;</a>
+<a name="ln1484"> </a>
+<a name="ln1485">      opened_frame = 1;</a>
+<a name="ln1486"> </a>
+<a name="ln1487">      /* read glyph header first */</a>
+<a name="ln1488">      error = face-&gt;read_glyph_header( loader );</a>
+<a name="ln1489">      if ( error )</a>
+<a name="ln1490">        goto Exit;</a>
+<a name="ln1491"> </a>
+<a name="ln1492">      /* the metrics must be computed after loading the glyph header */</a>
+<a name="ln1493">      /* since we need the glyph's `yMax' value in case the vertical */</a>
+<a name="ln1494">      /* metrics must be emulated                                    */</a>
+<a name="ln1495">      error = tt_get_metrics( loader, glyph_index );</a>
+<a name="ln1496">      if ( error )</a>
+<a name="ln1497">        goto Exit;</a>
+<a name="ln1498"> </a>
+<a name="ln1499">      if ( header_only )</a>
+<a name="ln1500">        goto Exit;</a>
+<a name="ln1501">    }</a>
+<a name="ln1502"> </a>
+<a name="ln1503">    if ( loader-&gt;byte_len == 0 || loader-&gt;n_contours == 0 )</a>
+<a name="ln1504">    {</a>
+<a name="ln1505">      loader-&gt;bbox.xMin = 0;</a>
+<a name="ln1506">      loader-&gt;bbox.xMax = 0;</a>
+<a name="ln1507">      loader-&gt;bbox.yMin = 0;</a>
+<a name="ln1508">      loader-&gt;bbox.yMax = 0;</a>
+<a name="ln1509"> </a>
+<a name="ln1510">      error = tt_get_metrics( loader, glyph_index );</a>
+<a name="ln1511">      if ( error )</a>
+<a name="ln1512">        goto Exit;</a>
+<a name="ln1513"> </a>
+<a name="ln1514">      if ( header_only )</a>
+<a name="ln1515">        goto Exit;</a>
+<a name="ln1516"> </a>
+<a name="ln1517">      /* must initialize points before (possibly) overriding */</a>
+<a name="ln1518">      /* glyph metrics from the incremental interface        */</a>
+<a name="ln1519">      TT_LOADER_SET_PP( loader );</a>
+<a name="ln1520"> </a>
+<a name="ln1521">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1522">      tt_get_metrics_incr_overrides( loader, glyph_index );</a>
+<a name="ln1523">#endif</a>
+<a name="ln1524"> </a>
+<a name="ln1525">#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT</a>
+<a name="ln1526"> </a>
+<a name="ln1527">      if ( loader-&gt;face-&gt;doblend )</a>
+<a name="ln1528">      {</a>
+<a name="ln1529">        /* a small outline structure with four elements for */</a>
+<a name="ln1530">        /* communication with `TT_Vary_Apply_Glyph_Deltas'  */</a>
+<a name="ln1531">        FT_Vector   points[4];</a>
+<a name="ln1532">        char        tags[4]     = { 1, 1, 1, 1 };</a>
+<a name="ln1533">        short       contours[4] = { 0, 1, 2, 3 };</a>
+<a name="ln1534">        FT_Outline  outline;</a>
+<a name="ln1535"> </a>
+<a name="ln1536"> </a>
+<a name="ln1537">        points[0].x = loader-&gt;pp1.x;</a>
+<a name="ln1538">        points[0].y = loader-&gt;pp1.y;</a>
+<a name="ln1539">        points[1].x = loader-&gt;pp2.x;</a>
+<a name="ln1540">        points[1].y = loader-&gt;pp2.y;</a>
+<a name="ln1541"> </a>
+<a name="ln1542">        points[2].x = loader-&gt;pp3.x;</a>
+<a name="ln1543">        points[2].y = loader-&gt;pp3.y;</a>
+<a name="ln1544">        points[3].x = loader-&gt;pp4.x;</a>
+<a name="ln1545">        points[3].y = loader-&gt;pp4.y;</a>
+<a name="ln1546"> </a>
+<a name="ln1547">        outline.n_points   = 4;</a>
+<a name="ln1548">        outline.n_contours = 4;</a>
+<a name="ln1549">        outline.points     = points;</a>
+<a name="ln1550">        outline.tags       = tags;</a>
+<a name="ln1551">        outline.contours   = contours;</a>
+<a name="ln1552"> </a>
+<a name="ln1553">        /* this must be done before scaling */</a>
+<a name="ln1554">        error = TT_Vary_Apply_Glyph_Deltas( loader-&gt;face,</a>
+<a name="ln1555">                                            glyph_index,</a>
+<a name="ln1556">                                            &amp;outline,</a>
+<a name="ln1557">                                            (FT_UInt)outline.n_points );</a>
+<a name="ln1558">        if ( error )</a>
+<a name="ln1559">          goto Exit;</a>
+<a name="ln1560"> </a>
+<a name="ln1561">        loader-&gt;pp1.x = points[0].x;</a>
+<a name="ln1562">        loader-&gt;pp1.y = points[0].y;</a>
+<a name="ln1563">        loader-&gt;pp2.x = points[1].x;</a>
+<a name="ln1564">        loader-&gt;pp2.y = points[1].y;</a>
+<a name="ln1565"> </a>
+<a name="ln1566">        loader-&gt;pp3.x = points[2].x;</a>
+<a name="ln1567">        loader-&gt;pp3.y = points[2].y;</a>
+<a name="ln1568">        loader-&gt;pp4.x = points[3].x;</a>
+<a name="ln1569">        loader-&gt;pp4.y = points[3].y;</a>
+<a name="ln1570">      }</a>
+<a name="ln1571"> </a>
+<a name="ln1572">#endif /* TT_CONFIG_OPTION_GX_VAR_SUPPORT */</a>
+<a name="ln1573"> </a>
+<a name="ln1574">      /* scale phantom points, if necessary; */</a>
+<a name="ln1575">      /* they get rounded in `TT_Hint_Glyph' */</a>
+<a name="ln1576">      if ( ( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) == 0 )</a>
+<a name="ln1577">      {</a>
+<a name="ln1578">        loader-&gt;pp1.x = FT_MulFix( loader-&gt;pp1.x, x_scale );</a>
+<a name="ln1579">        loader-&gt;pp2.x = FT_MulFix( loader-&gt;pp2.x, x_scale );</a>
+<a name="ln1580">        /* pp1.y and pp2.y are always zero */</a>
+<a name="ln1581"> </a>
+<a name="ln1582">        loader-&gt;pp3.x = FT_MulFix( loader-&gt;pp3.x, x_scale );</a>
+<a name="ln1583">        loader-&gt;pp3.y = FT_MulFix( loader-&gt;pp3.y, y_scale );</a>
+<a name="ln1584">        loader-&gt;pp4.x = FT_MulFix( loader-&gt;pp4.x, x_scale );</a>
+<a name="ln1585">        loader-&gt;pp4.y = FT_MulFix( loader-&gt;pp4.y, y_scale );</a>
+<a name="ln1586">      }</a>
+<a name="ln1587"> </a>
+<a name="ln1588">      error = FT_Err_Ok;</a>
+<a name="ln1589">      goto Exit;</a>
+<a name="ln1590">    }</a>
+<a name="ln1591"> </a>
+<a name="ln1592">    /* must initialize phantom points before (possibly) overriding */</a>
+<a name="ln1593">    /* glyph metrics from the incremental interface                */</a>
+<a name="ln1594">    TT_LOADER_SET_PP( loader );</a>
+<a name="ln1595"> </a>
+<a name="ln1596">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1597">    tt_get_metrics_incr_overrides( loader, glyph_index );</a>
+<a name="ln1598">#endif</a>
+<a name="ln1599"> </a>
+<a name="ln1600">    /***********************************************************************/</a>
+<a name="ln1601">    /***********************************************************************/</a>
+<a name="ln1602">    /***********************************************************************/</a>
+<a name="ln1603"> </a>
+<a name="ln1604">    /* if it is a simple glyph, load it */</a>
+<a name="ln1605"> </a>
+<a name="ln1606">    if ( loader-&gt;n_contours &gt; 0 )</a>
+<a name="ln1607">    {</a>
+<a name="ln1608">      error = face-&gt;read_simple_glyph( loader );</a>
+<a name="ln1609">      if ( error )</a>
+<a name="ln1610">        goto Exit;</a>
+<a name="ln1611"> </a>
+<a name="ln1612">      /* all data have been read */</a>
+<a name="ln1613">      face-&gt;forget_glyph_frame( loader );</a>
+<a name="ln1614">      opened_frame = 0;</a>
+<a name="ln1615"> </a>
+<a name="ln1616">      error = TT_Process_Simple_Glyph( loader );</a>
+<a name="ln1617">      if ( error )</a>
+<a name="ln1618">        goto Exit;</a>
+<a name="ln1619"> </a>
+<a name="ln1620">      FT_GlyphLoader_Add( gloader );</a>
+<a name="ln1621">    }</a>
+<a name="ln1622"> </a>
+<a name="ln1623">    /***********************************************************************/</a>
+<a name="ln1624">    /***********************************************************************/</a>
+<a name="ln1625">    /***********************************************************************/</a>
+<a name="ln1626"> </a>
+<a name="ln1627">    /* otherwise, load a composite! */</a>
+<a name="ln1628">    else if ( loader-&gt;n_contours == -1 )</a>
+<a name="ln1629">    {</a>
+<a name="ln1630">      FT_UInt   start_point;</a>
+<a name="ln1631">      FT_UInt   start_contour;</a>
+<a name="ln1632">      FT_ULong  ins_pos;  /* position of composite instructions, if any */</a>
+<a name="ln1633"> </a>
+<a name="ln1634"> </a>
+<a name="ln1635">      start_point   = (FT_UInt)gloader-&gt;base.outline.n_points;</a>
+<a name="ln1636">      start_contour = (FT_UInt)gloader-&gt;base.outline.n_contours;</a>
+<a name="ln1637"> </a>
+<a name="ln1638">      /* for each subglyph, read composite header */</a>
+<a name="ln1639">      error = face-&gt;read_composite_glyph( loader );</a>
+<a name="ln1640">      if ( error )</a>
+<a name="ln1641">        goto Exit;</a>
+<a name="ln1642"> </a>
+<a name="ln1643">      /* store the offset of instructions */</a>
+<a name="ln1644">      ins_pos = loader-&gt;ins_pos;</a>
+<a name="ln1645"> </a>
+<a name="ln1646">      /* all data we need are read */</a>
+<a name="ln1647">      face-&gt;forget_glyph_frame( loader );</a>
+<a name="ln1648">      opened_frame = 0;</a>
+<a name="ln1649"> </a>
+<a name="ln1650">#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT</a>
+<a name="ln1651"> </a>
+<a name="ln1652">      if ( face-&gt;doblend )</a>
+<a name="ln1653">      {</a>
+<a name="ln1654">        short        i, limit;</a>
+<a name="ln1655">        FT_SubGlyph  subglyph;</a>
+<a name="ln1656"> </a>
+<a name="ln1657">        FT_Outline  outline;</a>
+<a name="ln1658">        // #if (defined (_MSCVER) || defined (_MSC_VER))</a>
+<a name="ln1659">        // Initialize outline to prevent &quot;potentially uninitialized local variable&quot; warning</a>
+<a name="ln1660">        outline = (FT_Outline) { .n_contours = 0, .n_points = 0, .points = NULL, .tags = NULL, .contours = NULL, .flags = 0 };</a>
+<a name="ln1661"> </a>
+<a name="ln1662">        FT_Vector*  points   = NULL;</a>
+<a name="ln1663">        char*       tags     = NULL;</a>
+<a name="ln1664">        short*      contours = NULL;</a>
+<a name="ln1665"> </a>
+<a name="ln1666">        FT_Memory  memory = face-&gt;root.memory;</a>
+<a name="ln1667"> </a>
+<a name="ln1668"> </a>
+<a name="ln1669">        limit = (short)gloader-&gt;current.num_subglyphs;</a>
+<a name="ln1670"> </a>
+<a name="ln1671">        /* construct an outline structure for              */</a>
+<a name="ln1672">        /* communication with `TT_Vary_Apply_Glyph_Deltas' */</a>
+<a name="ln1673">        outline.n_points   = (short)( gloader-&gt;current.num_subglyphs + 4 );</a>
+<a name="ln1674">        outline.n_contours = outline.n_points;</a>
+<a name="ln1675"> </a>
+<a name="ln1676">        if ( FT_NEW_ARRAY( points, outline.n_points )   ||</a>
+<a name="ln1677">             FT_NEW_ARRAY( tags, outline.n_points )     ||</a>
+<a name="ln1678">             FT_NEW_ARRAY( contours, outline.n_points ) )</a>
+<a name="ln1679">          goto Exit1;</a>
+<a name="ln1680"> </a>
+<a name="ln1681">        subglyph = gloader-&gt;current.subglyphs;</a>
+<a name="ln1682"> </a>
+<a name="ln1683">        for ( i = 0; i &lt; limit; i++, subglyph++ )</a>
+<a name="ln1684">        {</a>
+<a name="ln1685">          /* applying deltas for anchor points doesn't make sense, */</a>
+<a name="ln1686">          /* but we don't have to specially check this since       */</a>
+<a name="ln1687">          /* unused delta values are zero anyways                  */</a>
+<a name="ln1688">          points[i].x = subglyph-&gt;arg1;</a>
+<a name="ln1689">          points[i].y = subglyph-&gt;arg2;</a>
+<a name="ln1690">          tags[i]     = 1;</a>
+<a name="ln1691">          contours[i] = i;</a>
+<a name="ln1692">        }</a>
+<a name="ln1693"> </a>
+<a name="ln1694">        points[i].x = loader-&gt;pp1.x;</a>
+<a name="ln1695">        points[i].y = loader-&gt;pp1.y;</a>
+<a name="ln1696">        tags[i]     = 1;</a>
+<a name="ln1697">        contours[i] = i;</a>
+<a name="ln1698"> </a>
+<a name="ln1699">        i++;</a>
+<a name="ln1700">        points[i].x = loader-&gt;pp2.x;</a>
+<a name="ln1701">        points[i].y = loader-&gt;pp2.y;</a>
+<a name="ln1702">        tags[i]     = 1;</a>
+<a name="ln1703">        contours[i] = i;</a>
+<a name="ln1704"> </a>
+<a name="ln1705">        i++;</a>
+<a name="ln1706">        points[i].x = loader-&gt;pp3.x;</a>
+<a name="ln1707">        points[i].y = loader-&gt;pp3.y;</a>
+<a name="ln1708">        tags[i]     = 1;</a>
+<a name="ln1709">        contours[i] = i;</a>
+<a name="ln1710"> </a>
+<a name="ln1711">        i++;</a>
+<a name="ln1712">        points[i].x = loader-&gt;pp4.x;</a>
+<a name="ln1713">        points[i].y = loader-&gt;pp4.y;</a>
+<a name="ln1714">        tags[i]     = 1;</a>
+<a name="ln1715">        contours[i] = i;</a>
+<a name="ln1716"> </a>
+<a name="ln1717">        outline.points   = points;</a>
+<a name="ln1718">        outline.tags     = tags;</a>
+<a name="ln1719">        outline.contours = contours;</a>
+<a name="ln1720"> </a>
+<a name="ln1721">        /* this call provides additional offsets */</a>
+<a name="ln1722">        /* for each component's translation      */</a>
+<a name="ln1723">        if ( ( error = TT_Vary_Apply_Glyph_Deltas(</a>
+<a name="ln1724">                         face,</a>
+<a name="ln1725">                         glyph_index,</a>
+<a name="ln1726">                         &amp;outline,</a>
+<a name="ln1727">                         (FT_UInt)outline.n_points ) ) != 0 )</a>
+<a name="ln1728">          goto Exit1;</a>
+<a name="ln1729"> </a>
+<a name="ln1730">        subglyph = gloader-&gt;current.subglyphs;</a>
+<a name="ln1731"> </a>
+<a name="ln1732">        for ( i = 0; i &lt; limit; i++, subglyph++ )</a>
+<a name="ln1733">        {</a>
+<a name="ln1734">          /* XXX: overflow check for subglyph-&gt;{arg1,arg2}.         */</a>
+<a name="ln1735">          /*      Deltas must be within signed 16-bit,              */</a>
+<a name="ln1736">          /*      but the restriction of summed deltas is not clear */</a>
+<a name="ln1737">          subglyph-&gt;arg1 = (FT_Int16)points[i].x;</a>
+<a name="ln1738">          subglyph-&gt;arg2 = (FT_Int16)points[i].y;</a>
+<a name="ln1739">        }</a>
+<a name="ln1740"> </a>
+<a name="ln1741">        loader-&gt;pp1.x = points[i + 0].x;</a>
+<a name="ln1742">        loader-&gt;pp1.y = points[i + 0].y;</a>
+<a name="ln1743">        loader-&gt;pp2.x = points[i + 1].x;</a>
+<a name="ln1744">        loader-&gt;pp2.y = points[i + 1].y;</a>
+<a name="ln1745"> </a>
+<a name="ln1746">        loader-&gt;pp3.x = points[i + 2].x;</a>
+<a name="ln1747">        loader-&gt;pp3.y = points[i + 2].y;</a>
+<a name="ln1748">        loader-&gt;pp4.x = points[i + 3].x;</a>
+<a name="ln1749">        loader-&gt;pp4.y = points[i + 3].y;</a>
+<a name="ln1750"> </a>
+<a name="ln1751">      Exit1:</a>
+<a name="ln1752">        FT_FREE( outline.points );</a>
+<a name="ln1753">        FT_FREE( outline.tags );</a>
+<a name="ln1754">        FT_FREE( outline.contours );</a>
+<a name="ln1755"> </a>
+<a name="ln1756">        if ( error )</a>
+<a name="ln1757">          goto Exit;</a>
+<a name="ln1758">      }</a>
+<a name="ln1759"> </a>
+<a name="ln1760">#endif /* TT_CONFIG_OPTION_GX_VAR_SUPPORT */</a>
+<a name="ln1761"> </a>
+<a name="ln1762">      /* scale phantom points, if necessary; */</a>
+<a name="ln1763">      /* they get rounded in `TT_Hint_Glyph' */</a>
+<a name="ln1764">      if ( ( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) == 0 )</a>
+<a name="ln1765">      {</a>
+<a name="ln1766">        loader-&gt;pp1.x = FT_MulFix( loader-&gt;pp1.x, x_scale );</a>
+<a name="ln1767">        loader-&gt;pp2.x = FT_MulFix( loader-&gt;pp2.x, x_scale );</a>
+<a name="ln1768">        /* pp1.y and pp2.y are always zero */</a>
+<a name="ln1769"> </a>
+<a name="ln1770">        loader-&gt;pp3.x = FT_MulFix( loader-&gt;pp3.x, x_scale );</a>
+<a name="ln1771">        loader-&gt;pp3.y = FT_MulFix( loader-&gt;pp3.y, y_scale );</a>
+<a name="ln1772">        loader-&gt;pp4.x = FT_MulFix( loader-&gt;pp4.x, x_scale );</a>
+<a name="ln1773">        loader-&gt;pp4.y = FT_MulFix( loader-&gt;pp4.y, y_scale );</a>
+<a name="ln1774">      }</a>
+<a name="ln1775"> </a>
+<a name="ln1776">      /* if the flag FT_LOAD_NO_RECURSE is set, we return the subglyph */</a>
+<a name="ln1777">      /* `as is' in the glyph slot (the client application will be     */</a>
+<a name="ln1778">      /* responsible for interpreting these data)...                   */</a>
+<a name="ln1779">      if ( loader-&gt;load_flags &amp; FT_LOAD_NO_RECURSE )</a>
+<a name="ln1780">      {</a>
+<a name="ln1781">        FT_GlyphLoader_Add( gloader );</a>
+<a name="ln1782">        loader-&gt;glyph-&gt;format = FT_GLYPH_FORMAT_COMPOSITE;</a>
+<a name="ln1783"> </a>
+<a name="ln1784">        goto Exit;</a>
+<a name="ln1785">      }</a>
+<a name="ln1786"> </a>
+<a name="ln1787">      /*********************************************************************/</a>
+<a name="ln1788">      /*********************************************************************/</a>
+<a name="ln1789">      /*********************************************************************/</a>
+<a name="ln1790"> </a>
+<a name="ln1791">      {</a>
+<a name="ln1792">        FT_UInt      n, num_base_points;</a>
+<a name="ln1793">        FT_SubGlyph  subglyph       = NULL;</a>
+<a name="ln1794"> </a>
+<a name="ln1795">        FT_UInt      num_points     = start_point;</a>
+<a name="ln1796">        FT_UInt      num_subglyphs  = gloader-&gt;current.num_subglyphs;</a>
+<a name="ln1797">        FT_UInt      num_base_subgs = gloader-&gt;base.num_subglyphs;</a>
+<a name="ln1798"> </a>
+<a name="ln1799">        FT_Stream    old_stream     = loader-&gt;stream;</a>
+<a name="ln1800">        FT_Int       old_byte_len   = loader-&gt;byte_len;</a>
+<a name="ln1801"> </a>
+<a name="ln1802"> </a>
+<a name="ln1803">        FT_GlyphLoader_Add( gloader );</a>
+<a name="ln1804"> </a>
+<a name="ln1805">        /* read each subglyph independently */</a>
+<a name="ln1806">        for ( n = 0; n &lt; num_subglyphs; n++ )</a>
+<a name="ln1807">        {</a>
+<a name="ln1808">          FT_Vector  pp[4];</a>
+<a name="ln1809"> </a>
+<a name="ln1810"> </a>
+<a name="ln1811">          /* Each time we call load_truetype_glyph in this loop, the   */</a>
+<a name="ln1812">          /* value of `gloader.base.subglyphs' can change due to table */</a>
+<a name="ln1813">          /* reallocations.  We thus need to recompute the subglyph    */</a>
+<a name="ln1814">          /* pointer on each iteration.                                */</a>
+<a name="ln1815">          subglyph = gloader-&gt;base.subglyphs + num_base_subgs + n;</a>
+<a name="ln1816"> </a>
+<a name="ln1817">          pp[0] = loader-&gt;pp1;</a>
+<a name="ln1818">          pp[1] = loader-&gt;pp2;</a>
+<a name="ln1819">          pp[2] = loader-&gt;pp3;</a>
+<a name="ln1820">          pp[3] = loader-&gt;pp4;</a>
+<a name="ln1821"> </a>
+<a name="ln1822">          num_base_points = (FT_UInt)gloader-&gt;base.outline.n_points;</a>
+<a name="ln1823"> </a>
+<a name="ln1824">          error = load_truetype_glyph( loader,</a>
+<a name="ln1825">                                       (FT_UInt)subglyph-&gt;index,</a>
+<a name="ln1826">                                       recurse_count + 1,</a>
+<a name="ln1827">                                       FALSE );</a>
+<a name="ln1828">          if ( error )</a>
+<a name="ln1829">            goto Exit;</a>
+<a name="ln1830"> </a>
+<a name="ln1831">          /* restore subglyph pointer */</a>
+<a name="ln1832">          subglyph = gloader-&gt;base.subglyphs + num_base_subgs + n;</a>
+<a name="ln1833"> </a>
+<a name="ln1834">          /* restore phantom points if necessary */</a>
+<a name="ln1835">          if ( !( subglyph-&gt;flags &amp; USE_MY_METRICS ) )</a>
+<a name="ln1836">          {</a>
+<a name="ln1837">            loader-&gt;pp1 = pp[0];</a>
+<a name="ln1838">            loader-&gt;pp2 = pp[1];</a>
+<a name="ln1839">            loader-&gt;pp3 = pp[2];</a>
+<a name="ln1840">            loader-&gt;pp4 = pp[3];</a>
+<a name="ln1841">          }</a>
+<a name="ln1842"> </a>
+<a name="ln1843">          num_points = (FT_UInt)gloader-&gt;base.outline.n_points;</a>
+<a name="ln1844"> </a>
+<a name="ln1845">          if ( num_points == num_base_points )</a>
+<a name="ln1846">            continue;</a>
+<a name="ln1847"> </a>
+<a name="ln1848">          /* gloader-&gt;base.outline consists of three parts:               */</a>
+<a name="ln1849">          /* 0 -(1)-&gt; start_point -(2)-&gt; num_base_points -(3)-&gt; n_points. */</a>
+<a name="ln1850">          /*                                                              */</a>
+<a name="ln1851">          /* (1): exists from the beginning                               */</a>
+<a name="ln1852">          /* (2): components that have been loaded so far                 */</a>
+<a name="ln1853">          /* (3): the newly loaded component                              */</a>
+<a name="ln1854">          error = TT_Process_Composite_Component( loader,</a>
+<a name="ln1855">                                                  subglyph,</a>
+<a name="ln1856">                                                  start_point,</a>
+<a name="ln1857">                                                  num_base_points );</a>
+<a name="ln1858">          if ( error )</a>
+<a name="ln1859">            goto Exit;</a>
+<a name="ln1860">        }</a>
+<a name="ln1861"> </a>
+<a name="ln1862">        loader-&gt;stream   = old_stream;</a>
+<a name="ln1863">        loader-&gt;byte_len = old_byte_len;</a>
+<a name="ln1864"> </a>
+<a name="ln1865">        /* process the glyph */</a>
+<a name="ln1866">        loader-&gt;ins_pos = ins_pos;</a>
+<a name="ln1867">        if ( IS_HINTED( loader-&gt;load_flags ) &amp;&amp;</a>
+<a name="ln1868">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln1869">             subglyph-&gt;flags &amp; WE_HAVE_INSTR &amp;&amp;</a>
+<a name="ln1870">#endif</a>
+<a name="ln1871">             num_points &gt; start_point )</a>
+<a name="ln1872">        {</a>
+<a name="ln1873">          error = TT_Process_Composite_Glyph( loader,</a>
+<a name="ln1874">                                              start_point,</a>
+<a name="ln1875">                                              start_contour );</a>
+<a name="ln1876">          if ( error )</a>
+<a name="ln1877">            goto Exit;</a>
+<a name="ln1878">        }</a>
+<a name="ln1879">      }</a>
+<a name="ln1880">    }</a>
+<a name="ln1881">    else</a>
+<a name="ln1882">    {</a>
+<a name="ln1883">      /* invalid composite count (negative but not -1) */</a>
+<a name="ln1884">      error = FT_THROW( Invalid_Outline );</a>
+<a name="ln1885">      goto Exit;</a>
+<a name="ln1886">    }</a>
+<a name="ln1887"> </a>
+<a name="ln1888">    /***********************************************************************/</a>
+<a name="ln1889">    /***********************************************************************/</a>
+<a name="ln1890">    /***********************************************************************/</a>
+<a name="ln1891"> </a>
+<a name="ln1892">  Exit:</a>
+<a name="ln1893"> </a>
+<a name="ln1894">    if ( opened_frame )</a>
+<a name="ln1895">      face-&gt;forget_glyph_frame( loader );</a>
+<a name="ln1896"> </a>
+<a name="ln1897">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln1898"> </a>
+<a name="ln1899">    if ( glyph_data_loaded )</a>
+<a name="ln1900">      face-&gt;root.internal-&gt;incremental_interface-&gt;funcs-&gt;free_glyph_data(</a>
+<a name="ln1901">        face-&gt;root.internal-&gt;incremental_interface-&gt;object,</a>
+<a name="ln1902">        &amp;glyph_data );</a>
+<a name="ln1903"> </a>
+<a name="ln1904">#endif</a>
+<a name="ln1905"> </a>
+<a name="ln1906">    return error;</a>
+<a name="ln1907">  }</a>
+<a name="ln1908"> </a>
+<a name="ln1909"> </a>
+<a name="ln1910">  static FT_Error</a>
+<a name="ln1911">  compute_glyph_metrics( TT_Loader  loader,</a>
+<a name="ln1912">                         FT_UInt    glyph_index )</a>
+<a name="ln1913">  {</a>
+<a name="ln1914">    TT_Face    face   = loader-&gt;face;</a>
+<a name="ln1915">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln1916">    TT_Driver  driver = (TT_Driver)FT_FACE_DRIVER( face );</a>
+<a name="ln1917">#endif</a>
+<a name="ln1918"> </a>
+<a name="ln1919">    FT_BBox       bbox;</a>
+<a name="ln1920">    FT_Fixed      y_scale;</a>
+<a name="ln1921">    TT_GlyphSlot  glyph = loader-&gt;glyph;</a>
+<a name="ln1922">    TT_Size       size  = loader-&gt;size;</a>
+<a name="ln1923"> </a>
+<a name="ln1924"> </a>
+<a name="ln1925">    y_scale = 0x10000L;</a>
+<a name="ln1926">    if ( ( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) == 0 )</a>
+<a name="ln1927">      y_scale = size-&gt;root.metrics.y_scale;</a>
+<a name="ln1928"> </a>
+<a name="ln1929">    if ( glyph-&gt;format != FT_GLYPH_FORMAT_COMPOSITE )</a>
+<a name="ln1930">      FT_Outline_Get_CBox( &amp;glyph-&gt;outline, &amp;bbox );</a>
+<a name="ln1931">    else</a>
+<a name="ln1932">      bbox = loader-&gt;bbox;</a>
+<a name="ln1933"> </a>
+<a name="ln1934">    /* get the device-independent horizontal advance; it is scaled later */</a>
+<a name="ln1935">    /* by the base layer.                                                */</a>
+<a name="ln1936">    glyph-&gt;linearHoriAdvance = loader-&gt;linear;</a>
+<a name="ln1937"> </a>
+<a name="ln1938">    glyph-&gt;metrics.horiBearingX = bbox.xMin;</a>
+<a name="ln1939">    glyph-&gt;metrics.horiBearingY = bbox.yMax;</a>
+<a name="ln1940">    glyph-&gt;metrics.horiAdvance  = loader-&gt;pp2.x - loader-&gt;pp1.x;</a>
+<a name="ln1941"> </a>
+<a name="ln1942">    /* adjust advance width to the value contained in the hdmx table */</a>
+<a name="ln1943">    /* unless FT_LOAD_COMPUTE_METRICS is set                         */</a>
+<a name="ln1944">    if ( !face-&gt;postscript.isFixedPitch                    &amp;&amp;</a>
+<a name="ln1945">         IS_HINTED( loader-&gt;load_flags )                   &amp;&amp;</a>
+<a name="ln1946">         !( loader-&gt;load_flags &amp; FT_LOAD_COMPUTE_METRICS ) )</a>
+<a name="ln1947">    {</a>
+<a name="ln1948">      FT_Byte*  widthp;</a>
+<a name="ln1949"> </a>
+<a name="ln1950"> </a>
+<a name="ln1951">      widthp = tt_face_get_device_metrics( face,</a>
+<a name="ln1952">                                           size-&gt;root.metrics.x_ppem,</a>
+<a name="ln1953">                                           glyph_index );</a>
+<a name="ln1954"> </a>
+<a name="ln1955">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln1956"> </a>
+<a name="ln1957">      if ( driver-&gt;interpreter_version == TT_INTERPRETER_VERSION_38 )</a>
+<a name="ln1958">      {</a>
+<a name="ln1959">        FT_Bool  ignore_x_mode;</a>
+<a name="ln1960"> </a>
+<a name="ln1961"> </a>
+<a name="ln1962">        ignore_x_mode = FT_BOOL( FT_LOAD_TARGET_MODE( loader-&gt;load_flags ) !=</a>
+<a name="ln1963">                                 FT_RENDER_MODE_MONO );</a>
+<a name="ln1964"> </a>
+<a name="ln1965">        if ( widthp                                                   &amp;&amp;</a>
+<a name="ln1966">             ( ( ignore_x_mode &amp;&amp; loader-&gt;exec-&gt;compatible_widths ) ||</a>
+<a name="ln1967">                !ignore_x_mode                                      ||</a>
+<a name="ln1968">                SPH_OPTION_BITMAP_WIDTHS                            ) )</a>
+<a name="ln1969">          glyph-&gt;metrics.horiAdvance = *widthp * 64;</a>
+<a name="ln1970">      }</a>
+<a name="ln1971">      else</a>
+<a name="ln1972"> </a>
+<a name="ln1973">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln1974"> </a>
+<a name="ln1975">      {</a>
+<a name="ln1976">        if ( widthp )</a>
+<a name="ln1977">          glyph-&gt;metrics.horiAdvance = *widthp * 64;</a>
+<a name="ln1978">      }</a>
+<a name="ln1979">    }</a>
+<a name="ln1980"> </a>
+<a name="ln1981">    /* set glyph dimensions */</a>
+<a name="ln1982">    glyph-&gt;metrics.width  = bbox.xMax - bbox.xMin;</a>
+<a name="ln1983">    glyph-&gt;metrics.height = bbox.yMax - bbox.yMin;</a>
+<a name="ln1984"> </a>
+<a name="ln1985">    /* Now take care of vertical metrics.  In the case where there is */</a>
+<a name="ln1986">    /* no vertical information within the font (relatively common),   */</a>
+<a name="ln1987">    /* create some metrics manually                                   */</a>
+<a name="ln1988">    {</a>
+<a name="ln1989">      FT_Pos  top;      /* scaled vertical top side bearing  */</a>
+<a name="ln1990">      FT_Pos  advance;  /* scaled vertical advance height    */</a>
+<a name="ln1991"> </a>
+<a name="ln1992"> </a>
+<a name="ln1993">      /* Get the unscaled top bearing and advance height. */</a>
+<a name="ln1994">      if ( face-&gt;vertical_info                   &amp;&amp;</a>
+<a name="ln1995">           face-&gt;vertical.number_Of_VMetrics &gt; 0 )</a>
+<a name="ln1996">      {</a>
+<a name="ln1997">        top = (FT_Short)FT_DivFix( loader-&gt;pp3.y - bbox.yMax,</a>
+<a name="ln1998">                                   y_scale );</a>
+<a name="ln1999"> </a>
+<a name="ln2000">        if ( loader-&gt;pp3.y &lt;= loader-&gt;pp4.y )</a>
+<a name="ln2001">          advance = 0;</a>
+<a name="ln2002">        else</a>
+<a name="ln2003">          advance = (FT_UShort)FT_DivFix( loader-&gt;pp3.y - loader-&gt;pp4.y,</a>
+<a name="ln2004">                                          y_scale );</a>
+<a name="ln2005">      }</a>
+<a name="ln2006">      else</a>
+<a name="ln2007">      {</a>
+<a name="ln2008">        FT_Pos  height;</a>
+<a name="ln2009"> </a>
+<a name="ln2010"> </a>
+<a name="ln2011">        /* XXX Compute top side bearing and advance height in  */</a>
+<a name="ln2012">        /*     Get_VMetrics instead of here.                   */</a>
+<a name="ln2013"> </a>
+<a name="ln2014">        /* NOTE: The OS/2 values are the only `portable' ones, */</a>
+<a name="ln2015">        /*       which is why we use them, if there is an OS/2 */</a>
+<a name="ln2016">        /*       table in the font.  Otherwise, we use the     */</a>
+<a name="ln2017">        /*       values defined in the horizontal header.      */</a>
+<a name="ln2018"> </a>
+<a name="ln2019">        height = (FT_Short)FT_DivFix( bbox.yMax - bbox.yMin,</a>
+<a name="ln2020">                                      y_scale );</a>
+<a name="ln2021">        if ( face-&gt;os2.version != 0xFFFFU )</a>
+<a name="ln2022">          advance = (FT_Pos)( face-&gt;os2.sTypoAscender -</a>
+<a name="ln2023">                              face-&gt;os2.sTypoDescender );</a>
+<a name="ln2024">        else</a>
+<a name="ln2025">          advance = (FT_Pos)( face-&gt;horizontal.Ascender -</a>
+<a name="ln2026">                              face-&gt;horizontal.Descender );</a>
+<a name="ln2027"> </a>
+<a name="ln2028">        top = ( advance - height ) / 2;</a>
+<a name="ln2029">      }</a>
+<a name="ln2030"> </a>
+<a name="ln2031">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln2032">      {</a>
+<a name="ln2033">        FT_Incremental_InterfaceRec*  incr;</a>
+<a name="ln2034">        FT_Incremental_MetricsRec     metrics;</a>
+<a name="ln2035">        FT_Error                      error;</a>
+<a name="ln2036"> </a>
+<a name="ln2037"> </a>
+<a name="ln2038">        incr = face-&gt;root.internal-&gt;incremental_interface;</a>
+<a name="ln2039"> </a>
+<a name="ln2040">        /* If this is an incrementally loaded font see if there are */</a>
+<a name="ln2041">        /* overriding metrics for this glyph.                       */</a>
+<a name="ln2042">        if ( incr &amp;&amp; incr-&gt;funcs-&gt;get_glyph_metrics )</a>
+<a name="ln2043">        {</a>
+<a name="ln2044">          metrics.bearing_x = 0;</a>
+<a name="ln2045">          metrics.bearing_y = top;</a>
+<a name="ln2046">          metrics.advance   = advance;</a>
+<a name="ln2047"> </a>
+<a name="ln2048">          error = incr-&gt;funcs-&gt;get_glyph_metrics( incr-&gt;object,</a>
+<a name="ln2049">                                                  glyph_index,</a>
+<a name="ln2050">                                                  TRUE,</a>
+<a name="ln2051">                                                  &amp;metrics );</a>
+<a name="ln2052">          if ( error )</a>
+<a name="ln2053">            return error;</a>
+<a name="ln2054"> </a>
+<a name="ln2055">          top     = metrics.bearing_y;</a>
+<a name="ln2056">          advance = metrics.advance;</a>
+<a name="ln2057">        }</a>
+<a name="ln2058">      }</a>
+<a name="ln2059"> </a>
+<a name="ln2060">      /* GWW: Do vertical metrics get loaded incrementally too? */</a>
+<a name="ln2061"> </a>
+<a name="ln2062">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln2063"> </a>
+<a name="ln2064">      glyph-&gt;linearVertAdvance = advance;</a>
+<a name="ln2065"> </a>
+<a name="ln2066">      /* scale the metrics */</a>
+<a name="ln2067">      if ( !( loader-&gt;load_flags &amp; FT_LOAD_NO_SCALE ) )</a>
+<a name="ln2068">      {</a>
+<a name="ln2069">        top     = FT_MulFix( top,     y_scale );</a>
+<a name="ln2070">        advance = FT_MulFix( advance, y_scale );</a>
+<a name="ln2071">      }</a>
+<a name="ln2072"> </a>
+<a name="ln2073">      /* XXX: for now, we have no better algorithm for the lsb, but it */</a>
+<a name="ln2074">      /*      should work fine.                                        */</a>
+<a name="ln2075">      /*                                                               */</a>
+<a name="ln2076">      glyph-&gt;metrics.vertBearingX = glyph-&gt;metrics.horiBearingX -</a>
+<a name="ln2077">                                      glyph-&gt;metrics.horiAdvance / 2;</a>
+<a name="ln2078">      glyph-&gt;metrics.vertBearingY = top;</a>
+<a name="ln2079">      glyph-&gt;metrics.vertAdvance  = advance;</a>
+<a name="ln2080">    }</a>
+<a name="ln2081"> </a>
+<a name="ln2082">    return 0;</a>
+<a name="ln2083">  }</a>
+<a name="ln2084"> </a>
+<a name="ln2085"> </a>
+<a name="ln2086">#ifdef TT_CONFIG_OPTION_EMBEDDED_BITMAPS</a>
+<a name="ln2087"> </a>
+<a name="ln2088">  static FT_Error</a>
+<a name="ln2089">  load_sbit_image( TT_Size       size,</a>
+<a name="ln2090">                   TT_GlyphSlot  glyph,</a>
+<a name="ln2091">                   FT_UInt       glyph_index,</a>
+<a name="ln2092">                   FT_Int32      load_flags )</a>
+<a name="ln2093">  {</a>
+<a name="ln2094">    TT_Face             face;</a>
+<a name="ln2095">    SFNT_Service        sfnt;</a>
+<a name="ln2096">    FT_Stream           stream;</a>
+<a name="ln2097">    FT_Error            error;</a>
+<a name="ln2098">    TT_SBit_MetricsRec  metrics;</a>
+<a name="ln2099"> </a>
+<a name="ln2100"> </a>
+<a name="ln2101">    face   = (TT_Face)glyph-&gt;face;</a>
+<a name="ln2102">    sfnt   = (SFNT_Service)face-&gt;sfnt;</a>
+<a name="ln2103">    stream = face-&gt;root.stream;</a>
+<a name="ln2104"> </a>
+<a name="ln2105">    error = sfnt-&gt;load_sbit_image( face,</a>
+<a name="ln2106">                                   size-&gt;strike_index,</a>
+<a name="ln2107">                                   glyph_index,</a>
+<a name="ln2108">                                   (FT_UInt)load_flags,</a>
+<a name="ln2109">                                   stream,</a>
+<a name="ln2110">                                   &amp;glyph-&gt;bitmap,</a>
+<a name="ln2111">                                   &amp;metrics );</a>
+<a name="ln2112">    if ( !error )</a>
+<a name="ln2113">    {</a>
+<a name="ln2114">      glyph-&gt;outline.n_points   = 0;</a>
+<a name="ln2115">      glyph-&gt;outline.n_contours = 0;</a>
+<a name="ln2116"> </a>
+<a name="ln2117">      glyph-&gt;metrics.width  = (FT_Pos)metrics.width  * 64;</a>
+<a name="ln2118">      glyph-&gt;metrics.height = (FT_Pos)metrics.height * 64;</a>
+<a name="ln2119"> </a>
+<a name="ln2120">      glyph-&gt;metrics.horiBearingX = (FT_Pos)metrics.horiBearingX * 64;</a>
+<a name="ln2121">      glyph-&gt;metrics.horiBearingY = (FT_Pos)metrics.horiBearingY * 64;</a>
+<a name="ln2122">      glyph-&gt;metrics.horiAdvance  = (FT_Pos)metrics.horiAdvance  * 64;</a>
+<a name="ln2123"> </a>
+<a name="ln2124">      glyph-&gt;metrics.vertBearingX = (FT_Pos)metrics.vertBearingX * 64;</a>
+<a name="ln2125">      glyph-&gt;metrics.vertBearingY = (FT_Pos)metrics.vertBearingY * 64;</a>
+<a name="ln2126">      glyph-&gt;metrics.vertAdvance  = (FT_Pos)metrics.vertAdvance  * 64;</a>
+<a name="ln2127"> </a>
+<a name="ln2128">      glyph-&gt;format = FT_GLYPH_FORMAT_BITMAP;</a>
+<a name="ln2129"> </a>
+<a name="ln2130">      if ( load_flags &amp; FT_LOAD_VERTICAL_LAYOUT )</a>
+<a name="ln2131">      {</a>
+<a name="ln2132">        glyph-&gt;bitmap_left = metrics.vertBearingX;</a>
+<a name="ln2133">        glyph-&gt;bitmap_top  = metrics.vertBearingY;</a>
+<a name="ln2134">      }</a>
+<a name="ln2135">      else</a>
+<a name="ln2136">      {</a>
+<a name="ln2137">        glyph-&gt;bitmap_left = metrics.horiBearingX;</a>
+<a name="ln2138">        glyph-&gt;bitmap_top  = metrics.horiBearingY;</a>
+<a name="ln2139">      }</a>
+<a name="ln2140">    }</a>
+<a name="ln2141"> </a>
+<a name="ln2142">    return error;</a>
+<a name="ln2143">  }</a>
+<a name="ln2144"> </a>
+<a name="ln2145">#endif /* TT_CONFIG_OPTION_EMBEDDED_BITMAPS */</a>
+<a name="ln2146"> </a>
+<a name="ln2147"> </a>
+<a name="ln2148">  static FT_Error</a>
+<a name="ln2149">  tt_loader_init( TT_Loader     loader,</a>
+<a name="ln2150">                  TT_Size       size,</a>
+<a name="ln2151">                  TT_GlyphSlot  glyph,</a>
+<a name="ln2152">                  FT_Int32      load_flags,</a>
+<a name="ln2153">                  FT_Bool       glyf_table_only )</a>
+<a name="ln2154">  {</a>
+<a name="ln2155">    FT_Error  error;</a>
+<a name="ln2156"> </a>
+<a name="ln2157">    TT_Face    face;</a>
+<a name="ln2158">    FT_Stream  stream;</a>
+<a name="ln2159">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln2160">    FT_Bool    pedantic = FT_BOOL( load_flags &amp; FT_LOAD_PEDANTIC );</a>
+<a name="ln2161">#endif</a>
+<a name="ln2162"> </a>
+<a name="ln2163"> </a>
+<a name="ln2164">    face   = (TT_Face)glyph-&gt;face;</a>
+<a name="ln2165">    stream = face-&gt;root.stream;</a>
+<a name="ln2166"> </a>
+<a name="ln2167">    FT_MEM_ZERO( loader, sizeof ( TT_LoaderRec ) );</a>
+<a name="ln2168"> </a>
+<a name="ln2169">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln2170"> </a>
+<a name="ln2171">    /* load execution context */</a>
+<a name="ln2172">    if ( IS_HINTED( load_flags ) &amp;&amp; !glyf_table_only )</a>
+<a name="ln2173">    {</a>
+<a name="ln2174">      TT_ExecContext  exec;</a>
+<a name="ln2175">      FT_Bool         grayscale;</a>
+<a name="ln2176"> </a>
+<a name="ln2177">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln2178">      TT_Driver  driver = (TT_Driver)FT_FACE_DRIVER( face );</a>
+<a name="ln2179"> </a>
+<a name="ln2180">      FT_Bool  subpixel_hinting = FALSE;</a>
+<a name="ln2181"> </a>
+<a name="ln2182">#if 0</a>
+<a name="ln2183">      /* not used yet */</a>
+<a name="ln2184">      FT_Bool  compatible_widths;</a>
+<a name="ln2185">      FT_Bool  symmetrical_smoothing;</a>
+<a name="ln2186">      FT_Bool  bgr;</a>
+<a name="ln2187">      FT_Bool  vertical_lcd;</a>
+<a name="ln2188">      FT_Bool  subpixel_positioned;</a>
+<a name="ln2189">      FT_Bool  gray_cleartype;</a>
+<a name="ln2190">#endif</a>
+<a name="ln2191">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln2192"> </a>
+<a name="ln2193">      FT_Bool  reexecute = FALSE;</a>
+<a name="ln2194"> </a>
+<a name="ln2195"> </a>
+<a name="ln2196">      if ( size-&gt;bytecode_ready &lt; 0 || size-&gt;cvt_ready &lt; 0 )</a>
+<a name="ln2197">      {</a>
+<a name="ln2198">        error = tt_size_ready_bytecode( size, pedantic );</a>
+<a name="ln2199">        if ( error )</a>
+<a name="ln2200">          return error;</a>
+<a name="ln2201">      }</a>
+<a name="ln2202">      else if ( size-&gt;bytecode_ready )</a>
+<a name="ln2203">        return size-&gt;bytecode_ready;</a>
+<a name="ln2204">      else if ( size-&gt;cvt_ready )</a>
+<a name="ln2205">        return size-&gt;cvt_ready;</a>
+<a name="ln2206"> </a>
+<a name="ln2207">      /* query new execution context */</a>
+<a name="ln2208">      exec = size-&gt;context;</a>
+<a name="ln2209">      if ( !exec )</a>
+<a name="ln2210">        return FT_THROW( Could_Not_Find_Context );</a>
+<a name="ln2211"> </a>
+<a name="ln2212">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln2213"> </a>
+<a name="ln2214">      if ( driver-&gt;interpreter_version == TT_INTERPRETER_VERSION_38 )</a>
+<a name="ln2215">      {</a>
+<a name="ln2216">        subpixel_hinting = FT_BOOL( ( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2217">                                      FT_RENDER_MODE_MONO               )  &amp;&amp;</a>
+<a name="ln2218">                                    SPH_OPTION_SET_SUBPIXEL                );</a>
+<a name="ln2219"> </a>
+<a name="ln2220">        if ( subpixel_hinting )</a>
+<a name="ln2221">          grayscale = FALSE;</a>
+<a name="ln2222">        else if ( SPH_OPTION_SET_GRAYSCALE )</a>
+<a name="ln2223">        {</a>
+<a name="ln2224">          grayscale        = TRUE;</a>
+<a name="ln2225">          subpixel_hinting = FALSE;</a>
+<a name="ln2226">        }</a>
+<a name="ln2227">        else</a>
+<a name="ln2228">          grayscale = FALSE;</a>
+<a name="ln2229"> </a>
+<a name="ln2230">        if ( FT_IS_TRICKY( glyph-&gt;face ) )</a>
+<a name="ln2231">          subpixel_hinting = FALSE;</a>
+<a name="ln2232"> </a>
+<a name="ln2233">        exec-&gt;ignore_x_mode      = subpixel_hinting || grayscale;</a>
+<a name="ln2234">        exec-&gt;rasterizer_version = SPH_OPTION_SET_RASTERIZER_VERSION;</a>
+<a name="ln2235">        if ( exec-&gt;sph_tweak_flags &amp; SPH_TWEAK_RASTERIZER_35 )</a>
+<a name="ln2236">          exec-&gt;rasterizer_version = TT_INTERPRETER_VERSION_35;</a>
+<a name="ln2237"> </a>
+<a name="ln2238">#if 1</a>
+<a name="ln2239">        exec-&gt;compatible_widths     = SPH_OPTION_SET_COMPATIBLE_WIDTHS;</a>
+<a name="ln2240">        exec-&gt;symmetrical_smoothing = TRUE;</a>
+<a name="ln2241">        exec-&gt;bgr                   = FALSE;</a>
+<a name="ln2242">        exec-&gt;vertical_lcd          = FALSE;</a>
+<a name="ln2243">        exec-&gt;subpixel_positioned   = TRUE;</a>
+<a name="ln2244">        exec-&gt;gray_cleartype        = FALSE;</a>
+<a name="ln2245">#else /* 0 */</a>
+<a name="ln2246">        exec-&gt;compatible_widths =</a>
+<a name="ln2247">          FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2248">                   TT_LOAD_COMPATIBLE_WIDTHS );</a>
+<a name="ln2249">        exec-&gt;symmetrical_smoothing =</a>
+<a name="ln2250">          FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2251">                   TT_LOAD_SYMMETRICAL_SMOOTHING );</a>
+<a name="ln2252">        exec-&gt;bgr =</a>
+<a name="ln2253">          FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2254">                   TT_LOAD_BGR );</a>
+<a name="ln2255">        exec-&gt;vertical_lcd =</a>
+<a name="ln2256">          FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2257">                   TT_LOAD_VERTICAL_LCD );</a>
+<a name="ln2258">        exec-&gt;subpixel_positioned =</a>
+<a name="ln2259">          FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2260">                   TT_LOAD_SUBPIXEL_POSITIONED );</a>
+<a name="ln2261">        exec-&gt;gray_cleartype =</a>
+<a name="ln2262">          FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2263">                   TT_LOAD_GRAY_CLEARTYPE );</a>
+<a name="ln2264">#endif /* 0 */</a>
+<a name="ln2265"> </a>
+<a name="ln2266">      }</a>
+<a name="ln2267">      else</a>
+<a name="ln2268"> </a>
+<a name="ln2269">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln2270"> </a>
+<a name="ln2271">      {</a>
+<a name="ln2272">        grayscale = FT_BOOL( FT_LOAD_TARGET_MODE( load_flags ) !=</a>
+<a name="ln2273">                             FT_RENDER_MODE_MONO );</a>
+<a name="ln2274">      }</a>
+<a name="ln2275"> </a>
+<a name="ln2276">      error = TT_Load_Context( exec, face, size );</a>
+<a name="ln2277">      if ( error )</a>
+<a name="ln2278">        return error;</a>
+<a name="ln2279"> </a>
+<a name="ln2280">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln2281"> </a>
+<a name="ln2282">      if ( driver-&gt;interpreter_version == TT_INTERPRETER_VERSION_38 )</a>
+<a name="ln2283">      {</a>
+<a name="ln2284">        /* a change from mono to subpixel rendering (and vice versa) */</a>
+<a name="ln2285">        /* requires a re-execution of the CVT program                */</a>
+<a name="ln2286">        if ( subpixel_hinting != exec-&gt;subpixel_hinting )</a>
+<a name="ln2287">        {</a>
+<a name="ln2288">          FT_TRACE4(( &quot;tt_loader_init: subpixel hinting change,&quot;</a>
+<a name="ln2289">                      &quot; re-executing `prep' table\n&quot; ));</a>
+<a name="ln2290"> </a>
+<a name="ln2291">          exec-&gt;subpixel_hinting = subpixel_hinting;</a>
+<a name="ln2292">          reexecute              = TRUE;</a>
+<a name="ln2293">        }</a>
+<a name="ln2294"> </a>
+<a name="ln2295">        /* a change from mono to grayscale rendering (and vice versa) */</a>
+<a name="ln2296">        /* requires a re-execution of the CVT program                 */</a>
+<a name="ln2297">        if ( grayscale != exec-&gt;grayscale )</a>
+<a name="ln2298">        {</a>
+<a name="ln2299">          FT_TRACE4(( &quot;tt_loader_init: grayscale hinting change,&quot;</a>
+<a name="ln2300">                      &quot; re-executing `prep' table\n&quot; ));</a>
+<a name="ln2301"> </a>
+<a name="ln2302">          exec-&gt;grayscale = grayscale;</a>
+<a name="ln2303">          reexecute       = TRUE;</a>
+<a name="ln2304">        }</a>
+<a name="ln2305">      }</a>
+<a name="ln2306">      else</a>
+<a name="ln2307"> </a>
+<a name="ln2308">#endif /* TT_CONFIG_OPTION_SUBPIXEL_HINTING */</a>
+<a name="ln2309"> </a>
+<a name="ln2310">      {</a>
+<a name="ln2311">        /* a change from mono to grayscale rendering (and vice versa) */</a>
+<a name="ln2312">        /* requires a re-execution of the CVT program                 */</a>
+<a name="ln2313">        if ( grayscale != exec-&gt;grayscale )</a>
+<a name="ln2314">        {</a>
+<a name="ln2315">          FT_TRACE4(( &quot;tt_loader_init: grayscale hinting change,&quot;</a>
+<a name="ln2316">                      &quot; re-executing `prep' table\n&quot; ));</a>
+<a name="ln2317"> </a>
+<a name="ln2318">          exec-&gt;grayscale = grayscale;</a>
+<a name="ln2319">          reexecute       = TRUE;</a>
+<a name="ln2320">        }</a>
+<a name="ln2321">      }</a>
+<a name="ln2322"> </a>
+<a name="ln2323">      if ( reexecute )</a>
+<a name="ln2324">      {</a>
+<a name="ln2325">        FT_UInt  i;</a>
+<a name="ln2326"> </a>
+<a name="ln2327"> </a>
+<a name="ln2328">        for ( i = 0; i &lt; size-&gt;cvt_size; i++ )</a>
+<a name="ln2329">          size-&gt;cvt[i] = FT_MulFix( face-&gt;cvt[i], size-&gt;ttmetrics.scale );</a>
+<a name="ln2330">        error = tt_size_run_prep( size, pedantic );</a>
+<a name="ln2331">        if ( error )</a>
+<a name="ln2332">          return error;</a>
+<a name="ln2333">      }</a>
+<a name="ln2334"> </a>
+<a name="ln2335">      /* check whether the cvt program has disabled hinting */</a>
+<a name="ln2336">      if ( exec-&gt;GS.instruct_control &amp; 1 )</a>
+<a name="ln2337">        load_flags |= FT_LOAD_NO_HINTING;</a>
+<a name="ln2338"> </a>
+<a name="ln2339">      /* load default graphics state -- if needed */</a>
+<a name="ln2340">      if ( exec-&gt;GS.instruct_control &amp; 2 )</a>
+<a name="ln2341">        exec-&gt;GS = tt_default_graphics_state;</a>
+<a name="ln2342"> </a>
+<a name="ln2343">#ifdef TT_CONFIG_OPTION_SUBPIXEL_HINTING</a>
+<a name="ln2344">      /* check whether we have a font hinted for ClearType --           */</a>
+<a name="ln2345">      /* note that this flag can also be modified in a glyph's bytecode */</a>
+<a name="ln2346">      if ( exec-&gt;GS.instruct_control &amp; 4 )</a>
+<a name="ln2347">        exec-&gt;ignore_x_mode = 0;</a>
+<a name="ln2348">#endif</a>
+<a name="ln2349"> </a>
+<a name="ln2350">      exec-&gt;pedantic_hinting = FT_BOOL( load_flags &amp; FT_LOAD_PEDANTIC );</a>
+<a name="ln2351">      loader-&gt;exec = exec;</a>
+<a name="ln2352">      loader-&gt;instructions = exec-&gt;glyphIns;</a>
+<a name="ln2353">    }</a>
+<a name="ln2354"> </a>
+<a name="ln2355">#endif /* TT_USE_BYTECODE_INTERPRETER */</a>
+<a name="ln2356"> </a>
+<a name="ln2357">    /* seek to the beginning of the glyph table -- for Type 42 fonts     */</a>
+<a name="ln2358">    /* the table might be accessed from a Postscript stream or something */</a>
+<a name="ln2359">    /* else...                                                           */</a>
+<a name="ln2360"> </a>
+<a name="ln2361">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln2362"> </a>
+<a name="ln2363">    if ( face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln2364">      loader-&gt;glyf_offset = 0;</a>
+<a name="ln2365">    else</a>
+<a name="ln2366"> </a>
+<a name="ln2367">#endif</a>
+<a name="ln2368"> </a>
+<a name="ln2369">    {</a>
+<a name="ln2370">      error = face-&gt;goto_table( face, TTAG_glyf, stream, 0 );</a>
+<a name="ln2371"> </a>
+<a name="ln2372">      if ( FT_ERR_EQ( error, Table_Missing ) )</a>
+<a name="ln2373">        loader-&gt;glyf_offset = 0;</a>
+<a name="ln2374">      else if ( error )</a>
+<a name="ln2375">      {</a>
+<a name="ln2376">        FT_ERROR(( &quot;tt_loader_init: could not access glyph table\n&quot; ));</a>
+<a name="ln2377">        return error;</a>
+<a name="ln2378">      }</a>
+<a name="ln2379">      else</a>
+<a name="ln2380">        loader-&gt;glyf_offset = FT_STREAM_POS();</a>
+<a name="ln2381">    }</a>
+<a name="ln2382"> </a>
+<a name="ln2383">    /* get face's glyph loader */</a>
+<a name="ln2384">    if ( !glyf_table_only )</a>
+<a name="ln2385">    {</a>
+<a name="ln2386">      FT_GlyphLoader  gloader = glyph-&gt;internal-&gt;loader;</a>
+<a name="ln2387"> </a>
+<a name="ln2388"> </a>
+<a name="ln2389">      FT_GlyphLoader_Rewind( gloader );</a>
+<a name="ln2390">      loader-&gt;gloader = gloader;</a>
+<a name="ln2391">    }</a>
+<a name="ln2392"> </a>
+<a name="ln2393">    loader-&gt;load_flags = (FT_ULong)load_flags;</a>
+<a name="ln2394"> </a>
+<a name="ln2395">    loader-&gt;face   = face;</a>
+<a name="ln2396">    loader-&gt;size   = size;</a>
+<a name="ln2397">    loader-&gt;glyph  = (FT_GlyphSlot)glyph;</a>
+<a name="ln2398">    loader-&gt;stream = stream;</a>
+<a name="ln2399"> </a>
+<a name="ln2400">    return FT_Err_Ok;</a>
+<a name="ln2401">  }</a>
+<a name="ln2402"> </a>
+<a name="ln2403"> </a>
+<a name="ln2404">  /*************************************************************************/</a>
+<a name="ln2405">  /*                                                                       */</a>
+<a name="ln2406">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln2407">  /*    TT_Load_Glyph                                                      */</a>
+<a name="ln2408">  /*                                                                       */</a>
+<a name="ln2409">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln2410">  /*    A function used to load a single glyph within a given glyph slot,  */</a>
+<a name="ln2411">  /*    for a given size.                                                  */</a>
+<a name="ln2412">  /*                                                                       */</a>
+<a name="ln2413">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln2414">  /*    glyph       :: A handle to a target slot object where the glyph    */</a>
+<a name="ln2415">  /*                   will be loaded.                                     */</a>
+<a name="ln2416">  /*                                                                       */</a>
+<a name="ln2417">  /*    size        :: A handle to the source face size at which the glyph */</a>
+<a name="ln2418">  /*                   must be scaled/loaded.                              */</a>
+<a name="ln2419">  /*                                                                       */</a>
+<a name="ln2420">  /*    glyph_index :: The index of the glyph in the font file.            */</a>
+<a name="ln2421">  /*                                                                       */</a>
+<a name="ln2422">  /*    load_flags  :: A flag indicating what to load for this glyph.  The */</a>
+<a name="ln2423">  /*                   FT_LOAD_XXX constants can be used to control the    */</a>
+<a name="ln2424">  /*                   glyph loading process (e.g., whether the outline    */</a>
+<a name="ln2425">  /*                   should be scaled, whether to load bitmaps or not,   */</a>
+<a name="ln2426">  /*                   whether to hint the outline, etc).                  */</a>
+<a name="ln2427">  /*                                                                       */</a>
+<a name="ln2428">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln2429">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln2430">  /*                                                                       */</a>
+<a name="ln2431">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln2432">  TT_Load_Glyph( TT_Size       size,</a>
+<a name="ln2433">                 TT_GlyphSlot  glyph,</a>
+<a name="ln2434">                 FT_UInt       glyph_index,</a>
+<a name="ln2435">                 FT_Int32      load_flags )</a>
+<a name="ln2436">  {</a>
+<a name="ln2437">    FT_Error      error;</a>
+<a name="ln2438">    TT_LoaderRec  loader;</a>
+<a name="ln2439"> </a>
+<a name="ln2440"> </a>
+<a name="ln2441">    FT_TRACE1(( &quot;TT_Load_Glyph: glyph index %d\n&quot;, glyph_index ));</a>
+<a name="ln2442"> </a>
+<a name="ln2443">#ifdef TT_CONFIG_OPTION_EMBEDDED_BITMAPS</a>
+<a name="ln2444"> </a>
+<a name="ln2445">    /* try to load embedded bitmap if any              */</a>
+<a name="ln2446">    /*                                                 */</a>
+<a name="ln2447">    /* XXX: The convention should be emphasized in     */</a>
+<a name="ln2448">    /*      the documents because it can be confusing. */</a>
+<a name="ln2449">    if ( size-&gt;strike_index != 0xFFFFFFFFUL      &amp;&amp;</a>
+<a name="ln2450">         ( load_flags &amp; FT_LOAD_NO_BITMAP ) == 0 )</a>
+<a name="ln2451">    {</a>
+<a name="ln2452">      error = load_sbit_image( size, glyph, glyph_index, load_flags );</a>
+<a name="ln2453">      if ( !error )</a>
+<a name="ln2454">      {</a>
+<a name="ln2455">        if ( FT_IS_SCALABLE( glyph-&gt;face ) )</a>
+<a name="ln2456">        {</a>
+<a name="ln2457">          /* for the bbox we need the header only */</a>
+<a name="ln2458">          (void)tt_loader_init( &amp;loader, size, glyph, load_flags, TRUE );</a>
+<a name="ln2459">          (void)load_truetype_glyph( &amp;loader, glyph_index, 0, TRUE );</a>
+<a name="ln2460">          glyph-&gt;linearHoriAdvance = loader.linear;</a>
+<a name="ln2461">          glyph-&gt;linearVertAdvance = loader.vadvance;</a>
+<a name="ln2462"> </a>
+<a name="ln2463">          /* sanity checks: if `xxxAdvance' in the sbit metric */</a>
+<a name="ln2464">          /* structure isn't set, use `linearXXXAdvance'      */</a>
+<a name="ln2465">          if ( !glyph-&gt;metrics.horiAdvance &amp;&amp; glyph-&gt;linearHoriAdvance )</a>
+<a name="ln2466">            glyph-&gt;metrics.horiAdvance =</a>
+<a name="ln2467">              FT_MulFix( glyph-&gt;linearHoriAdvance,</a>
+<a name="ln2468">                         size-&gt;root.metrics.x_scale );</a>
+<a name="ln2469">          if ( !glyph-&gt;metrics.vertAdvance &amp;&amp; glyph-&gt;linearVertAdvance )</a>
+<a name="ln2470">            glyph-&gt;metrics.vertAdvance =</a>
+<a name="ln2471">              FT_MulFix( glyph-&gt;linearVertAdvance,</a>
+<a name="ln2472">                         size-&gt;root.metrics.y_scale );</a>
+<a name="ln2473">        }</a>
+<a name="ln2474"> </a>
+<a name="ln2475">        return FT_Err_Ok;</a>
+<a name="ln2476">      }</a>
+<a name="ln2477">    }</a>
+<a name="ln2478"> </a>
+<a name="ln2479">#endif /* TT_CONFIG_OPTION_EMBEDDED_BITMAPS */</a>
+<a name="ln2480"> </a>
+<a name="ln2481">    /* if FT_LOAD_NO_SCALE is not set, `ttmetrics' must be valid */</a>
+<a name="ln2482">    if ( !( load_flags &amp; FT_LOAD_NO_SCALE ) &amp;&amp; !size-&gt;ttmetrics.valid )</a>
+<a name="ln2483">      return FT_THROW( Invalid_Size_Handle );</a>
+<a name="ln2484"> </a>
+<a name="ln2485">    if ( load_flags &amp; FT_LOAD_SBITS_ONLY )</a>
+<a name="ln2486">      return FT_THROW( Invalid_Argument );</a>
+<a name="ln2487"> </a>
+<a name="ln2488">    error = tt_loader_init( &amp;loader, size, glyph, load_flags, FALSE );</a>
+<a name="ln2489">    if ( error )</a>
+<a name="ln2490">      return error;</a>
+<a name="ln2491"> </a>
+<a name="ln2492">    glyph-&gt;format        = FT_GLYPH_FORMAT_OUTLINE;</a>
+<a name="ln2493">    glyph-&gt;num_subglyphs = 0;</a>
+<a name="ln2494">    glyph-&gt;outline.flags = 0;</a>
+<a name="ln2495"> </a>
+<a name="ln2496">    /* main loading loop */</a>
+<a name="ln2497">    error = load_truetype_glyph( &amp;loader, glyph_index, 0, FALSE );</a>
+<a name="ln2498">    if ( !error )</a>
+<a name="ln2499">    {</a>
+<a name="ln2500">      if ( glyph-&gt;format == FT_GLYPH_FORMAT_COMPOSITE )</a>
+<a name="ln2501">      {</a>
+<a name="ln2502">        glyph-&gt;num_subglyphs = loader.gloader-&gt;base.num_subglyphs;</a>
+<a name="ln2503">        glyph-&gt;subglyphs     = loader.gloader-&gt;base.subglyphs;</a>
+<a name="ln2504">      }</a>
+<a name="ln2505">      else</a>
+<a name="ln2506">      {</a>
+<a name="ln2507">        glyph-&gt;outline        = loader.gloader-&gt;base.outline;</a>
+<a name="ln2508">        glyph-&gt;outline.flags &amp;= ~FT_OUTLINE_SINGLE_PASS;</a>
+<a name="ln2509"> </a>
+<a name="ln2510">        /* Translate array so that (0,0) is the glyph's origin.  Note  */</a>
+<a name="ln2511">        /* that this behaviour is independent on the value of bit 1 of */</a>
+<a name="ln2512">        /* the `flags' field in the `head' table -- at least major     */</a>
+<a name="ln2513">        /* applications like Acroread indicate that.                   */</a>
+<a name="ln2514">        if ( loader.pp1.x )</a>
+<a name="ln2515">          FT_Outline_Translate( &amp;glyph-&gt;outline, -loader.pp1.x, 0 );</a>
+<a name="ln2516">      }</a>
+<a name="ln2517"> </a>
+<a name="ln2518">#ifdef TT_USE_BYTECODE_INTERPRETER</a>
+<a name="ln2519"> </a>
+<a name="ln2520">      if ( IS_HINTED( load_flags ) )</a>
+<a name="ln2521">      {</a>
+<a name="ln2522">        if ( loader.exec-&gt;GS.scan_control )</a>
+<a name="ln2523">        {</a>
+<a name="ln2524">          /* convert scan conversion mode to FT_OUTLINE_XXX flags */</a>
+<a name="ln2525">          switch ( loader.exec-&gt;GS.scan_type )</a>
+<a name="ln2526">          {</a>
+<a name="ln2527">          case 0: /* simple drop-outs including stubs */</a>
+<a name="ln2528">            glyph-&gt;outline.flags |= FT_OUTLINE_INCLUDE_STUBS;</a>
+<a name="ln2529">            break;</a>
+<a name="ln2530">          case 1: /* simple drop-outs excluding stubs */</a>
+<a name="ln2531">            /* nothing; it's the default rendering mode */</a>
+<a name="ln2532">            break;</a>
+<a name="ln2533">          case 4: /* smart drop-outs including stubs */</a>
+<a name="ln2534">            glyph-&gt;outline.flags |= FT_OUTLINE_SMART_DROPOUTS |</a>
+<a name="ln2535">                                    FT_OUTLINE_INCLUDE_STUBS;</a>
+<a name="ln2536">            break;</a>
+<a name="ln2537">          case 5: /* smart drop-outs excluding stubs  */</a>
+<a name="ln2538">            glyph-&gt;outline.flags |= FT_OUTLINE_SMART_DROPOUTS;</a>
+<a name="ln2539">            break;</a>
+<a name="ln2540"> </a>
+<a name="ln2541">          default: /* no drop-out control */</a>
+<a name="ln2542">            glyph-&gt;outline.flags |= FT_OUTLINE_IGNORE_DROPOUTS;</a>
+<a name="ln2543">            break;</a>
+<a name="ln2544">          }</a>
+<a name="ln2545">        }</a>
+<a name="ln2546">        else</a>
+<a name="ln2547">          glyph-&gt;outline.flags |= FT_OUTLINE_IGNORE_DROPOUTS;</a>
+<a name="ln2548">      }</a>
+<a name="ln2549"> </a>
+<a name="ln2550">#endif /* TT_USE_BYTECODE_INTERPRETER */</a>
+<a name="ln2551"> </a>
+<a name="ln2552">      error = compute_glyph_metrics( &amp;loader, glyph_index );</a>
+<a name="ln2553">    }</a>
+<a name="ln2554"> </a>
+<a name="ln2555">    /* Set the `high precision' bit flag.                           */</a>
+<a name="ln2556">    /* This is _critical_ to get correct output for monochrome      */</a>
+<a name="ln2557">    /* TrueType glyphs at all sizes using the bytecode interpreter. */</a>
+<a name="ln2558">    /*                                                              */</a>
+<a name="ln2559">    if ( !( load_flags &amp; FT_LOAD_NO_SCALE ) &amp;&amp;</a>
+<a name="ln2560">         size-&gt;root.metrics.y_ppem &lt; 24     )</a>
+<a name="ln2561">      glyph-&gt;outline.flags |= FT_OUTLINE_HIGH_PRECISION;</a>
+<a name="ln2562"> </a>
+<a name="ln2563">    return error;</a>
+<a name="ln2564">  }</a>
+<a name="ln2565"> </a>
+<a name="ln2566"> </a>
+<a name="ln2567">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="2500"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

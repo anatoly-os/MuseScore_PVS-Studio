@@ -1,0 +1,612 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>importbww.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2010 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">// TODO LVI 2011-10-30: determine how to report import errors.</a>
+<a name="ln21">// Currently all output (both debug and error reports) are done using qDebug.</a>
+<a name="ln22"> </a>
+<a name="ln23">#include &quot;bww2mxml/lexer.h&quot;</a>
+<a name="ln24">#include &quot;bww2mxml/writer.h&quot;</a>
+<a name="ln25">#include &quot;bww2mxml/parser.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;libmscore/fraction.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/barline.h&quot;</a>
+<a name="ln29">#include &quot;libmscore/box.h&quot;</a>
+<a name="ln30">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln31">#include &quot;libmscore/clef.h&quot;</a>
+<a name="ln32">#include &quot;libmscore/keysig.h&quot;</a>
+<a name="ln33">#include &quot;libmscore/layoutbreak.h&quot;</a>
+<a name="ln34">#include &quot;libmscore/measure.h&quot;</a>
+<a name="ln35">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln36">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln37">#include &quot;libmscore/pitchspelling.h&quot;</a>
+<a name="ln38">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln39">#include &quot;libmscore/slur.h&quot;</a>
+<a name="ln40">#include &quot;libmscore/tie.h&quot;</a>
+<a name="ln41">#include &quot;libmscore/staff.h&quot;</a>
+<a name="ln42">#include &quot;libmscore/tempotext.h&quot;</a>
+<a name="ln43">#include &quot;libmscore/timesig.h&quot;</a>
+<a name="ln44">#include &quot;libmscore/tuplet.h&quot;</a>
+<a name="ln45">#include &quot;libmscore/volta.h&quot;</a>
+<a name="ln46">#include &quot;libmscore/segment.h&quot;</a>
+<a name="ln47">#include &quot;musescore.h&quot;</a>
+<a name="ln48">#include &quot;musicxml.h&quot;</a>
+<a name="ln49"> </a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51">//   addText</a>
+<a name="ln52">//   copied from importxml.cpp</a>
+<a name="ln53">//   TODO: remove duplicate code</a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55"> </a>
+<a name="ln56">static void addText(Ms::VBox*&amp; vbx, Ms::Score* s, QString strTxt, Ms::Tid stl)</a>
+<a name="ln57">      {</a>
+<a name="ln58">      if (!strTxt.isEmpty()) {</a>
+<a name="ln59">            Ms::Text* text = new Ms::Text(s, stl);</a>
+<a name="ln60">            text-&gt;setPlainText(strTxt);</a>
+<a name="ln61">            if (vbx == 0)</a>
+<a name="ln62">                  vbx = new Ms::VBox(s);</a>
+<a name="ln63">            vbx-&gt;add(text);</a>
+<a name="ln64">            }</a>
+<a name="ln65">      }</a>
+<a name="ln66"> </a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68">//   xmlSetPitch</a>
+<a name="ln69">//   copied and adapted from importxml.cpp</a>
+<a name="ln70">//   TODO: remove duplicate code</a>
+<a name="ln71">//---------------------------------------------------------</a>
+<a name="ln72"> </a>
+<a name="ln73">/**</a>
+<a name="ln74"> Convert MusicXML \a step / \a alter / \a octave to midi pitch,</a>
+<a name="ln75"> set pitch and tpc.</a>
+<a name="ln76"> */</a>
+<a name="ln77"> </a>
+<a name="ln78">static void xmlSetPitch(Ms::Note* n, char step, int alter, int octave)</a>
+<a name="ln79">      {</a>
+<a name="ln80">      int istep = step - 'A';</a>
+<a name="ln81">      //                       a  b   c  d  e  f  g</a>
+<a name="ln82">      static int table[7]  = { 9, 11, 0, 2, 4, 5, 7 };</a>
+<a name="ln83">      if (istep &lt; 0 || istep &gt; 6) {</a>
+<a name="ln84">            qDebug(&quot;xmlSetPitch: illegal pitch %d, &lt;%c&gt;&quot;, istep, step);</a>
+<a name="ln85">            return;</a>
+<a name="ln86">            }</a>
+<a name="ln87">      int pitch = table[istep] + alter + (octave+1) * 12;</a>
+<a name="ln88"> </a>
+<a name="ln89">      if (pitch &lt; 0)</a>
+<a name="ln90">            pitch = 0;</a>
+<a name="ln91">      if (pitch &gt; 127)</a>
+<a name="ln92">            pitch = 127;</a>
+<a name="ln93"> </a>
+<a name="ln94">      n-&gt;setPitch(pitch);</a>
+<a name="ln95"> </a>
+<a name="ln96">      //                        a  b  c  d  e  f  g</a>
+<a name="ln97">      static int table1[7]  = { 5, 6, 0, 1, 2, 3, 4 };</a>
+<a name="ln98">      int tpc  = step2tpc(table1[istep], Ms::AccidentalVal(alter));</a>
+<a name="ln99">      n-&gt;setTpc(tpc);</a>
+<a name="ln100">      }</a>
+<a name="ln101"> </a>
+<a name="ln102">//---------------------------------------------------------</a>
+<a name="ln103">//   setTempo</a>
+<a name="ln104">//   copied and adapted from importxml.cpp</a>
+<a name="ln105">//   TODO: remove duplicate code</a>
+<a name="ln106">//---------------------------------------------------------</a>
+<a name="ln107"> </a>
+<a name="ln108">static void setTempo(Ms::Score* score, int tempo)</a>
+<a name="ln109">      {</a>
+<a name="ln110">      Ms::TempoText* tt = new Ms::TempoText(score);</a>
+<a name="ln111">      tt-&gt;setTempo(double(tempo)/60.0);</a>
+<a name="ln112">      tt-&gt;setTrack(0);</a>
+<a name="ln113">      QString tempoText = Ms::TempoText::duration2tempoTextString(Ms::TDuration::DurationType::V_QUARTER);</a>
+<a name="ln114">      tempoText += QString(&quot; = %1&quot;).arg(tempo);</a>
+<a name="ln115">      tt-&gt;setPlainText(tempoText);</a>
+<a name="ln116">      Ms::Measure* measure = score-&gt;firstMeasure();</a>
+<a name="ln117">      Ms::Segment* segment = measure-&gt;getSegment(Ms::SegmentType::ChordRest, Ms::Fraction(0,1));</a>
+<a name="ln118">      segment-&gt;add(tt);</a>
+<a name="ln119">      }</a>
+<a name="ln120"> </a>
+<a name="ln121">namespace Bww {</a>
+<a name="ln122"> </a>
+<a name="ln123">/**</a>
+<a name="ln124"> The writer that imports into MuseScore.</a>
+<a name="ln125"> */</a>
+<a name="ln126"> </a>
+<a name="ln127">class MsScWriter : public Writer</a>
+<a name="ln128">      {</a>
+<a name="ln129">public:</a>
+<a name="ln130">      MsScWriter();</a>
+<a name="ln131">      void beginMeasure(const Bww::MeasureBeginFlags mbf);</a>
+<a name="ln132">      void endMeasure(const Bww::MeasureEndFlags mef);</a>
+<a name="ln133">      void header(const QString title, const QString type,</a>
+<a name="ln134">                  const QString composer, const QString footer,</a>
+<a name="ln135">                  const unsigned int temp);</a>
+<a name="ln136">      void note(const QString pitch, const QVector&lt;Bww::BeamType&gt; beamList,</a>
+<a name="ln137">                const QString type, const int dots,</a>
+<a name="ln138">                bool tieStart = false, bool tieStop = false,</a>
+<a name="ln139">                StartStop triplet = ST_NONE,</a>
+<a name="ln140">                bool grace = false);</a>
+<a name="ln141">      void setScore(Ms::Score* s) { score = s; }</a>
+<a name="ln142">      void tsig(const int beats, const int beat);</a>
+<a name="ln143">      void trailer();</a>
+<a name="ln144">private:</a>
+<a name="ln145">      void doTriplet(Ms::Chord* cr, StartStop triplet = ST_NONE);</a>
+<a name="ln146">      static const int WHOLE_DUR = 64;                  ///&lt; Whole note duration</a>
+<a name="ln147">      struct StepAlterOct {                             ///&lt; MusicXML step/alter/oct values</a>
+<a name="ln148">            QChar s;</a>
+<a name="ln149">            int a;</a>
+<a name="ln150">            int o;</a>
+<a name="ln151">            StepAlterOct(QChar step = QChar('C'), int alter = 0, int oct = 1)</a>
+<a name="ln152">                  : s(step), a(alter), o(oct) {};</a>
+<a name="ln153">            };</a>
+<a name="ln154">      Ms::Score* score;                                     ///&lt; The score</a>
+<a name="ln155">      int beats;                                        ///&lt; Number of beats</a>
+<a name="ln156">      int beat;                                         ///&lt; Beat type</a>
+<a name="ln157">      QMap&lt;QString, StepAlterOct&gt; stepAlterOctMap;      ///&lt; Map bww pitch to step/alter/oct</a>
+<a name="ln158">      QMap&lt;QString, QString&gt; typeMap;                   ///&lt; Map bww note types to MusicXML</a>
+<a name="ln159">      unsigned int measureNumber;                       ///&lt; Current measure number</a>
+<a name="ln160">      Ms::Fraction tick;                                    ///&lt; Current tick</a>
+<a name="ln161">      Ms::Measure* currentMeasure;                          ///&lt; Current measure</a>
+<a name="ln162">      Ms::Tuplet* tuplet;                                   ///&lt; Current tuplet</a>
+<a name="ln163">      Ms::Volta* lastVolta;                                 ///&lt; Current volta</a>
+<a name="ln164">      unsigned int tempo;                               ///&lt; Tempo (0 = not specified)</a>
+<a name="ln165">      unsigned int ending;                              ///&lt; Current ending</a>
+<a name="ln166">      QList&lt;Ms::Chord*&gt; currentGraceNotes;</a>
+<a name="ln167">      };</a>
+<a name="ln168"> </a>
+<a name="ln169">/**</a>
+<a name="ln170"> MsScWriter constructor.</a>
+<a name="ln171"> */</a>
+<a name="ln172"> </a>
+<a name="ln173">MsScWriter::MsScWriter()</a>
+<a name="ln174">      : score(0),</a>
+<a name="ln175">      beats(4),</a>
+<a name="ln176">      beat(4),</a>
+<a name="ln177">      measureNumber(0),</a>
+<a name="ln178">      tick(Ms::Fraction(0,1)),</a>
+<a name="ln179">      currentMeasure(0),</a>
+<a name="ln180">      tuplet(0),</a>
+<a name="ln181">      lastVolta(0),</a>
+<a name="ln182">      tempo(0)</a>
+<a name="ln183">      {</a>
+<a name="ln184">      qDebug() &lt;&lt; &quot;MsScWriter::MsScWriter()&quot;;</a>
+<a name="ln185"> </a>
+<a name="ln186">      stepAlterOctMap[&quot;LG&quot;] = StepAlterOct('G', 0, 4);</a>
+<a name="ln187">      stepAlterOctMap[&quot;LA&quot;] = StepAlterOct('A', 0, 4);</a>
+<a name="ln188">      stepAlterOctMap[&quot;B&quot;] = StepAlterOct('B', 0, 4);</a>
+<a name="ln189">      stepAlterOctMap[&quot;C&quot;] = StepAlterOct('C', 1, 5);</a>
+<a name="ln190">      stepAlterOctMap[&quot;D&quot;] = StepAlterOct('D', 0, 5);</a>
+<a name="ln191">      stepAlterOctMap[&quot;E&quot;] = StepAlterOct('E', 0, 5);</a>
+<a name="ln192">      stepAlterOctMap[&quot;F&quot;] = StepAlterOct('F', 1, 5);</a>
+<a name="ln193">      stepAlterOctMap[&quot;HG&quot;] = StepAlterOct('G', 0, 5);</a>
+<a name="ln194">      stepAlterOctMap[&quot;HA&quot;] = StepAlterOct('A', 0, 5);</a>
+<a name="ln195"> </a>
+<a name="ln196">      typeMap[&quot;1&quot;] = &quot;whole&quot;;</a>
+<a name="ln197">      typeMap[&quot;2&quot;] = &quot;half&quot;;</a>
+<a name="ln198">      typeMap[&quot;4&quot;] = &quot;quarter&quot;;</a>
+<a name="ln199">      typeMap[&quot;8&quot;] = &quot;eighth&quot;;</a>
+<a name="ln200">      typeMap[&quot;16&quot;] = &quot;16th&quot;;</a>
+<a name="ln201">      typeMap[&quot;32&quot;] = &quot;32nd&quot;;</a>
+<a name="ln202">      }</a>
+<a name="ln203"> </a>
+<a name="ln204">/**</a>
+<a name="ln205"> Begin a new measure.</a>
+<a name="ln206"> */</a>
+<a name="ln207"> </a>
+<a name="ln208">void MsScWriter::beginMeasure(const Bww::MeasureBeginFlags mbf)</a>
+<a name="ln209">      {</a>
+<a name="ln210">      qDebug() &lt;&lt; &quot;MsScWriter::beginMeasure()&quot;;</a>
+<a name="ln211">      ++measureNumber;</a>
+<a name="ln212"> </a>
+<a name="ln213">      // create a new measure</a>
+<a name="ln214">      currentMeasure  = new Ms::Measure(score);</a>
+<a name="ln215">      currentMeasure-&gt;setTick(tick);</a>
+<a name="ln216">      currentMeasure-&gt;setTimesig(Ms::Fraction(beats, beat));</a>
+<a name="ln217">      currentMeasure-&gt;setNo(measureNumber);</a>
+<a name="ln218">      score-&gt;measures()-&gt;add(currentMeasure);</a>
+<a name="ln219"> </a>
+<a name="ln220">      if (mbf.repeatBegin)</a>
+<a name="ln221">            currentMeasure-&gt;setRepeatStart(true);</a>
+<a name="ln222"> </a>
+<a name="ln223">      if (mbf.irregular)</a>
+<a name="ln224">            currentMeasure-&gt;setIrregular(true);</a>
+<a name="ln225"> </a>
+<a name="ln226">      if (mbf.endingFirst || mbf.endingSecond) {</a>
+<a name="ln227">            Ms::Volta* volta = new Ms::Volta(score);</a>
+<a name="ln228">            volta-&gt;setTrack(0);</a>
+<a name="ln229">            volta-&gt;endings().clear();</a>
+<a name="ln230">            if (mbf.endingFirst) {</a>
+<a name="ln231">                  volta-&gt;setText(&quot;1&quot;);</a>
+<a name="ln232">                  volta-&gt;endings().append(1);</a>
+<a name="ln233">                  ending = 1;</a>
+<a name="ln234">                  }</a>
+<a name="ln235">            else {</a>
+<a name="ln236">                  volta-&gt;setText(&quot;2&quot;);</a>
+<a name="ln237">                  volta-&gt;endings().append(2);</a>
+<a name="ln238">                  ending = 2;</a>
+<a name="ln239">                  }</a>
+<a name="ln240">            volta-&gt;setTick(currentMeasure-&gt;tick());</a>
+<a name="ln241">            score-&gt;addElement(volta);</a>
+<a name="ln242">            lastVolta = volta;</a>
+<a name="ln243">            }</a>
+<a name="ln244"> </a>
+<a name="ln245">      // set clef, key and time signature in the first measure</a>
+<a name="ln246">      if (measureNumber == 1) {</a>
+<a name="ln247">            // clef</a>
+<a name="ln248">            Ms::Clef* clef = new Ms::Clef(score);</a>
+<a name="ln249">            clef-&gt;setClefType(Ms::ClefType::G);</a>
+<a name="ln250">            clef-&gt;setTrack(0);</a>
+<a name="ln251">            Ms::Segment* s = currentMeasure-&gt;getSegment(Ms::SegmentType::Clef, tick);</a>
+<a name="ln252">            s-&gt;add(clef);</a>
+<a name="ln253">            // keysig</a>
+<a name="ln254">            Ms::KeySigEvent key;</a>
+<a name="ln255">            key.setKey(Ms::Key::D);</a>
+<a name="ln256">            Ms::KeySig* keysig = new Ms::KeySig(score);</a>
+<a name="ln257">            keysig-&gt;setKeySigEvent(key);</a>
+<a name="ln258">            keysig-&gt;setTrack(0);</a>
+<a name="ln259">            s = currentMeasure-&gt;getSegment(Ms::SegmentType::KeySig, tick);</a>
+<a name="ln260">            s-&gt;add(keysig);</a>
+<a name="ln261">            // timesig</a>
+<a name="ln262">            Ms::TimeSig* timesig = new Ms::TimeSig(score);</a>
+<a name="ln263">            timesig-&gt;setSig(Ms::Fraction(beats, beat));</a>
+<a name="ln264">            timesig-&gt;setTrack(0);</a>
+<a name="ln265">            s = currentMeasure-&gt;getSegment(Ms::SegmentType::TimeSig, tick);</a>
+<a name="ln266">            s-&gt;add(timesig);</a>
+<a name="ln267">            qDebug(&quot;tempo %d&quot;, tempo);</a>
+<a name="ln268">            }</a>
+<a name="ln269">      }</a>
+<a name="ln270"> </a>
+<a name="ln271">/**</a>
+<a name="ln272"> End the current measure.</a>
+<a name="ln273"> */</a>
+<a name="ln274"> </a>
+<a name="ln275">void MsScWriter::endMeasure(const Bww::MeasureEndFlags mef)</a>
+<a name="ln276">      {</a>
+<a name="ln277">      qDebug() &lt;&lt; &quot;MsScWriter::endMeasure()&quot;;</a>
+<a name="ln278">      if (mef.repeatEnd)</a>
+<a name="ln279">            currentMeasure-&gt;setRepeatEnd(true);</a>
+<a name="ln280"> </a>
+<a name="ln281">      if (mef.endingEnd) {</a>
+<a name="ln282">            if (lastVolta) {</a>
+<a name="ln283">                  qDebug(&quot;adding volta&quot;);</a>
+<a name="ln284">                  if (ending == 1)</a>
+<a name="ln285">                        lastVolta-&gt;setVoltaType(Ms::Volta::Type::CLOSED);</a>
+<a name="ln286">                  else</a>
+<a name="ln287">                        lastVolta-&gt;setVoltaType(Ms::Volta::Type::OPEN);</a>
+<a name="ln288">                  lastVolta-&gt;setTick2(tick);</a>
+<a name="ln289">                  lastVolta = 0;</a>
+<a name="ln290">                  }</a>
+<a name="ln291">            else {</a>
+<a name="ln292">                  qDebug(&quot;lastVolta == 0 on stop&quot;);</a>
+<a name="ln293">                  }</a>
+<a name="ln294">            }</a>
+<a name="ln295"> </a>
+<a name="ln296">      if (mef.lastOfSystem) {</a>
+<a name="ln297">            Ms::LayoutBreak* lb = new Ms::LayoutBreak(score);</a>
+<a name="ln298">            lb-&gt;setTrack(0);</a>
+<a name="ln299">            lb-&gt;setLayoutBreakType(Ms::LayoutBreak::Type::LINE);</a>
+<a name="ln300">            currentMeasure-&gt;add(lb);</a>
+<a name="ln301">            }</a>
+<a name="ln302"> </a>
+<a name="ln303">      if (mef.lastOfPart &amp;&amp; !mef.repeatEnd) {</a>
+<a name="ln304">//TODO            currentMeasure-&gt;setEndBarLineType(Ms::BarLineType::END, false, true);</a>
+<a name="ln305">            }</a>
+<a name="ln306">      else if (mef.doubleBarLine) {</a>
+<a name="ln307">//TODO            currentMeasure-&gt;setEndBarLineType(Ms::BarLineType::DOUBLE, false, true);</a>
+<a name="ln308">            }</a>
+<a name="ln309">      // BarLine* barLine = new BarLine(score);</a>
+<a name="ln310">      // bool visible = true;</a>
+<a name="ln311">      // barLine-&gt;setSubtype(BarLineType::NORMAL);</a>
+<a name="ln312">      // barLine-&gt;setTrack(0);</a>
+<a name="ln313">      // currentMeasure-&gt;setEndBarLineType(barLine-&gt;subtype(), false, visible);</a>
+<a name="ln314">      }</a>
+<a name="ln315"> </a>
+<a name="ln316">/**</a>
+<a name="ln317"> Write a single note.</a>
+<a name="ln318"> */</a>
+<a name="ln319"> </a>
+<a name="ln320">void MsScWriter::note(const QString pitch, const QVector&lt;Bww::BeamType&gt; beamList,</a>
+<a name="ln321">                      const QString type, const int dots,</a>
+<a name="ln322">                      bool tieStart, bool /*TODO tieStop */,</a>
+<a name="ln323">                      StartStop triplet,</a>
+<a name="ln324">                      bool grace)</a>
+<a name="ln325">      {</a>
+<a name="ln326">      qDebug() &lt;&lt; &quot;MsScWriter::note()&quot;</a>
+<a name="ln327">               &lt;&lt; &quot;type:&quot; &lt;&lt; type</a>
+<a name="ln328">               &lt;&lt; &quot;dots:&quot; &lt;&lt; dots</a>
+<a name="ln329">               &lt;&lt; &quot;grace&quot; &lt;&lt; grace</a>
+<a name="ln330">      ;</a>
+<a name="ln331"> </a>
+<a name="ln332">      if (!stepAlterOctMap.contains(pitch)</a>
+<a name="ln333">          || !typeMap.contains(type)) {</a>
+<a name="ln334">            // TODO: error message</a>
+<a name="ln335">            return;</a>
+<a name="ln336">            }</a>
+<a name="ln337">      StepAlterOct sao = stepAlterOctMap.value(pitch);</a>
+<a name="ln338"> </a>
+<a name="ln339">      int ticks = 4 * Ms::MScore::division / type.toInt();</a>
+<a name="ln340">      if (dots) ticks = 3 * ticks / 2;</a>
+<a name="ln341">      qDebug() &lt;&lt; &quot;ticks:&quot; &lt;&lt; ticks;</a>
+<a name="ln342">      Ms::TDuration durationType(Ms::TDuration::DurationType::V_INVALID);</a>
+<a name="ln343">      durationType.setVal(ticks);</a>
+<a name="ln344">      qDebug() &lt;&lt; &quot;duration:&quot; &lt;&lt; durationType.name();</a>
+<a name="ln345">      if (triplet != ST_NONE) ticks = 2 * ticks / 3;</a>
+<a name="ln346"> </a>
+<a name="ln347">      Ms::Beam::Mode bm  = (beamList.at(0) == Bww::BM_BEGIN) ? Ms::Beam::Mode::BEGIN : Ms::Beam::Mode::AUTO;</a>
+<a name="ln348">      Ms::Direction sd = Ms::Direction::AUTO;</a>
+<a name="ln349"> </a>
+<a name="ln350">      // create chord</a>
+<a name="ln351">      Ms::Chord* cr = new Ms::Chord(score);</a>
+<a name="ln352">      //ws cr-&gt;setTick(tick);</a>
+<a name="ln353">      cr-&gt;setBeamMode(bm);</a>
+<a name="ln354">      cr-&gt;setTrack(0);</a>
+<a name="ln355">      if (grace) {</a>
+<a name="ln356">            cr-&gt;setNoteType(Ms::NoteType::GRACE32);</a>
+<a name="ln357">            cr-&gt;setDurationType(Ms::TDuration::DurationType::V_32ND);</a>
+<a name="ln358">            sd = Ms::Direction::UP;</a>
+<a name="ln359">            }</a>
+<a name="ln360">      else {</a>
+<a name="ln361">            if (durationType.type() == Ms::TDuration::DurationType::V_INVALID)</a>
+<a name="ln362">                  durationType.setType(Ms::TDuration::DurationType::V_QUARTER);</a>
+<a name="ln363">            cr-&gt;setDurationType(durationType);</a>
+<a name="ln364">            sd = Ms::Direction::DOWN;</a>
+<a name="ln365">            }</a>
+<a name="ln366">      cr-&gt;setTicks(durationType.fraction());</a>
+<a name="ln367">      cr-&gt;setDots(dots);</a>
+<a name="ln368">      cr-&gt;setStemDirection(sd);</a>
+<a name="ln369">      // add note to chord</a>
+<a name="ln370">      Ms::Note* note = new Ms::Note(score);</a>
+<a name="ln371">      note-&gt;setTrack(0);</a>
+<a name="ln372">      xmlSetPitch(note, sao.s.toLatin1(), sao.a, sao.o);</a>
+<a name="ln373">      if (tieStart) {</a>
+<a name="ln374">            Ms::Tie* tie = new Ms::Tie(score);</a>
+<a name="ln375">            note-&gt;setTieFor(tie);</a>
+<a name="ln376">            tie-&gt;setStartNote(note);</a>
+<a name="ln377">            tie-&gt;setTrack(0);</a>
+<a name="ln378">            }</a>
+<a name="ln379">      cr-&gt;add(note);</a>
+<a name="ln380">      // add chord to measure</a>
+<a name="ln381">      if (!grace) {</a>
+<a name="ln382">            Ms::Segment* s = currentMeasure-&gt;getSegment(Ms::SegmentType::ChordRest, tick);</a>
+<a name="ln383">            s-&gt;add(cr);</a>
+<a name="ln384">            if (!currentGraceNotes.isEmpty()) {</a>
+<a name="ln385">                  for (int i = currentGraceNotes.size() - 1; i &gt;=0; i--)</a>
+<a name="ln386">                        cr-&gt;add(currentGraceNotes.at(i));</a>
+<a name="ln387">                  currentGraceNotes.clear();</a>
+<a name="ln388">                  }</a>
+<a name="ln389">            doTriplet(cr, triplet);</a>
+<a name="ln390">            Ms::Fraction tickBefore = tick;</a>
+<a name="ln391">            tick += Ms::Fraction::fromTicks(ticks);</a>
+<a name="ln392">            Ms::Fraction nl(tick - currentMeasure-&gt;tick());</a>
+<a name="ln393">            currentMeasure-&gt;setTicks(nl);</a>
+<a name="ln394">            qDebug() &lt;&lt; &quot;MsScWriter::note()&quot;</a>
+<a name="ln395">                     &lt;&lt; &quot;tickBefore:&quot; &lt;&lt; tickBefore</a>
+<a name="ln396">                     &lt;&lt; &quot;tick:&quot; &lt;&lt; tick</a>
+<a name="ln397">                     &lt;&lt; &quot;nl:&quot; &lt;&lt; nl.print()</a>
+<a name="ln398">            ;</a>
+<a name="ln399">            }</a>
+<a name="ln400">      else {</a>
+<a name="ln401">            currentGraceNotes.append(cr);</a>
+<a name="ln402">            }</a>
+<a name="ln403">      }</a>
+<a name="ln404"> </a>
+<a name="ln405">/**</a>
+<a name="ln406"> Write the header.</a>
+<a name="ln407"> */</a>
+<a name="ln408"> </a>
+<a name="ln409">void MsScWriter::header(const QString title, const QString type,</a>
+<a name="ln410">                        const QString composer, const QString footer,</a>
+<a name="ln411">                        const unsigned int temp)</a>
+<a name="ln412">      {</a>
+<a name="ln413">      qDebug() &lt;&lt; &quot;MsScWriter::header()&quot;</a>
+<a name="ln414">               &lt;&lt; &quot;title:&quot; &lt;&lt; title</a>
+<a name="ln415">               &lt;&lt; &quot;type:&quot; &lt;&lt; type</a>
+<a name="ln416">               &lt;&lt; &quot;composer:&quot; &lt;&lt; composer</a>
+<a name="ln417">               &lt;&lt; &quot;footer:&quot; &lt;&lt; footer</a>
+<a name="ln418">               &lt;&lt; &quot;temp:&quot; &lt;&lt; temp</a>
+<a name="ln419">      ;</a>
+<a name="ln420"> </a>
+<a name="ln421">      // save tempo for later use</a>
+<a name="ln422">      tempo = temp;</a>
+<a name="ln423"> </a>
+<a name="ln424">      if (!title.isEmpty()) score-&gt;setMetaTag(&quot;workTitle&quot;, title);</a>
+<a name="ln425">      // TODO re-enable following statement</a>
+<a name="ln426">      // currently disabled because it breaks the bww iotest</a>
+<a name="ln427">      // if (!type.isEmpty()) score-&gt;setMetaTag(&quot;workNumber&quot;, type);</a>
+<a name="ln428">      if (!composer.isEmpty()) score-&gt;setMetaTag(&quot;composer&quot;, composer);</a>
+<a name="ln429">      if (!footer.isEmpty()) score-&gt;setMetaTag(&quot;copyright&quot;, footer);</a>
+<a name="ln430"> </a>
+<a name="ln431">      //  score-&gt;setWorkTitle(title);</a>
+<a name="ln432">      Ms::VBox* vbox  = 0;</a>
+<a name="ln433">      addText(vbox, score, title, Ms::Tid::TITLE);</a>
+<a name="ln434">      addText(vbox, score, type, Ms::Tid::SUBTITLE);</a>
+<a name="ln435">      addText(vbox, score, composer, Ms::Tid::COMPOSER);</a>
+<a name="ln436">      // addText(vbox, score, strPoet, Ms::Tid::POET);</a>
+<a name="ln437">      // addText(vbox, score, strTranslator, Ms::Tid::TRANSLATOR);</a>
+<a name="ln438">      if (vbox) {</a>
+<a name="ln439">            vbox-&gt;setTick(Ms::Fraction(0,1));</a>
+<a name="ln440">            score-&gt;measures()-&gt;add(vbox);</a>
+<a name="ln441">            }</a>
+<a name="ln442">      if (!footer.isEmpty())</a>
+<a name="ln443">            score-&gt;style().set(Ms::Sid::oddFooterC, footer);</a>
+<a name="ln444"> </a>
+<a name="ln445">      Ms::Part* part = score-&gt;staff(0)-&gt;part();</a>
+<a name="ln446">      part-&gt;setPlainLongName(instrumentName());</a>
+<a name="ln447">      part-&gt;setPartName(instrumentName());</a>
+<a name="ln448">      part-&gt;instrument()-&gt;setTrackName(instrumentName());</a>
+<a name="ln449">      part-&gt;setMidiProgram(midiProgram() - 1);</a>
+<a name="ln450">      }</a>
+<a name="ln451"> </a>
+<a name="ln452">/**</a>
+<a name="ln453"> Store beats and beat type for later use.</a>
+<a name="ln454"> */</a>
+<a name="ln455"> </a>
+<a name="ln456">void MsScWriter::tsig(const int bts, const int bt)</a>
+<a name="ln457">      {</a>
+<a name="ln458">      qDebug() &lt;&lt; &quot;MsScWriter::tsig()&quot;</a>
+<a name="ln459">               &lt;&lt; &quot;beats:&quot; &lt;&lt; bts</a>
+<a name="ln460">               &lt;&lt; &quot;beat:&quot; &lt;&lt; bt</a>
+<a name="ln461">      ;</a>
+<a name="ln462"> </a>
+<a name="ln463">      beats = bts;</a>
+<a name="ln464">      beat  = bt;</a>
+<a name="ln465">      }</a>
+<a name="ln466"> </a>
+<a name="ln467">/**</a>
+<a name="ln468"> Write the trailer.</a>
+<a name="ln469"> */</a>
+<a name="ln470"> </a>
+<a name="ln471">void MsScWriter::trailer()</a>
+<a name="ln472">      {</a>
+<a name="ln473">      qDebug() &lt;&lt; &quot;MsScWriter::trailer()&quot;</a>
+<a name="ln474">      ;</a>
+<a name="ln475"> </a>
+<a name="ln476">      if (tempo) setTempo(score, tempo);</a>
+<a name="ln477">      }</a>
+<a name="ln478"> </a>
+<a name="ln479">/**</a>
+<a name="ln480"> Handle the triplet.</a>
+<a name="ln481"> */</a>
+<a name="ln482"> </a>
+<a name="ln483">void MsScWriter::doTriplet(Ms::Chord* cr, StartStop triplet)</a>
+<a name="ln484">      {</a>
+<a name="ln485">      qDebug() &lt;&lt; &quot;MsScWriter::doTriplet(&quot; &lt;&lt; triplet &lt;&lt; &quot;)&quot;</a>
+<a name="ln486">      ;</a>
+<a name="ln487"> </a>
+<a name="ln488">      if (triplet == ST_START) {</a>
+<a name="ln489">            tuplet = new Ms::Tuplet(score);</a>
+<a name="ln490">            tuplet-&gt;setTrack(0);</a>
+<a name="ln491">            tuplet-&gt;setRatio(Ms::Fraction(3, 2));</a>
+<a name="ln492">//            tuplet-&gt;setTick(tick);</a>
+<a name="ln493">            currentMeasure-&gt;add(tuplet);</a>
+<a name="ln494">            }</a>
+<a name="ln495">      else if (triplet == ST_STOP) {</a>
+<a name="ln496">            if (tuplet) {</a>
+<a name="ln497">                  cr-&gt;setTuplet(tuplet);</a>
+<a name="ln498">                  tuplet-&gt;add(cr);</a>
+<a name="ln499">                  tuplet = 0;</a>
+<a name="ln500">                  }</a>
+<a name="ln501">            else</a>
+<a name="ln502">                  qDebug(&quot;BWW::import: triplet stop without triplet start&quot;);</a>
+<a name="ln503">            }</a>
+<a name="ln504">      else if (triplet == ST_CONTINUE) {</a>
+<a name="ln505">            if (!tuplet)</a>
+<a name="ln506">                  qDebug(&quot;BWW::import: triplet continue without triplet start&quot;);</a>
+<a name="ln507">            }</a>
+<a name="ln508">      else if (triplet == ST_NONE) {</a>
+<a name="ln509">            if (tuplet)</a>
+<a name="ln510">                  qDebug(&quot;BWW::import: triplet none inside triplet&quot;);</a>
+<a name="ln511">            }</a>
+<a name="ln512">      else</a>
+<a name="ln513">            qDebug(&quot;unknown triplet type %d&quot;, triplet);</a>
+<a name="ln514">      if (tuplet) {</a>
+<a name="ln515">            cr-&gt;setTuplet(tuplet);</a>
+<a name="ln516">            tuplet-&gt;add(cr);</a>
+<a name="ln517">            }</a>
+<a name="ln518">      }</a>
+<a name="ln519"> </a>
+<a name="ln520"> </a>
+<a name="ln521">} // namespace Bww</a>
+<a name="ln522"> </a>
+<a name="ln523">namespace Ms {</a>
+<a name="ln524"> </a>
+<a name="ln525">//---------------------------------------------------------</a>
+<a name="ln526">//   importBww</a>
+<a name="ln527">//---------------------------------------------------------</a>
+<a name="ln528"> </a>
+<a name="ln529">Score::FileError importBww(MasterScore* score, const QString&amp; path)</a>
+<a name="ln530">      {</a>
+<a name="ln531">      qDebug(&quot;Score::importBww(%s)&quot;, qPrintable(path));</a>
+<a name="ln532"> </a>
+<a name="ln533">      QFile fp(path);</a>
+<a name="ln534">      if(!fp.exists())</a>
+<a name="ln535">            return Score::FileError::FILE_NOT_FOUND;</a>
+<a name="ln536">      if (!fp.open(QIODevice::ReadOnly))</a>
+<a name="ln537">            return Score::FileError::FILE_OPEN_ERROR;</a>
+<a name="ln538"> </a>
+<a name="ln539">      QString id(&quot;importBww&quot;);</a>
+<a name="ln540">      Part* part = new Part(score);</a>
+<a name="ln541">      part-&gt;setId(id);</a>
+<a name="ln542">      score-&gt;appendPart(part);</a>
+<a name="ln543">      Staff* staff = new Staff(score);</a>
+<a name="ln544">      staff-&gt;setPart(part);</a>
+<a name="ln545">      part-&gt;staves()-&gt;push_back(staff);</a>
+<a name="ln546">      score-&gt;staves().push_back(staff);</a>
+<a name="ln547"> </a>
+<a name="ln548">      Bww::Lexer lex(&amp;fp);</a>
+<a name="ln549">      Bww::MsScWriter wrt;</a>
+<a name="ln550">      wrt.setScore(score);</a>
+<a name="ln551">      score-&gt;style().set(Sid::measureSpacing, 1.0);</a>
+<a name="ln552">      Bww::Parser p(lex, wrt);</a>
+<a name="ln553">      p.parse();</a>
+<a name="ln554"> </a>
+<a name="ln555">      score-&gt;setSaved(false);</a>
+<a name="ln556">      score-&gt;setCreated(true);</a>
+<a name="ln557">      score-&gt;connectTies();</a>
+<a name="ln558">      qDebug(&quot;Score::importBww() done&quot;);</a>
+<a name="ln559">      return Score::FileError::FILE_NO_ERROR;      // OK</a>
+<a name="ln560">      }</a>
+<a name="ln561"> </a>
+<a name="ln562">} // namespace Ms</a>
+<a name="ln563"> </a>
+
+</code></pre>
+<div class="balloon" rel="508"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'triplet == ST_NONE' is always true.</p></div>
+<div class="balloon" rel="531"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="173"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: ending.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

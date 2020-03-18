@@ -1,0 +1,521 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>lyricsline.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2018 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;lyrics.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;chord.h&quot;</a>
+<a name="ln16">#include &quot;score.h&quot;</a>
+<a name="ln17">#include &quot;sym.h&quot;</a>
+<a name="ln18">#include &quot;system.h&quot;</a>
+<a name="ln19">#include &quot;xml.h&quot;</a>
+<a name="ln20">#include &quot;staff.h&quot;</a>
+<a name="ln21">#include &quot;segment.h&quot;</a>
+<a name="ln22">#include &quot;undo.h&quot;</a>
+<a name="ln23">#include &quot;textedit.h&quot;</a>
+<a name="ln24">#include &quot;measure.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">namespace Ms {</a>
+<a name="ln27"> </a>
+<a name="ln28">//---------------------------------------------------------</a>
+<a name="ln29">//   searchNextLyrics</a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31"> </a>
+<a name="ln32">static Lyrics* searchNextLyrics(Segment* s, int staffIdx, int verse, Placement p)</a>
+<a name="ln33">      {</a>
+<a name="ln34">      Lyrics* l = 0;</a>
+<a name="ln35">      while ((s = s-&gt;next1(SegmentType::ChordRest))) {</a>
+<a name="ln36">            int strack = staffIdx * VOICES;</a>
+<a name="ln37">            int etrack = strack + VOICES;</a>
+<a name="ln38">            // search through all tracks of current staff looking for a lyric in specified verse</a>
+<a name="ln39">            for (int track = strack; track &lt; etrack; ++track) {</a>
+<a name="ln40">                  ChordRest* cr = toChordRest(s-&gt;element(track));</a>
+<a name="ln41">                  if (cr) {</a>
+<a name="ln42">                        // cr with lyrics found, but does it have a syllable in specified verse?</a>
+<a name="ln43">                        l = cr-&gt;lyrics(verse, p);</a>
+<a name="ln44">                        if (l)</a>
+<a name="ln45">                              break;</a>
+<a name="ln46">                        }</a>
+<a name="ln47">                  }</a>
+<a name="ln48">            if (l)</a>
+<a name="ln49">                  break;</a>
+<a name="ln50">            }</a>
+<a name="ln51">      return l;</a>
+<a name="ln52">      }</a>
+<a name="ln53"> </a>
+<a name="ln54">//---------------------------------------------------------</a>
+<a name="ln55">//   LyricsLine</a>
+<a name="ln56">//---------------------------------------------------------</a>
+<a name="ln57"> </a>
+<a name="ln58">LyricsLine::LyricsLine(Score* s)</a>
+<a name="ln59">  : SLine(s, ElementFlag::NOT_SELECTABLE)</a>
+<a name="ln60">      {</a>
+<a name="ln61">      setGenerated(true);           // no need to save it, as it can be re-generated</a>
+<a name="ln62">      setDiagonal(false);</a>
+<a name="ln63">      setLineWidth(score()-&gt;styleP(Sid::lyricsDashLineThickness));</a>
+<a name="ln64">      setAnchor(Spanner::Anchor::SEGMENT);</a>
+<a name="ln65">      _nextLyrics = 0;</a>
+<a name="ln66">      }</a>
+<a name="ln67"> </a>
+<a name="ln68">LyricsLine::LyricsLine(const LyricsLine&amp; g)</a>
+<a name="ln69">   : SLine(g)</a>
+<a name="ln70">      {</a>
+<a name="ln71">      _nextLyrics = 0;</a>
+<a name="ln72">      }</a>
+<a name="ln73"> </a>
+<a name="ln74">//---------------------------------------------------------</a>
+<a name="ln75">//   styleChanged</a>
+<a name="ln76">//---------------------------------------------------------</a>
+<a name="ln77"> </a>
+<a name="ln78">void LyricsLine::styleChanged()</a>
+<a name="ln79">      {</a>
+<a name="ln80">      setLineWidth(score()-&gt;styleP(Sid::lyricsDashLineThickness));</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84">//   layout</a>
+<a name="ln85">//---------------------------------------------------------</a>
+<a name="ln86"> </a>
+<a name="ln87">void LyricsLine::layout()</a>
+<a name="ln88">      {</a>
+<a name="ln89">      bool tempMelismaTicks = (lyrics()-&gt;ticks() == Fraction::fromTicks(Lyrics::TEMP_MELISMA_TICKS));</a>
+<a name="ln90">      if (isEndMelisma()) {         // melisma</a>
+<a name="ln91">            setLineWidth(score()-&gt;styleP(Sid::lyricsLineThickness));</a>
+<a name="ln92">            // if lyrics has a temporary one-chord melisma, set to 0 ticks (just its own chord)</a>
+<a name="ln93">            if (tempMelismaTicks)</a>
+<a name="ln94">                  lyrics()-&gt;setTicks(Fraction(0,1));</a>
+<a name="ln95"> </a>
+<a name="ln96">            // Lyrics::_ticks points to the beginning of the last spanned segment,</a>
+<a name="ln97">            // but the line shall include it:</a>
+<a name="ln98">            // include the duration of this last segment in the melisma duration</a>
+<a name="ln99">            Segment* lyricsSegment   = lyrics()-&gt;segment();</a>
+<a name="ln100">            Fraction lyricsStartTick = lyricsSegment-&gt;tick();</a>
+<a name="ln101">            Fraction lyricsEndTick   = lyrics()-&gt;endTick();</a>
+<a name="ln102">            int lyricsTrack          = lyrics()-&gt;track();</a>
+<a name="ln103"> </a>
+<a name="ln104">            // find segment with tick &gt;= endTick</a>
+<a name="ln105">            Segment* s = lyricsSegment;</a>
+<a name="ln106">            while (s &amp;&amp; s-&gt;tick() &lt; lyricsEndTick)</a>
+<a name="ln107">                  s = s-&gt;nextCR(lyricsTrack, true);</a>
+<a name="ln108">            if (!s) {</a>
+<a name="ln109">                  // user probably deleted measures at end of score, leaving this melisma too long</a>
+<a name="ln110">                  // set s to last segment and reset lyricsEndTick to trigger FIXUP code below</a>
+<a name="ln111">                  s = score()-&gt;lastSegment();</a>
+<a name="ln112">                  lyricsEndTick = Fraction(-1,1);</a>
+<a name="ln113">                  }</a>
+<a name="ln114">            Element* se = s-&gt;element(lyricsTrack);</a>
+<a name="ln115">            // everything is OK if we have reached a chord at right tick on right track</a>
+<a name="ln116">            if (s-&gt;tick() == lyricsEndTick &amp;&amp; se &amp;&amp; se-&gt;type() == ElementType::CHORD) {</a>
+<a name="ln117">                  // advance to next CR, or last segment if no next CR</a>
+<a name="ln118">                  s = s-&gt;nextCR(lyricsTrack, true);</a>
+<a name="ln119">                  if (!s)</a>
+<a name="ln120">                        s = score()-&gt;lastSegment();</a>
+<a name="ln121">                  }</a>
+<a name="ln122">            else {</a>
+<a name="ln123">                  // FIXUP - lyrics tick count not valid</a>
+<a name="ln124">                  // this happens if edits to score have removed the original end segment</a>
+<a name="ln125">                  // so let's fix it here</a>
+<a name="ln126">                  // s is already pointing to segment past endTick (or to last segment)</a>
+<a name="ln127">                  // we should shorten the lyrics tick count to make this work</a>
+<a name="ln128">                  Segment* ns = s;</a>
+<a name="ln129">                  Segment* ps = s-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln130">                  while (ps &amp;&amp; ps != lyricsSegment) {</a>
+<a name="ln131">                        Element* pe = ps-&gt;element(lyricsTrack);</a>
+<a name="ln132">                        // we're looking for an actual chord on this track</a>
+<a name="ln133">                        if (pe &amp;&amp; pe-&gt;type() == ElementType::CHORD)</a>
+<a name="ln134">                              break;</a>
+<a name="ln135">                        s = ps;</a>
+<a name="ln136">                        ps = ps-&gt;prev1(SegmentType::ChordRest);</a>
+<a name="ln137">                        }</a>
+<a name="ln138">                  if (!ps || ps == lyricsSegment) {</a>
+<a name="ln139">                        // no valid previous CR, so try to lengthen melisma instead</a>
+<a name="ln140">                        ps = ns;</a>
+<a name="ln141">                        s = ps-&gt;nextCR(lyricsTrack, true);</a>
+<a name="ln142">                        Element* e = s ? s-&gt;element(lyricsTrack) : nullptr;</a>
+<a name="ln143">                        // check to make sure we have a chord</a>
+<a name="ln144">                        if (!e || e-&gt;type() != ElementType::CHORD) {</a>
+<a name="ln145">                              // nothing to do but set ticks to 0</a>
+<a name="ln146">                              // this will result in melisma being deleted later</a>
+<a name="ln147">                              lyrics()-&gt;undoChangeProperty(Pid::LYRIC_TICKS, 0);</a>
+<a name="ln148">                              setTicks(Fraction(0,1));</a>
+<a name="ln149">                              return;</a>
+<a name="ln150">                              }</a>
+<a name="ln151">                        }</a>
+<a name="ln152">                  lyrics()-&gt;undoChangeProperty(Pid::LYRIC_TICKS, ps-&gt;tick() - lyricsStartTick);</a>
+<a name="ln153">                  }</a>
+<a name="ln154">            // Spanner::computeEndElement() will actually ignore this value and use the (earlier) lyrics()-&gt;endTick() instead</a>
+<a name="ln155">            // still, for consistency with other lines, we should set the ticks for this to the computed (later) value</a>
+<a name="ln156">            if (s)</a>
+<a name="ln157">                  setTicks(s-&gt;tick() - lyricsStartTick);</a>
+<a name="ln158">            }</a>
+<a name="ln159">      else {                                    // dash(es)</a>
+<a name="ln160">            _nextLyrics = searchNextLyrics(lyrics()-&gt;segment(), staffIdx(), lyrics()-&gt;no(), lyrics()-&gt;placement());</a>
+<a name="ln161">            setTick2(_nextLyrics ? _nextLyrics-&gt;segment()-&gt;tick() : tick());</a>
+<a name="ln162">            }</a>
+<a name="ln163">      if (ticks().isNotZero()) {                // only do layout if some time span</a>
+<a name="ln164">            // do layout with non-0 duration</a>
+<a name="ln165">            if (tempMelismaTicks)</a>
+<a name="ln166">                  lyrics()-&gt;setTicks(Fraction::fromTicks(Lyrics::TEMP_MELISMA_TICKS));</a>
+<a name="ln167">            }</a>
+<a name="ln168">      }</a>
+<a name="ln169"> </a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171">//   layoutSystem</a>
+<a name="ln172">//---------------------------------------------------------</a>
+<a name="ln173"> </a>
+<a name="ln174">SpannerSegment* LyricsLine::layoutSystem(System* system)</a>
+<a name="ln175">      {</a>
+<a name="ln176">      Fraction stick = system-&gt;firstMeasure()-&gt;tick();</a>
+<a name="ln177">      Fraction etick = system-&gt;lastMeasure()-&gt;endTick();</a>
+<a name="ln178"> </a>
+<a name="ln179">      LyricsLineSegment* lineSegm = toLyricsLineSegment(getNextLayoutSystemSegment(system, [this]() { return createLineSegment(); }));</a>
+<a name="ln180"> </a>
+<a name="ln181">      SpannerSegmentType sst;</a>
+<a name="ln182">      if (tick() &gt;= stick) {</a>
+<a name="ln183">            layout();</a>
+<a name="ln184">            if (ticks().isZero())                 // only do layout if some time span</a>
+<a name="ln185">                  return nullptr;</a>
+<a name="ln186">            SLine::layout();</a>
+<a name="ln187">            //</a>
+<a name="ln188">            // this is the first call to layoutSystem,</a>
+<a name="ln189">            // processing the first line segment</a>
+<a name="ln190">            //</a>
+<a name="ln191">            computeStartElement();</a>
+<a name="ln192">            computeEndElement();</a>
+<a name="ln193">            sst = tick2() &lt;= etick ? SpannerSegmentType::SINGLE : SpannerSegmentType::BEGIN;</a>
+<a name="ln194">            }</a>
+<a name="ln195">      else if (tick() &lt; stick &amp;&amp; tick2() &gt; etick) {</a>
+<a name="ln196">            sst = SpannerSegmentType::MIDDLE;</a>
+<a name="ln197">            }</a>
+<a name="ln198">      else {</a>
+<a name="ln199">            //</a>
+<a name="ln200">            // this is the last call to layoutSystem</a>
+<a name="ln201">            // processing the last line segment</a>
+<a name="ln202">            //</a>
+<a name="ln203">            sst = SpannerSegmentType::END;</a>
+<a name="ln204">            }</a>
+<a name="ln205">      lineSegm-&gt;setSpannerSegmentType(sst);</a>
+<a name="ln206"> </a>
+<a name="ln207">      switch (sst) {</a>
+<a name="ln208">            case SpannerSegmentType::SINGLE: {</a>
+<a name="ln209">                  System* s;</a>
+<a name="ln210">                  QPointF p1 = linePos(Grip::START, &amp;s);</a>
+<a name="ln211">                  QPointF p2 = linePos(Grip::END,   &amp;s);</a>
+<a name="ln212">                  qreal len = p2.x() - p1.x();</a>
+<a name="ln213">                  lineSegm-&gt;setPos(p1);</a>
+<a name="ln214">                  lineSegm-&gt;setPos2(QPointF(len, p2.y() - p1.y()));</a>
+<a name="ln215">                  }</a>
+<a name="ln216">                  break;</a>
+<a name="ln217">            case SpannerSegmentType::BEGIN: {</a>
+<a name="ln218">                  System* s;</a>
+<a name="ln219">                  QPointF p1 = linePos(Grip::START, &amp;s);</a>
+<a name="ln220">                  lineSegm-&gt;setPos(p1);</a>
+<a name="ln221">                  qreal x2 = system-&gt;bbox().right();</a>
+<a name="ln222">                  lineSegm-&gt;setPos2(QPointF(x2 - p1.x(), 0.0));</a>
+<a name="ln223">                  }</a>
+<a name="ln224">                  break;</a>
+<a name="ln225">            case SpannerSegmentType::MIDDLE: {</a>
+<a name="ln226">                  Measure* firstMeasure = system-&gt;firstMeasure();</a>
+<a name="ln227">                  Segment* firstCRSeg   = firstMeasure-&gt;first(SegmentType::ChordRest);</a>
+<a name="ln228">                  qreal x1              = (firstCRSeg ? firstCRSeg-&gt;pos().x() : 0) + firstMeasure-&gt;pos().x();</a>
+<a name="ln229">                  qreal x2              = system-&gt;bbox().right();</a>
+<a name="ln230">                  System* s;</a>
+<a name="ln231">                  QPointF p1 = linePos(Grip::START, &amp;s);</a>
+<a name="ln232">                  lineSegm-&gt;setPos(QPointF(x1, p1.y()));</a>
+<a name="ln233">                  lineSegm-&gt;setPos2(QPointF(x2 - x1, 0.0));</a>
+<a name="ln234">                  }</a>
+<a name="ln235">                  break;</a>
+<a name="ln236">            case SpannerSegmentType::END: {</a>
+<a name="ln237">                  qreal offset = 0.0;</a>
+<a name="ln238">                  System* s;</a>
+<a name="ln239">                  QPointF p2 = linePos(Grip::END,   &amp;s);</a>
+<a name="ln240">                  Measure* firstMeas  = system-&gt;firstMeasure();</a>
+<a name="ln241">                  Segment* firstCRSeg = firstMeas-&gt;first(SegmentType::ChordRest);</a>
+<a name="ln242">                  if (anchor() == Anchor::SEGMENT || anchor() == Anchor::MEASURE) {</a>
+<a name="ln243">                        // start line just after previous element (eg, key signature)</a>
+<a name="ln244">                        firstCRSeg = firstCRSeg-&gt;prev();</a>
+<a name="ln245">                        Element* e = firstCRSeg ? firstCRSeg-&gt;element(staffIdx() * VOICES) : nullptr;</a>
+<a name="ln246">                        if (e)</a>
+<a name="ln247">                              offset = e-&gt;width();</a>
+<a name="ln248">                        }</a>
+<a name="ln249">                  qreal x1  = (firstCRSeg ? firstCRSeg-&gt;pos().x() : 0) + firstMeas-&gt;pos().x() + offset;</a>
+<a name="ln250">                  qreal len = p2.x() - x1;</a>
+<a name="ln251">                  lineSegm-&gt;setPos(QPointF(p2.x() - len, p2.y()));</a>
+<a name="ln252">                  lineSegm-&gt;setPos2(QPointF(len, 0.0));</a>
+<a name="ln253">                  }</a>
+<a name="ln254">                  break;</a>
+<a name="ln255">            }</a>
+<a name="ln256">      lineSegm-&gt;layout();</a>
+<a name="ln257">      // if temp melisma extend the first line segment to be</a>
+<a name="ln258">      // after the lyrics syllable (otherwise the melisma segment</a>
+<a name="ln259">      // will be too short).</a>
+<a name="ln260">      const bool tempMelismaTicks = (lyrics()-&gt;ticks() == Fraction::fromTicks(Lyrics::TEMP_MELISMA_TICKS));</a>
+<a name="ln261">      if (tempMelismaTicks &amp;&amp; spannerSegments().size() &gt; 0 &amp;&amp; spannerSegments().front() == lineSegm)</a>
+<a name="ln262">            lineSegm-&gt;rxpos2() += lyrics()-&gt;width();</a>
+<a name="ln263">      // avoid backwards melisma</a>
+<a name="ln264">      if (lineSegm-&gt;pos2().x() &lt; 0)</a>
+<a name="ln265">            lineSegm-&gt;rxpos2() = 0;</a>
+<a name="ln266">      return lineSegm;</a>
+<a name="ln267">      }</a>
+<a name="ln268"> </a>
+<a name="ln269">//---------------------------------------------------------</a>
+<a name="ln270">//   createLineSegment</a>
+<a name="ln271">//---------------------------------------------------------</a>
+<a name="ln272"> </a>
+<a name="ln273">LineSegment* LyricsLine::createLineSegment()</a>
+<a name="ln274">      {</a>
+<a name="ln275">      LyricsLineSegment* seg = new LyricsLineSegment(this, score());</a>
+<a name="ln276">      seg-&gt;setTrack(track());</a>
+<a name="ln277">      seg-&gt;setColor(color());</a>
+<a name="ln278">      return seg;</a>
+<a name="ln279">      }</a>
+<a name="ln280"> </a>
+<a name="ln281">//---------------------------------------------------------</a>
+<a name="ln282">//   removeUnmanaged</a>
+<a name="ln283">//    same as Spanner::removeUnmanaged(), but in addition, remove from hosting Lyrics</a>
+<a name="ln284">//---------------------------------------------------------</a>
+<a name="ln285"> </a>
+<a name="ln286">void LyricsLine::removeUnmanaged()</a>
+<a name="ln287">      {</a>
+<a name="ln288">      Spanner::removeUnmanaged();</a>
+<a name="ln289">      if (lyrics())</a>
+<a name="ln290">            lyrics()-&gt;remove(this);</a>
+<a name="ln291">      }</a>
+<a name="ln292"> </a>
+<a name="ln293">//---------------------------------------------------------</a>
+<a name="ln294">//   setProperty</a>
+<a name="ln295">//---------------------------------------------------------</a>
+<a name="ln296"> </a>
+<a name="ln297">bool LyricsLine::setProperty(Pid propertyId, const QVariant&amp; v)</a>
+<a name="ln298">      {</a>
+<a name="ln299">      switch (propertyId) {</a>
+<a name="ln300">            case Pid::SPANNER_TICKS:</a>
+<a name="ln301">                  {</a>
+<a name="ln302">                  // if parent lyrics has a melisma, change its length too</a>
+<a name="ln303">                  if (parent() &amp;&amp; parent()-&gt;type() == ElementType::LYRICS</a>
+<a name="ln304">                              &amp;&amp; isEndMelisma()) {</a>
+<a name="ln305">                        Fraction newTicks   = toLyrics(parent())-&gt;ticks() + v.value&lt;Fraction&gt;() - ticks();</a>
+<a name="ln306">                        parent()-&gt;undoChangeProperty(Pid::LYRIC_TICKS, newTicks);</a>
+<a name="ln307">                        }</a>
+<a name="ln308">                  setTicks(v.value&lt;Fraction&gt;());</a>
+<a name="ln309">                  }</a>
+<a name="ln310">                  break;</a>
+<a name="ln311">            default:</a>
+<a name="ln312">                  if (!SLine::setProperty(propertyId, v))</a>
+<a name="ln313">                        return false;</a>
+<a name="ln314">                  break;</a>
+<a name="ln315">            }</a>
+<a name="ln316">      triggerLayoutAll();</a>
+<a name="ln317">      return true;</a>
+<a name="ln318">      }</a>
+<a name="ln319"> </a>
+<a name="ln320">//=========================================================</a>
+<a name="ln321">//   LyricsLineSegment</a>
+<a name="ln322">//=========================================================</a>
+<a name="ln323"> </a>
+<a name="ln324">LyricsLineSegment::LyricsLineSegment(Spanner* sp, Score* s)</a>
+<a name="ln325">      : LineSegment(sp, s, ElementFlag::ON_STAFF | ElementFlag::NOT_SELECTABLE)</a>
+<a name="ln326">      {</a>
+<a name="ln327">      setGenerated(true);</a>
+<a name="ln328">      }</a>
+<a name="ln329"> </a>
+<a name="ln330">//---------------------------------------------------------</a>
+<a name="ln331">//   layout</a>
+<a name="ln332">//---------------------------------------------------------</a>
+<a name="ln333"> </a>
+<a name="ln334">void LyricsLineSegment::layout()</a>
+<a name="ln335">      {</a>
+<a name="ln336">      ryoffset() = 0.0;</a>
+<a name="ln337"> </a>
+<a name="ln338">      bool        endOfSystem       = false;</a>
+<a name="ln339">      bool        isEndMelisma      = lyricsLine()-&gt;isEndMelisma();</a>
+<a name="ln340">      Lyrics*     lyr               = 0;</a>
+<a name="ln341">      Lyrics*     nextLyr           = 0;</a>
+<a name="ln342">      qreal       fromX             = 0;</a>
+<a name="ln343">      qreal       toX               = 0;             // start and end point of intra-lyrics room</a>
+<a name="ln344">      qreal       sp                = spatium();</a>
+<a name="ln345">      System*     sys;</a>
+<a name="ln346"> </a>
+<a name="ln347">      if (lyricsLine()-&gt;ticks() &lt;= Fraction(0,1)) {   // if no span,</a>
+<a name="ln348">            _numOfDashes = 0;             // nothing to draw</a>
+<a name="ln349">            return;                       // and do nothing</a>
+<a name="ln350">            }</a>
+<a name="ln351"> </a>
+<a name="ln352">      // HORIZONTAL POSITION</a>
+<a name="ln353">      // A) if line precedes a syllable, advance line end to right before the next syllable text</a>
+<a name="ln354">      // if not a melisma and there is a next syllable;</a>
+<a name="ln355">      if (!isEndMelisma &amp;&amp; lyricsLine()-&gt;nextLyrics() &amp;&amp; isSingleEndType()) {</a>
+<a name="ln356">            lyr         = nextLyr = lyricsLine()-&gt;nextLyrics();</a>
+<a name="ln357">            sys         = lyr-&gt;segment()-&gt;system();</a>
+<a name="ln358">            endOfSystem = (sys != system());</a>
+<a name="ln359">            // if next lyrics is on a different system, this line segment is at the end of its system:</a>
+<a name="ln360">            // do not adjust for next lyrics position</a>
+<a name="ln361">            if (sys &amp;&amp; !endOfSystem) {</a>
+<a name="ln362">                  qreal lyrX        = lyr-&gt;bbox().x();</a>
+<a name="ln363">                  qreal lyrXp       = lyr-&gt;pagePos().x();</a>
+<a name="ln364">                  qreal sysXp       = sys-&gt;pagePos().x();</a>
+<a name="ln365">                  toX               = lyrXp - sysXp + lyrX;       // syst.rel. X pos.</a>
+<a name="ln366">                  qreal offsetX     = toX - pos().x() - pos2().x() - score()-&gt;styleP(Sid::lyricsDashPad);</a>
+<a name="ln367">                  //                    delta from current end pos.| ending padding</a>
+<a name="ln368">                  rxpos2()          += offsetX;</a>
+<a name="ln369">                  }</a>
+<a name="ln370">            }</a>
+<a name="ln371">      // B) if line follows a syllable, advance line start to after the syllable text</a>
+<a name="ln372">      lyr  = lyricsLine()-&gt;lyrics();</a>
+<a name="ln373">      sys  = lyr-&gt;segment()-&gt;system();</a>
+<a name="ln374">      if (sys &amp;&amp; isSingleBeginType()) {</a>
+<a name="ln375">            qreal lyrX        = lyr-&gt;bbox().x();</a>
+<a name="ln376">            qreal lyrXp       = lyr-&gt;pagePos().x();</a>
+<a name="ln377">            qreal lyrW        = lyr-&gt;bbox().width();</a>
+<a name="ln378">            qreal sysXp       = sys-&gt;pagePos().x();</a>
+<a name="ln379">            fromX             = lyrXp - sysXp + lyrX + lyrW;</a>
+<a name="ln380">            //               syst.rel. X pos. | lyr.advance</a>
+<a name="ln381">            qreal offsetX     = fromX - pos().x();</a>
+<a name="ln382">            offsetX           += score()-&gt;styleP(isEndMelisma ? Sid::lyricsMelismaPad : Sid::lyricsDashPad);</a>
+<a name="ln383"> </a>
+<a name="ln384">            //               delta from curr.pos. | add initial padding</a>
+<a name="ln385">            rxpos()           += offsetX;</a>
+<a name="ln386">            rxpos2()          -= offsetX;</a>
+<a name="ln387">            }</a>
+<a name="ln388"> </a>
+<a name="ln389">      // VERTICAL POSITION: at the base line of the syllable text</a>
+<a name="ln390">      if (!isEndType()) {</a>
+<a name="ln391">            rypos() = lyr-&gt;ipos().y();</a>
+<a name="ln392">            ryoffset() = lyr-&gt;offset().y();</a>
+<a name="ln393">            }</a>
+<a name="ln394">      else {</a>
+<a name="ln395">            // use Y position of *next* syllable if there is one on same system</a>
+<a name="ln396">            Lyrics* nextLyr1 = searchNextLyrics(lyr-&gt;segment(), lyr-&gt;staffIdx(), lyr-&gt;no(), lyr-&gt;placement());</a>
+<a name="ln397">            if (nextLyr1 &amp;&amp; nextLyr1-&gt;segment()-&gt;system() == system()) {</a>
+<a name="ln398">                  rypos() = nextLyr1-&gt;ipos().y();</a>
+<a name="ln399">                  ryoffset() = nextLyr1-&gt;offset().y();</a>
+<a name="ln400">                  }</a>
+<a name="ln401">            else {</a>
+<a name="ln402">                  rypos() = lyr-&gt;ipos().y();</a>
+<a name="ln403">                  ryoffset() = lyr-&gt;offset().y();</a>
+<a name="ln404">                  }</a>
+<a name="ln405">            }</a>
+<a name="ln406"> </a>
+<a name="ln407">      // MELISMA vs. DASHES</a>
+<a name="ln408">      if (isEndMelisma) {                 // melisma</a>
+<a name="ln409">            _numOfDashes = 1;</a>
+<a name="ln410">            rypos()      -= lyricsLine()-&gt;lineWidth() * .5; // let the line 'sit on' the base line</a>
+<a name="ln411">            qreal offsetX = score()-&gt;styleP(Sid::minNoteDistance) * mag();</a>
+<a name="ln412">            // if final segment, extend slightly after the chord, otherwise shorten it</a>
+<a name="ln413">            rxpos2() += (isBeginType() || isEndType()) ? -offsetX : +offsetX;</a>
+<a name="ln414">            }</a>
+<a name="ln415">      else {                              // dash(es)</a>
+<a name="ln416">            // set conventional dash Y pos</a>
+<a name="ln417">            rypos() -= MScore::pixelRatio * lyr-&gt;fontMetrics().xHeight() * score()-&gt;styleD(Sid::lyricsDashYposRatio);</a>
+<a name="ln418">            _dashLength = score()-&gt;styleP(Sid::lyricsDashMaxLength) * mag();  // and dash length</a>
+<a name="ln419">            qreal len         = pos2().x();</a>
+<a name="ln420">            qreal minDashLen  = score()-&gt;styleS(Sid::lyricsDashMinLength).val() * sp;</a>
+<a name="ln421">            qreal maxDashDist = score()-&gt;styleS(Sid::lyricsDashMaxDistance).val() * sp;</a>
+<a name="ln422">            if (len &lt; minDashLen) {                                           // if no room for a dash</a>
+<a name="ln423">                  // if at end of system or dash is forced</a>
+<a name="ln424">                  if (endOfSystem || score()-&gt;styleB(Sid::lyricsDashForce)) {</a>
+<a name="ln425">                        rxpos2()          = minDashLen;                       //     draw minimal dash</a>
+<a name="ln426">                        _numOfDashes      = 1;</a>
+<a name="ln427">                        _dashLength       = minDashLen;</a>
+<a name="ln428">                        }</a>
+<a name="ln429">                  else                                                        //   if within system or dash not forced</a>
+<a name="ln430">                        _numOfDashes = 0;                                     //     draw no dash</a>
+<a name="ln431">                  }</a>
+<a name="ln432">            else if (len &lt; (maxDashDist * 1.5)) {                             // if no room for two dashes</a>
+<a name="ln433">                  _numOfDashes = 1;                                           //    draw one dash</a>
+<a name="ln434">                  if (_dashLength &gt; len)                                      // if no room for a full dash</a>
+<a name="ln435">                        _dashLength = len;                                    //    shorten it</a>
+<a name="ln436">                  }</a>
+<a name="ln437">            else</a>
+<a name="ln438">                  _numOfDashes = len / maxDashDist + 1;                       // draw several dashes</a>
+<a name="ln439"> </a>
+<a name="ln440">            // adjust next lyrics horiz. position if too little a space forced to skip the dash</a>
+<a name="ln441">            if (_numOfDashes == 0 &amp;&amp; nextLyr != nullptr &amp;&amp; len &gt; 0)</a>
+<a name="ln442">                  nextLyr-&gt;rxpos() -= (toX - fromX);</a>
+<a name="ln443">            }</a>
+<a name="ln444"> </a>
+<a name="ln445">      // set bounding box</a>
+<a name="ln446">      QRectF r = QRectF(0.0, 0.0, pos2().x(), pos2().y()).normalized();</a>
+<a name="ln447">      qreal lw = lyricsLine()-&gt;lineWidth() * .5;</a>
+<a name="ln448">      setbbox(r.adjusted(-lw, -lw, lw, lw));</a>
+<a name="ln449">      }</a>
+<a name="ln450"> </a>
+<a name="ln451">//---------------------------------------------------------</a>
+<a name="ln452">//   draw</a>
+<a name="ln453">//---------------------------------------------------------</a>
+<a name="ln454"> </a>
+<a name="ln455">void LyricsLineSegment::draw(QPainter* painter) const</a>
+<a name="ln456">      {</a>
+<a name="ln457">      if (_numOfDashes &lt; 1)               // nothing to draw</a>
+<a name="ln458">            return;</a>
+<a name="ln459"> </a>
+<a name="ln460">      QPen pen(lyricsLine()-&gt;lyrics()-&gt;curColor());</a>
+<a name="ln461">      pen.setWidthF(lyricsLine()-&gt;lineWidth());</a>
+<a name="ln462">      pen.setCapStyle(Qt::FlatCap);</a>
+<a name="ln463">      painter-&gt;setPen(pen);</a>
+<a name="ln464">      if (lyricsLine()-&gt;isEndMelisma())               // melisma</a>
+<a name="ln465">            painter-&gt;drawLine(QPointF(), pos2());</a>
+<a name="ln466">      else {                                          // dash(es)</a>
+<a name="ln467">            qreal step  = pos2().x() / _numOfDashes;</a>
+<a name="ln468">            qreal x     = step * .5 - _dashLength * .5;</a>
+<a name="ln469">            for (int i = 0; i &lt; _numOfDashes; i++, x += step)</a>
+<a name="ln470">                  painter-&gt;drawLine(QPointF(x, 0.0), QPointF(x + _dashLength, 0.0));</a>
+<a name="ln471">            }</a>
+<a name="ln472">      }</a>
+<a name="ln473"> </a>
+<a name="ln474">}</a>
+<a name="ln475"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,747 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>dsp.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/* FluidSynth - A Software Synthesizer</a>
+<a name="ln2"> *</a>
+<a name="ln3"> * Copyright (C) 2003  Peter Hanappe and others.</a>
+<a name="ln4"> *</a>
+<a name="ln5"> * This library is free software; you can redistribute it and/or</a>
+<a name="ln6"> * modify it under the terms of the GNU Library General Public License</a>
+<a name="ln7"> * as published by the Free Software Foundation; either version 2 of</a>
+<a name="ln8"> * the License, or (at your option) any later version.</a>
+<a name="ln9"> *</a>
+<a name="ln10"> * This library is distributed in the hope that it will be useful, but</a>
+<a name="ln11"> * WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12"> * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU</a>
+<a name="ln13"> * Library General Public License for more details.</a>
+<a name="ln14"> *</a>
+<a name="ln15"> * You should have received a copy of the GNU Library General Public</a>
+<a name="ln16"> * License along with this library; if not, write to the Free</a>
+<a name="ln17"> * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA</a>
+<a name="ln18"> * 02111-1307, USA</a>
+<a name="ln19"> */</a>
+<a name="ln20"> </a>
+<a name="ln21">#include &quot;fluid.h&quot;</a>
+<a name="ln22">#include &quot;voice.h&quot;</a>
+<a name="ln23">#include &quot;sfont.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">namespace FluidS {</a>
+<a name="ln26"> </a>
+<a name="ln27">/* Purpose:</a>
+<a name="ln28"> *</a>
+<a name="ln29"> * Interpolates audio data (obtains values between the samples of the original</a>
+<a name="ln30"> * waveform data).</a>
+<a name="ln31"> *</a>
+<a name="ln32"> * Variables loaded from the voice structure (assigned in fluid_voice_write()):</a>
+<a name="ln33"> * - dsp_data: Pointer to the original waveform data</a>
+<a name="ln34"> * - dsp_phase: The position in the original waveform data.</a>
+<a name="ln35"> *              This has an integer and a fractional part (between samples).</a>
+<a name="ln36"> * - dsp_phase_incr: For each output sample, the position in the original</a>
+<a name="ln37"> *              waveform advances by dsp_phase_incr. This also has an integer</a>
+<a name="ln38"> *              part and a fractional part.</a>
+<a name="ln39"> *              If a sample is played at root pitch (no pitch change),</a>
+<a name="ln40"> *              dsp_phase_incr is integer=1 and fractional=0.</a>
+<a name="ln41"> * - dsp_amp: The current amplitude envelope value.</a>
+<a name="ln42"> * - dsp_amp_incr: The changing rate of the amplitude envelope.</a>
+<a name="ln43"> *</a>
+<a name="ln44"> * A couple of variables are used internally, their results are discarded:</a>
+<a name="ln45"> * - dsp_i: Index through the output buffer</a>
+<a name="ln46"> * - dsp_buf: Output buffer of floating point values (FLUID_BUFSIZE in length)</a>
+<a name="ln47"> */</a>
+<a name="ln48"> </a>
+<a name="ln49">inline bool Voice::updateAmpInc(unsigned int &amp;nextNewAmpInc, std::map&lt;int, qreal&gt;::iterator &amp;curSample2AmpInc, qreal &amp;dsp_amp_incr, unsigned int &amp;dsp_i)</a>
+<a name="ln50">      {</a>
+<a name="ln51">      if (positionToTurnOff &gt; 0 &amp;&amp; dsp_i &gt;= (unsigned int) positionToTurnOff)</a>
+<a name="ln52">            return false;</a>
+<a name="ln53"> </a>
+<a name="ln54">      // if volume is zero skip all phases that do not change that!</a>
+<a name="ln55">      if (amp == 0.0f) {</a>
+<a name="ln56">            while (dsp_amp_incr == 0.0f &amp;&amp; curSample2AmpInc != Sample2AmpInc.end()) {</a>
+<a name="ln57">                  dsp_i = curSample2AmpInc-&gt;first;</a>
+<a name="ln58">                  curSample2AmpInc++;</a>
+<a name="ln59">                  nextNewAmpInc = curSample2AmpInc-&gt;first;</a>
+<a name="ln60">                  dsp_amp_incr = curSample2AmpInc-&gt;second;</a>
+<a name="ln61">                  }</a>
+<a name="ln62">            if (curSample2AmpInc == Sample2AmpInc.end())</a>
+<a name="ln63">                  return false;</a>
+<a name="ln64">            }</a>
+<a name="ln65"> </a>
+<a name="ln66">      if (dsp_i &gt;= nextNewAmpInc) {</a>
+<a name="ln67">            curSample2AmpInc++;</a>
+<a name="ln68">            nextNewAmpInc = curSample2AmpInc-&gt;first;</a>
+<a name="ln69">            dsp_amp_incr = curSample2AmpInc-&gt;second;</a>
+<a name="ln70">            }</a>
+<a name="ln71">      return true;</a>
+<a name="ln72">      }</a>
+<a name="ln73"> </a>
+<a name="ln74"> </a>
+<a name="ln75">/* Interpolation (find a value between two samples of the original waveform) */</a>
+<a name="ln76"> </a>
+<a name="ln77">/* Linear interpolation table (2 coefficients centered on 1st) */</a>
+<a name="ln78">float Voice::interp_coeff_linear[FLUID_INTERP_MAX][2];</a>
+<a name="ln79"> </a>
+<a name="ln80">/* 4th order (cubic) interpolation table (4 coefficients centered on 2nd) */</a>
+<a name="ln81">float Voice::interp_coeff[FLUID_INTERP_MAX][4];</a>
+<a name="ln82"> </a>
+<a name="ln83">/* 7th order interpolation (7 coefficients centered on 3rd) */</a>
+<a name="ln84">float Voice::sinc_table7[FLUID_INTERP_MAX][7];</a>
+<a name="ln85"> </a>
+<a name="ln86">#define SINC_INTERP_ORDER 7	/* 7th order constant */</a>
+<a name="ln87"> </a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89">//   dsp_float_config</a>
+<a name="ln90">//    Initializes interpolation tables</a>
+<a name="ln91">//---------------------------------------------------------</a>
+<a name="ln92"> </a>
+<a name="ln93">void Voice::dsp_float_config()</a>
+<a name="ln94">      {</a>
+<a name="ln95">      /* Initialize the coefficients for the interpolation. The math comes</a>
+<a name="ln96">       * from a mail, posted by Olli Niemitalo to the music-dsp mailing</a>
+<a name="ln97">       * list (I found it in the music-dsp archives</a>
+<a name="ln98">       * http://www.smartelectronix.com/musicdsp/).  */</a>
+<a name="ln99"> </a>
+<a name="ln100">      for (int i = 0; i &lt; FLUID_INTERP_MAX; i++) {</a>
+<a name="ln101">            double x = (double) i / (double) FLUID_INTERP_MAX;</a>
+<a name="ln102"> </a>
+<a name="ln103">            interp_coeff[i][0] = (float)(x * (-0.5 + x * (1 - 0.5 * x)));</a>
+<a name="ln104">            interp_coeff[i][1] = (float)(1.0 + x * x * (1.5 * x - 2.5));</a>
+<a name="ln105">            interp_coeff[i][2] = (float)(x * (0.5 + x * (2.0 - 1.5 * x)));</a>
+<a name="ln106">            interp_coeff[i][3] = (float)(0.5 * x * x * (x - 1.0));</a>
+<a name="ln107"> </a>
+<a name="ln108">            interp_coeff_linear[i][0] = (float)(1.0 - x);</a>
+<a name="ln109">            interp_coeff_linear[i][1] = (float)x;</a>
+<a name="ln110">            }</a>
+<a name="ln111"> </a>
+<a name="ln112">      /* i: Offset in terms of whole samples */</a>
+<a name="ln113">      for (int i = 0; i &lt; SINC_INTERP_ORDER; i++) {</a>
+<a name="ln114">            /* i2: Offset in terms of fractional samples ('subsamples') */</a>
+<a name="ln115">            for (int i2 = 0; i2 &lt; FLUID_INTERP_MAX; i2++) {</a>
+<a name="ln116">                  /* center on middle of table */</a>
+<a name="ln117">                  double i_shifted = (double)i - ((double)SINC_INTERP_ORDER / 2.0)</a>
+<a name="ln118">                     + (double)i2 / (double)FLUID_INTERP_MAX;</a>
+<a name="ln119"> </a>
+<a name="ln120">                  /* sinc(0) cannot be calculated straightforward (limit needed for 0/0) */</a>
+<a name="ln121">                  double v;</a>
+<a name="ln122">                  if (fabs (i_shifted) &gt; 0.000001) {</a>
+<a name="ln123">                        v = (float)sin (i_shifted * M_PI) / (M_PI * i_shifted);</a>
+<a name="ln124">                        /* Hamming window */</a>
+<a name="ln125">                        v *= (float)0.5 * (1.0 + cos (2.0 * M_PI * i_shifted / (float)SINC_INTERP_ORDER));</a>
+<a name="ln126">                        }</a>
+<a name="ln127">                  else</a>
+<a name="ln128">                        v = 1.0;</a>
+<a name="ln129">                  sinc_table7[FLUID_INTERP_MAX - i2 - 1][i] = v;</a>
+<a name="ln130">                  }</a>
+<a name="ln131">            }</a>
+<a name="ln132">      fluid_check_fpe(&quot;interpolation table calculation&quot;);</a>
+<a name="ln133">      }</a>
+<a name="ln134"> </a>
+<a name="ln135">//-------------------------------------------------------------------</a>
+<a name="ln136">//   fluid_dsp_float_interpolate_none</a>
+<a name="ln137">//    No interpolation. Just take the sample, which is closest to</a>
+<a name="ln138">//    the playback pointer.  Questionable quality, but very</a>
+<a name="ln139">//    efficient.</a>
+<a name="ln140">//-------------------------------------------------------------------</a>
+<a name="ln141"> </a>
+<a name="ln142">int Voice::dsp_float_interpolate_none(unsigned n)</a>
+<a name="ln143">      {</a>
+<a name="ln144">      Voice* voice = this;</a>
+<a name="ln145"> </a>
+<a name="ln146">      Phase dsp_phase = voice-&gt;phase;</a>
+<a name="ln147">      Phase dsp_phase_incr; //  end_phase;</a>
+<a name="ln148">      short int *dsp_data = voice-&gt;sample-&gt;data;</a>
+<a name="ln149">      auto curSample2AmpInc = Sample2AmpInc.begin();</a>
+<a name="ln150">      qreal dsp_amp_incr = curSample2AmpInc-&gt;second;</a>
+<a name="ln151">      unsigned int nextNewAmpInc = curSample2AmpInc-&gt;first;</a>
+<a name="ln152">      unsigned int dsp_i = 0;</a>
+<a name="ln153">      unsigned int dsp_phase_index;</a>
+<a name="ln154">      unsigned int end_index;</a>
+<a name="ln155">      int looping;</a>
+<a name="ln156"> </a>
+<a name="ln157">      /* Convert playback &quot;speed&quot; floating point value to phase index/fract */</a>
+<a name="ln158">      dsp_phase_incr.setFloat(voice-&gt;phase_incr);</a>
+<a name="ln159"> </a>
+<a name="ln160">      /* voice is currently looping? */</a>
+<a name="ln161">      looping = SAMPLEMODE() == FLUID_LOOP_DURING_RELEASE</a>
+<a name="ln162">         || (SAMPLEMODE() == FLUID_LOOP_UNTIL_RELEASE</a>
+<a name="ln163">         &amp;&amp; voice-&gt;volenv_section &lt; FLUID_VOICE_ENVRELEASE);</a>
+<a name="ln164"> </a>
+<a name="ln165">      end_index = looping ? voice-&gt;loopend - 1 : voice-&gt;end;</a>
+<a name="ln166"> </a>
+<a name="ln167">      while(1) {</a>
+<a name="ln168">            dsp_phase_index = dsp_phase.index_round();      // round to nearest point</a>
+<a name="ln169"> </a>
+<a name="ln170">            /* interpolate sequence of sample points */</a>
+<a name="ln171">            for ( ; dsp_i &lt; n &amp;&amp; dsp_phase_index &lt;= end_index; dsp_i++) {</a>
+<a name="ln172">                  dsp_buf[dsp_i] = amp * dsp_data[dsp_phase_index];</a>
+<a name="ln173"> </a>
+<a name="ln174">                  /* increment phase and amplitude */</a>
+<a name="ln175">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln176">                  dsp_phase_index = dsp_phase.index_round();	/* round to nearest point */</a>
+<a name="ln177">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln178">                        return dsp_i;</a>
+<a name="ln179">                  amp += dsp_amp_incr;</a>
+<a name="ln180">                  }</a>
+<a name="ln181"> </a>
+<a name="ln182">            /* break out if not looping (buffer may not be full) */</a>
+<a name="ln183">            if (!looping)</a>
+<a name="ln184">                  break;</a>
+<a name="ln185"> </a>
+<a name="ln186">            /* go back to loop start */</a>
+<a name="ln187">            if (dsp_phase_index &gt; end_index) {</a>
+<a name="ln188">                  dsp_phase -= (voice-&gt;loopend - voice-&gt;loopstart);</a>
+<a name="ln189">                  voice-&gt;has_looped = true;</a>
+<a name="ln190">                  }</a>
+<a name="ln191"> </a>
+<a name="ln192">            /* break out if filled buffer */</a>
+<a name="ln193">            if (dsp_i &gt;= n)</a>
+<a name="ln194">                  break;</a>
+<a name="ln195">            }</a>
+<a name="ln196"> </a>
+<a name="ln197">      voice-&gt;phase = dsp_phase;</a>
+<a name="ln198">      return dsp_i;</a>
+<a name="ln199">      }</a>
+<a name="ln200"> </a>
+<a name="ln201">//---------------------------------------------------------</a>
+<a name="ln202">//   dsp_float_interpolate_linear</a>
+<a name="ln203">//    Straight line interpolation.</a>
+<a name="ln204">//    Returns number of samples processed (usually FLUID_BUFSIZE but could be</a>
+<a name="ln205">//    smaller if end of sample occurs).</a>
+<a name="ln206">//---------------------------------------------------------</a>
+<a name="ln207"> </a>
+<a name="ln208">int Voice::dsp_float_interpolate_linear(unsigned n)</a>
+<a name="ln209">      {</a>
+<a name="ln210">      Voice* voice = this;</a>
+<a name="ln211">      Phase dsp_phase = voice-&gt;phase;</a>
+<a name="ln212">      Phase dsp_phase_incr; // end_phase;</a>
+<a name="ln213">      short int *dsp_data = voice-&gt;sample-&gt;data;</a>
+<a name="ln214">      auto curSample2AmpInc = Sample2AmpInc.begin();</a>
+<a name="ln215">      qreal dsp_amp_incr = curSample2AmpInc-&gt;second;</a>
+<a name="ln216">      unsigned int nextNewAmpInc = curSample2AmpInc-&gt;first;</a>
+<a name="ln217">      unsigned int dsp_i = 0;</a>
+<a name="ln218">      unsigned int dsp_phase_index;</a>
+<a name="ln219">      unsigned int end_index;</a>
+<a name="ln220">      short int point;</a>
+<a name="ln221">      float *coeffs;</a>
+<a name="ln222">      int looping;</a>
+<a name="ln223"> </a>
+<a name="ln224">      /* Convert playback &quot;speed&quot; floating point value to phase index/fract */</a>
+<a name="ln225">      dsp_phase_incr.setFloat(voice-&gt;phase_incr);</a>
+<a name="ln226"> </a>
+<a name="ln227">      /* voice is currently looping? */</a>
+<a name="ln228">      looping = SAMPLEMODE() == FLUID_LOOP_DURING_RELEASE</a>
+<a name="ln229">         || (SAMPLEMODE() == FLUID_LOOP_UNTIL_RELEASE</a>
+<a name="ln230">         &amp;&amp; voice-&gt;volenv_section &lt; FLUID_VOICE_ENVRELEASE);</a>
+<a name="ln231"> </a>
+<a name="ln232">      /* last index before 2nd interpolation point must be specially handled */</a>
+<a name="ln233">      end_index = (looping ? voice-&gt;loopend - 1 : voice-&gt;end) - 1;</a>
+<a name="ln234"> </a>
+<a name="ln235">      /* 2nd interpolation point to use at end of loop or sample */</a>
+<a name="ln236">      if (looping)</a>
+<a name="ln237">            point = dsp_data[voice-&gt;loopstart];      /* loop start */</a>
+<a name="ln238">      else</a>
+<a name="ln239">            point = dsp_data[voice-&gt;end];             /* duplicate end for samples no longer looping */</a>
+<a name="ln240"> </a>
+<a name="ln241">      while (1) {</a>
+<a name="ln242">            dsp_phase_index = dsp_phase.index();</a>
+<a name="ln243"> </a>
+<a name="ln244">            /* interpolate the sequence of sample points */</a>
+<a name="ln245">            for ( ; dsp_i &lt; n &amp;&amp; dsp_phase_index &lt;= end_index; dsp_i++) {</a>
+<a name="ln246">                  coeffs = interp_coeff_linear[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln247">                  dsp_buf[dsp_i] = amp * (coeffs[0] * dsp_data[dsp_phase_index]</a>
+<a name="ln248">				  + coeffs[1] * dsp_data[dsp_phase_index+1]);</a>
+<a name="ln249"> </a>
+<a name="ln250">                  /* increment phase and amplitude */</a>
+<a name="ln251">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln252">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln253">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln254">                        return dsp_i;</a>
+<a name="ln255">                  amp += dsp_amp_incr;</a>
+<a name="ln256">                  }</a>
+<a name="ln257"> </a>
+<a name="ln258">            /* break out if buffer filled */</a>
+<a name="ln259">            if (dsp_i &gt;= n)</a>
+<a name="ln260">                  break;</a>
+<a name="ln261"> </a>
+<a name="ln262">            end_index++;	/* we're now interpolating the last point */</a>
+<a name="ln263"> </a>
+<a name="ln264">            /* interpolate within last point */</a>
+<a name="ln265">            for (; dsp_phase_index &lt;= end_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln266">                  coeffs = interp_coeff_linear[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln267">                  dsp_buf[dsp_i] = amp * (coeffs[0] * dsp_data[dsp_phase_index]</a>
+<a name="ln268">                     + coeffs[1] * point);</a>
+<a name="ln269"> </a>
+<a name="ln270">                  /* increment phase and amplitude */</a>
+<a name="ln271">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln272">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln273">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln274">                        return dsp_i;</a>
+<a name="ln275">                  amp += dsp_amp_incr;	/* increment amplitude */</a>
+<a name="ln276">                  }</a>
+<a name="ln277"> </a>
+<a name="ln278">            if (!looping)</a>
+<a name="ln279">                  break;    /* break out if not looping (end of sample) */</a>
+<a name="ln280"> </a>
+<a name="ln281">            /* go back to loop start (if past */</a>
+<a name="ln282">            if (dsp_phase_index &gt; end_index) {</a>
+<a name="ln283">                  dsp_phase -= (voice-&gt;loopend - voice-&gt;loopstart);</a>
+<a name="ln284">                  voice-&gt;has_looped = true;</a>
+<a name="ln285">                  }</a>
+<a name="ln286"> </a>
+<a name="ln287">            /* break out if filled buffer */</a>
+<a name="ln288">            if (dsp_i &gt;= n)</a>
+<a name="ln289">                  break;</a>
+<a name="ln290">            end_index--;	/* set end back to second to last sample point */</a>
+<a name="ln291">            }</a>
+<a name="ln292"> </a>
+<a name="ln293">      voice-&gt;phase = dsp_phase;</a>
+<a name="ln294">      return dsp_i;</a>
+<a name="ln295">      }</a>
+<a name="ln296"> </a>
+<a name="ln297">//-----------------------------------------------------------------------------</a>
+<a name="ln298">//   dsp_float_interpolate_4th_order</a>
+<a name="ln299">//    4th order (cubic) interpolation.</a>
+<a name="ln300">//    Returns number of samples processed (usually FLUID_BUFSIZE but could be</a>
+<a name="ln301">//    smaller if end of sample occurs).</a>
+<a name="ln302">//-----------------------------------------------------------------------------</a>
+<a name="ln303"> </a>
+<a name="ln304">int Voice::dsp_float_interpolate_4th_order(unsigned n)</a>
+<a name="ln305">      {</a>
+<a name="ln306">      Phase dsp_phase_incr; // end_phase;</a>
+<a name="ln307">      short int* dsp_data = sample-&gt;data;</a>
+<a name="ln308">      auto curSample2AmpInc = Sample2AmpInc.begin();</a>
+<a name="ln309">      qreal dsp_amp_incr = curSample2AmpInc-&gt;second;</a>
+<a name="ln310">      unsigned int nextNewAmpInc = curSample2AmpInc-&gt;first;</a>
+<a name="ln311">      unsigned int dsp_i  = 0;</a>
+<a name="ln312">      unsigned int dsp_phase_index;</a>
+<a name="ln313">      unsigned int start_index;</a>
+<a name="ln314">      short int start_point, end_point1, end_point2;</a>
+<a name="ln315">      float *coeffs;</a>
+<a name="ln316"> </a>
+<a name="ln317">      /* Convert playback &quot;speed&quot; floating point value to phase index/fract */</a>
+<a name="ln318">      dsp_phase_incr.setFloat(phase_incr);</a>
+<a name="ln319"> </a>
+<a name="ln320">      /* voice is currently looping? */</a>
+<a name="ln321">      int looping = SAMPLEMODE() == FLUID_LOOP_DURING_RELEASE</a>
+<a name="ln322">         || (SAMPLEMODE() == FLUID_LOOP_UNTIL_RELEASE</a>
+<a name="ln323">         &amp;&amp; volenv_section &lt; FLUID_VOICE_ENVRELEASE);</a>
+<a name="ln324"> </a>
+<a name="ln325">      /* last index before 4th interpolation point must be specially handled */</a>
+<a name="ln326">      unsigned int end_index = (looping ? loopend - 1 : end) - 2;</a>
+<a name="ln327"> </a>
+<a name="ln328">      if (has_looped) {	/* set start_index and start point if looped or not */</a>
+<a name="ln329">            start_index = loopstart;</a>
+<a name="ln330">            start_point = dsp_data[loopend - 1];	/* last point in loop (wrap around) */</a>
+<a name="ln331">            }</a>
+<a name="ln332">      else {</a>
+<a name="ln333">            start_index = start;</a>
+<a name="ln334">            start_point = dsp_data[start];	/* just duplicate the point */</a>
+<a name="ln335">            }</a>
+<a name="ln336"> </a>
+<a name="ln337">      /* get points off the end (loop start if looping, duplicate point if end) */</a>
+<a name="ln338">      if (looping) {</a>
+<a name="ln339">            end_point1 = dsp_data[loopstart];</a>
+<a name="ln340">            end_point2 = dsp_data[loopstart + 1];</a>
+<a name="ln341">            }</a>
+<a name="ln342">      else {</a>
+<a name="ln343">            end_point1 = dsp_data[end];</a>
+<a name="ln344">            end_point2 = end_point1;</a>
+<a name="ln345">            }</a>
+<a name="ln346"> </a>
+<a name="ln347">      while (1) {</a>
+<a name="ln348">            dsp_phase_index = phase.index();</a>
+<a name="ln349"> </a>
+<a name="ln350">            /* interpolate first sample point (start or loop start) if needed */</a>
+<a name="ln351">            for ( ; dsp_phase_index == start_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln352">                  coeffs = interp_coeff[fluid_phase_fract_to_tablerow (phase)];</a>
+<a name="ln353">                  auto val = amp * (coeffs[0] * start_point</a>
+<a name="ln354">                                    + coeffs[1] * dsp_data[dsp_phase_index]</a>
+<a name="ln355">                                    + coeffs[2] * dsp_data[dsp_phase_index+1]</a>
+<a name="ln356">                                    + coeffs[3] * dsp_data[dsp_phase_index+2]);</a>
+<a name="ln357">                  dsp_buf[dsp_i] = val;</a>
+<a name="ln358"> </a>
+<a name="ln359">                  /* increment phase and amplitude */</a>
+<a name="ln360">                  phase += dsp_phase_incr;</a>
+<a name="ln361">                  dsp_phase_index = phase.index();</a>
+<a name="ln362">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln363">                        return dsp_i;</a>
+<a name="ln364">                  amp += dsp_amp_incr;</a>
+<a name="ln365">                  }</a>
+<a name="ln366"> </a>
+<a name="ln367">            /* interpolate the sequence of sample points */</a>
+<a name="ln368">            for ( ; dsp_i &lt; n &amp;&amp; dsp_phase_index &lt;= end_index; dsp_i++) {</a>
+<a name="ln369">                  coeffs = interp_coeff[fluid_phase_fract_to_tablerow (phase)];</a>
+<a name="ln370">                  auto val = amp * (coeffs[0] * dsp_data[dsp_phase_index-1]</a>
+<a name="ln371">                                   + coeffs[1] * dsp_data[dsp_phase_index]</a>
+<a name="ln372">                                   + coeffs[2] * dsp_data[dsp_phase_index+1]</a>
+<a name="ln373">                                   + coeffs[3] * dsp_data[dsp_phase_index+2]);</a>
+<a name="ln374">                  dsp_buf[dsp_i] = val;</a>
+<a name="ln375"> </a>
+<a name="ln376">                  /* increment phase and amplitude */</a>
+<a name="ln377">                  phase += dsp_phase_incr;</a>
+<a name="ln378">                  dsp_phase_index = phase.index();</a>
+<a name="ln379">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln380">                        return dsp_i;</a>
+<a name="ln381">                  amp += dsp_amp_incr;</a>
+<a name="ln382">                  }</a>
+<a name="ln383"> </a>
+<a name="ln384">            /* break out if buffer filled */</a>
+<a name="ln385">            if (dsp_i &gt;= n)</a>
+<a name="ln386">                  break;</a>
+<a name="ln387"> </a>
+<a name="ln388">            end_index++;	/* we're now interpolating the 2nd to last point */</a>
+<a name="ln389"> </a>
+<a name="ln390">            /* interpolate within 2nd to last point */</a>
+<a name="ln391">            for (; dsp_phase_index &lt;= end_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln392">                  coeffs = interp_coeff[fluid_phase_fract_to_tablerow (phase)];</a>
+<a name="ln393">                  auto val = amp * (coeffs[0] * dsp_data[dsp_phase_index-1]</a>
+<a name="ln394">                                   + coeffs[1] * dsp_data[dsp_phase_index]</a>
+<a name="ln395">                                   + coeffs[2] * dsp_data[dsp_phase_index+1]</a>
+<a name="ln396">                                   + coeffs[3] * end_point1);</a>
+<a name="ln397">                  dsp_buf[dsp_i] = val;</a>
+<a name="ln398"> </a>
+<a name="ln399">                  /* increment phase and amplitude */</a>
+<a name="ln400">                  phase += dsp_phase_incr;</a>
+<a name="ln401">                  dsp_phase_index = phase.index();</a>
+<a name="ln402">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln403">                        return dsp_i;</a>
+<a name="ln404">                  amp += dsp_amp_incr;</a>
+<a name="ln405">                  }</a>
+<a name="ln406"> </a>
+<a name="ln407">            end_index++;	/* we're now interpolating the last point */</a>
+<a name="ln408"> </a>
+<a name="ln409">            /* interpolate within the last point */</a>
+<a name="ln410">            for (; dsp_phase_index &lt;= end_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln411">                  coeffs = interp_coeff[fluid_phase_fract_to_tablerow (phase)];</a>
+<a name="ln412">                  auto val = amp * (coeffs[0] * dsp_data[dsp_phase_index-1]</a>
+<a name="ln413">                                    + coeffs[1] * dsp_data[dsp_phase_index]</a>
+<a name="ln414">                                    + coeffs[2] * end_point1</a>
+<a name="ln415">                                    + coeffs[3] * end_point2);</a>
+<a name="ln416">                  dsp_buf[dsp_i] = val;</a>
+<a name="ln417"> </a>
+<a name="ln418">                  /* increment phase and amplitude */</a>
+<a name="ln419">                  phase += dsp_phase_incr;</a>
+<a name="ln420">                  dsp_phase_index = phase.index();</a>
+<a name="ln421">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln422">                        return dsp_i;</a>
+<a name="ln423">                  amp += dsp_amp_incr;</a>
+<a name="ln424">                  }</a>
+<a name="ln425"> </a>
+<a name="ln426">            if (!looping)</a>
+<a name="ln427">                  break;    /* break out if not looping (end of sample) */</a>
+<a name="ln428"> </a>
+<a name="ln429">            /* go back to loop start */</a>
+<a name="ln430">            if (dsp_phase_index &gt; end_index) {</a>
+<a name="ln431">                  phase -= (loopend - loopstart);</a>
+<a name="ln432">                  if (!has_looped) {</a>
+<a name="ln433">                        has_looped = true;</a>
+<a name="ln434">                        start_index = loopstart;</a>
+<a name="ln435">                        start_point = dsp_data[loopend - 1];</a>
+<a name="ln436">                        }</a>
+<a name="ln437">                  }</a>
+<a name="ln438">            /* break out if filled buffer */</a>
+<a name="ln439">            if (dsp_i &gt;= n)</a>
+<a name="ln440">                  break;</a>
+<a name="ln441">            end_index -= 2;	/* set end back to third to last sample point */</a>
+<a name="ln442">            }</a>
+<a name="ln443">      return dsp_i;</a>
+<a name="ln444">      }</a>
+<a name="ln445"> </a>
+<a name="ln446">//-----------------------------------------------------------------------------</a>
+<a name="ln447">//   dsp_float_interpolate_7th_order</a>
+<a name="ln448">//    7th order interpolation.</a>
+<a name="ln449">//    Returns number of samples processed (usually FLUID_BUFSIZE but could be</a>
+<a name="ln450">//    smaller if end of sample occurs).</a>
+<a name="ln451">//-----------------------------------------------------------------------------</a>
+<a name="ln452"> </a>
+<a name="ln453">int Voice::dsp_float_interpolate_7th_order(unsigned n)</a>
+<a name="ln454">      {</a>
+<a name="ln455">      Voice* voice = this;</a>
+<a name="ln456"> </a>
+<a name="ln457">      Phase dsp_phase = voice-&gt;phase;</a>
+<a name="ln458">      Phase dsp_phase_incr; // end_phase;</a>
+<a name="ln459">      short int *dsp_data = voice-&gt;sample-&gt;data;</a>
+<a name="ln460">      auto curSample2AmpInc = Sample2AmpInc.begin();</a>
+<a name="ln461">      qreal dsp_amp_incr = curSample2AmpInc-&gt;second;</a>
+<a name="ln462">      unsigned int nextNewAmpInc = curSample2AmpInc-&gt;first;</a>
+<a name="ln463">      unsigned int dsp_i = 0;</a>
+<a name="ln464">      unsigned int dsp_phase_index;</a>
+<a name="ln465">      unsigned int start_index, end_index;</a>
+<a name="ln466">      short int start_points[3];</a>
+<a name="ln467">      short int end_points[3];</a>
+<a name="ln468">      float *coeffs;</a>
+<a name="ln469">      int looping;</a>
+<a name="ln470"> </a>
+<a name="ln471">      /* Convert playback &quot;speed&quot; floating point value to phase index/fract */</a>
+<a name="ln472">      dsp_phase_incr.setFloat(voice-&gt;phase_incr);</a>
+<a name="ln473"> </a>
+<a name="ln474">      /* add 1/2 sample to dsp_phase since 7th order interpolation is centered on</a>
+<a name="ln475">       * the 4th sample point */</a>
+<a name="ln476">      dsp_phase += (Phase)0x80000000;</a>
+<a name="ln477"> </a>
+<a name="ln478">      /* voice is currently looping? */</a>
+<a name="ln479">      looping = SAMPLEMODE() == FLUID_LOOP_DURING_RELEASE</a>
+<a name="ln480">         || (SAMPLEMODE() == FLUID_LOOP_UNTIL_RELEASE</a>
+<a name="ln481">         &amp;&amp; voice-&gt;volenv_section &lt; FLUID_VOICE_ENVRELEASE);</a>
+<a name="ln482"> </a>
+<a name="ln483">      /* last index before 7th interpolation point must be specially handled */</a>
+<a name="ln484">      end_index = (looping ? voice-&gt;loopend - 1 : voice-&gt;end) - 3;</a>
+<a name="ln485"> </a>
+<a name="ln486">      if (voice-&gt;has_looped) { /* set start_index and start point if looped or not */</a>
+<a name="ln487">            start_index = voice-&gt;loopstart;</a>
+<a name="ln488">            start_points[0] = dsp_data[voice-&gt;loopend - 1];</a>
+<a name="ln489">            start_points[1] = dsp_data[voice-&gt;loopend - 2];</a>
+<a name="ln490">            start_points[2] = dsp_data[voice-&gt;loopend - 3];</a>
+<a name="ln491">            }</a>
+<a name="ln492">      else {</a>
+<a name="ln493">            start_index = voice-&gt;start;</a>
+<a name="ln494">            start_points[0] = dsp_data[voice-&gt;start];	/* just duplicate the start point */</a>
+<a name="ln495">            start_points[1] = start_points[0];</a>
+<a name="ln496">            start_points[2] = start_points[0];</a>
+<a name="ln497">            }</a>
+<a name="ln498"> </a>
+<a name="ln499">      /* get the 3 points off the end (loop start if looping, duplicate point if end) */</a>
+<a name="ln500">      if (looping) {</a>
+<a name="ln501">            end_points[0] = dsp_data[voice-&gt;loopstart];</a>
+<a name="ln502">            end_points[1] = dsp_data[voice-&gt;loopstart + 1];</a>
+<a name="ln503">            end_points[2] = dsp_data[voice-&gt;loopstart + 2];</a>
+<a name="ln504">            }</a>
+<a name="ln505">      else {</a>
+<a name="ln506">            end_points[0] = dsp_data[voice-&gt;end];</a>
+<a name="ln507">            end_points[1] = end_points[0];</a>
+<a name="ln508">            end_points[2] = end_points[0];</a>
+<a name="ln509">            }</a>
+<a name="ln510"> </a>
+<a name="ln511">      while (1) {</a>
+<a name="ln512">            dsp_phase_index = dsp_phase.index();</a>
+<a name="ln513"> </a>
+<a name="ln514">            /* interpolate first sample point (start or loop start) if needed */</a>
+<a name="ln515">            for ( ; dsp_phase_index == start_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln516">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln517"> </a>
+<a name="ln518">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)start_points[2]</a>
+<a name="ln519">                        + coeffs[1] * (float)start_points[1]</a>
+<a name="ln520">	                  + coeffs[2] * (float)start_points[0]</a>
+<a name="ln521">                        + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln522">                        + coeffs[4] * (float)dsp_data[dsp_phase_index+1]</a>
+<a name="ln523">                        + coeffs[5] * (float)dsp_data[dsp_phase_index+2]</a>
+<a name="ln524">                        + coeffs[6] * (float)dsp_data[dsp_phase_index+3]);</a>
+<a name="ln525"> </a>
+<a name="ln526">                  /* increment phase and amplitude */</a>
+<a name="ln527">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln528">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln529">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln530">                        return dsp_i;</a>
+<a name="ln531">                  amp += dsp_amp_incr;</a>
+<a name="ln532">                  }</a>
+<a name="ln533"> </a>
+<a name="ln534">            start_index++;</a>
+<a name="ln535"> </a>
+<a name="ln536">            /* interpolate 2nd to first sample point (start or loop start) if needed */</a>
+<a name="ln537">            for ( ; dsp_phase_index == start_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln538">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln539"> </a>
+<a name="ln540">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)start_points[1]</a>
+<a name="ln541">        	            + coeffs[1] * (float)start_points[0]</a>
+<a name="ln542">        	            + coeffs[2] * (float)dsp_data[dsp_phase_index-1]</a>
+<a name="ln543">        	            + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln544">        	            + coeffs[4] * (float)dsp_data[dsp_phase_index+1]</a>
+<a name="ln545">        	            + coeffs[5] * (float)dsp_data[dsp_phase_index+2]</a>
+<a name="ln546">        	            + coeffs[6] * (float)dsp_data[dsp_phase_index+3]);</a>
+<a name="ln547"> </a>
+<a name="ln548">                  /* increment phase and amplitude */</a>
+<a name="ln549">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln550">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln551">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln552">                        return dsp_i;</a>
+<a name="ln553">                  amp += dsp_amp_incr;</a>
+<a name="ln554">                  }</a>
+<a name="ln555"> </a>
+<a name="ln556">            start_index++;</a>
+<a name="ln557"> </a>
+<a name="ln558">            /* interpolate 3rd to first sample point (start or loop start) if needed */</a>
+<a name="ln559">            for ( ; dsp_phase_index == start_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln560">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln561"> </a>
+<a name="ln562">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)start_points[0]</a>
+<a name="ln563">                     + coeffs[1] * (float)dsp_data[dsp_phase_index-2]</a>
+<a name="ln564">                     + coeffs[2] * (float)dsp_data[dsp_phase_index-1]</a>
+<a name="ln565">                     + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln566">                     + coeffs[4] * (float)dsp_data[dsp_phase_index+1]</a>
+<a name="ln567">                     + coeffs[5] * (float)dsp_data[dsp_phase_index+2]</a>
+<a name="ln568">                     + coeffs[6] * (float)dsp_data[dsp_phase_index+3]);</a>
+<a name="ln569"> </a>
+<a name="ln570">                  /* increment phase and amplitude */</a>
+<a name="ln571">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln572">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln573">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln574">                        return dsp_i;</a>
+<a name="ln575">                  amp += dsp_amp_incr;</a>
+<a name="ln576">                  }</a>
+<a name="ln577"> </a>
+<a name="ln578">            start_index -= 2;	/* set back to original start index */</a>
+<a name="ln579"> </a>
+<a name="ln580">            /* interpolate the sequence of sample points */</a>
+<a name="ln581">            for ( ; dsp_i &lt; n &amp;&amp; dsp_phase_index &lt;= end_index; dsp_i++) {</a>
+<a name="ln582">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln583"> </a>
+<a name="ln584">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)dsp_data[dsp_phase_index-3]</a>
+<a name="ln585">                     + coeffs[1] * (float)dsp_data[dsp_phase_index-2]</a>
+<a name="ln586">                     + coeffs[2] * (float)dsp_data[dsp_phase_index-1]</a>
+<a name="ln587">                     + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln588">                     + coeffs[4] * (float)dsp_data[dsp_phase_index+1]</a>
+<a name="ln589">                     + coeffs[5] * (float)dsp_data[dsp_phase_index+2]</a>
+<a name="ln590">                     + coeffs[6] * (float)dsp_data[dsp_phase_index+3]);</a>
+<a name="ln591"> </a>
+<a name="ln592">                  /* increment phase and amplitude */</a>
+<a name="ln593">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln594">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln595">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln596">                        return dsp_i;</a>
+<a name="ln597">                  amp += dsp_amp_incr;</a>
+<a name="ln598">                  }</a>
+<a name="ln599"> </a>
+<a name="ln600">            /* break out if buffer filled */</a>
+<a name="ln601">            if (dsp_i &gt;= n)</a>
+<a name="ln602">                  break;</a>
+<a name="ln603"> </a>
+<a name="ln604">            end_index++;	/* we're now interpolating the 3rd to last point */</a>
+<a name="ln605"> </a>
+<a name="ln606">            /* interpolate within 3rd to last point */</a>
+<a name="ln607">            for (; dsp_phase_index &lt;= end_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln608">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln609"> </a>
+<a name="ln610">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)dsp_data[dsp_phase_index-3]</a>
+<a name="ln611">                        + coeffs[1] * (float)dsp_data[dsp_phase_index-2]</a>
+<a name="ln612">                        + coeffs[2] * (float)dsp_data[dsp_phase_index-1]</a>
+<a name="ln613">                        + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln614">                        + coeffs[4] * (float)dsp_data[dsp_phase_index+1]</a>
+<a name="ln615">                        + coeffs[5] * (float)dsp_data[dsp_phase_index+2]</a>
+<a name="ln616">                        + coeffs[6] * (float)end_points[0]);</a>
+<a name="ln617"> </a>
+<a name="ln618">                  /* increment phase and amplitude */</a>
+<a name="ln619">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln620">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln621">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln622">                        return dsp_i;</a>
+<a name="ln623">                  amp += dsp_amp_incr;</a>
+<a name="ln624">                  }</a>
+<a name="ln625"> </a>
+<a name="ln626">            end_index++;	/* we're now interpolating the 2nd to last point */</a>
+<a name="ln627"> </a>
+<a name="ln628">            /* interpolate within 2nd to last point */</a>
+<a name="ln629">            for (; dsp_phase_index &lt;= end_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln630">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln631"> </a>
+<a name="ln632">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)dsp_data[dsp_phase_index-3]</a>
+<a name="ln633">                        + coeffs[1] * (float)dsp_data[dsp_phase_index-2]</a>
+<a name="ln634">                        + coeffs[2] * (float)dsp_data[dsp_phase_index-1]</a>
+<a name="ln635">                        + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln636">                        + coeffs[4] * (float)dsp_data[dsp_phase_index+1]</a>
+<a name="ln637">                        + coeffs[5] * (float)end_points[0]</a>
+<a name="ln638">                        + coeffs[6] * (float)end_points[1]);</a>
+<a name="ln639"> </a>
+<a name="ln640">                  /* increment phase and amplitude */</a>
+<a name="ln641">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln642">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln643">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln644">                        return dsp_i;</a>
+<a name="ln645">                  amp += dsp_amp_incr;</a>
+<a name="ln646">                  }</a>
+<a name="ln647"> </a>
+<a name="ln648">            end_index++;	/* we're now interpolating the last point */</a>
+<a name="ln649"> </a>
+<a name="ln650">            /* interpolate within last point */</a>
+<a name="ln651">            for (; dsp_phase_index &lt;= end_index &amp;&amp; dsp_i &lt; n; dsp_i++) {</a>
+<a name="ln652">                  coeffs = sinc_table7[fluid_phase_fract_to_tablerow (dsp_phase)];</a>
+<a name="ln653"> </a>
+<a name="ln654">                  dsp_buf[dsp_i] = amp * (coeffs[0] * (float)dsp_data[dsp_phase_index-3]</a>
+<a name="ln655">                        + coeffs[1] * (float)dsp_data[dsp_phase_index-2]</a>
+<a name="ln656">                        + coeffs[2] * (float)dsp_data[dsp_phase_index-1]</a>
+<a name="ln657">                        + coeffs[3] * (float)dsp_data[dsp_phase_index]</a>
+<a name="ln658">                        + coeffs[4] * (float)end_points[0]</a>
+<a name="ln659">                        + coeffs[5] * (float)end_points[1]</a>
+<a name="ln660">                        + coeffs[6] * (float)end_points[2]);</a>
+<a name="ln661"> </a>
+<a name="ln662">                  /* increment phase and amplitude */</a>
+<a name="ln663">                  dsp_phase += dsp_phase_incr;</a>
+<a name="ln664">                  dsp_phase_index = dsp_phase.index();</a>
+<a name="ln665">                  if (!updateAmpInc(nextNewAmpInc, curSample2AmpInc, dsp_amp_incr, dsp_i))</a>
+<a name="ln666">                        return dsp_i;</a>
+<a name="ln667">                  amp += dsp_amp_incr;</a>
+<a name="ln668">                  }</a>
+<a name="ln669"> </a>
+<a name="ln670">            if (!looping)</a>
+<a name="ln671">                  break;    /* break out if not looping (end of sample) */</a>
+<a name="ln672"> </a>
+<a name="ln673">            /* go back to loop start */</a>
+<a name="ln674">            if (dsp_phase_index &gt; end_index) {</a>
+<a name="ln675">                  dsp_phase -= (voice-&gt;loopend - voice-&gt;loopstart);</a>
+<a name="ln676"> </a>
+<a name="ln677">                  if (!voice-&gt;has_looped) {</a>
+<a name="ln678">                        voice-&gt;has_looped = true;</a>
+<a name="ln679">                        start_index = voice-&gt;loopstart;</a>
+<a name="ln680">                        start_points[0] = dsp_data[voice-&gt;loopend - 1];</a>
+<a name="ln681">                        start_points[1] = dsp_data[voice-&gt;loopend - 2];</a>
+<a name="ln682">                        start_points[2] = dsp_data[voice-&gt;loopend - 3];</a>
+<a name="ln683">                        }</a>
+<a name="ln684">                  }</a>
+<a name="ln685"> </a>
+<a name="ln686">            /* break out if filled buffer */</a>
+<a name="ln687">            if (dsp_i &gt;= n)</a>
+<a name="ln688">                  break;</a>
+<a name="ln689">            end_index -= 3;	/* set end back to 4th to last sample point */</a>
+<a name="ln690">            }</a>
+<a name="ln691"> </a>
+<a name="ln692">      /* sub 1/2 sample from dsp_phase since 7th order interpolation is centered on</a>
+<a name="ln693">       * the 4th sample point (correct back to real value) */</a>
+<a name="ln694">      dsp_phase -= (Phase)0x80000000;</a>
+<a name="ln695"> </a>
+<a name="ln696">      voice-&gt;phase = dsp_phase;</a>
+<a name="ln697"> </a>
+<a name="ln698">      return dsp_i;</a>
+<a name="ln699">      }</a>
+<a name="ln700">}</a>
+<a name="ln701"> </a>
+
+</code></pre>
+<div class="balloon" rel="6"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

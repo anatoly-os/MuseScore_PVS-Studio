@@ -1,0 +1,596 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>synthcontrol.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2016 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;synthcontrol.h&quot;</a>
+<a name="ln14">#include &quot;musescore.h&quot;</a>
+<a name="ln15">#include &quot;seq.h&quot;</a>
+<a name="ln16">#include &quot;synthesizer/msynthesizer.h&quot;</a>
+<a name="ln17">#include &quot;synthesizer/synthesizer.h&quot;</a>
+<a name="ln18">#include &quot;synthesizer/synthesizergui.h&quot;</a>
+<a name="ln19">#include &quot;mixer.h&quot;</a>
+<a name="ln20">#include &quot;file.h&quot;</a>
+<a name="ln21">#include &quot;icons.h&quot;</a>
+<a name="ln22">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/mscore.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/undo.h&quot;</a>
+<a name="ln26">#include &quot;effects/effectgui.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/part.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/instrument.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">namespace Ms {</a>
+<a name="ln31"> </a>
+<a name="ln32">extern MasterSynthesizer* synti;</a>
+<a name="ln33">extern bool useFactorySettings;</a>
+<a name="ln34"> </a>
+<a name="ln35">//---------------------------------------------------------</a>
+<a name="ln36">//   SynthControl</a>
+<a name="ln37">//---------------------------------------------------------</a>
+<a name="ln38"> </a>
+<a name="ln39">SynthControl::SynthControl(QWidget* parent)</a>
+<a name="ln40">   : QWidget(parent, Qt::Dialog)</a>
+<a name="ln41">      {</a>
+<a name="ln42">      setObjectName(&quot;SynthControl&quot;);</a>
+<a name="ln43">      setupUi(this);</a>
+<a name="ln44">      _score = 0;</a>
+<a name="ln45"> </a>
+<a name="ln46">      setWindowFlags(Qt::Tool);</a>
+<a name="ln47">//      setWindowFlags(this-&gt;windowFlags() &amp; ~Qt::WindowContextHelpButtonHint);</a>
+<a name="ln48"> </a>
+<a name="ln49">      int idx = 0;</a>
+<a name="ln50">      for (Synthesizer* s : synti-&gt;synthesizer()) {</a>
+<a name="ln51">            if (strcmp(s-&gt;name(), &quot;Aeolus&quot;) == 0)    // no gui for aeolus</a>
+<a name="ln52">                  continue;</a>
+<a name="ln53">            tabWidget-&gt;insertTab(idx++, s-&gt;gui(), tr(s-&gt;name()));</a>
+<a name="ln54">            s-&gt;gui()-&gt;synthesizerChanged();</a>
+<a name="ln55">            connect(s-&gt;gui(), SIGNAL(valueChanged()), SLOT(setDirty()));</a>
+<a name="ln56">            }</a>
+<a name="ln57"> </a>
+<a name="ln58">      // effectA        combo box</a>
+<a name="ln59">      // effectStackA   widget stack</a>
+<a name="ln60"> </a>
+<a name="ln61">      effectA-&gt;clear();</a>
+<a name="ln62">      for (Effect* e : synti-&gt;effectList(0)) {</a>
+<a name="ln63">            effectA-&gt;addItem(tr(e-&gt;name()));</a>
+<a name="ln64">            EffectGui* gui = e-&gt;gui();</a>
+<a name="ln65">            if (gui) {</a>
+<a name="ln66">                  effectStackA-&gt;addWidget(gui);</a>
+<a name="ln67">                  connect(gui, SIGNAL(valueChanged()), SLOT(setDirty()));</a>
+<a name="ln68">                  }</a>
+<a name="ln69">            }</a>
+<a name="ln70"> </a>
+<a name="ln71">      effectB-&gt;clear();</a>
+<a name="ln72">      for (Effect* e : synti-&gt;effectList(1)) {</a>
+<a name="ln73">            effectB-&gt;addItem(tr(e-&gt;name()));</a>
+<a name="ln74">            EffectGui* gui = e-&gt;gui();</a>
+<a name="ln75">            if (gui) {</a>
+<a name="ln76">                  effectStackB-&gt;addWidget(gui);</a>
+<a name="ln77">                  connect(gui, SIGNAL(valueChanged()), SLOT(setDirty()));</a>
+<a name="ln78">                  }</a>
+<a name="ln79">            }</a>
+<a name="ln80">      readSettings();</a>
+<a name="ln81"> </a>
+<a name="ln82">      updateGui();</a>
+<a name="ln83"> </a>
+<a name="ln84">      storeButton-&gt;setEnabled(false);</a>
+<a name="ln85">      recallButton-&gt;setEnabled(false);</a>
+<a name="ln86">      changeTuningButton-&gt;setEnabled(false);</a>
+<a name="ln87"> </a>
+<a name="ln88">      gainSlider-&gt;setLog(false);</a>
+<a name="ln89">      gainSlider-&gt;setRange(synti-&gt;minGainAsDecibels, synti-&gt;maxGainAsDecibels);</a>
+<a name="ln90">      gainSlider-&gt;setDclickValue1(synti-&gt;defaultGainAsDecibels);</a>
+<a name="ln91">      gainSlider-&gt;setDclickValue2(synti-&gt;defaultGainAsDecibels);</a>
+<a name="ln92">      gainSlider-&gt;setValue(synti-&gt;gainAsDecibels());</a>
+<a name="ln93"> </a>
+<a name="ln94">      enablePlay = new EnablePlayForWidget(this);</a>
+<a name="ln95">      connect(effectA,      SIGNAL(currentIndexChanged(int)), SLOT(effectAChanged(int)));</a>
+<a name="ln96">      connect(effectB,      SIGNAL(currentIndexChanged(int)), SLOT(effectBChanged(int)));</a>
+<a name="ln97">      connect(gainSlider,   SIGNAL(valueChanged(double,int)), SLOT(gainChanged(double,int)));</a>
+<a name="ln98">      connect(masterTuning, SIGNAL(valueChanged(double)),     SLOT(masterTuningChanged(double)));</a>
+<a name="ln99">      connect(changeTuningButton, SIGNAL(clicked()),          SLOT(changeMasterTuning()));</a>
+<a name="ln100">      connect(loadButton,   SIGNAL(clicked()),                SLOT(loadButtonClicked()));</a>
+<a name="ln101">      connect(saveButton,   SIGNAL(clicked()),                SLOT(saveButtonClicked()));</a>
+<a name="ln102">      connect(storeButton,  SIGNAL(clicked()),                SLOT(storeButtonClicked()));</a>
+<a name="ln103">      connect(recallButton, SIGNAL(clicked()),                SLOT(recallButtonClicked()));</a>
+<a name="ln104">      connect(gainSlider,         SIGNAL(valueChanged(double,int)), SLOT(setDirty()));</a>
+<a name="ln105">      connect(dynamicsMethodList, SIGNAL(currentIndexChanged(int)), SLOT(dynamicsMethodChanged(int)));</a>
+<a name="ln106">      connect(ccToUseList,        SIGNAL(currentIndexChanged(int)), SLOT(ccToUseChanged(int)));</a>
+<a name="ln107">      connect(switchExpr,   SIGNAL(clicked()),                SLOT(switchExprButtonClicked()));</a>
+<a name="ln108">      connect(switchNonExpr,SIGNAL(clicked()),                SLOT(switchNonExprButtonClicked()));</a>
+<a name="ln109">      connect(resetExpr,    SIGNAL(clicked()),                SLOT(resetExprButtonClicked()));</a>
+<a name="ln110">      }</a>
+<a name="ln111"> </a>
+<a name="ln112">//---------------------------------------------------------</a>
+<a name="ln113">//   setGain</a>
+<a name="ln114">//---------------------------------------------------------</a>
+<a name="ln115"> </a>
+<a name="ln116">// synthesizer has signalled a gain change - update the slider</a>
+<a name="ln117">void SynthControl::setGain(float val)</a>
+<a name="ln118">      {</a>
+<a name="ln119">      Q_UNUSED(val);</a>
+<a name="ln120">      gainSlider-&gt;setValue(synti-&gt;gainAsDecibels());</a>
+<a name="ln121">      }</a>
+<a name="ln122"> </a>
+<a name="ln123">//---------------------------------------------------------</a>
+<a name="ln124">//   closeEvent</a>
+<a name="ln125">//---------------------------------------------------------</a>
+<a name="ln126"> </a>
+<a name="ln127">void SynthControl::closeEvent(QCloseEvent* ev)</a>
+<a name="ln128">      {</a>
+<a name="ln129">      emit closed(false);</a>
+<a name="ln130">      QWidget::closeEvent(ev);</a>
+<a name="ln131">      }</a>
+<a name="ln132"> </a>
+<a name="ln133">//---------------------------------------------------------</a>
+<a name="ln134">//   showEvent</a>
+<a name="ln135">//---------------------------------------------------------</a>
+<a name="ln136"> </a>
+<a name="ln137">void SynthControl::showEvent(QShowEvent* e)</a>
+<a name="ln138">      {</a>
+<a name="ln139">      enablePlay-&gt;showEvent(e);</a>
+<a name="ln140">      QWidget::showEvent(e);</a>
+<a name="ln141">      activateWindow();</a>
+<a name="ln142">      setFocus();</a>
+<a name="ln143">      }</a>
+<a name="ln144"> </a>
+<a name="ln145">//---------------------------------------------------------</a>
+<a name="ln146">//   eventFilter</a>
+<a name="ln147">//---------------------------------------------------------</a>
+<a name="ln148"> </a>
+<a name="ln149">bool SynthControl::eventFilter(QObject* obj, QEvent* e)</a>
+<a name="ln150">      {</a>
+<a name="ln151">      if(enablePlay-&gt;eventFilter(obj, e))</a>
+<a name="ln152">            return true;</a>
+<a name="ln153">      return QWidget::eventFilter(obj, e);</a>
+<a name="ln154">      }</a>
+<a name="ln155"> </a>
+<a name="ln156">void SynthControl::keyPressEvent(QKeyEvent* ev) {</a>
+<a name="ln157">      if (ev-&gt;key() == Qt::Key_Escape &amp;&amp; ev-&gt;modifiers() == Qt::NoModifier) {</a>
+<a name="ln158">            close();</a>
+<a name="ln159">            return;</a>
+<a name="ln160">            }</a>
+<a name="ln161">      QWidget::keyPressEvent(ev);</a>
+<a name="ln162">      }</a>
+<a name="ln163"> </a>
+<a name="ln164">//---------------------------------------------------------</a>
+<a name="ln165">//   showSynthControl</a>
+<a name="ln166">//---------------------------------------------------------</a>
+<a name="ln167"> </a>
+<a name="ln168">void MuseScore::showSynthControl(bool val)</a>
+<a name="ln169">      {</a>
+<a name="ln170">      QAction* a = getAction(&quot;synth-control&quot;);</a>
+<a name="ln171">      if (synthControl == 0) {</a>
+<a name="ln172">            synthControl = new SynthControl(this);</a>
+<a name="ln173">            mscore-&gt;stackUnder(synthControl);</a>
+<a name="ln174">            synthControl-&gt;setScore(cs);</a>
+<a name="ln175">            connect(synti,        SIGNAL(gainChanged(float)), synthControl, SLOT(setGain(float)));</a>
+<a name="ln176">            connect(synthControl, SIGNAL(gainChanged(float)), synti, SLOT(setGain(float)));</a>
+<a name="ln177">            connect(synthControl, SIGNAL(closed(bool)), a,     SLOT(setChecked(bool)));</a>
+<a name="ln178">            if (mixer)</a>
+<a name="ln179">                  connect(synthControl, SIGNAL(soundFontChanged()), mixer, SLOT(patchListChanged()));</a>
+<a name="ln180">            }</a>
+<a name="ln181">      synthControl-&gt;setVisible(val);</a>
+<a name="ln182">      }</a>
+<a name="ln183"> </a>
+<a name="ln184">//---------------------------------------------------------</a>
+<a name="ln185">//   gainChanged</a>
+<a name="ln186">//---------------------------------------------------------</a>
+<a name="ln187"> </a>
+<a name="ln188">// user has moved the gain control on this widget - update the synthesizer</a>
+<a name="ln189">void SynthControl::gainChanged(double val, int)</a>
+<a name="ln190">      {</a>
+<a name="ln191">      synti-&gt;setGainAsDecibels(val);</a>
+<a name="ln192">      }</a>
+<a name="ln193"> </a>
+<a name="ln194">//---------------------------------------------------------</a>
+<a name="ln195">//   masterTuningChanged</a>
+<a name="ln196">//---------------------------------------------------------</a>
+<a name="ln197"> </a>
+<a name="ln198">void SynthControl::masterTuningChanged(double /*val*/)</a>
+<a name="ln199">      {</a>
+<a name="ln200">      changeTuningButton-&gt;setEnabled(true);</a>
+<a name="ln201">      }</a>
+<a name="ln202"> </a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204">//   changeMasterTuning</a>
+<a name="ln205">//---------------------------------------------------------</a>
+<a name="ln206"> </a>
+<a name="ln207">void SynthControl::changeMasterTuning()</a>
+<a name="ln208">      {</a>
+<a name="ln209">      synti-&gt;setMasterTuning(masterTuning-&gt;value());</a>
+<a name="ln210">      changeTuningButton-&gt;setEnabled(false);</a>
+<a name="ln211">      setDirty();</a>
+<a name="ln212">      }</a>
+<a name="ln213"> </a>
+<a name="ln214">//---------------------------------------------------------</a>
+<a name="ln215">//   setMeter</a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217"> </a>
+<a name="ln218">void SynthControl::setMeter(float l, float r, float left_peak, float right_peak)</a>
+<a name="ln219">      {</a>
+<a name="ln220">      gainSlider-&gt;setMeterVal(0, l, left_peak);</a>
+<a name="ln221">      gainSlider-&gt;setMeterVal(1, r, right_peak);</a>
+<a name="ln222">      }</a>
+<a name="ln223"> </a>
+<a name="ln224">//---------------------------------------------------------</a>
+<a name="ln225">//   setScore</a>
+<a name="ln226">//---------------------------------------------------------</a>
+<a name="ln227">void SynthControl::setScore(Score* s) {</a>
+<a name="ln228">      _score = s;</a>
+<a name="ln229"> </a>
+<a name="ln230">      loadButton-&gt;setEnabled(true);</a>
+<a name="ln231">      saveButton-&gt;setEnabled(true);</a>
+<a name="ln232">      }</a>
+<a name="ln233"> </a>
+<a name="ln234">//---------------------------------------------------------</a>
+<a name="ln235">//   stop</a>
+<a name="ln236">//---------------------------------------------------------</a>
+<a name="ln237"> </a>
+<a name="ln238">void SynthControl::stop()</a>
+<a name="ln239">      {</a>
+<a name="ln240">      gainSlider-&gt;setMeterVal(0, .0, .0);</a>
+<a name="ln241">      gainSlider-&gt;setMeterVal(1, .0, .0);</a>
+<a name="ln242">      }</a>
+<a name="ln243"> </a>
+<a name="ln244">//---------------------------------------------------------</a>
+<a name="ln245">//   effectAChanged</a>
+<a name="ln246">//---------------------------------------------------------</a>
+<a name="ln247"> </a>
+<a name="ln248">void SynthControl::effectAChanged(int idx)</a>
+<a name="ln249">      {</a>
+<a name="ln250">      synti-&gt;setEffect(0, idx);</a>
+<a name="ln251">      effectStackA-&gt;setCurrentIndex(idx);</a>
+<a name="ln252">      setDirty();</a>
+<a name="ln253">      }</a>
+<a name="ln254"> </a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256">//   effectBChanged</a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258"> </a>
+<a name="ln259">void SynthControl::effectBChanged(int idx)</a>
+<a name="ln260">      {</a>
+<a name="ln261">      synti-&gt;setEffect(1, idx);</a>
+<a name="ln262">      effectStackB-&gt;setCurrentIndex(idx);</a>
+<a name="ln263">      setDirty();</a>
+<a name="ln264">      }</a>
+<a name="ln265"> </a>
+<a name="ln266">//---------------------------------------------------------</a>
+<a name="ln267">//   dynamicsMethodChanged</a>
+<a name="ln268">//---------------------------------------------------------</a>
+<a name="ln269"> </a>
+<a name="ln270">void SynthControl::dynamicsMethodChanged(int val)</a>
+<a name="ln271">      {</a>
+<a name="ln272">      ccToUseList-&gt;setEnabled(val != 0);</a>
+<a name="ln273">      synti-&gt;setDynamicsMethod(val);</a>
+<a name="ln274">      setDirty();</a>
+<a name="ln275">      }</a>
+<a name="ln276"> </a>
+<a name="ln277">//---------------------------------------------------------</a>
+<a name="ln278">//   ccToUseChanged</a>
+<a name="ln279">//---------------------------------------------------------</a>
+<a name="ln280"> </a>
+<a name="ln281">void SynthControl::ccToUseChanged(int val)</a>
+<a name="ln282">      {</a>
+<a name="ln283">      synti-&gt;setCcToUseIndex(val);</a>
+<a name="ln284">      setDirty();</a>
+<a name="ln285">      }</a>
+<a name="ln286"> </a>
+<a name="ln287">//---------------------------------------------------------</a>
+<a name="ln288">//   switchExprButtonClicked</a>
+<a name="ln289">//---------------------------------------------------------</a>
+<a name="ln290"> </a>
+<a name="ln291">void SynthControl::switchExprButtonClicked()</a>
+<a name="ln292">      {</a>
+<a name="ln293">      _score-&gt;masterScore()-&gt;updateExpressive(MuseScore::synthesizer(&quot;Fluid&quot;), true, true);</a>
+<a name="ln294">      setAllUserBankController(true);</a>
+<a name="ln295">      updateMixer();</a>
+<a name="ln296">      }</a>
+<a name="ln297"> </a>
+<a name="ln298">//---------------------------------------------------------</a>
+<a name="ln299">//   switchNonExprButtonClicked</a>
+<a name="ln300">//---------------------------------------------------------</a>
+<a name="ln301"> </a>
+<a name="ln302">void SynthControl::switchNonExprButtonClicked()</a>
+<a name="ln303">      {</a>
+<a name="ln304">      _score-&gt;masterScore()-&gt;updateExpressive(MuseScore::synthesizer(&quot;Fluid&quot;), false, true);</a>
+<a name="ln305">      setAllUserBankController(true);</a>
+<a name="ln306">      updateMixer();</a>
+<a name="ln307">      }</a>
+<a name="ln308"> </a>
+<a name="ln309">//---------------------------------------------------------</a>
+<a name="ln310">//   resetExprButtonClicked</a>
+<a name="ln311">//---------------------------------------------------------</a>
+<a name="ln312"> </a>
+<a name="ln313">void SynthControl::resetExprButtonClicked()</a>
+<a name="ln314">      {</a>
+<a name="ln315">      setAllUserBankController(false);</a>
+<a name="ln316">      _score-&gt;masterScore()-&gt;updateExpressive(MuseScore::synthesizer(&quot;Fluid&quot;));</a>
+<a name="ln317">      updateMixer();</a>
+<a name="ln318">      }</a>
+<a name="ln319"> </a>
+<a name="ln320">//---------------------------------------------------------</a>
+<a name="ln321">//   setAllUserBankController</a>
+<a name="ln322">//---------------------------------------------------------</a>
+<a name="ln323"> </a>
+<a name="ln324">void SynthControl::setAllUserBankController(bool val)</a>
+<a name="ln325">      {</a>
+<a name="ln326">      _score-&gt;startCmd();</a>
+<a name="ln327">      for (Part* p : _score-&gt;parts()) {</a>
+<a name="ln328">            const InstrumentList* il = p-&gt;instruments();</a>
+<a name="ln329">            for (auto it = il-&gt;begin(); it != il-&gt;end(); it++) {</a>
+<a name="ln330">                  Instrument* i = it-&gt;second;</a>
+<a name="ln331">                  for (Channel* c : i-&gt;channel()) {</a>
+<a name="ln332">                        _score-&gt;undo(new SetUserBankController(c, val));</a>
+<a name="ln333">                        }</a>
+<a name="ln334">                  }</a>
+<a name="ln335">            }</a>
+<a name="ln336">      _score-&gt;endCmd();</a>
+<a name="ln337">      }</a>
+<a name="ln338"> </a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340">//   loadButtonClicked</a>
+<a name="ln341">//    load synthesizer settings from score</a>
+<a name="ln342">//---------------------------------------------------------</a>
+<a name="ln343"> </a>
+<a name="ln344">void SynthControl::loadButtonClicked()</a>
+<a name="ln345">      {</a>
+<a name="ln346">      if (!_score)</a>
+<a name="ln347">            return;</a>
+<a name="ln348">      synti-&gt;setState(_score-&gt;synthesizerState());</a>
+<a name="ln349">      updateGui();</a>
+<a name="ln350">      loadButton-&gt;setEnabled(false);</a>
+<a name="ln351">      saveButton-&gt;setEnabled(false);</a>
+<a name="ln352">      storeButton-&gt;setEnabled(true);</a>
+<a name="ln353">      recallButton-&gt;setEnabled(true);</a>
+<a name="ln354">      changeTuningButton-&gt;setEnabled(false);</a>
+<a name="ln355">      }</a>
+<a name="ln356"> </a>
+<a name="ln357">//---------------------------------------------------------</a>
+<a name="ln358">//   saveButtonClicked</a>
+<a name="ln359">//    save synthesizer settings to score</a>
+<a name="ln360">//---------------------------------------------------------</a>
+<a name="ln361"> </a>
+<a name="ln362">void SynthControl::saveButtonClicked()</a>
+<a name="ln363">      {</a>
+<a name="ln364">      if (!_score)</a>
+<a name="ln365">            return;</a>
+<a name="ln366">      _score-&gt;startCmd();</a>
+<a name="ln367">      SynthesizerState ss = synti-&gt;state();</a>
+<a name="ln368">      if (_dirty || !_score-&gt;synthesizerState().isDefault())</a>
+<a name="ln369">            ss.setIsDefault(false);</a>
+<a name="ln370">      _score-&gt;undo(new ChangeSynthesizerState(_score, ss));</a>
+<a name="ln371">      _score-&gt;endCmd();</a>
+<a name="ln372"> </a>
+<a name="ln373">      updateExpressivePatches();</a>
+<a name="ln374">      loadButton-&gt;setEnabled(false);</a>
+<a name="ln375">      saveButton-&gt;setEnabled(false);</a>
+<a name="ln376">      storeButton-&gt;setEnabled(true);</a>
+<a name="ln377">      recallButton-&gt;setEnabled(true);</a>
+<a name="ln378">      _dirty = false;</a>
+<a name="ln379">      }</a>
+<a name="ln380"> </a>
+<a name="ln381">//---------------------------------------------------------</a>
+<a name="ln382">//   recallButtonClicked</a>
+<a name="ln383">//    load stored synthesizer settings</a>
+<a name="ln384">//---------------------------------------------------------</a>
+<a name="ln385"> </a>
+<a name="ln386">void SynthControl::recallButtonClicked()</a>
+<a name="ln387">      {</a>
+<a name="ln388">      if (!_score) {</a>
+<a name="ln389">            qDebug(&quot;no score&quot;);</a>
+<a name="ln390">            return;</a>
+<a name="ln391">            }</a>
+<a name="ln392"> </a>
+<a name="ln393">      SynthesizerState state;</a>
+<a name="ln394">      QString s(dataPath + &quot;/synthesizer.xml&quot;);</a>
+<a name="ln395">      QFile f(s);</a>
+<a name="ln396">      if (!f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln397">            qDebug(&quot;cannot read synthesizer settings &lt;%s&gt;&quot;, qPrintable(s));</a>
+<a name="ln398">            return;</a>
+<a name="ln399">            }</a>
+<a name="ln400">      XmlReader e(&amp;f);</a>
+<a name="ln401">      while (e.readNextStartElement()) {</a>
+<a name="ln402">            if (e.name() == &quot;Synthesizer&quot;)</a>
+<a name="ln403">                  state.read(e);</a>
+<a name="ln404">            else</a>
+<a name="ln405">                  e.unknown();</a>
+<a name="ln406">            }</a>
+<a name="ln407">      state.setIsDefault(true);</a>
+<a name="ln408">      synti-&gt;setState(state);</a>
+<a name="ln409">      updateGui();</a>
+<a name="ln410"> </a>
+<a name="ln411">      storeButton-&gt;setEnabled(false);</a>
+<a name="ln412">      recallButton-&gt;setEnabled(false);</a>
+<a name="ln413"> </a>
+<a name="ln414">      loadButton-&gt;setEnabled(true);</a>
+<a name="ln415">      saveButton-&gt;setEnabled(true);</a>
+<a name="ln416">      changeTuningButton-&gt;setEnabled(false);</a>
+<a name="ln417">      }</a>
+<a name="ln418"> </a>
+<a name="ln419">//---------------------------------------------------------</a>
+<a name="ln420">//   storeButtonClicked</a>
+<a name="ln421">//    save synthesizer settings</a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423"> </a>
+<a name="ln424">void SynthControl::storeButtonClicked()</a>
+<a name="ln425">      {</a>
+<a name="ln426">      if (!_score) {</a>
+<a name="ln427">            qDebug(&quot;no score&quot;);</a>
+<a name="ln428">            return;</a>
+<a name="ln429">            }</a>
+<a name="ln430">      synti-&gt;storeState();</a>
+<a name="ln431">      updateExpressivePatches();</a>
+<a name="ln432">      storeButton-&gt;setEnabled(false);</a>
+<a name="ln433">      recallButton-&gt;setEnabled(false);</a>
+<a name="ln434">      _dirty = false;</a>
+<a name="ln435">      }</a>
+<a name="ln436"> </a>
+<a name="ln437">//---------------------------------------------------------</a>
+<a name="ln438">//   Gui</a>
+<a name="ln439">//---------------------------------------------------------</a>
+<a name="ln440"> </a>
+<a name="ln441">void SynthControl::updateGui()</a>
+<a name="ln442">      {</a>
+<a name="ln443">      masterTuning-&gt;setValue(synti-&gt;masterTuning());</a>
+<a name="ln444">      setGain(synti-&gt;gain());</a>
+<a name="ln445"> </a>
+<a name="ln446">      dynamicsMethodList-&gt;setCurrentIndex(synti-&gt;dynamicsMethod());</a>
+<a name="ln447">      ccToUseList-&gt;setCurrentIndex(synti-&gt;ccToUseIndex());</a>
+<a name="ln448">      if (dynamicsMethodList-&gt;currentIndex() == 0)</a>
+<a name="ln449">            ccToUseList-&gt;setEnabled(false);</a>
+<a name="ln450">      else</a>
+<a name="ln451">            ccToUseList-&gt;setEnabled(true);</a>
+<a name="ln452"> </a>
+<a name="ln453">      int idx = synti-&gt;indexOfEffect(0);</a>
+<a name="ln454">      effectA-&gt;setCurrentIndex(idx);</a>
+<a name="ln455">      effectStackA-&gt;setCurrentIndex(idx);</a>
+<a name="ln456">      if (synti-&gt;effect(0) &amp;&amp; synti-&gt;effect(0)-&gt;gui())</a>
+<a name="ln457">            synti-&gt;effect(0)-&gt;gui()-&gt;updateValues();</a>
+<a name="ln458">      if (synti-&gt;effect(1) &amp;&amp; synti-&gt;effect(1)-&gt;gui())</a>
+<a name="ln459">            synti-&gt;effect(1)-&gt;gui()-&gt;updateValues();</a>
+<a name="ln460"> </a>
+<a name="ln461">      idx = synti-&gt;indexOfEffect(1);</a>
+<a name="ln462">      effectB-&gt;setCurrentIndex(idx);</a>
+<a name="ln463">      effectStackB-&gt;setCurrentIndex(idx);</a>
+<a name="ln464">      for (Synthesizer* s : synti-&gt;synthesizer()) {</a>
+<a name="ln465">            if (strcmp(s-&gt;name(), &quot;Aeolus&quot;) == 0)    // no gui for aeolus</a>
+<a name="ln466">                  continue;</a>
+<a name="ln467">            s-&gt;gui()-&gt;synthesizerChanged();</a>
+<a name="ln468">            }</a>
+<a name="ln469">      }</a>
+<a name="ln470"> </a>
+<a name="ln471">//---------------------------------------------------------</a>
+<a name="ln472">//   updateExpressivePatches</a>
+<a name="ln473">//---------------------------------------------------------</a>
+<a name="ln474"> </a>
+<a name="ln475">void SynthControl::updateExpressivePatches()</a>
+<a name="ln476">      {</a>
+<a name="ln477">      _score-&gt;masterScore()-&gt;rebuildAndUpdateExpressive(MuseScore::synthesizer(&quot;Fluid&quot;));</a>
+<a name="ln478">      updateMixer();</a>
+<a name="ln479">      }</a>
+<a name="ln480"> </a>
+<a name="ln481">//---------------------------------------------------------</a>
+<a name="ln482">//   updateMixer</a>
+<a name="ln483">//---------------------------------------------------------</a>
+<a name="ln484"> </a>
+<a name="ln485">void SynthControl::updateMixer()</a>
+<a name="ln486">      {</a>
+<a name="ln487">      if (mscore-&gt;getMixer())</a>
+<a name="ln488">            mscore-&gt;getMixer()-&gt;updateTracks();</a>
+<a name="ln489">      }</a>
+<a name="ln490"> </a>
+<a name="ln491">//---------------------------------------------------------</a>
+<a name="ln492">//   setDirty</a>
+<a name="ln493">//---------------------------------------------------------</a>
+<a name="ln494"> </a>
+<a name="ln495">void SynthControl::setDirty()</a>
+<a name="ln496">      {</a>
+<a name="ln497">      _dirty = true;</a>
+<a name="ln498">      loadButton-&gt;setEnabled(true);</a>
+<a name="ln499">      saveButton-&gt;setEnabled(true);</a>
+<a name="ln500">      storeButton-&gt;setEnabled(true);</a>
+<a name="ln501">      recallButton-&gt;setEnabled(true);</a>
+<a name="ln502">      }</a>
+<a name="ln503"> </a>
+<a name="ln504">//---------------------------------------------------------</a>
+<a name="ln505">//   writeSettings</a>
+<a name="ln506">//---------------------------------------------------------</a>
+<a name="ln507"> </a>
+<a name="ln508">void SynthControl::writeSettings()</a>
+<a name="ln509">      {</a>
+<a name="ln510">      QSettings settings;</a>
+<a name="ln511">      settings.beginGroup(objectName());</a>
+<a name="ln512">      settings.setValue(&quot;tab&quot;, tabWidget-&gt;currentIndex());</a>
+<a name="ln513">      settings.endGroup();</a>
+<a name="ln514"> </a>
+<a name="ln515">      MuseScore::saveGeometry(this);</a>
+<a name="ln516">      }</a>
+<a name="ln517"> </a>
+<a name="ln518">//---------------------------------------------------------</a>
+<a name="ln519">//   readSettings</a>
+<a name="ln520">//---------------------------------------------------------</a>
+<a name="ln521"> </a>
+<a name="ln522">void SynthControl::readSettings()</a>
+<a name="ln523">      {</a>
+<a name="ln524">      if (!useFactorySettings) {</a>
+<a name="ln525">            QSettings settings;</a>
+<a name="ln526">            settings.beginGroup(objectName());</a>
+<a name="ln527">            tabWidget-&gt;setCurrentIndex(settings.value(&quot;tab&quot;, 0).toInt());</a>
+<a name="ln528">            settings.endGroup();</a>
+<a name="ln529">            }</a>
+<a name="ln530">      else {</a>
+<a name="ln531">            tabWidget-&gt;setCurrentIndex(0);</a>
+<a name="ln532">            }</a>
+<a name="ln533"> </a>
+<a name="ln534">      MuseScore::restoreGeometry(this);</a>
+<a name="ln535">      }</a>
+<a name="ln536"> </a>
+<a name="ln537">//---------------------------------------------------------</a>
+<a name="ln538">//   changeEvent</a>
+<a name="ln539">//---------------------------------------------------------</a>
+<a name="ln540"> </a>
+<a name="ln541">void SynthControl::changeEvent(QEvent *event)</a>
+<a name="ln542">      {</a>
+<a name="ln543">      QWidget::changeEvent(event);</a>
+<a name="ln544">      if (event-&gt;type() == QEvent::LanguageChange)</a>
+<a name="ln545">            retranslate();</a>
+<a name="ln546">      }</a>
+<a name="ln547"> </a>
+<a name="ln548">}</a>
+<a name="ln549"> </a>
+
+</code></pre>
+<div class="balloon" rel="397"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

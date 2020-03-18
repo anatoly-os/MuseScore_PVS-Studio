@@ -1,0 +1,828 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>textedit.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2018 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;textedit.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15"> </a>
+<a name="ln16">namespace Ms {</a>
+<a name="ln17"> </a>
+<a name="ln18">//---------------------------------------------------------</a>
+<a name="ln19">//   editInsertText</a>
+<a name="ln20">//---------------------------------------------------------</a>
+<a name="ln21"> </a>
+<a name="ln22">void TextBase::editInsertText(TextCursor* cursor, const QString&amp; s)</a>
+<a name="ln23">      {</a>
+<a name="ln24">      Q_ASSERT(!layoutInvalid);</a>
+<a name="ln25">      textInvalid = true;</a>
+<a name="ln26"> </a>
+<a name="ln27">      int col = 0;</a>
+<a name="ln28">      for (const QChar&amp; c : s) {</a>
+<a name="ln29">            if (!c.isHighSurrogate())</a>
+<a name="ln30">                  ++col;</a>
+<a name="ln31">            }</a>
+<a name="ln32">      cursor-&gt;curLine().insert(cursor, s);</a>
+<a name="ln33">      cursor-&gt;setColumn(cursor-&gt;column() + col);</a>
+<a name="ln34">      cursor-&gt;clearSelection();</a>
+<a name="ln35"> </a>
+<a name="ln36">      triggerLayout();</a>
+<a name="ln37">      }</a>
+<a name="ln38"> </a>
+<a name="ln39">//---------------------------------------------------------</a>
+<a name="ln40">//   startEdit</a>
+<a name="ln41">//---------------------------------------------------------</a>
+<a name="ln42"> </a>
+<a name="ln43">void TextBase::startEdit(EditData&amp; ed)</a>
+<a name="ln44">      {</a>
+<a name="ln45">      TextEditData* ted = new TextEditData(this);</a>
+<a name="ln46">      ted-&gt;e = this;</a>
+<a name="ln47">      ted-&gt;cursor.setRow(0);</a>
+<a name="ln48">      ted-&gt;cursor.setColumn(0);</a>
+<a name="ln49">      ted-&gt;cursor.clearSelection();</a>
+<a name="ln50"> </a>
+<a name="ln51">      Q_ASSERT(!score()-&gt;undoStack()-&gt;active());      // make sure we are not in a Cmd</a>
+<a name="ln52"> </a>
+<a name="ln53">      ted-&gt;oldXmlText = xmlText();</a>
+<a name="ln54">      ted-&gt;startUndoIdx = score()-&gt;undoStack()-&gt;getCurIdx();</a>
+<a name="ln55"> </a>
+<a name="ln56">      if (layoutInvalid)</a>
+<a name="ln57">            layout();</a>
+<a name="ln58">      if (!ted-&gt;cursor.set(ed.startMove))</a>
+<a name="ln59">            ted-&gt;cursor.init();</a>
+<a name="ln60">      qreal _spatium = spatium();</a>
+<a name="ln61">      // refresh edit bounding box</a>
+<a name="ln62">      score()-&gt;addRefresh(canvasBoundingRect().adjusted(-_spatium, -_spatium, _spatium, _spatium));</a>
+<a name="ln63">      ed.addData(ted);</a>
+<a name="ln64">      }</a>
+<a name="ln65"> </a>
+<a name="ln66">//---------------------------------------------------------</a>
+<a name="ln67">//   endEdit</a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69"> </a>
+<a name="ln70">void TextBase::endEdit(EditData&amp; ed)</a>
+<a name="ln71">      {</a>
+<a name="ln72">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln73">      const QString actualText = xmlText();</a>
+<a name="ln74">      UndoStack* undo = score()-&gt;undoStack();</a>
+<a name="ln75"> </a>
+<a name="ln76">      // replace all undo/redo records collected during text editing with</a>
+<a name="ln77">      // one property change</a>
+<a name="ln78"> </a>
+<a name="ln79">      using Filter = UndoCommand::Filter;</a>
+<a name="ln80">      const bool textWasEdited = (undo-&gt;getCurIdx() != ted-&gt;startUndoIdx);</a>
+<a name="ln81"> </a>
+<a name="ln82">      if (textWasEdited) {</a>
+<a name="ln83">            undo-&gt;mergeCommands(ted-&gt;startUndoIdx);</a>
+<a name="ln84">            undo-&gt;last()-&gt;filterChildren(Filter::TextEdit, this);</a>
+<a name="ln85">            }</a>
+<a name="ln86">      else {</a>
+<a name="ln87">            // No text changes in &quot;undo&quot; part of undo stack,</a>
+<a name="ln88">            // hence nothing to merge and filter.</a>
+<a name="ln89">            undo-&gt;cleanRedoStack(); // prevent text editing commands from remaining in undo stack</a>
+<a name="ln90">            }</a>
+<a name="ln91"> </a>
+<a name="ln92">      bool newlyAdded = false;</a>
+<a name="ln93"> </a>
+<a name="ln94">      if (ted-&gt;oldXmlText.isEmpty()) {</a>
+<a name="ln95">            UndoCommand* ucmd = textWasEdited ? undo-&gt;prev() : undo-&gt;last();</a>
+<a name="ln96">            if (ucmd &amp;&amp; ucmd-&gt;hasFilteredChildren(Filter::AddElement, this)) {</a>
+<a name="ln97">                  // We have just added this element to a score.</a>
+<a name="ln98">                  // Combine undo records of text creation with text editing.</a>
+<a name="ln99">                  newlyAdded = true;</a>
+<a name="ln100">                  undo-&gt;mergeCommands(ted-&gt;startUndoIdx - 1);</a>
+<a name="ln101">                  }</a>
+<a name="ln102">            }</a>
+<a name="ln103"> </a>
+<a name="ln104">      if (actualText.isEmpty()) {</a>
+<a name="ln105">            qDebug(&quot;actual text is empty&quot;);</a>
+<a name="ln106"> </a>
+<a name="ln107">            // If this assertion fails, no undo command relevant to this text</a>
+<a name="ln108">            // resides on undo stack and reopen() would corrupt the previous</a>
+<a name="ln109">            // command. Text shouldn't happen to be empty in other cases though.</a>
+<a name="ln110">            Q_ASSERT(newlyAdded || textWasEdited);</a>
+<a name="ln111"> </a>
+<a name="ln112">            undo-&gt;reopen();</a>
+<a name="ln113">            score()-&gt;undoRemoveElement(this);</a>
+<a name="ln114">            ed.element = 0;</a>
+<a name="ln115"> </a>
+<a name="ln116">            static const std::vector&lt;Filter&gt; filters {</a>
+<a name="ln117">                  Filter::AddElementLinked,</a>
+<a name="ln118">                  Filter::RemoveElementLinked,</a>
+<a name="ln119">                  Filter::ChangePropertyLinked,</a>
+<a name="ln120">                  Filter::Link,</a>
+<a name="ln121">                  };</a>
+<a name="ln122"> </a>
+<a name="ln123">            if (newlyAdded &amp;&amp; !undo-&gt;current()-&gt;hasUnfilteredChildren(filters, this)) {</a>
+<a name="ln124">                  for (Filter f : filters)</a>
+<a name="ln125">                        undo-&gt;current()-&gt;filterChildren(f, this);</a>
+<a name="ln126"> </a>
+<a name="ln127">                  score()-&gt;endCmd();</a>
+<a name="ln128"> </a>
+<a name="ln129">                  // Ensure that unnecessary text elements will be cleaned up</a>
+<a name="ln130">                  MasterScore* ms = score()-&gt;masterScore();</a>
+<a name="ln131">                  for (ScoreElement* se : linkList())</a>
+<a name="ln132">                        ms-&gt;deleteLater(se);</a>
+<a name="ln133">                  }</a>
+<a name="ln134">            else {</a>
+<a name="ln135">                  score()-&gt;endCmd();</a>
+<a name="ln136">                  }</a>
+<a name="ln137"> </a>
+<a name="ln138">            return;</a>
+<a name="ln139">            }</a>
+<a name="ln140"> </a>
+<a name="ln141">      if (textWasEdited) {</a>
+<a name="ln142">            setXmlText(ted-&gt;oldXmlText);                    // reset text to value before editing</a>
+<a name="ln143">            undo-&gt;reopen();</a>
+<a name="ln144">            undoChangeProperty(Pid::TEXT, actualText);      // change property to set text to actual value again</a>
+<a name="ln145">                                                            // this also changes text of linked elements</a>
+<a name="ln146">            layout1();</a>
+<a name="ln147">            triggerLayout();                                // force relayout even if text did not change</a>
+<a name="ln148">            score()-&gt;endCmd();</a>
+<a name="ln149">            }</a>
+<a name="ln150">      else {</a>
+<a name="ln151">            triggerLayout();</a>
+<a name="ln152">            }</a>
+<a name="ln153"> </a>
+<a name="ln154">      static const qreal w = 2.0;</a>
+<a name="ln155">      score()-&gt;addRefresh(canvasBoundingRect().adjusted(-w, -w, w, w));</a>
+<a name="ln156">      }</a>
+<a name="ln157"> </a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159">//   insertSym</a>
+<a name="ln160">//---------------------------------------------------------</a>
+<a name="ln161"> </a>
+<a name="ln162">void TextBase::insertSym(EditData&amp; ed, SymId id)</a>
+<a name="ln163">      {</a>
+<a name="ln164">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln165">      TextCursor* _cursor = &amp;ted-&gt;cursor;</a>
+<a name="ln166"> </a>
+<a name="ln167">      deleteSelectedText(ed);</a>
+<a name="ln168">      QString s = score()-&gt;scoreFont()-&gt;toString(id);</a>
+<a name="ln169">      CharFormat fmt = *_cursor-&gt;format();  // save format</a>
+<a name="ln170">//      uint code = ScoreFont::fallbackFont()-&gt;sym(id).code();</a>
+<a name="ln171">      _cursor-&gt;format()-&gt;setFontFamily(&quot;ScoreText&quot;);</a>
+<a name="ln172">      _cursor-&gt;format()-&gt;setBold(false);</a>
+<a name="ln173">      _cursor-&gt;format()-&gt;setItalic(false);</a>
+<a name="ln174">      score()-&gt;undo(new InsertText(_cursor, s), &amp;ed);</a>
+<a name="ln175">      _cursor-&gt;setFormat(fmt);  // restore format</a>
+<a name="ln176">      }</a>
+<a name="ln177"> </a>
+<a name="ln178">//---------------------------------------------------------</a>
+<a name="ln179">//   insertText</a>
+<a name="ln180">//---------------------------------------------------------</a>
+<a name="ln181"> </a>
+<a name="ln182">void TextBase::insertText(EditData&amp; ed, const QString&amp; s)</a>
+<a name="ln183">      {</a>
+<a name="ln184">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln185">      TextCursor* _cursor = &amp;ted-&gt;cursor;</a>
+<a name="ln186">      score()-&gt;undo(new InsertText(_cursor, s), &amp;ed);</a>
+<a name="ln187">      }</a>
+<a name="ln188"> </a>
+<a name="ln189">//---------------------------------------------------------</a>
+<a name="ln190">//   edit</a>
+<a name="ln191">//---------------------------------------------------------</a>
+<a name="ln192"> </a>
+<a name="ln193">bool TextBase::edit(EditData&amp; ed)</a>
+<a name="ln194">      {</a>
+<a name="ln195">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln196">      TextCursor* _cursor = &amp;ted-&gt;cursor;</a>
+<a name="ln197"> </a>
+<a name="ln198">      // do nothing on Shift, it messes up IME on Windows. See #64046</a>
+<a name="ln199">      if (ed.key == Qt::Key_Shift)</a>
+<a name="ln200">            return false;</a>
+<a name="ln201">      QString s         = ed.s;</a>
+<a name="ln202">      bool ctrlPressed  = ed.modifiers &amp; Qt::ControlModifier;</a>
+<a name="ln203">      bool shiftPressed = ed.modifiers &amp; Qt::ShiftModifier;</a>
+<a name="ln204"> </a>
+<a name="ln205">      QTextCursor::MoveMode mm = shiftPressed ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor;</a>
+<a name="ln206"> </a>
+<a name="ln207">      bool wasHex = false;</a>
+<a name="ln208">      if (hexState &gt;= 0) {</a>
+<a name="ln209">            if (ed.modifiers == (Qt::ControlModifier | Qt::ShiftModifier | Qt::KeypadModifier)) {</a>
+<a name="ln210">                  switch (ed.key) {</a>
+<a name="ln211">                        case Qt::Key_0:</a>
+<a name="ln212">                        case Qt::Key_1:</a>
+<a name="ln213">                        case Qt::Key_2:</a>
+<a name="ln214">                        case Qt::Key_3:</a>
+<a name="ln215">                        case Qt::Key_4:</a>
+<a name="ln216">                        case Qt::Key_5:</a>
+<a name="ln217">                        case Qt::Key_6:</a>
+<a name="ln218">                        case Qt::Key_7:</a>
+<a name="ln219">                        case Qt::Key_8:</a>
+<a name="ln220">                        case Qt::Key_9:</a>
+<a name="ln221">                              s = QChar::fromLatin1(ed.key);</a>
+<a name="ln222">                              ++hexState;</a>
+<a name="ln223">                              wasHex = true;</a>
+<a name="ln224">                              break;</a>
+<a name="ln225">                        default:</a>
+<a name="ln226">                              break;</a>
+<a name="ln227">                        }</a>
+<a name="ln228">                  }</a>
+<a name="ln229">            else if (ed.modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {</a>
+<a name="ln230">                  switch (ed.key) {</a>
+<a name="ln231">                        case Qt::Key_A:</a>
+<a name="ln232">                        case Qt::Key_B:</a>
+<a name="ln233">                        case Qt::Key_C:</a>
+<a name="ln234">                        case Qt::Key_D:</a>
+<a name="ln235">                        case Qt::Key_E:</a>
+<a name="ln236">                        case Qt::Key_F:</a>
+<a name="ln237">                              s = QChar::fromLatin1(ed.key);</a>
+<a name="ln238">                              ++hexState;</a>
+<a name="ln239">                              wasHex = true;</a>
+<a name="ln240">                              break;</a>
+<a name="ln241">                        default:</a>
+<a name="ln242">                              break;</a>
+<a name="ln243">                        }</a>
+<a name="ln244">                  }</a>
+<a name="ln245">            }</a>
+<a name="ln246"> </a>
+<a name="ln247">      if (!wasHex) {</a>
+<a name="ln248">//printf(&quot;======%x\n&quot;, s.isEmpty() ? -1 : s[0].unicode());</a>
+<a name="ln249"> </a>
+<a name="ln250">            switch (ed.key) {</a>
+<a name="ln251">                  case Qt::Key_Z:         // happens when the undo stack is empty</a>
+<a name="ln252">                        if (ed.modifiers == Qt::ControlModifier)</a>
+<a name="ln253">                              return true;</a>
+<a name="ln254">                        break;</a>
+<a name="ln255"> </a>
+<a name="ln256">                  case Qt::Key_Enter:</a>
+<a name="ln257">                  case Qt::Key_Return:</a>
+<a name="ln258">                        deleteSelectedText(ed);</a>
+<a name="ln259">                        score()-&gt;undo(new SplitText(_cursor), &amp;ed);</a>
+<a name="ln260">                        return true;</a>
+<a name="ln261"> </a>
+<a name="ln262">                  case Qt::Key_Delete:</a>
+<a name="ln263">                        if (!deleteSelectedText(ed))</a>
+<a name="ln264">                              score()-&gt;undo(new RemoveText(_cursor, QString(_cursor-&gt;currentCharacter())), &amp;ed);</a>
+<a name="ln265">                        return true;</a>
+<a name="ln266"> </a>
+<a name="ln267">                  case Qt::Key_Backspace:</a>
+<a name="ln268">                        if (!deleteSelectedText(ed)) {</a>
+<a name="ln269">                              if (_cursor-&gt;column() == 0 &amp;&amp; _cursor-&gt;row() != 0)</a>
+<a name="ln270">                                    score()-&gt;undo(new JoinText(_cursor), &amp;ed);</a>
+<a name="ln271">                              else {</a>
+<a name="ln272">                                    if (!_cursor-&gt;movePosition(QTextCursor::Left))</a>
+<a name="ln273">                                          return false;</a>
+<a name="ln274">                                    score()-&gt;undo(new RemoveText(_cursor, QString(_cursor-&gt;currentCharacter())), &amp;ed);</a>
+<a name="ln275">                                    }</a>
+<a name="ln276">                              }</a>
+<a name="ln277">                        return true;</a>
+<a name="ln278"> </a>
+<a name="ln279">                  case Qt::Key_Left:</a>
+<a name="ln280">                        if (!_cursor-&gt;movePosition(ctrlPressed ? QTextCursor::WordLeft : QTextCursor::Left, mm) &amp;&amp; type() == ElementType::LYRICS)</a>
+<a name="ln281">                              return false;</a>
+<a name="ln282">                        s.clear();</a>
+<a name="ln283">                        break;</a>
+<a name="ln284"> </a>
+<a name="ln285">                  case Qt::Key_Right:</a>
+<a name="ln286">                        if (!_cursor-&gt;movePosition(ctrlPressed ? QTextCursor::NextWord : QTextCursor::Right, mm) &amp;&amp; type() == ElementType::LYRICS)</a>
+<a name="ln287">                              return false;</a>
+<a name="ln288">                        s.clear();</a>
+<a name="ln289">                        break;</a>
+<a name="ln290"> </a>
+<a name="ln291">                  case Qt::Key_Up:</a>
+<a name="ln292">#if defined(Q_OS_MAC)</a>
+<a name="ln293">                        if (!_cursor-&gt;movePosition(QTextCursor::Up, mm))</a>
+<a name="ln294">                              _cursor-&gt;movePosition(QTextCursor::StartOfLine, mm);</a>
+<a name="ln295">#else</a>
+<a name="ln296">                        _cursor-&gt;movePosition(QTextCursor::Up, mm);</a>
+<a name="ln297">#endif</a>
+<a name="ln298">                        s.clear();</a>
+<a name="ln299">                        break;</a>
+<a name="ln300"> </a>
+<a name="ln301">                  case Qt::Key_Down:</a>
+<a name="ln302">#if defined(Q_OS_MAC)</a>
+<a name="ln303">                        if (!_cursor-&gt;movePosition(QTextCursor::Down, mm))</a>
+<a name="ln304">                              _cursor-&gt;movePosition(QTextCursor::EndOfLine, mm);</a>
+<a name="ln305">#else</a>
+<a name="ln306">                        _cursor-&gt;movePosition(QTextCursor::Down, mm);</a>
+<a name="ln307">#endif</a>
+<a name="ln308">                        s.clear();</a>
+<a name="ln309">                        break;</a>
+<a name="ln310"> </a>
+<a name="ln311">                  case Qt::Key_Home:</a>
+<a name="ln312">                        if (ctrlPressed)</a>
+<a name="ln313">                              _cursor-&gt;movePosition(QTextCursor::Start, mm);</a>
+<a name="ln314">                        else</a>
+<a name="ln315">                              _cursor-&gt;movePosition(QTextCursor::StartOfLine, mm);</a>
+<a name="ln316"> </a>
+<a name="ln317">                        s.clear();</a>
+<a name="ln318">                        break;</a>
+<a name="ln319"> </a>
+<a name="ln320">                  case Qt::Key_End:</a>
+<a name="ln321">                        if (ctrlPressed)</a>
+<a name="ln322">                              _cursor-&gt;movePosition(QTextCursor::End, mm);</a>
+<a name="ln323">                        else</a>
+<a name="ln324">                              _cursor-&gt;movePosition(QTextCursor::EndOfLine, mm);</a>
+<a name="ln325"> </a>
+<a name="ln326">                        s.clear();</a>
+<a name="ln327">                        break;</a>
+<a name="ln328"> </a>
+<a name="ln329">                  case Qt::Key_Tab:</a>
+<a name="ln330">                        s = &quot; &quot;;</a>
+<a name="ln331">                        ed.modifiers = 0;</a>
+<a name="ln332">                        break;</a>
+<a name="ln333"> </a>
+<a name="ln334">                  case Qt::Key_Space:</a>
+<a name="ln335">                        if (ed.modifiers &amp; CONTROL_MODIFIER) {</a>
+<a name="ln336">                              s = QString(QChar(0xa0)); // non-breaking space</a>
+<a name="ln337">                              }</a>
+<a name="ln338">                        else {</a>
+<a name="ln339">                              if (isFingering() &amp;&amp; ed.view) {</a>
+<a name="ln340">                                    score()-&gt;endCmd();</a>
+<a name="ln341">                                    ed.view-&gt;textTab(ed.modifiers &amp; Qt::ShiftModifier);</a>
+<a name="ln342">                                    return true;</a>
+<a name="ln343">                                    }</a>
+<a name="ln344">                              s = &quot; &quot;;</a>
+<a name="ln345">                              }</a>
+<a name="ln346">                        ed.modifiers = 0;</a>
+<a name="ln347">                        break;</a>
+<a name="ln348"> </a>
+<a name="ln349">                  case Qt::Key_Minus:</a>
+<a name="ln350">                        if (ed.modifiers == 0)</a>
+<a name="ln351">                              s = &quot;-&quot;;</a>
+<a name="ln352">                        break;</a>
+<a name="ln353"> </a>
+<a name="ln354">                  case Qt::Key_Underscore:</a>
+<a name="ln355">                        if (ed.modifiers == 0)</a>
+<a name="ln356">                              s = &quot;_&quot;;</a>
+<a name="ln357">                        break;</a>
+<a name="ln358"> </a>
+<a name="ln359">                  case Qt::Key_A:</a>
+<a name="ln360">                        if (ctrlPressed) {</a>
+<a name="ln361">                              selectAll(_cursor);</a>
+<a name="ln362">                              s.clear();</a>
+<a name="ln363">                        }</a>
+<a name="ln364">                        break;</a>
+<a name="ln365">                  default:</a>
+<a name="ln366">                        break;</a>
+<a name="ln367">                  }</a>
+<a name="ln368">            if (ctrlPressed &amp;&amp; shiftPressed) {</a>
+<a name="ln369">                  switch (ed.key) {</a>
+<a name="ln370">                        case Qt::Key_U:</a>
+<a name="ln371">                              if (hexState == -1) {</a>
+<a name="ln372">                                    hexState = 0;</a>
+<a name="ln373">                                    s = &quot;u&quot;;</a>
+<a name="ln374">                                    }</a>
+<a name="ln375">                              break;</a>
+<a name="ln376">                        case Qt::Key_B:</a>
+<a name="ln377">                              s = &quot;\u266d&quot;; // Unicode flat</a>
+<a name="ln378">                              break;</a>
+<a name="ln379">                        case Qt::Key_NumberSign:</a>
+<a name="ln380">                              s = &quot;\u266f&quot;; // Unicode sharp</a>
+<a name="ln381">                              break;</a>
+<a name="ln382">                        case Qt::Key_H:</a>
+<a name="ln383">                              s = &quot;\u266e&quot;; // Unicode natural</a>
+<a name="ln384">                              break;</a>
+<a name="ln385">                         case Qt::Key_Space:</a>
+<a name="ln386">                              insertSym(ed, SymId::space);</a>
+<a name="ln387">                              return true;</a>
+<a name="ln388">                        case Qt::Key_F:</a>
+<a name="ln389">                              insertSym(ed, SymId::dynamicForte);</a>
+<a name="ln390">                              return true;</a>
+<a name="ln391">                        case Qt::Key_M:</a>
+<a name="ln392">                              insertSym(ed, SymId::dynamicMezzo);</a>
+<a name="ln393">                              return true;</a>
+<a name="ln394">                        case Qt::Key_N:</a>
+<a name="ln395">                              insertSym(ed, SymId::dynamicNiente);</a>
+<a name="ln396">                              return true;</a>
+<a name="ln397">                        case Qt::Key_P:</a>
+<a name="ln398">                              insertSym(ed, SymId::dynamicPiano);</a>
+<a name="ln399">                              return true;</a>
+<a name="ln400">                        case Qt::Key_S:</a>
+<a name="ln401">                              insertSym(ed, SymId::dynamicSforzando);</a>
+<a name="ln402">                              return true;</a>
+<a name="ln403">                        case Qt::Key_R:</a>
+<a name="ln404">                              insertSym(ed, SymId::dynamicRinforzando);</a>
+<a name="ln405">                              return true;</a>
+<a name="ln406">                        case Qt::Key_Z:</a>
+<a name="ln407">                              // Ctrl+Z is normally &quot;undo&quot;</a>
+<a name="ln408">                              // but this code gets hit even if you are also holding Shift</a>
+<a name="ln409">                              // so Shift+Ctrl+Z works</a>
+<a name="ln410">                              insertSym(ed, SymId::dynamicZ);</a>
+<a name="ln411">                              return true;</a>
+<a name="ln412">                        }</a>
+<a name="ln413">                  }</a>
+<a name="ln414">            }</a>
+<a name="ln415">      if (!s.isEmpty()) {</a>
+<a name="ln416">            deleteSelectedText(ed);</a>
+<a name="ln417">            score()-&gt;undo(new InsertText(_cursor, s), &amp;ed);</a>
+<a name="ln418">            }</a>
+<a name="ln419">      return true;</a>
+<a name="ln420">      }</a>
+<a name="ln421"> </a>
+<a name="ln422">//---------------------------------------------------------</a>
+<a name="ln423">//   movePosition</a>
+<a name="ln424">//---------------------------------------------------------</a>
+<a name="ln425"> </a>
+<a name="ln426">void TextBase::movePosition(EditData&amp; ed, QTextCursor::MoveOperation op)</a>
+<a name="ln427">      {</a>
+<a name="ln428">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln429">      TextCursor* _cursor = &amp;ted-&gt;cursor;</a>
+<a name="ln430">      _cursor-&gt;movePosition(op);</a>
+<a name="ln431">      score()-&gt;addRefresh(canvasBoundingRect());</a>
+<a name="ln432">      score()-&gt;update();</a>
+<a name="ln433">      }</a>
+<a name="ln434"> </a>
+<a name="ln435">//---------------------------------------------------------</a>
+<a name="ln436">//  ChangeText::insertText</a>
+<a name="ln437">//---------------------------------------------------------</a>
+<a name="ln438"> </a>
+<a name="ln439">void ChangeText::insertText(EditData* ed)</a>
+<a name="ln440">      {</a>
+<a name="ln441">      TextCursor tc = c;</a>
+<a name="ln442">      c.text()-&gt;editInsertText(&amp;tc, s);</a>
+<a name="ln443">      if (ed) {</a>
+<a name="ln444">            TextCursor* ttc = c.text()-&gt;cursor(*ed);</a>
+<a name="ln445">            *ttc = tc;</a>
+<a name="ln446">            }</a>
+<a name="ln447">      }</a>
+<a name="ln448"> </a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450">//  ChangeText::removeText</a>
+<a name="ln451">//---------------------------------------------------------</a>
+<a name="ln452"> </a>
+<a name="ln453">void ChangeText::removeText(EditData* ed)</a>
+<a name="ln454">      {</a>
+<a name="ln455">      TextCursor tc = c;</a>
+<a name="ln456">      TextBlock&amp; l  = c.curLine();</a>
+<a name="ln457">      int column    = c.column();</a>
+<a name="ln458"> </a>
+<a name="ln459">      for (int n = 0; n &lt; s.size(); ++n)</a>
+<a name="ln460">            l.remove(column);</a>
+<a name="ln461">      c.text()-&gt;triggerLayout();</a>
+<a name="ln462">      if (ed)</a>
+<a name="ln463">            *c.text()-&gt;cursor(*ed) = tc;</a>
+<a name="ln464">      c.text()-&gt;setTextInvalid();</a>
+<a name="ln465">      }</a>
+<a name="ln466"> </a>
+<a name="ln467">//---------------------------------------------------------</a>
+<a name="ln468">//   SplitJoinText</a>
+<a name="ln469">//---------------------------------------------------------</a>
+<a name="ln470"> </a>
+<a name="ln471">void SplitJoinText::join(EditData* ed)</a>
+<a name="ln472">      {</a>
+<a name="ln473">      TextBase* t   = c.text();</a>
+<a name="ln474">      int line      = c.row();</a>
+<a name="ln475">      t-&gt;setTextInvalid();</a>
+<a name="ln476">      t-&gt;triggerLayout();</a>
+<a name="ln477"> </a>
+<a name="ln478">      CharFormat* charFmt = c.format();         // take current format</a>
+<a name="ln479">      int col             = t-&gt;textBlock(line-1).columns();</a>
+<a name="ln480">      int eol             = t-&gt;textBlock(line).eol();</a>
+<a name="ln481">      t-&gt;textBlock(line-1).fragments().append(t-&gt;textBlock(line).fragments());</a>
+<a name="ln482">      int lines = t-&gt;rows();</a>
+<a name="ln483">      if (line &lt; lines)</a>
+<a name="ln484">            t-&gt;textBlock(line).setEol(eol);</a>
+<a name="ln485">      t-&gt;textBlockList().removeAt(line);</a>
+<a name="ln486">      c.setRow(line-1);</a>
+<a name="ln487">      c.setColumn(col);</a>
+<a name="ln488">      c.setFormat(*charFmt);             // restore orig. format at new line</a>
+<a name="ln489">      c.clearSelection();</a>
+<a name="ln490">      if (ed)</a>
+<a name="ln491">            *t-&gt;cursor(*ed) = c;</a>
+<a name="ln492">      c.text()-&gt;setTextInvalid();</a>
+<a name="ln493">      }</a>
+<a name="ln494"> </a>
+<a name="ln495">void SplitJoinText::split(EditData* ed)</a>
+<a name="ln496">      {</a>
+<a name="ln497">      TextBase* t   = c.text();</a>
+<a name="ln498">      int line      = c.row();</a>
+<a name="ln499">      t-&gt;setTextInvalid();</a>
+<a name="ln500">      t-&gt;triggerLayout();</a>
+<a name="ln501"> </a>
+<a name="ln502">      CharFormat* charFmt = c.format();         // take current format</a>
+<a name="ln503">      t-&gt;textBlockList().insert(line + 1, c.curLine().split(c.column()));</a>
+<a name="ln504">      c.curLine().setEol(true);</a>
+<a name="ln505"> </a>
+<a name="ln506">      c.setRow(line+1);</a>
+<a name="ln507">      c.curLine().setEol(true);</a>
+<a name="ln508">      c.setColumn(0);</a>
+<a name="ln509">      c.setFormat(*charFmt);             // restore orig. format at new line</a>
+<a name="ln510">      c.clearSelection();</a>
+<a name="ln511"> </a>
+<a name="ln512">      if (ed)</a>
+<a name="ln513">            *t-&gt;cursor(*ed) = c;</a>
+<a name="ln514">      c.text()-&gt;setTextInvalid();</a>
+<a name="ln515">      }</a>
+<a name="ln516"> </a>
+<a name="ln517">//---------------------------------------------------------</a>
+<a name="ln518">//   drop</a>
+<a name="ln519">//---------------------------------------------------------</a>
+<a name="ln520"> </a>
+<a name="ln521">Element* TextBase::drop(EditData&amp; ed)</a>
+<a name="ln522">      {</a>
+<a name="ln523">      TextCursor* _cursor = cursor(ed);</a>
+<a name="ln524"> </a>
+<a name="ln525">      Element* e = ed.dropElement;</a>
+<a name="ln526"> </a>
+<a name="ln527">      switch (e-&gt;type()) {</a>
+<a name="ln528">            case ElementType::SYMBOL:</a>
+<a name="ln529">                  {</a>
+<a name="ln530">                  SymId id = toSymbol(e)-&gt;sym();</a>
+<a name="ln531">                  delete e;</a>
+<a name="ln532"> </a>
+<a name="ln533">                  insertSym(ed, id);</a>
+<a name="ln534">                  }</a>
+<a name="ln535">                  break;</a>
+<a name="ln536"> </a>
+<a name="ln537">            case ElementType::FSYMBOL:</a>
+<a name="ln538">                  {</a>
+<a name="ln539">                  uint code = toFSymbol(e)-&gt;code();</a>
+<a name="ln540">                  QString s = QString::fromUcs4(&amp;code, 1);</a>
+<a name="ln541">                  delete e;</a>
+<a name="ln542"> </a>
+<a name="ln543">                  deleteSelectedText(ed);</a>
+<a name="ln544">                  score()-&gt;undo(new InsertText(_cursor, s), &amp;ed);</a>
+<a name="ln545">                  }</a>
+<a name="ln546">                  break;</a>
+<a name="ln547"> </a>
+<a name="ln548">            default:</a>
+<a name="ln549">                  qDebug(&quot;drop &lt;%s&gt; not handled&quot;, e-&gt;name());</a>
+<a name="ln550">                  break;</a>
+<a name="ln551">            }</a>
+<a name="ln552">      return 0;</a>
+<a name="ln553">      }</a>
+<a name="ln554"> </a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556">//   paste</a>
+<a name="ln557">//---------------------------------------------------------</a>
+<a name="ln558"> </a>
+<a name="ln559">void TextBase::paste(EditData&amp; ed)</a>
+<a name="ln560">      {</a>
+<a name="ln561">      QString txt = QApplication::clipboard()-&gt;text(QClipboard::Clipboard);</a>
+<a name="ln562">      if (MScore::debugMode)</a>
+<a name="ln563">            qDebug(&quot;&lt;%s&gt;&quot;, qPrintable(txt));</a>
+<a name="ln564"> </a>
+<a name="ln565">      int state = 0;</a>
+<a name="ln566">      QString token;</a>
+<a name="ln567">      QString sym;</a>
+<a name="ln568">      bool symState = false;</a>
+<a name="ln569"> </a>
+<a name="ln570">      score()-&gt;startCmd();</a>
+<a name="ln571">      for (int i = 0; i &lt; txt.length(); i++ ) {</a>
+<a name="ln572">            QChar c = txt[i];</a>
+<a name="ln573">            if (state == 0) {</a>
+<a name="ln574">                  if (c == '&lt;') {</a>
+<a name="ln575">                        state = 1;</a>
+<a name="ln576">                        token.clear();</a>
+<a name="ln577">                        }</a>
+<a name="ln578">                  else if (c == '&amp;') {</a>
+<a name="ln579">                        state = 2;</a>
+<a name="ln580">                        token.clear();</a>
+<a name="ln581">                        }</a>
+<a name="ln582">                  else {</a>
+<a name="ln583">                        if (symState)</a>
+<a name="ln584">                              sym += c;</a>
+<a name="ln585">                        else {</a>
+<a name="ln586">                              deleteSelectedText(ed);</a>
+<a name="ln587">                              if (c.isHighSurrogate()) {</a>
+<a name="ln588">                                    QChar highSurrogate = c;</a>
+<a name="ln589">                                    Q_ASSERT(i + 1 &lt; txt.length());</a>
+<a name="ln590">                                    i++;</a>
+<a name="ln591">                                    QChar lowSurrogate = txt[i];</a>
+<a name="ln592">                                    insertText(ed, QString(QChar::surrogateToUcs4(highSurrogate, lowSurrogate)));</a>
+<a name="ln593">                                    }</a>
+<a name="ln594">                              else {</a>
+<a name="ln595">                                    insertText(ed, QString(QChar(c.unicode())));</a>
+<a name="ln596">                                    }</a>
+<a name="ln597">                              }</a>
+<a name="ln598">                        }</a>
+<a name="ln599">                  }</a>
+<a name="ln600">            else if (state == 1) {</a>
+<a name="ln601">                  if (c == '&gt;') {</a>
+<a name="ln602">                        state = 0;</a>
+<a name="ln603">                        if (token == &quot;sym&quot;) {</a>
+<a name="ln604">                              symState = true;</a>
+<a name="ln605">                              sym.clear();</a>
+<a name="ln606">                              }</a>
+<a name="ln607">                        else if (token == &quot;/sym&quot;) {</a>
+<a name="ln608">                              symState = false;</a>
+<a name="ln609">                              insertSym(ed, Sym::name2id(sym));</a>
+<a name="ln610">                              }</a>
+<a name="ln611">                        }</a>
+<a name="ln612">                  else</a>
+<a name="ln613">                        token += c;</a>
+<a name="ln614">                  }</a>
+<a name="ln615">            else if (state == 2) {</a>
+<a name="ln616">                  if (c == ';') {</a>
+<a name="ln617">                        state = 0;</a>
+<a name="ln618">                        if (token == &quot;lt&quot;)</a>
+<a name="ln619">                              insertText(ed, &quot;&lt;&quot;);</a>
+<a name="ln620">                        else if (token == &quot;gt&quot;)</a>
+<a name="ln621">                              insertText(ed, &quot;&gt;&quot;);</a>
+<a name="ln622">                        else if (token == &quot;amp&quot;)</a>
+<a name="ln623">                              insertText(ed, &quot;&amp;&quot;);</a>
+<a name="ln624">                        else if (token == &quot;quot&quot;)</a>
+<a name="ln625">                              insertText(ed, &quot;\&quot;&quot;);</a>
+<a name="ln626">                        else</a>
+<a name="ln627">                              insertSym(ed, Sym::name2id(token));</a>
+<a name="ln628">                        }</a>
+<a name="ln629">                  else if (!c.isLetter()) {</a>
+<a name="ln630">                        state = 0;</a>
+<a name="ln631">                        insertText(ed, &quot;&amp;&quot;);</a>
+<a name="ln632">                        insertText(ed, token);</a>
+<a name="ln633">                        insertText(ed, c);</a>
+<a name="ln634">                        }</a>
+<a name="ln635">                  else</a>
+<a name="ln636">                        token += c;</a>
+<a name="ln637">                  }</a>
+<a name="ln638">            }</a>
+<a name="ln639">      if (state == 2) {</a>
+<a name="ln640">            insertText(ed, &quot;&amp;&quot;);</a>
+<a name="ln641">            insertText(ed, token);</a>
+<a name="ln642">            }</a>
+<a name="ln643">      score()-&gt;endCmd();</a>
+<a name="ln644">      }</a>
+<a name="ln645"> </a>
+<a name="ln646">//---------------------------------------------------------</a>
+<a name="ln647">//   inputTransition</a>
+<a name="ln648">//    - preedit string should not influence then undo/redo stack</a>
+<a name="ln649">//    - commit string goes onto the undo/redo stack</a>
+<a name="ln650">//---------------------------------------------------------</a>
+<a name="ln651"> </a>
+<a name="ln652">void TextBase::inputTransition(EditData&amp; ed, QInputMethodEvent* ie)</a>
+<a name="ln653">      {</a>
+<a name="ln654">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln655">      TextCursor* _cursor = &amp;ted-&gt;cursor;</a>
+<a name="ln656"> </a>
+<a name="ln657">      // remove preedit string</a>
+<a name="ln658">      int n = preEdit.size();</a>
+<a name="ln659">      while (n--) {</a>
+<a name="ln660">            if (_cursor-&gt;movePosition(QTextCursor::Left)) {</a>
+<a name="ln661">                  TextBlock&amp; l  = _cursor-&gt;curLine();</a>
+<a name="ln662">                   l.remove(_cursor-&gt;column());</a>
+<a name="ln663">                  _cursor-&gt;text()-&gt;triggerLayout();</a>
+<a name="ln664">                  _cursor-&gt;text()-&gt;setTextInvalid();</a>
+<a name="ln665">                  }</a>
+<a name="ln666">            }</a>
+<a name="ln667"> </a>
+<a name="ln668">      qDebug(&quot;&lt;%s&gt;&lt;%s&gt; len %d start %d, preEdit size %d&quot;,</a>
+<a name="ln669">         qPrintable(ie-&gt;commitString()),</a>
+<a name="ln670">         qPrintable(ie-&gt;preeditString()),</a>
+<a name="ln671">         ie-&gt;replacementLength(), ie-&gt;replacementStart(), preEdit.size());</a>
+<a name="ln672"> </a>
+<a name="ln673">      if (!ie-&gt;commitString().isEmpty()) {</a>
+<a name="ln674">            _cursor-&gt;format()-&gt;setPreedit(false);</a>
+<a name="ln675">            score()-&gt;startCmd();</a>
+<a name="ln676">            insertText(ed, ie-&gt;commitString());</a>
+<a name="ln677">            score()-&gt;endCmd();</a>
+<a name="ln678">            preEdit.clear();</a>
+<a name="ln679">            }</a>
+<a name="ln680">      else  {</a>
+<a name="ln681">            preEdit = ie-&gt;preeditString();</a>
+<a name="ln682">            if (!preEdit.isEmpty()) {</a>
+<a name="ln683">#if 0</a>
+<a name="ln684">                  for (auto a : ie-&gt;attributes()) {</a>
+<a name="ln685">                        switch(a.type) {</a>
+<a name="ln686">                              case QInputMethodEvent::TextFormat:</a>
+<a name="ln687">                                    {</a>
+<a name="ln688">                                    qDebug(&quot;   attribute TextFormat: %d-%d&quot;, a.start, a.length);</a>
+<a name="ln689">                                    QTextFormat tf = a.value.value&lt;QTextFormat&gt;();</a>
+<a name="ln690">                                    }</a>
+<a name="ln691">                                    break;</a>
+<a name="ln692">                              case QInputMethodEvent::Cursor:</a>
+<a name="ln693">                                    qDebug(&quot;   attribute Cursor at %d&quot;, a.start);</a>
+<a name="ln694">                                    break;</a>
+<a name="ln695">                              default:</a>
+<a name="ln696">                                    qDebug(&quot;   attribute %d&quot;, a.type);</a>
+<a name="ln697">                              }</a>
+<a name="ln698">                        }</a>
+<a name="ln699">#endif</a>
+<a name="ln700">                  _cursor-&gt;format()-&gt;setPreedit(true);</a>
+<a name="ln701">                  _cursor-&gt;updateCursorFormat();</a>
+<a name="ln702">                  editInsertText(_cursor, preEdit);</a>
+<a name="ln703">                  setTextInvalid();</a>
+<a name="ln704">                  layout1();</a>
+<a name="ln705">                  score()-&gt;update();</a>
+<a name="ln706">                  }</a>
+<a name="ln707">            }</a>
+<a name="ln708">      ie-&gt;accept();</a>
+<a name="ln709">      }</a>
+<a name="ln710"> </a>
+<a name="ln711">//---------------------------------------------------------</a>
+<a name="ln712">//   endHexState</a>
+<a name="ln713">//---------------------------------------------------------</a>
+<a name="ln714"> </a>
+<a name="ln715">void TextBase::endHexState(EditData&amp; ed)</a>
+<a name="ln716">      {</a>
+<a name="ln717">      TextEditData* ted = static_cast&lt;TextEditData*&gt;(ed.getData(this));</a>
+<a name="ln718">      TextCursor* _cursor = &amp;ted-&gt;cursor;</a>
+<a name="ln719"> </a>
+<a name="ln720">      if (hexState &gt;= 0) {</a>
+<a name="ln721">            if (hexState &gt; 0) {</a>
+<a name="ln722">                  int c2 = _cursor-&gt;column();</a>
+<a name="ln723">                  int c1 = c2 - (hexState + 1);</a>
+<a name="ln724"> </a>
+<a name="ln725">                  TextBlock&amp; t = _layout[_cursor-&gt;row()];</a>
+<a name="ln726">                  QString ss   = t.remove(c1, hexState + 1);</a>
+<a name="ln727">                  bool ok;</a>
+<a name="ln728">                  int code     = ss.mid(1).toInt(&amp;ok, 16);</a>
+<a name="ln729">                  _cursor-&gt;setColumn(c1);</a>
+<a name="ln730">                  _cursor-&gt;clearSelection();</a>
+<a name="ln731">                  if (ok)</a>
+<a name="ln732">                        editInsertText(_cursor, QString(code));</a>
+<a name="ln733">                  else</a>
+<a name="ln734">                        qDebug(&quot;cannot convert hex string &lt;%s&gt;, state %d (%d-%d)&quot;,</a>
+<a name="ln735">                           qPrintable(ss.mid(1)), hexState, c1, c2);</a>
+<a name="ln736">                  }</a>
+<a name="ln737">            hexState = -1;</a>
+<a name="ln738">            }</a>
+<a name="ln739">      }</a>
+<a name="ln740"> </a>
+<a name="ln741">//---------------------------------------------------------</a>
+<a name="ln742">//   deleteSelectedText</a>
+<a name="ln743">//---------------------------------------------------------</a>
+<a name="ln744"> </a>
+<a name="ln745">bool TextBase::deleteSelectedText(EditData&amp; ed)</a>
+<a name="ln746">      {</a>
+<a name="ln747">      TextCursor* _cursor = cursor(ed);</a>
+<a name="ln748"> </a>
+<a name="ln749">      if (!_cursor-&gt;hasSelection())</a>
+<a name="ln750">            return false;</a>
+<a name="ln751"> </a>
+<a name="ln752">      int r1 = _cursor-&gt;selectLine();</a>
+<a name="ln753">      int c1 = _cursor-&gt;selectColumn();</a>
+<a name="ln754"> </a>
+<a name="ln755">      if (r1 &gt; _cursor-&gt;row() || (r1 == _cursor-&gt;row() &amp;&amp; c1 &gt; _cursor-&gt;column())) {</a>
+<a name="ln756">            // swap start end of selection</a>
+<a name="ln757">            r1 = _cursor-&gt;row();</a>
+<a name="ln758">            c1 = _cursor-&gt;column();</a>
+<a name="ln759">            _cursor-&gt;setRow(_cursor-&gt;selectLine());</a>
+<a name="ln760">            _cursor-&gt;setColumn(_cursor-&gt;selectColumn());</a>
+<a name="ln761">            }</a>
+<a name="ln762"> </a>
+<a name="ln763">      _cursor-&gt;clearSelection();</a>
+<a name="ln764">      for (;;) {</a>
+<a name="ln765">            if (r1 == _cursor-&gt;row() &amp;&amp; c1 == _cursor-&gt;column())</a>
+<a name="ln766">                  break;</a>
+<a name="ln767">            if (_cursor-&gt;column() == 0 &amp;&amp; _cursor-&gt;row() != 0)</a>
+<a name="ln768">                  score()-&gt;undo(new JoinText(_cursor), &amp;ed);</a>
+<a name="ln769">            else {</a>
+<a name="ln770">                  // move cursor left:</a>
+<a name="ln771">                  if (!_cursor-&gt;movePosition(QTextCursor::Left))</a>
+<a name="ln772">                        break;</a>
+<a name="ln773">                  score()-&gt;undo(new RemoveText(_cursor, QString(_cursor-&gt;currentCharacter())), &amp;ed);</a>
+<a name="ln774">                  }</a>
+<a name="ln775">            }</a>
+<a name="ln776">      return true;</a>
+<a name="ln777">      }</a>
+<a name="ln778"> </a>
+<a name="ln779">}  // namespace Ms</a>
+<a name="ln780"> </a>
+
+</code></pre>
+<div class="balloon" rel="549"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="563"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

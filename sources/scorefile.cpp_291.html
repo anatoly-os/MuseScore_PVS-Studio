@@ -1,0 +1,1381 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>scorefile.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2011-2012 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENSE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;config.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;xml.h&quot;</a>
+<a name="ln16">#include &quot;element.h&quot;</a>
+<a name="ln17">#include &quot;measure.h&quot;</a>
+<a name="ln18">#include &quot;segment.h&quot;</a>
+<a name="ln19">#include &quot;slur.h&quot;</a>
+<a name="ln20">#include &quot;chordrest.h&quot;</a>
+<a name="ln21">#include &quot;chord.h&quot;</a>
+<a name="ln22">#include &quot;tuplet.h&quot;</a>
+<a name="ln23">#include &quot;beam.h&quot;</a>
+<a name="ln24">#include &quot;revisions.h&quot;</a>
+<a name="ln25">#include &quot;page.h&quot;</a>
+<a name="ln26">#include &quot;part.h&quot;</a>
+<a name="ln27">#include &quot;staff.h&quot;</a>
+<a name="ln28">#include &quot;system.h&quot;</a>
+<a name="ln29">#include &quot;keysig.h&quot;</a>
+<a name="ln30">#include &quot;clef.h&quot;</a>
+<a name="ln31">#include &quot;text.h&quot;</a>
+<a name="ln32">#include &quot;ottava.h&quot;</a>
+<a name="ln33">#include &quot;volta.h&quot;</a>
+<a name="ln34">#include &quot;excerpt.h&quot;</a>
+<a name="ln35">#include &quot;mscore.h&quot;</a>
+<a name="ln36">#include &quot;stafftype.h&quot;</a>
+<a name="ln37">#include &quot;sym.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">#ifdef OMR</a>
+<a name="ln40">#include &quot;omr/omr.h&quot;</a>
+<a name="ln41">#include &quot;omr/omrpage.h&quot;</a>
+<a name="ln42">#endif</a>
+<a name="ln43"> </a>
+<a name="ln44">#include &quot;sig.h&quot;</a>
+<a name="ln45">#include &quot;undo.h&quot;</a>
+<a name="ln46">#include &quot;imageStore.h&quot;</a>
+<a name="ln47">#include &quot;audio.h&quot;</a>
+<a name="ln48">#include &quot;barline.h&quot;</a>
+<a name="ln49">#include &quot;thirdparty/qzip/qzipreader_p.h&quot;</a>
+<a name="ln50">#include &quot;thirdparty/qzip/qzipwriter_p.h&quot;</a>
+<a name="ln51">#ifdef Q_OS_WIN</a>
+<a name="ln52">#include &lt;windows.h&gt;</a>
+<a name="ln53">#endif</a>
+<a name="ln54"> </a>
+<a name="ln55">namespace Ms {</a>
+<a name="ln56"> </a>
+<a name="ln57">//---------------------------------------------------------</a>
+<a name="ln58">//   writeMeasure</a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60"> </a>
+<a name="ln61">static void writeMeasure(XmlWriter&amp; xml, MeasureBase* m, int staffIdx, bool writeSystemElements, bool forceTimeSig)</a>
+<a name="ln62">      {</a>
+<a name="ln63">      //</a>
+<a name="ln64">      // special case multi measure rest</a>
+<a name="ln65">      //</a>
+<a name="ln66">      if (m-&gt;isMeasure() || staffIdx == 0)</a>
+<a name="ln67">            m-&gt;write(xml, staffIdx, writeSystemElements, forceTimeSig);</a>
+<a name="ln68"> </a>
+<a name="ln69">      if (m-&gt;score()-&gt;styleB(Sid::createMultiMeasureRests) &amp;&amp; m-&gt;isMeasure() &amp;&amp; toMeasure(m)-&gt;mmRest())</a>
+<a name="ln70">            toMeasure(m)-&gt;mmRest()-&gt;write(xml, staffIdx, writeSystemElements, forceTimeSig);</a>
+<a name="ln71"> </a>
+<a name="ln72">      xml.setCurTick(m-&gt;endTick());</a>
+<a name="ln73">      }</a>
+<a name="ln74"> </a>
+<a name="ln75">//---------------------------------------------------------</a>
+<a name="ln76">//   writeMovement</a>
+<a name="ln77">//---------------------------------------------------------</a>
+<a name="ln78"> </a>
+<a name="ln79">void Score::writeMovement(XmlWriter&amp; xml, bool selectionOnly)</a>
+<a name="ln80">      {</a>
+<a name="ln81">      // if we have multi measure rests and some parts are hidden,</a>
+<a name="ln82">      // then some layout information is missing:</a>
+<a name="ln83">      // relayout with all parts set visible</a>
+<a name="ln84"> </a>
+<a name="ln85">      QList&lt;Part*&gt; hiddenParts;</a>
+<a name="ln86">      bool unhide = false;</a>
+<a name="ln87">      if (styleB(Sid::createMultiMeasureRests)) {</a>
+<a name="ln88">            for (Part* part : _parts) {</a>
+<a name="ln89">                  if (!part-&gt;show()) {</a>
+<a name="ln90">                        if (!unhide) {</a>
+<a name="ln91">                              startCmd();</a>
+<a name="ln92">                              unhide = true;</a>
+<a name="ln93">                              }</a>
+<a name="ln94">                        part-&gt;undoChangeProperty(Pid::VISIBLE, true);</a>
+<a name="ln95">                        hiddenParts.append(part);</a>
+<a name="ln96">                        }</a>
+<a name="ln97">                  }</a>
+<a name="ln98">            }</a>
+<a name="ln99">      if (unhide) {</a>
+<a name="ln100">            doLayout();</a>
+<a name="ln101">            for (Part* p : hiddenParts)</a>
+<a name="ln102">                  p-&gt;setShow(false);</a>
+<a name="ln103">            }</a>
+<a name="ln104"> </a>
+<a name="ln105">      xml.stag(this);</a>
+<a name="ln106">      if (excerpt()) {</a>
+<a name="ln107">            Excerpt* e = excerpt();</a>
+<a name="ln108">            QMultiMap&lt;int, int&gt; trackList = e-&gt;tracks();</a>
+<a name="ln109">            QMapIterator&lt;int, int&gt; i(trackList);</a>
+<a name="ln110">            if (!(trackList.size() == e-&gt;parts().size() * VOICES) &amp;&amp; !trackList.isEmpty()) {</a>
+<a name="ln111">                  while (i.hasNext()) {</a>
+<a name="ln112">                      i.next();</a>
+<a name="ln113">                      xml.tagE(QString(&quot;Tracklist sTrack=\&quot;%1\&quot; dstTrack=\&quot;%2\&quot;&quot;).arg(i.key()).arg(i.value()));</a>
+<a name="ln114">                      }</a>
+<a name="ln115">                  }</a>
+<a name="ln116">            }</a>
+<a name="ln117"> </a>
+<a name="ln118">      if (lineMode())</a>
+<a name="ln119">            xml.tag(&quot;layoutMode&quot;, &quot;line&quot;);</a>
+<a name="ln120">      if (systemMode())</a>
+<a name="ln121">            xml.tag(&quot;layoutMode&quot;, &quot;system&quot;);</a>
+<a name="ln122"> </a>
+<a name="ln123">#ifdef OMR</a>
+<a name="ln124">      if (masterScore()-&gt;omr() &amp;&amp; xml.writeOmr())</a>
+<a name="ln125">            masterScore()-&gt;omr()-&gt;write(xml);</a>
+<a name="ln126">#endif</a>
+<a name="ln127">      if (isMaster() &amp;&amp; masterScore()-&gt;showOmr() &amp;&amp; xml.writeOmr())</a>
+<a name="ln128">            xml.tag(&quot;showOmr&quot;, masterScore()-&gt;showOmr());</a>
+<a name="ln129">      if (_audio &amp;&amp; xml.writeOmr()) {</a>
+<a name="ln130">            xml.tag(&quot;playMode&quot;, int(_playMode));</a>
+<a name="ln131">            _audio-&gt;write(xml);</a>
+<a name="ln132">            }</a>
+<a name="ln133"> </a>
+<a name="ln134">      for (int i = 0; i &lt; 32; ++i) {</a>
+<a name="ln135">            if (!_layerTags[i].isEmpty()) {</a>
+<a name="ln136">                  xml.tag(QString(&quot;LayerTag id=\&quot;%1\&quot; tag=\&quot;%2\&quot;&quot;).arg(i).arg(_layerTags[i]),</a>
+<a name="ln137">                     _layerTagComments[i]);</a>
+<a name="ln138">                  }</a>
+<a name="ln139">            }</a>
+<a name="ln140">      int n = _layer.size();</a>
+<a name="ln141">      for (int i = 1; i &lt; n; ++i) {       // don’t save default variant</a>
+<a name="ln142">            const Layer&amp; l = _layer[i];</a>
+<a name="ln143">            xml.tagE(QString(&quot;Layer name=\&quot;%1\&quot; mask=\&quot;%2\&quot;&quot;).arg(l.name).arg(l.tags));</a>
+<a name="ln144">            }</a>
+<a name="ln145">      xml.tag(&quot;currentLayer&quot;, _currentLayer);</a>
+<a name="ln146"> </a>
+<a name="ln147">      if (isTopScore() &amp;&amp; !MScore::testMode)</a>
+<a name="ln148">            _synthesizerState.write(xml);</a>
+<a name="ln149"> </a>
+<a name="ln150">      if (pageNumberOffset())</a>
+<a name="ln151">            xml.tag(&quot;page-offset&quot;, pageNumberOffset());</a>
+<a name="ln152">      xml.tag(&quot;Division&quot;, MScore::division);</a>
+<a name="ln153">      xml.setCurTrack(-1);</a>
+<a name="ln154"> </a>
+<a name="ln155">      if (isTopScore())                   // only top score</a>
+<a name="ln156">            style().save(xml, true);       // save only differences to buildin style</a>
+<a name="ln157"> </a>
+<a name="ln158">      xml.tag(&quot;showInvisible&quot;,   _showInvisible);</a>
+<a name="ln159">      xml.tag(&quot;showUnprintable&quot;, _showUnprintable);</a>
+<a name="ln160">      xml.tag(&quot;showFrames&quot;,      _showFrames);</a>
+<a name="ln161">      xml.tag(&quot;showMargins&quot;,     _showPageborders);</a>
+<a name="ln162">      xml.tag(&quot;markIrregularMeasures&quot;, _markIrregularMeasures, true);</a>
+<a name="ln163"> </a>
+<a name="ln164">      QMapIterator&lt;QString, QString&gt; i(_metaTags);</a>
+<a name="ln165">      while (i.hasNext()) {</a>
+<a name="ln166">            i.next();</a>
+<a name="ln167">            // do not output &quot;platform&quot; and &quot;creationDate&quot; in test and save template mode</a>
+<a name="ln168">            if ((!MScore::testMode &amp;&amp; !MScore::saveTemplateMode) || (i.key() != &quot;platform&quot; &amp;&amp; i.key() != &quot;creationDate&quot;))</a>
+<a name="ln169">                  xml.tag(QString(&quot;metaTag name=\&quot;%1\&quot;&quot;).arg(i.key().toHtmlEscaped()), i.value());</a>
+<a name="ln170">            }</a>
+<a name="ln171"> </a>
+<a name="ln172">      xml.setCurTrack(0);</a>
+<a name="ln173">      int staffStart;</a>
+<a name="ln174">      int staffEnd;</a>
+<a name="ln175">      MeasureBase* measureStart;</a>
+<a name="ln176">      MeasureBase* measureEnd;</a>
+<a name="ln177"> </a>
+<a name="ln178">      if (selectionOnly) {</a>
+<a name="ln179">            staffStart   = _selection.staffStart();</a>
+<a name="ln180">            staffEnd     = _selection.staffEnd();</a>
+<a name="ln181">            // make sure we select full parts</a>
+<a name="ln182">            Staff* sStaff = staff(staffStart);</a>
+<a name="ln183">            Part* sPart = sStaff-&gt;part();</a>
+<a name="ln184">            Staff* eStaff = staff(staffEnd - 1);</a>
+<a name="ln185">            Part* ePart = eStaff-&gt;part();</a>
+<a name="ln186">            staffStart = staffIdx(sPart);</a>
+<a name="ln187">            staffEnd = staffIdx(ePart) + ePart-&gt;nstaves();</a>
+<a name="ln188">            measureStart = _selection.startSegment()-&gt;measure();</a>
+<a name="ln189">            if (measureStart-&gt;isMeasure() &amp;&amp; toMeasure(measureStart)-&gt;isMMRest())</a>
+<a name="ln190">                  measureStart = toMeasure(measureStart)-&gt;mmRestFirst();</a>
+<a name="ln191">            if (_selection.endSegment())</a>
+<a name="ln192">                  measureEnd   = _selection.endSegment()-&gt;measure()-&gt;next();</a>
+<a name="ln193">            else</a>
+<a name="ln194">                  measureEnd   = 0;</a>
+<a name="ln195">            }</a>
+<a name="ln196">      else {</a>
+<a name="ln197">            staffStart   = 0;</a>
+<a name="ln198">            staffEnd     = nstaves();</a>
+<a name="ln199">            measureStart = first();</a>
+<a name="ln200">            measureEnd   = 0;</a>
+<a name="ln201">            }</a>
+<a name="ln202"> </a>
+<a name="ln203">      // Let's decide: write midi mapping to a file or not</a>
+<a name="ln204">      masterScore()-&gt;checkMidiMapping();</a>
+<a name="ln205">      for (const Part* part : _parts) {</a>
+<a name="ln206">            if (!selectionOnly || ((staffIdx(part) &gt;= staffStart) &amp;&amp; (staffEnd &gt;= staffIdx(part) + part-&gt;nstaves())))</a>
+<a name="ln207">                  part-&gt;write(xml);</a>
+<a name="ln208">            }</a>
+<a name="ln209"> </a>
+<a name="ln210">      xml.setCurTrack(0);</a>
+<a name="ln211">      xml.setTrackDiff(-staffStart * VOICES);</a>
+<a name="ln212">      if (measureStart) {</a>
+<a name="ln213">            for (int staffIdx = staffStart; staffIdx &lt; staffEnd; ++staffIdx) {</a>
+<a name="ln214">                  xml.stag(staff(staffIdx), QString(&quot;id=\&quot;%1\&quot;&quot;).arg(staffIdx + 1 - staffStart));</a>
+<a name="ln215">                  xml.setCurTick(measureStart-&gt;tick());</a>
+<a name="ln216">                  xml.setTickDiff(xml.curTick());</a>
+<a name="ln217">                  xml.setCurTrack(staffIdx * VOICES);</a>
+<a name="ln218">                  bool writeSystemElements = (staffIdx == staffStart);</a>
+<a name="ln219">                  bool firstMeasureWritten = false;</a>
+<a name="ln220">                  bool forceTimeSig = false;</a>
+<a name="ln221">                  for (MeasureBase* m = measureStart; m != measureEnd; m = m-&gt;next()) {</a>
+<a name="ln222">                        // force timesig if first measure and selectionOnly</a>
+<a name="ln223">                        if (selectionOnly &amp;&amp; m-&gt;isMeasure()) {</a>
+<a name="ln224">                              if (!firstMeasureWritten) {</a>
+<a name="ln225">                                    forceTimeSig = true;</a>
+<a name="ln226">                                    firstMeasureWritten = true;</a>
+<a name="ln227">                                    }</a>
+<a name="ln228">                              else</a>
+<a name="ln229">                                    forceTimeSig = false;</a>
+<a name="ln230">                              }</a>
+<a name="ln231">                        writeMeasure(xml, m, staffIdx, writeSystemElements, forceTimeSig);</a>
+<a name="ln232">                        }</a>
+<a name="ln233">                  xml.etag();</a>
+<a name="ln234">                  }</a>
+<a name="ln235">            }</a>
+<a name="ln236">      xml.setCurTrack(-1);</a>
+<a name="ln237">      if (isMaster()) {</a>
+<a name="ln238">            if (!selectionOnly) {</a>
+<a name="ln239">                  for (const Excerpt* excerpt : excerpts()) {</a>
+<a name="ln240">                        if (excerpt-&gt;partScore() != this)</a>
+<a name="ln241">                              excerpt-&gt;partScore()-&gt;write(xml, false);       // recursion</a>
+<a name="ln242">                        }</a>
+<a name="ln243">                  }</a>
+<a name="ln244">            }</a>
+<a name="ln245">      else</a>
+<a name="ln246">            xml.tag(&quot;name&quot;, excerpt()-&gt;title());</a>
+<a name="ln247">      xml.etag();</a>
+<a name="ln248"> </a>
+<a name="ln249">      if (unhide)</a>
+<a name="ln250">            endCmd(true);</a>
+<a name="ln251">      }</a>
+<a name="ln252"> </a>
+<a name="ln253">//---------------------------------------------------------</a>
+<a name="ln254">//   write</a>
+<a name="ln255">//---------------------------------------------------------</a>
+<a name="ln256"> </a>
+<a name="ln257">void Score::write(XmlWriter&amp; xml, bool selectionOnly)</a>
+<a name="ln258">      {</a>
+<a name="ln259">      if (isMaster()) {</a>
+<a name="ln260">            MasterScore* score = static_cast&lt;MasterScore*&gt;(this);</a>
+<a name="ln261">            while (score-&gt;prev())</a>
+<a name="ln262">                  score = score-&gt;prev();</a>
+<a name="ln263">            while (score) {</a>
+<a name="ln264">                  score-&gt;writeMovement(xml, selectionOnly);</a>
+<a name="ln265">                  score = score-&gt;next();</a>
+<a name="ln266">                  }</a>
+<a name="ln267">            }</a>
+<a name="ln268">      else</a>
+<a name="ln269">            writeMovement(xml, selectionOnly);</a>
+<a name="ln270">      }</a>
+<a name="ln271"> </a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273">//   Staff</a>
+<a name="ln274">//---------------------------------------------------------</a>
+<a name="ln275"> </a>
+<a name="ln276">void Score::readStaff(XmlReader&amp; e)</a>
+<a name="ln277">      {</a>
+<a name="ln278">      int staff = e.intAttribute(&quot;id&quot;, 1) - 1;</a>
+<a name="ln279">      int measureIdx = 0;</a>
+<a name="ln280">      e.setCurrentMeasureIndex(0);</a>
+<a name="ln281">      e.setTick(Fraction(0,1));</a>
+<a name="ln282">      e.setTrack(staff * VOICES);</a>
+<a name="ln283"> </a>
+<a name="ln284">      if (staff == 0) {</a>
+<a name="ln285">            while (e.readNextStartElement()) {</a>
+<a name="ln286">                  const QStringRef&amp; tag(e.name());</a>
+<a name="ln287"> </a>
+<a name="ln288">                  if (tag == &quot;Measure&quot;) {</a>
+<a name="ln289">                        Measure* measure = 0;</a>
+<a name="ln290">                        measure = new Measure(this);</a>
+<a name="ln291">                        measure-&gt;setTick(e.tick());</a>
+<a name="ln292">                        e.setCurrentMeasureIndex(measureIdx++);</a>
+<a name="ln293">                        //</a>
+<a name="ln294">                        // inherit timesig from previous measure</a>
+<a name="ln295">                        //</a>
+<a name="ln296">                        Measure* m = e.lastMeasure(); // measure-&gt;prevMeasure();</a>
+<a name="ln297">                        Fraction f(m ? m-&gt;timesig() : Fraction(4,4));</a>
+<a name="ln298">                        measure-&gt;setTicks(f);</a>
+<a name="ln299">                        measure-&gt;setTimesig(f);</a>
+<a name="ln300"> </a>
+<a name="ln301">                        measure-&gt;read(e, staff);</a>
+<a name="ln302">                        measure-&gt;checkMeasure(staff);</a>
+<a name="ln303">                        if (!measure-&gt;isMMRest()) {</a>
+<a name="ln304">                              measures()-&gt;add(measure);</a>
+<a name="ln305">                              e.setLastMeasure(measure);</a>
+<a name="ln306">                              e.setTick(measure-&gt;tick() + measure-&gt;ticks());</a>
+<a name="ln307">                              }</a>
+<a name="ln308">                        else {</a>
+<a name="ln309">                              // this is a multi measure rest</a>
+<a name="ln310">                              // always preceded by the first measure it replaces</a>
+<a name="ln311">                              Measure* m1 = e.lastMeasure();</a>
+<a name="ln312"> </a>
+<a name="ln313">                              if (m1) {</a>
+<a name="ln314">                                    m1-&gt;setMMRest(measure);</a>
+<a name="ln315">                                    measure-&gt;setTick(m1-&gt;tick());</a>
+<a name="ln316">                                    }</a>
+<a name="ln317">                              }</a>
+<a name="ln318">                        }</a>
+<a name="ln319">                  else if (tag == &quot;HBox&quot; || tag == &quot;VBox&quot; || tag == &quot;TBox&quot; || tag == &quot;FBox&quot;) {</a>
+<a name="ln320">                        MeasureBase* mb = toMeasureBase(Element::name2Element(tag, this));</a>
+<a name="ln321">                        mb-&gt;read(e);</a>
+<a name="ln322">                        mb-&gt;setTick(e.tick());</a>
+<a name="ln323">                        measures()-&gt;add(mb);</a>
+<a name="ln324">                        }</a>
+<a name="ln325">                  else if (tag == &quot;tick&quot;)</a>
+<a name="ln326">                        e.setTick(Fraction::fromTicks(fileDivision(e.readInt())));</a>
+<a name="ln327">                  else</a>
+<a name="ln328">                        e.unknown();</a>
+<a name="ln329">                  }</a>
+<a name="ln330">            }</a>
+<a name="ln331">      else {</a>
+<a name="ln332">            Measure* measure = firstMeasure();</a>
+<a name="ln333">            while (e.readNextStartElement()) {</a>
+<a name="ln334">                  const QStringRef&amp; tag(e.name());</a>
+<a name="ln335"> </a>
+<a name="ln336">                  if (tag == &quot;Measure&quot;) {</a>
+<a name="ln337">                        if (measure == 0) {</a>
+<a name="ln338">                              qDebug(&quot;Score::readStaff(): missing measure!&quot;);</a>
+<a name="ln339">                              measure = new Measure(this);</a>
+<a name="ln340">                              measure-&gt;setTick(e.tick());</a>
+<a name="ln341">                              measures()-&gt;add(measure);</a>
+<a name="ln342">                              }</a>
+<a name="ln343">                        e.setTick(measure-&gt;tick());</a>
+<a name="ln344">                        e.setCurrentMeasureIndex(measureIdx++);</a>
+<a name="ln345">                        measure-&gt;read(e, staff);</a>
+<a name="ln346">                        measure-&gt;checkMeasure(staff);</a>
+<a name="ln347">                        if (measure-&gt;isMMRest())</a>
+<a name="ln348">                              measure = e.lastMeasure()-&gt;nextMeasure();</a>
+<a name="ln349">                        else {</a>
+<a name="ln350">                              e.setLastMeasure(measure);</a>
+<a name="ln351">                              if (measure-&gt;mmRest())</a>
+<a name="ln352">                                    measure = measure-&gt;mmRest();</a>
+<a name="ln353">                              else</a>
+<a name="ln354">                                    measure = measure-&gt;nextMeasure();</a>
+<a name="ln355">                              }</a>
+<a name="ln356">                        }</a>
+<a name="ln357">                  else if (tag == &quot;tick&quot;)</a>
+<a name="ln358">                        e.setTick(Fraction::fromTicks(fileDivision(e.readInt())));</a>
+<a name="ln359">                  else</a>
+<a name="ln360">                        e.unknown();</a>
+<a name="ln361">                  }</a>
+<a name="ln362">            }</a>
+<a name="ln363">      }</a>
+<a name="ln364"> </a>
+<a name="ln365">//---------------------------------------------------------</a>
+<a name="ln366">//   saveFile</a>
+<a name="ln367">///   If file has generated name, create a modal file save dialog</a>
+<a name="ln368">///   and ask filename.</a>
+<a name="ln369">///   Rename old file to backup file (.xxxx.msc?,).</a>
+<a name="ln370">///   Default is to save score in .mscz format,</a>
+<a name="ln371">///   Return true if OK and false on error.</a>
+<a name="ln372">//---------------------------------------------------------</a>
+<a name="ln373"> </a>
+<a name="ln374">bool MasterScore::saveFile()</a>
+<a name="ln375">      {</a>
+<a name="ln376">      if (readOnly())</a>
+<a name="ln377">            return false;</a>
+<a name="ln378">      QString suffix = info.suffix();</a>
+<a name="ln379">      if (info.exists() &amp;&amp; !info.isWritable()) {</a>
+<a name="ln380">            MScore::lastError = tr(&quot;The following file is locked: \n%1 \n\nTry saving to a different location.&quot;).arg(info.filePath());</a>
+<a name="ln381">            return false;</a>
+<a name="ln382">            }</a>
+<a name="ln383">      //</a>
+<a name="ln384">      // step 1</a>
+<a name="ln385">      // save into temporary file to prevent partially overwriting</a>
+<a name="ln386">      // the original file in case of &quot;disc full&quot;</a>
+<a name="ln387">      //</a>
+<a name="ln388"> </a>
+<a name="ln389">      QString tempName = info.filePath() + QString(&quot;.temp&quot;);</a>
+<a name="ln390">      QFile temp(tempName);</a>
+<a name="ln391">      if (!temp.open(QIODevice::WriteOnly)) {</a>
+<a name="ln392">            MScore::lastError = tr(&quot;Open Temp File\n%1\nfailed: %2&quot;).arg(tempName, strerror(errno));</a>
+<a name="ln393">            return false;</a>
+<a name="ln394">            }</a>
+<a name="ln395">      bool rv = suffix == &quot;mscx&quot; ? Score::saveFile(&amp;temp, false) : Score::saveCompressedFile(&amp;temp, info, false);</a>
+<a name="ln396">      if (!rv) {</a>
+<a name="ln397">            return false;</a>
+<a name="ln398">            }</a>
+<a name="ln399"> </a>
+<a name="ln400">      if (temp.error() != QFile::NoError) {</a>
+<a name="ln401">            MScore::lastError = tr(&quot;Save File failed: %1&quot;).arg(temp.errorString());</a>
+<a name="ln402">            return false;</a>
+<a name="ln403">            }</a>
+<a name="ln404">      temp.close();</a>
+<a name="ln405"> </a>
+<a name="ln406">      QString name(info.filePath());</a>
+<a name="ln407">      QString basename(info.fileName());</a>
+<a name="ln408">      QDir dir(info.path());</a>
+<a name="ln409">      if (!saved()) {</a>
+<a name="ln410">            // if file was already saved in this session</a>
+<a name="ln411">            // save but don't overwrite backup again</a>
+<a name="ln412"> </a>
+<a name="ln413">            //</a>
+<a name="ln414">            // step 2</a>
+<a name="ln415">            // remove old backup file if exists</a>
+<a name="ln416">            //</a>
+<a name="ln417">            QString backupName = QString(&quot;.&quot;) + info.fileName() + QString(&quot;,&quot;);</a>
+<a name="ln418">            if (dir.exists(backupName)) {</a>
+<a name="ln419">                  if (!dir.remove(backupName)) {</a>
+<a name="ln420">//                      if (!MScore::noGui)</a>
+<a name="ln421">//                            QMessageBox::critical(0, QObject::tr(&quot;Save File&quot;),</a>
+<a name="ln422">//                               tr(&quot;Removing old backup file %1 failed&quot;).arg(backupName));</a>
+<a name="ln423">                        }</a>
+<a name="ln424">                  }</a>
+<a name="ln425"> </a>
+<a name="ln426">            //</a>
+<a name="ln427">            // step 3</a>
+<a name="ln428">            // rename old file into backup</a>
+<a name="ln429">            //</a>
+<a name="ln430">            if (dir.exists(basename)) {</a>
+<a name="ln431">                  if (!dir.rename(basename, backupName)) {</a>
+<a name="ln432">//                      if (!MScore::noGui)</a>
+<a name="ln433">//                            QMessageBox::critical(0, tr(&quot;Save File&quot;),</a>
+<a name="ln434">//                               tr(&quot;Renaming old file &lt;%1&gt; to backup &lt;%2&gt; failed&quot;).arg(name, backupname);</a>
+<a name="ln435">                        }</a>
+<a name="ln436">                  }</a>
+<a name="ln437"> </a>
+<a name="ln438">            QFileInfo fileBackup(dir, backupName);</a>
+<a name="ln439">            _sessionStartBackupInfo = fileBackup;</a>
+<a name="ln440"> </a>
+<a name="ln441">#ifdef Q_OS_WIN</a>
+<a name="ln442">            QString backupNativePath = QDir::toNativeSeparators(fileBackup.absoluteFilePath());</a>
+<a name="ln443">#if (defined (_MSCVER) || defined (_MSC_VER))</a>
+<a name="ln444">   #if (defined (UNICODE))</a>
+<a name="ln445">            SetFileAttributes((LPCTSTR)backupNativePath.unicode(), FILE_ATTRIBUTE_HIDDEN);</a>
+<a name="ln446">   #else</a>
+<a name="ln447">            // Use byte-based Windows function</a>
+<a name="ln448">            SetFileAttributes((LPCTSTR)backupNativePath.toLocal8Bit(), FILE_ATTRIBUTE_HIDDEN);</a>
+<a name="ln449">   #endif</a>
+<a name="ln450">#else</a>
+<a name="ln451">            SetFileAttributes((LPCTSTR)backupNativePath.toLocal8Bit(), FILE_ATTRIBUTE_HIDDEN);</a>
+<a name="ln452">#endif</a>
+<a name="ln453">#endif</a>
+<a name="ln454">            }</a>
+<a name="ln455">      else {</a>
+<a name="ln456">            // file has previously been saved - remove the old file</a>
+<a name="ln457">            if (dir.exists(basename)) {</a>
+<a name="ln458">                  if (!dir.remove(basename)) {</a>
+<a name="ln459">//                      if (!MScore::noGui)</a>
+<a name="ln460">//                            QMessageBox::critical(0, tr(&quot;Save File&quot;),</a>
+<a name="ln461">//                               tr(&quot;Removing old file %1 failed&quot;).arg(name));</a>
+<a name="ln462">                        }</a>
+<a name="ln463">                  }</a>
+<a name="ln464">            }</a>
+<a name="ln465"> </a>
+<a name="ln466">      //</a>
+<a name="ln467">      // step 4</a>
+<a name="ln468">      // rename temp name into file name</a>
+<a name="ln469">      //</a>
+<a name="ln470">      if (!QFile::rename(tempName, name)) {</a>
+<a name="ln471">            MScore::lastError = tr(&quot;Renaming temp. file &lt;%1&gt; to &lt;%2&gt; failed:\n%3&quot;).arg(tempName, name, strerror(errno));</a>
+<a name="ln472">            return false;</a>
+<a name="ln473">            }</a>
+<a name="ln474">      // make file readable by all</a>
+<a name="ln475">      QFile::setPermissions(name, QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser</a>
+<a name="ln476">         | QFile::ReadGroup | QFile::ReadOther);</a>
+<a name="ln477"> </a>
+<a name="ln478">      undoStack()-&gt;setClean();</a>
+<a name="ln479">      setSaved(true);</a>
+<a name="ln480">      info.refresh();</a>
+<a name="ln481">      update();</a>
+<a name="ln482">      return true;</a>
+<a name="ln483">      }</a>
+<a name="ln484"> </a>
+<a name="ln485">//---------------------------------------------------------</a>
+<a name="ln486">//   saveCompressedFile</a>
+<a name="ln487">//---------------------------------------------------------</a>
+<a name="ln488"> </a>
+<a name="ln489">bool Score::saveCompressedFile(QFileInfo&amp; info, bool onlySelection, bool createThumbnail)</a>
+<a name="ln490">      {</a>
+<a name="ln491">      if (readOnly() &amp;&amp; info == *masterScore()-&gt;fileInfo())</a>
+<a name="ln492">            return false;</a>
+<a name="ln493">      QFile fp(info.filePath());</a>
+<a name="ln494">      if (!fp.open(QIODevice::WriteOnly)) {</a>
+<a name="ln495">            MScore::lastError = tr(&quot;Open File\n%1\nfailed: %2&quot;).arg(info.filePath(), strerror(errno));</a>
+<a name="ln496">            return false;</a>
+<a name="ln497">            }</a>
+<a name="ln498">      return saveCompressedFile(&amp;fp, info, onlySelection, createThumbnail);</a>
+<a name="ln499">      }</a>
+<a name="ln500"> </a>
+<a name="ln501">//---------------------------------------------------------</a>
+<a name="ln502">//   createThumbnail</a>
+<a name="ln503">//---------------------------------------------------------</a>
+<a name="ln504"> </a>
+<a name="ln505">QImage Score::createThumbnail()</a>
+<a name="ln506">      {</a>
+<a name="ln507">      LayoutMode mode = layoutMode();</a>
+<a name="ln508">      setLayoutMode(LayoutMode::PAGE);</a>
+<a name="ln509">      doLayout();</a>
+<a name="ln510"> </a>
+<a name="ln511">      Page* page = pages().at(0);</a>
+<a name="ln512">      QRectF fr  = page-&gt;abbox();</a>
+<a name="ln513">      qreal mag  = 256.0 / qMax(fr.width(), fr.height());</a>
+<a name="ln514">      int w      = int(fr.width() * mag);</a>
+<a name="ln515">      int h      = int(fr.height() * mag);</a>
+<a name="ln516"> </a>
+<a name="ln517">      QImage pm(w, h, QImage::Format_ARGB32_Premultiplied);</a>
+<a name="ln518"> </a>
+<a name="ln519">      int dpm = lrint(DPMM * 1000.0);</a>
+<a name="ln520">      pm.setDotsPerMeterX(dpm);</a>
+<a name="ln521">      pm.setDotsPerMeterY(dpm);</a>
+<a name="ln522">      pm.fill(0xffffffff);</a>
+<a name="ln523"> </a>
+<a name="ln524">      double pr = MScore::pixelRatio;</a>
+<a name="ln525">      MScore::pixelRatio = 1.0;</a>
+<a name="ln526"> </a>
+<a name="ln527">      QPainter p(&amp;pm);</a>
+<a name="ln528">      p.setRenderHint(QPainter::Antialiasing, true);</a>
+<a name="ln529">      p.setRenderHint(QPainter::TextAntialiasing, true);</a>
+<a name="ln530">      p.scale(mag, mag);</a>
+<a name="ln531">      print(&amp;p, 0);</a>
+<a name="ln532">      p.end();</a>
+<a name="ln533"> </a>
+<a name="ln534">      MScore::pixelRatio = pr;</a>
+<a name="ln535"> </a>
+<a name="ln536">      if (layoutMode() != mode) {</a>
+<a name="ln537">            setLayoutMode(mode);</a>
+<a name="ln538">            doLayout();</a>
+<a name="ln539">            }</a>
+<a name="ln540">      return pm;</a>
+<a name="ln541">      }</a>
+<a name="ln542"> </a>
+<a name="ln543">//---------------------------------------------------------</a>
+<a name="ln544">//   saveCompressedFile</a>
+<a name="ln545">//    file is already opened</a>
+<a name="ln546">//---------------------------------------------------------</a>
+<a name="ln547"> </a>
+<a name="ln548">bool Score::saveCompressedFile(QFileDevice* f, QFileInfo&amp; info, bool onlySelection, bool doCreateThumbnail)</a>
+<a name="ln549">      {</a>
+<a name="ln550">      MQZipWriter uz(f);</a>
+<a name="ln551"> </a>
+<a name="ln552">      QString fn = info.completeBaseName() + &quot;.mscx&quot;;</a>
+<a name="ln553">      QBuffer cbuf;</a>
+<a name="ln554">      cbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln555">      XmlWriter xml(this, &amp;cbuf);</a>
+<a name="ln556">      xml &lt;&lt; &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt;\n&quot;;</a>
+<a name="ln557">      xml.stag(&quot;container&quot;);</a>
+<a name="ln558">      xml.stag(&quot;rootfiles&quot;);</a>
+<a name="ln559">      xml.stag(QString(&quot;rootfile full-path=\&quot;%1\&quot;&quot;).arg(XmlWriter::xmlString(fn)));</a>
+<a name="ln560">      xml.etag();</a>
+<a name="ln561">      for (ImageStoreItem* ip : imageStore) {</a>
+<a name="ln562">            if (!ip-&gt;isUsed(this))</a>
+<a name="ln563">                  continue;</a>
+<a name="ln564">            QString path = QString(&quot;Pictures/&quot;) + ip-&gt;hashName();</a>
+<a name="ln565">            xml.tag(&quot;file&quot;, path);</a>
+<a name="ln566">            }</a>
+<a name="ln567"> </a>
+<a name="ln568">      xml.etag();</a>
+<a name="ln569">      xml.etag();</a>
+<a name="ln570">      cbuf.seek(0);</a>
+<a name="ln571">      //uz.addDirectory(&quot;META-INF&quot;);</a>
+<a name="ln572">      uz.addFile(&quot;META-INF/container.xml&quot;, cbuf.data());</a>
+<a name="ln573"> </a>
+<a name="ln574">      QBuffer dbuf;</a>
+<a name="ln575">      dbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln576">      saveFile(&amp;dbuf, true, onlySelection);</a>
+<a name="ln577">      dbuf.seek(0);</a>
+<a name="ln578">      uz.addFile(fn, dbuf.data());</a>
+<a name="ln579">      f-&gt;flush(); // flush to preserve score data in case of</a>
+<a name="ln580">                  // any failures on the further operations.</a>
+<a name="ln581"> </a>
+<a name="ln582">      // save images</a>
+<a name="ln583">      //uz.addDirectory(&quot;Pictures&quot;);</a>
+<a name="ln584">      for (ImageStoreItem* ip : imageStore) {</a>
+<a name="ln585">            if (!ip-&gt;isUsed(this))</a>
+<a name="ln586">                  continue;</a>
+<a name="ln587">            QString path = QString(&quot;Pictures/&quot;) + ip-&gt;hashName();</a>
+<a name="ln588">            uz.addFile(path, ip-&gt;buffer());</a>
+<a name="ln589">            }</a>
+<a name="ln590"> </a>
+<a name="ln591">      // create thumbnail</a>
+<a name="ln592">      if (doCreateThumbnail &amp;&amp; !pages().isEmpty()) {</a>
+<a name="ln593">            QImage pm = createThumbnail();</a>
+<a name="ln594"> </a>
+<a name="ln595">            QByteArray ba;</a>
+<a name="ln596">            QBuffer b(&amp;ba);</a>
+<a name="ln597">            if (!b.open(QIODevice::WriteOnly))</a>
+<a name="ln598">                  qDebug(&quot;open buffer failed&quot;);</a>
+<a name="ln599">            if (!pm.save(&amp;b, &quot;PNG&quot;))</a>
+<a name="ln600">                  qDebug(&quot;save failed&quot;);</a>
+<a name="ln601">            uz.addFile(&quot;Thumbnails/thumbnail.png&quot;, ba);</a>
+<a name="ln602">            }</a>
+<a name="ln603"> </a>
+<a name="ln604">#ifdef OMR</a>
+<a name="ln605">      //</a>
+<a name="ln606">      // save OMR page images</a>
+<a name="ln607">      //</a>
+<a name="ln608">      if (masterScore()-&gt;omr()) {</a>
+<a name="ln609">            int n = masterScore()-&gt;omr()-&gt;numPages();</a>
+<a name="ln610">            for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln611">                  QString path = QString(&quot;OmrPages/page%1.png&quot;).arg(i+1);</a>
+<a name="ln612">                  QBuffer cbuf1;</a>
+<a name="ln613">                  OmrPage* page = masterScore()-&gt;omr()-&gt;page(i);</a>
+<a name="ln614">                  const QImage&amp; image = page-&gt;image();</a>
+<a name="ln615">                  if (!image.save(&amp;cbuf1, &quot;PNG&quot;)) {</a>
+<a name="ln616">                        MScore::lastError = tr(&quot;Save file: cannot save image (%1x%2)&quot;).arg(image.width(), image.height());</a>
+<a name="ln617">                        return false;</a>
+<a name="ln618">                        }</a>
+<a name="ln619">                  uz.addFile(path, cbuf1.data());</a>
+<a name="ln620">                  cbuf1.close();</a>
+<a name="ln621">                  }</a>
+<a name="ln622">            }</a>
+<a name="ln623">#endif</a>
+<a name="ln624">      //</a>
+<a name="ln625">      // save audio</a>
+<a name="ln626">      //</a>
+<a name="ln627">      if (_audio)</a>
+<a name="ln628">            uz.addFile(&quot;audio.ogg&quot;, _audio-&gt;data());</a>
+<a name="ln629"> </a>
+<a name="ln630">      uz.close();</a>
+<a name="ln631">      return true;</a>
+<a name="ln632">      }</a>
+<a name="ln633"> </a>
+<a name="ln634">//---------------------------------------------------------</a>
+<a name="ln635">//   saveFile</a>
+<a name="ln636">//    return true on success</a>
+<a name="ln637">//---------------------------------------------------------</a>
+<a name="ln638"> </a>
+<a name="ln639">bool Score::saveFile(QFileInfo&amp; info)</a>
+<a name="ln640">      {</a>
+<a name="ln641">      if (readOnly() &amp;&amp; info == *masterScore()-&gt;fileInfo())</a>
+<a name="ln642">            return false;</a>
+<a name="ln643">      if (info.suffix().isEmpty())</a>
+<a name="ln644">            info.setFile(info.filePath() + &quot;.mscx&quot;);</a>
+<a name="ln645">      QFile fp(info.filePath());</a>
+<a name="ln646">      if (!fp.open(QIODevice::WriteOnly)) {</a>
+<a name="ln647">            MScore::lastError = tr(&quot;Open File\n%1\nfailed: %2&quot;).arg(info.filePath(), strerror(errno));</a>
+<a name="ln648">            return false;</a>
+<a name="ln649">            }</a>
+<a name="ln650">      saveFile(&amp;fp, false, false);</a>
+<a name="ln651">      fp.close();</a>
+<a name="ln652">      return true;</a>
+<a name="ln653">      }</a>
+<a name="ln654"> </a>
+<a name="ln655">//---------------------------------------------------------</a>
+<a name="ln656">//   loadStyle</a>
+<a name="ln657">//---------------------------------------------------------</a>
+<a name="ln658"> </a>
+<a name="ln659">bool Score::loadStyle(const QString&amp; fn, bool ign)</a>
+<a name="ln660">      {</a>
+<a name="ln661">      QFile f(fn);</a>
+<a name="ln662">      if (f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln663">            MStyle st = style();</a>
+<a name="ln664">            if (st.load(&amp;f, ign)) {</a>
+<a name="ln665">                  undo(new ChangeStyle(this, st));</a>
+<a name="ln666">                  return true;</a>
+<a name="ln667">                  }</a>
+<a name="ln668">             else {</a>
+<a name="ln669">                  MScore::lastError = tr(&quot;The style file is not compatible with this version of MuseScore.&quot;);</a>
+<a name="ln670">                  return false;</a>
+<a name="ln671">                  }</a>
+<a name="ln672">            }</a>
+<a name="ln673">      MScore::lastError = strerror(errno);</a>
+<a name="ln674">      return false;</a>
+<a name="ln675">      }</a>
+<a name="ln676"> </a>
+<a name="ln677">//---------------------------------------------------------</a>
+<a name="ln678">//   saveStyle</a>
+<a name="ln679">//---------------------------------------------------------</a>
+<a name="ln680"> </a>
+<a name="ln681">bool Score::saveStyle(const QString&amp; name)</a>
+<a name="ln682">      {</a>
+<a name="ln683">      QString ext(&quot;.mss&quot;);</a>
+<a name="ln684">      QFileInfo info(name);</a>
+<a name="ln685"> </a>
+<a name="ln686">      if (info.suffix().isEmpty())</a>
+<a name="ln687">            info.setFile(info.filePath() + ext);</a>
+<a name="ln688">      QFile f(info.filePath());</a>
+<a name="ln689">      if (!f.open(QIODevice::WriteOnly)) {</a>
+<a name="ln690">            MScore::lastError = tr(&quot;Open Style File\n%1\nfailed: %2&quot;).arg(info.filePath(), strerror(errno));</a>
+<a name="ln691">            return false;</a>
+<a name="ln692">            }</a>
+<a name="ln693"> </a>
+<a name="ln694">      XmlWriter xml(this, &amp;f);</a>
+<a name="ln695">      xml.header();</a>
+<a name="ln696">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln697">      style().save(xml, false);     // save complete style</a>
+<a name="ln698">      xml.etag();</a>
+<a name="ln699">      if (f.error() != QFile::NoError) {</a>
+<a name="ln700">            MScore::lastError = tr(&quot;Write Style failed: %1&quot;).arg(f.errorString());</a>
+<a name="ln701">            return false;</a>
+<a name="ln702">            }</a>
+<a name="ln703">      return true;</a>
+<a name="ln704">      }</a>
+<a name="ln705"> </a>
+<a name="ln706">//---------------------------------------------------------</a>
+<a name="ln707">//   saveFile</a>
+<a name="ln708">//    return true on success</a>
+<a name="ln709">//---------------------------------------------------------</a>
+<a name="ln710"> </a>
+<a name="ln711">extern QString revision;</a>
+<a name="ln712"> </a>
+<a name="ln713">bool Score::saveFile(QIODevice* f, bool msczFormat, bool onlySelection)</a>
+<a name="ln714">      {</a>
+<a name="ln715">      XmlWriter xml(this, f);</a>
+<a name="ln716">      xml.setWriteOmr(msczFormat);</a>
+<a name="ln717">      xml.header();</a>
+<a name="ln718">      if (!MScore::testMode) {</a>
+<a name="ln719">            xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln720">            xml.tag(&quot;programVersion&quot;, VERSION);</a>
+<a name="ln721">            xml.tag(&quot;programRevision&quot;, revision);</a>
+<a name="ln722">            }</a>
+<a name="ln723">      else</a>
+<a name="ln724">            xml.stag(&quot;museScore version=\&quot;3.01\&quot;&quot;);</a>
+<a name="ln725">      write(xml, onlySelection);</a>
+<a name="ln726">      xml.etag();</a>
+<a name="ln727">      if (isMaster())</a>
+<a name="ln728">            masterScore()-&gt;revisions()-&gt;write(xml);</a>
+<a name="ln729">      if (!onlySelection) {</a>
+<a name="ln730">            //update version values for i.e. plugin access</a>
+<a name="ln731">            _mscoreVersion = VERSION;</a>
+<a name="ln732">            _mscoreRevision = revision.toInt(0, 16);</a>
+<a name="ln733">            _mscVersion = MSCVERSION;</a>
+<a name="ln734">            }</a>
+<a name="ln735">      return true;</a>
+<a name="ln736">      }</a>
+<a name="ln737"> </a>
+<a name="ln738">//---------------------------------------------------------</a>
+<a name="ln739">//   readRootFile</a>
+<a name="ln740">//---------------------------------------------------------</a>
+<a name="ln741"> </a>
+<a name="ln742">QString readRootFile(MQZipReader* uz, QList&lt;QString&gt;&amp; images)</a>
+<a name="ln743">      {</a>
+<a name="ln744">      QString rootfile;</a>
+<a name="ln745"> </a>
+<a name="ln746">      QByteArray cbuf = uz-&gt;fileData(&quot;META-INF/container.xml&quot;);</a>
+<a name="ln747">      if (cbuf.isEmpty()) {</a>
+<a name="ln748">            qDebug(&quot;can't find container.xml&quot;);</a>
+<a name="ln749">            return rootfile;</a>
+<a name="ln750">            }</a>
+<a name="ln751"> </a>
+<a name="ln752">      XmlReader e(cbuf);</a>
+<a name="ln753"> </a>
+<a name="ln754">      while (e.readNextStartElement()) {</a>
+<a name="ln755">            if (e.name() != &quot;container&quot;) {</a>
+<a name="ln756">                  e.unknown();</a>
+<a name="ln757">                  continue;</a>
+<a name="ln758">                  }</a>
+<a name="ln759">            while (e.readNextStartElement()) {</a>
+<a name="ln760">                  if (e.name() != &quot;rootfiles&quot;) {</a>
+<a name="ln761">                        e.unknown();</a>
+<a name="ln762">                        continue;</a>
+<a name="ln763">                        }</a>
+<a name="ln764">                  while (e.readNextStartElement()) {</a>
+<a name="ln765">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln766"> </a>
+<a name="ln767">                        if (tag == &quot;rootfile&quot;) {</a>
+<a name="ln768">                              if (rootfile.isEmpty()) {</a>
+<a name="ln769">                                    rootfile = e.attribute(&quot;full-path&quot;);</a>
+<a name="ln770">                                    e.skipCurrentElement();</a>
+<a name="ln771">                                    }</a>
+<a name="ln772">                              }</a>
+<a name="ln773">                        else if (tag == &quot;file&quot;)</a>
+<a name="ln774">                              images.append(e.readElementText());</a>
+<a name="ln775">                        else</a>
+<a name="ln776">                              e.unknown();</a>
+<a name="ln777">                        }</a>
+<a name="ln778">                  }</a>
+<a name="ln779">            }</a>
+<a name="ln780">      return rootfile;</a>
+<a name="ln781">      }</a>
+<a name="ln782"> </a>
+<a name="ln783">//---------------------------------------------------------</a>
+<a name="ln784">//   loadCompressedMsc</a>
+<a name="ln785">//    return false on error</a>
+<a name="ln786">//---------------------------------------------------------</a>
+<a name="ln787"> </a>
+<a name="ln788">Score::FileError MasterScore::loadCompressedMsc(QIODevice* io, bool ignoreVersionError)</a>
+<a name="ln789">      {</a>
+<a name="ln790">      MQZipReader uz(io);</a>
+<a name="ln791"> </a>
+<a name="ln792">      QList&lt;QString&gt; sl;</a>
+<a name="ln793">      QString rootfile = readRootFile(&amp;uz, sl);</a>
+<a name="ln794">      if (rootfile.isEmpty())</a>
+<a name="ln795">            return FileError::FILE_NO_ROOTFILE;</a>
+<a name="ln796"> </a>
+<a name="ln797">      //</a>
+<a name="ln798">      // load images</a>
+<a name="ln799">      //</a>
+<a name="ln800">      if (!MScore::noImages) {</a>
+<a name="ln801">            foreach(const QString&amp; s, sl) {</a>
+<a name="ln802">                  QByteArray dbuf = uz.fileData(s);</a>
+<a name="ln803">                  imageStore.add(s, dbuf);</a>
+<a name="ln804">                  }</a>
+<a name="ln805">            }</a>
+<a name="ln806"> </a>
+<a name="ln807">      QByteArray dbuf = uz.fileData(rootfile);</a>
+<a name="ln808">      if (dbuf.isEmpty()) {</a>
+<a name="ln809">            QVector&lt;MQZipReader::FileInfo&gt; fil = uz.fileInfoList();</a>
+<a name="ln810">            foreach(const MQZipReader::FileInfo&amp; fi, fil) {</a>
+<a name="ln811">                  if (fi.filePath.endsWith(&quot;.mscx&quot;)) {</a>
+<a name="ln812">                        dbuf = uz.fileData(fi.filePath);</a>
+<a name="ln813">                        break;</a>
+<a name="ln814">                        }</a>
+<a name="ln815">                  }</a>
+<a name="ln816">            }</a>
+<a name="ln817">      XmlReader e(dbuf);</a>
+<a name="ln818">      QBuffer readAheadBuf(&amp;dbuf);</a>
+<a name="ln819">      e.setReadAheadDevice(&amp;readAheadBuf);</a>
+<a name="ln820">      e.setDocName(masterScore()-&gt;fileInfo()-&gt;completeBaseName());</a>
+<a name="ln821"> </a>
+<a name="ln822">      FileError retval = read1(e, ignoreVersionError);</a>
+<a name="ln823"> </a>
+<a name="ln824">#ifdef OMR</a>
+<a name="ln825">      //</a>
+<a name="ln826">      // load OMR page images</a>
+<a name="ln827">      //</a>
+<a name="ln828">      if (masterScore()-&gt;omr()) {</a>
+<a name="ln829">            int n = masterScore()-&gt;omr()-&gt;numPages();</a>
+<a name="ln830">            for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln831">                  QString path = QString(&quot;OmrPages/page%1.png&quot;).arg(i+1);</a>
+<a name="ln832">                  QByteArray dbuf1 = uz.fileData(path);</a>
+<a name="ln833">                  OmrPage* page = masterScore()-&gt;omr()-&gt;page(i);</a>
+<a name="ln834">                  QImage image;</a>
+<a name="ln835">                  if (image.loadFromData(dbuf1, &quot;PNG&quot;)) {</a>
+<a name="ln836">                        page-&gt;setImage(image);</a>
+<a name="ln837">                        }</a>
+<a name="ln838">                  else</a>
+<a name="ln839">                        qDebug(&quot;load image failed&quot;);</a>
+<a name="ln840">                  }</a>
+<a name="ln841">            }</a>
+<a name="ln842">#endif</a>
+<a name="ln843">      //</a>
+<a name="ln844">      //  read audio</a>
+<a name="ln845">      //</a>
+<a name="ln846">      if (audio()) {</a>
+<a name="ln847">            QByteArray dbuf1 = uz.fileData(&quot;audio.ogg&quot;);</a>
+<a name="ln848">            audio()-&gt;setData(dbuf1);</a>
+<a name="ln849">            }</a>
+<a name="ln850">      return retval;</a>
+<a name="ln851">      }</a>
+<a name="ln852"> </a>
+<a name="ln853">//---------------------------------------------------------</a>
+<a name="ln854">//   loadMsc</a>
+<a name="ln855">//    return true on success</a>
+<a name="ln856">//---------------------------------------------------------</a>
+<a name="ln857"> </a>
+<a name="ln858">Score::FileError MasterScore::loadMsc(QString name, bool ignoreVersionError)</a>
+<a name="ln859">      {</a>
+<a name="ln860">      QFile f(name);</a>
+<a name="ln861">      if (!f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln862">            MScore::lastError = f.errorString();</a>
+<a name="ln863">            return FileError::FILE_OPEN_ERROR;</a>
+<a name="ln864">            }</a>
+<a name="ln865">      return loadMsc(name, &amp;f, ignoreVersionError);</a>
+<a name="ln866">      }</a>
+<a name="ln867"> </a>
+<a name="ln868">Score::FileError MasterScore::loadMsc(QString name, QIODevice* io, bool ignoreVersionError)</a>
+<a name="ln869">      {</a>
+<a name="ln870">      ScoreLoad sl;</a>
+<a name="ln871">      fileInfo()-&gt;setFile(name);</a>
+<a name="ln872"> </a>
+<a name="ln873">      if (name.endsWith(&quot;.mscz&quot;))</a>
+<a name="ln874">            return loadCompressedMsc(io, ignoreVersionError);</a>
+<a name="ln875">      else {</a>
+<a name="ln876">            XmlReader r(io);</a>
+<a name="ln877">            r.setReadAheadDevice(io);</a>
+<a name="ln878">            return read1(r, ignoreVersionError);</a>
+<a name="ln879">            }</a>
+<a name="ln880">      }</a>
+<a name="ln881"> </a>
+<a name="ln882">//---------------------------------------------------------</a>
+<a name="ln883">//   parseVersion</a>
+<a name="ln884">//---------------------------------------------------------</a>
+<a name="ln885"> </a>
+<a name="ln886">void MasterScore::parseVersion(const QString&amp; val)</a>
+<a name="ln887">      {</a>
+<a name="ln888">      QRegExp re(&quot;(\\d+)\\.(\\d+)\\.(\\d+)&quot;);</a>
+<a name="ln889">      int v1, v2, v3, rv1, rv2, rv3;</a>
+<a name="ln890">      if (re.indexIn(VERSION) != -1) {</a>
+<a name="ln891">            QStringList sl = re.capturedTexts();</a>
+<a name="ln892">            if (sl.size() == 4) {</a>
+<a name="ln893">                  v1 = sl[1].toInt();</a>
+<a name="ln894">                  v2 = sl[2].toInt();</a>
+<a name="ln895">                  v3 = sl[3].toInt();</a>
+<a name="ln896">                  if (re.indexIn(val) != -1) {</a>
+<a name="ln897">                        sl = re.capturedTexts();</a>
+<a name="ln898">                        if (sl.size() == 4) {</a>
+<a name="ln899">                              rv1 = sl[1].toInt();</a>
+<a name="ln900">                              rv2 = sl[2].toInt();</a>
+<a name="ln901">                              rv3 = sl[3].toInt();</a>
+<a name="ln902"> </a>
+<a name="ln903">                              int currentVersion = v1 * 10000 + v2 * 100 + v3;</a>
+<a name="ln904">                              int readVersion = rv1 * 10000 + rv2 * 100 + rv3;</a>
+<a name="ln905">                              if (readVersion &gt; currentVersion) {</a>
+<a name="ln906">                                    qDebug(&quot;read future version&quot;);</a>
+<a name="ln907">                                    }</a>
+<a name="ln908">                              }</a>
+<a name="ln909">                        }</a>
+<a name="ln910">                  else {</a>
+<a name="ln911">                        QRegExp re1(&quot;(\\d+)\\.(\\d+)&quot;);</a>
+<a name="ln912">                        if (re1.indexIn(val) != -1) {</a>
+<a name="ln913">                              sl = re.capturedTexts();</a>
+<a name="ln914">                              if (sl.size() == 3) {</a>
+<a name="ln915">                                    rv1 = sl[1].toInt();</a>
+<a name="ln916">                                    rv2 = sl[2].toInt();</a>
+<a name="ln917"> </a>
+<a name="ln918">                                    int currentVersion = v1 * 10000 + v2 * 100 + v3;</a>
+<a name="ln919">                                    int readVersion = rv1 * 10000 + rv2 * 100;</a>
+<a name="ln920">                                    if (readVersion &gt; currentVersion) {</a>
+<a name="ln921">                                          qDebug(&quot;read future version&quot;);</a>
+<a name="ln922">                                          }</a>
+<a name="ln923">                                    }</a>
+<a name="ln924">                              }</a>
+<a name="ln925">                        else</a>
+<a name="ln926">                              qDebug(&quot;1cannot parse &lt;%s&gt;&quot;, qPrintable(val));</a>
+<a name="ln927">                        }</a>
+<a name="ln928">                  }</a>
+<a name="ln929">            }</a>
+<a name="ln930">      else</a>
+<a name="ln931">            qDebug(&quot;2cannot parse &lt;%s&gt;&quot;, VERSION);</a>
+<a name="ln932">      }</a>
+<a name="ln933"> </a>
+<a name="ln934">//---------------------------------------------------------</a>
+<a name="ln935">//   read1</a>
+<a name="ln936">//    return true on success</a>
+<a name="ln937">//---------------------------------------------------------</a>
+<a name="ln938"> </a>
+<a name="ln939">Score::FileError MasterScore::read1(XmlReader&amp; e, bool ignoreVersionError)</a>
+<a name="ln940">      {</a>
+<a name="ln941">      while (e.readNextStartElement()) {</a>
+<a name="ln942">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln943">                  const QString&amp; version = e.attribute(&quot;version&quot;);</a>
+<a name="ln944">                  QStringList sl = version.split('.');</a>
+<a name="ln945">                  setMscVersion(sl[0].toInt() * 100 + sl[1].toInt());</a>
+<a name="ln946"> </a>
+<a name="ln947">                  if (!ignoreVersionError) {</a>
+<a name="ln948">                        QString message;</a>
+<a name="ln949">                        if (mscVersion() &gt; MSCVERSION)</a>
+<a name="ln950">                              return FileError::FILE_TOO_NEW;</a>
+<a name="ln951">                        if (mscVersion() &lt; 114)</a>
+<a name="ln952">                              return FileError::FILE_TOO_OLD;</a>
+<a name="ln953">                        if (mscVersion() == 300)</a>
+<a name="ln954">                              return FileError::FILE_OLD_300_FORMAT;</a>
+<a name="ln955">                        }</a>
+<a name="ln956">                  Score::FileError error;</a>
+<a name="ln957">                  if (mscVersion() &lt;= 114)</a>
+<a name="ln958">                        error = read114(e);</a>
+<a name="ln959">                  else if (mscVersion() &lt;= 207)</a>
+<a name="ln960">                        error = read206(e);</a>
+<a name="ln961">                  else</a>
+<a name="ln962">                        error = read301(e);</a>
+<a name="ln963">                  setExcerptsChanged(false);</a>
+<a name="ln964">                  return error;</a>
+<a name="ln965">                  }</a>
+<a name="ln966">            else</a>
+<a name="ln967">                  e.unknown();</a>
+<a name="ln968">            }</a>
+<a name="ln969">      return FileError::FILE_CORRUPTED;</a>
+<a name="ln970">      }</a>
+<a name="ln971"> </a>
+<a name="ln972">//---------------------------------------------------------</a>
+<a name="ln973">//   print</a>
+<a name="ln974">//---------------------------------------------------------</a>
+<a name="ln975"> </a>
+<a name="ln976">void Score::print(QPainter* painter, int pageNo)</a>
+<a name="ln977">      {</a>
+<a name="ln978">      _printing  = true;</a>
+<a name="ln979">      MScore::pdfPrinting = true;</a>
+<a name="ln980">      Page* page = pages().at(pageNo);</a>
+<a name="ln981">      QRectF fr  = page-&gt;abbox();</a>
+<a name="ln982"> </a>
+<a name="ln983">      QList&lt;Element*&gt; ell = page-&gt;items(fr);</a>
+<a name="ln984">      qStableSort(ell.begin(), ell.end(), elementLessThan);</a>
+<a name="ln985">      for (const Element* e : ell) {</a>
+<a name="ln986">            if (!e-&gt;visible())</a>
+<a name="ln987">                  continue;</a>
+<a name="ln988">            painter-&gt;save();</a>
+<a name="ln989">            painter-&gt;translate(e-&gt;pagePos());</a>
+<a name="ln990">            e-&gt;draw(painter);</a>
+<a name="ln991">            painter-&gt;restore();</a>
+<a name="ln992">            }</a>
+<a name="ln993">      MScore::pdfPrinting = false;</a>
+<a name="ln994">      _printing = false;</a>
+<a name="ln995">      }</a>
+<a name="ln996"> </a>
+<a name="ln997">//---------------------------------------------------------</a>
+<a name="ln998">//   readCompressedToBuffer</a>
+<a name="ln999">//---------------------------------------------------------</a>
+<a name="ln1000"> </a>
+<a name="ln1001">QByteArray MasterScore::readCompressedToBuffer()</a>
+<a name="ln1002">      {</a>
+<a name="ln1003">      MQZipReader uz(info.filePath());</a>
+<a name="ln1004">      if (!uz.exists()) {</a>
+<a name="ln1005">            qDebug(&quot;Score::readCompressedToBuffer: cannot read zip file&quot;);</a>
+<a name="ln1006">            return QByteArray();</a>
+<a name="ln1007">            }</a>
+<a name="ln1008">      QList&lt;QString&gt; images;</a>
+<a name="ln1009">      QString rootfile = readRootFile(&amp;uz, images);</a>
+<a name="ln1010"> </a>
+<a name="ln1011">      //</a>
+<a name="ln1012">      // load images</a>
+<a name="ln1013">      //</a>
+<a name="ln1014">      foreach(const QString&amp; s, images) {</a>
+<a name="ln1015">            QByteArray dbuf = uz.fileData(s);</a>
+<a name="ln1016">            imageStore.add(s, dbuf);</a>
+<a name="ln1017">            }</a>
+<a name="ln1018"> </a>
+<a name="ln1019">      if (rootfile.isEmpty()) {</a>
+<a name="ln1020">            qDebug(&quot;=can't find rootfile in: %s&quot;, qPrintable(info.filePath()));</a>
+<a name="ln1021">            return QByteArray();</a>
+<a name="ln1022">            }</a>
+<a name="ln1023">      return uz.fileData(rootfile);</a>
+<a name="ln1024">      }</a>
+<a name="ln1025"> </a>
+<a name="ln1026">//---------------------------------------------------------</a>
+<a name="ln1027">//   readToBuffer</a>
+<a name="ln1028">//---------------------------------------------------------</a>
+<a name="ln1029"> </a>
+<a name="ln1030">QByteArray MasterScore::readToBuffer()</a>
+<a name="ln1031">      {</a>
+<a name="ln1032">      QByteArray ba;</a>
+<a name="ln1033">      QString cs  = info.suffix();</a>
+<a name="ln1034"> </a>
+<a name="ln1035">      if (cs == &quot;mscz&quot;) {</a>
+<a name="ln1036">            ba = readCompressedToBuffer();</a>
+<a name="ln1037">            }</a>
+<a name="ln1038">      if (cs.toLower() == &quot;msc&quot; || cs.toLower() == &quot;mscx&quot;) {</a>
+<a name="ln1039">            QFile f(info.filePath());</a>
+<a name="ln1040">            if (f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln1041">                  ba = f.readAll();</a>
+<a name="ln1042">                  f.close();</a>
+<a name="ln1043">                  }</a>
+<a name="ln1044">            }</a>
+<a name="ln1045">      return ba;</a>
+<a name="ln1046">      }</a>
+<a name="ln1047"> </a>
+<a name="ln1048">//---------------------------------------------------------</a>
+<a name="ln1049">//   createRevision</a>
+<a name="ln1050">//---------------------------------------------------------</a>
+<a name="ln1051"> </a>
+<a name="ln1052">void Score::createRevision()</a>
+<a name="ln1053">      {</a>
+<a name="ln1054">#if 0</a>
+<a name="ln1055">qDebug(&quot;createRevision&quot;);</a>
+<a name="ln1056">      QBuffer dbuf;</a>
+<a name="ln1057">      dbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln1058">      saveFile(&amp;dbuf, false, false);</a>
+<a name="ln1059">      dbuf.close();</a>
+<a name="ln1060"> </a>
+<a name="ln1061">      QByteArray ba1 = readToBuffer();</a>
+<a name="ln1062"> </a>
+<a name="ln1063">      QString os = QString::fromUtf8(ba1.data(), ba1.size());</a>
+<a name="ln1064">      QString ns = QString::fromUtf8(dbuf.buffer().data(), dbuf.buffer().size());</a>
+<a name="ln1065"> </a>
+<a name="ln1066">      diff_match_patch dmp;</a>
+<a name="ln1067">      Revision* r = new Revision();</a>
+<a name="ln1068">      r-&gt;setDiff(dmp.patch_toText(dmp.patch_make(ns, os)));</a>
+<a name="ln1069">      r-&gt;setId(&quot;1&quot;);</a>
+<a name="ln1070">      _revisions-&gt;add(r);</a>
+<a name="ln1071"> </a>
+<a name="ln1072">//      qDebug(&quot;patch:\n%s\n==========&quot;, qPrintable(patch));</a>
+<a name="ln1073">      //</a>
+<a name="ln1074">#endif</a>
+<a name="ln1075">      }</a>
+<a name="ln1076"> </a>
+<a name="ln1077">//---------------------------------------------------------</a>
+<a name="ln1078">//   writeVoiceMove</a>
+<a name="ln1079">//    write &lt;move&gt; and starting &lt;voice&gt; tags to denote</a>
+<a name="ln1080">//    change in position.</a>
+<a name="ln1081">//    Returns true if &lt;voice&gt; tag was written.</a>
+<a name="ln1082">//---------------------------------------------------------</a>
+<a name="ln1083"> </a>
+<a name="ln1084">static bool writeVoiceMove(XmlWriter&amp; xml, Segment* seg, const Fraction&amp; startTick, int track, int* lastTrackWrittenPtr)</a>
+<a name="ln1085">      {</a>
+<a name="ln1086">      bool voiceTagWritten = false;</a>
+<a name="ln1087">      int&amp; lastTrackWritten = *lastTrackWrittenPtr;</a>
+<a name="ln1088">      if ((lastTrackWritten &lt; track) &amp;&amp; !xml.clipboardmode()) {</a>
+<a name="ln1089">            while (lastTrackWritten &lt; (track - 1)) {</a>
+<a name="ln1090">                  xml.tagE(&quot;voice&quot;);</a>
+<a name="ln1091">                  ++lastTrackWritten;</a>
+<a name="ln1092">                  }</a>
+<a name="ln1093">            xml.stag(&quot;voice&quot;);</a>
+<a name="ln1094">            xml.setCurTick(startTick);</a>
+<a name="ln1095">            xml.setCurTrack(track);</a>
+<a name="ln1096">            ++lastTrackWritten;</a>
+<a name="ln1097">            voiceTagWritten = true;</a>
+<a name="ln1098">            }</a>
+<a name="ln1099"> </a>
+<a name="ln1100">      if ((xml.curTick() != seg-&gt;tick()) || (track != xml.curTrack())) {</a>
+<a name="ln1101">            Location curr = Location::absolute();</a>
+<a name="ln1102">            Location dest = Location::absolute();</a>
+<a name="ln1103">            curr.setFrac(xml.curTick());</a>
+<a name="ln1104">            dest.setFrac(seg-&gt;tick());</a>
+<a name="ln1105">            curr.setTrack(xml.curTrack());</a>
+<a name="ln1106">            dest.setTrack(track);</a>
+<a name="ln1107"> </a>
+<a name="ln1108">            dest.toRelative(curr);</a>
+<a name="ln1109">            dest.write(xml);</a>
+<a name="ln1110"> </a>
+<a name="ln1111">            xml.setCurTick(seg-&gt;tick());</a>
+<a name="ln1112">            xml.setCurTrack(track);</a>
+<a name="ln1113">            }</a>
+<a name="ln1114"> </a>
+<a name="ln1115">      return voiceTagWritten;</a>
+<a name="ln1116">      }</a>
+<a name="ln1117"> </a>
+<a name="ln1118">//---------------------------------------------------------</a>
+<a name="ln1119">//   writeSegments</a>
+<a name="ln1120">//    ls  - write upto this segment (excluding)</a>
+<a name="ln1121">//          can be zero</a>
+<a name="ln1122">//---------------------------------------------------------</a>
+<a name="ln1123"> </a>
+<a name="ln1124">void Score::writeSegments(XmlWriter&amp; xml, int strack, int etrack,</a>
+<a name="ln1125">   Segment* sseg, Segment* eseg, bool writeSystemElements, bool forceTimeSig)</a>
+<a name="ln1126">      {</a>
+<a name="ln1127">      Fraction startTick = xml.curTick();</a>
+<a name="ln1128">      Fraction endTick   = eseg ? eseg-&gt;tick() : lastMeasure()-&gt;endTick();</a>
+<a name="ln1129">      bool clip          = xml.clipboardmode();</a>
+<a name="ln1130"> </a>
+<a name="ln1131">      // in clipboard mode, ls might be in an mmrest</a>
+<a name="ln1132">      // since we are traversing regular measures,</a>
+<a name="ln1133">      // force them out of mmRest</a>
+<a name="ln1134">      if (clip) {</a>
+<a name="ln1135">            Measure* lm = eseg ? eseg-&gt;measure() : 0;</a>
+<a name="ln1136">            Measure* fm = sseg ? sseg-&gt;measure() : 0;</a>
+<a name="ln1137">            if (lm &amp;&amp; lm-&gt;isMMRest()) {</a>
+<a name="ln1138">                  lm = lm-&gt;mmRestLast();</a>
+<a name="ln1139">                  if (lm)</a>
+<a name="ln1140">                        eseg = lm-&gt;nextMeasure() ? lm-&gt;nextMeasure()-&gt;first() : nullptr;</a>
+<a name="ln1141">                  else</a>
+<a name="ln1142">                        qDebug(&quot;writeSegments: no measure for end segment in mmrest&quot;);</a>
+<a name="ln1143">                  }</a>
+<a name="ln1144">            if (fm &amp;&amp; fm-&gt;isMMRest()) {</a>
+<a name="ln1145">                  fm = fm-&gt;mmRestFirst();</a>
+<a name="ln1146">                  if (fm)</a>
+<a name="ln1147">                        sseg = fm-&gt;first();</a>
+<a name="ln1148">                  }</a>
+<a name="ln1149">            }</a>
+<a name="ln1150"> </a>
+<a name="ln1151">      QList&lt;Spanner*&gt; spanners;</a>
+<a name="ln1152">#if 0</a>
+<a name="ln1153">      auto endIt   = spanner().upper_bound(endTick);</a>
+<a name="ln1154">      for (auto i = spanner().begin(); i != endIt; ++i) {</a>
+<a name="ln1155">            Spanner* s = i-&gt;second;</a>
+<a name="ln1156">#else</a>
+<a name="ln1157">      auto sl = spannerMap().findOverlapping(sseg-&gt;tick().ticks(), endTick.ticks());</a>
+<a name="ln1158">      for (auto i : sl) {</a>
+<a name="ln1159">            Spanner* s = i.value;</a>
+<a name="ln1160">#endif</a>
+<a name="ln1161">            if (s-&gt;generated() || !xml.canWrite(s))</a>
+<a name="ln1162">                  continue;</a>
+<a name="ln1163">            // don't write voltas to clipboard</a>
+<a name="ln1164">            if (clip &amp;&amp; s-&gt;isVolta())</a>
+<a name="ln1165">                  continue;</a>
+<a name="ln1166">            spanners.push_back(s);</a>
+<a name="ln1167">            }</a>
+<a name="ln1168"> </a>
+<a name="ln1169">      int lastTrackWritten = strack - 1; // for counting necessary &lt;voice&gt; tags</a>
+<a name="ln1170">      for (int track = strack; track &lt; etrack; ++track) {</a>
+<a name="ln1171">            if (!xml.canWriteVoice(track))</a>
+<a name="ln1172">                  continue;</a>
+<a name="ln1173"> </a>
+<a name="ln1174">            bool voiceTagWritten = false;</a>
+<a name="ln1175"> </a>
+<a name="ln1176">            bool timeSigWritten = false; // for forceTimeSig</a>
+<a name="ln1177">            bool crWritten = false;      // for forceTimeSig</a>
+<a name="ln1178">            bool keySigWritten = false;  // for forceTimeSig</a>
+<a name="ln1179"> </a>
+<a name="ln1180">            for (Segment* segment = sseg; segment &amp;&amp; segment != eseg; segment = segment-&gt;next1()) {</a>
+<a name="ln1181">                  if (!segment-&gt;enabled())</a>
+<a name="ln1182">                        continue;</a>
+<a name="ln1183">                  if (track == 0)</a>
+<a name="ln1184">                        segment-&gt;setWritten(false);</a>
+<a name="ln1185">                  Element* e = segment-&gt;element(track);</a>
+<a name="ln1186"> </a>
+<a name="ln1187">                  //</a>
+<a name="ln1188">                  // special case: - barline span &gt; 1</a>
+<a name="ln1189">                  //               - part (excerpt) staff starts after</a>
+<a name="ln1190">                  //                 barline element</a>
+<a name="ln1191">                  bool needMove = (segment-&gt;tick() != xml.curTick() || (track &gt; lastTrackWritten));</a>
+<a name="ln1192">                  if ((segment-&gt;isEndBarLineType()) &amp;&amp; !e &amp;&amp; writeSystemElements &amp;&amp; ((track % VOICES) == 0)) {</a>
+<a name="ln1193">                        // search barline:</a>
+<a name="ln1194">                        for (int idx = track - VOICES; idx &gt;= 0; idx -= VOICES) {</a>
+<a name="ln1195">                              if (segment-&gt;element(idx)) {</a>
+<a name="ln1196">                                    int oDiff = xml.trackDiff();</a>
+<a name="ln1197">                                    xml.setTrackDiff(idx);          // staffIdx should be zero</a>
+<a name="ln1198">                                    segment-&gt;element(idx)-&gt;write(xml);</a>
+<a name="ln1199">                                    xml.setTrackDiff(oDiff);</a>
+<a name="ln1200">                                    break;</a>
+<a name="ln1201">                                    }</a>
+<a name="ln1202">                              }</a>
+<a name="ln1203">                        }</a>
+<a name="ln1204">                  for (Element* e1 : segment-&gt;annotations()) {</a>
+<a name="ln1205">                        if (e1-&gt;track() != track || e1-&gt;generated() || (e1-&gt;systemFlag() &amp;&amp; !writeSystemElements))</a>
+<a name="ln1206">                              continue;</a>
+<a name="ln1207">                        if (needMove) {</a>
+<a name="ln1208">                              voiceTagWritten |= writeVoiceMove(xml, segment, startTick, track, &amp;lastTrackWritten);</a>
+<a name="ln1209">                              needMove = false;</a>
+<a name="ln1210">                              }</a>
+<a name="ln1211">                        e1-&gt;write(xml);</a>
+<a name="ln1212">                        }</a>
+<a name="ln1213">                  Measure* m = segment-&gt;measure();</a>
+<a name="ln1214">                  // don't write spanners for multi measure rests</a>
+<a name="ln1215"> </a>
+<a name="ln1216">                  if ((!(m &amp;&amp; m-&gt;isMMRest())) &amp;&amp; segment-&gt;isChordRestType()) {</a>
+<a name="ln1217">                        for (Spanner* s : spanners) {</a>
+<a name="ln1218">                              if (s-&gt;track() == track) {</a>
+<a name="ln1219">                                    bool end = false;</a>
+<a name="ln1220">                                    if (s-&gt;anchor() == Spanner::Anchor::CHORD || s-&gt;anchor() == Spanner::Anchor::NOTE)</a>
+<a name="ln1221">                                          end = s-&gt;tick2() &lt; endTick;</a>
+<a name="ln1222">                                    else</a>
+<a name="ln1223">                                          end = s-&gt;tick2() &lt;= endTick;</a>
+<a name="ln1224">                                    if (s-&gt;tick() == segment-&gt;tick() &amp;&amp; (!clip || end) &amp;&amp; !s-&gt;isSlur()) {</a>
+<a name="ln1225">                                          if (needMove) {</a>
+<a name="ln1226">                                                voiceTagWritten |= writeVoiceMove(xml, segment, startTick, track, &amp;lastTrackWritten);</a>
+<a name="ln1227">                                                needMove = false;</a>
+<a name="ln1228">                                                }</a>
+<a name="ln1229">                                          s-&gt;writeSpannerStart(xml, segment, track);</a>
+<a name="ln1230">                                          }</a>
+<a name="ln1231">                                    }</a>
+<a name="ln1232">                              if ((s-&gt;tick2() == segment-&gt;tick())</a>
+<a name="ln1233">                                 &amp;&amp; !s-&gt;isSlur()</a>
+<a name="ln1234">                                 &amp;&amp; (s-&gt;effectiveTrack2() == track)</a>
+<a name="ln1235">                                 &amp;&amp; (!clip || s-&gt;tick() &gt;= sseg-&gt;tick())</a>
+<a name="ln1236">                                 ) {</a>
+<a name="ln1237">                                    if (needMove) {</a>
+<a name="ln1238">                                          voiceTagWritten |= writeVoiceMove(xml, segment, startTick, track, &amp;lastTrackWritten);</a>
+<a name="ln1239">                                          needMove = false;</a>
+<a name="ln1240">                                          }</a>
+<a name="ln1241">                                    s-&gt;writeSpannerEnd(xml, segment, track);</a>
+<a name="ln1242">                                    }</a>
+<a name="ln1243">                              }</a>
+<a name="ln1244">                        }</a>
+<a name="ln1245"> </a>
+<a name="ln1246">                  if (!e || !xml.canWrite(e))</a>
+<a name="ln1247">                        continue;</a>
+<a name="ln1248">                  if (e-&gt;generated())</a>
+<a name="ln1249">                        continue;</a>
+<a name="ln1250">                  if (forceTimeSig &amp;&amp; track2voice(track) == 0 &amp;&amp; segment-&gt;segmentType() == SegmentType::ChordRest &amp;&amp; !timeSigWritten &amp;&amp; !crWritten) {</a>
+<a name="ln1251">                        // Ensure that &lt;voice&gt; tag is open</a>
+<a name="ln1252">                        voiceTagWritten |= writeVoiceMove(xml, segment, startTick, track, &amp;lastTrackWritten);</a>
+<a name="ln1253">                        // we will miss a key sig!</a>
+<a name="ln1254">                        if (!keySigWritten) {</a>
+<a name="ln1255">                              Key k = score()-&gt;staff(track2staff(track))-&gt;key(segment-&gt;tick());</a>
+<a name="ln1256">                              KeySig* ks = new KeySig(this);</a>
+<a name="ln1257">                              ks-&gt;setKey(k);</a>
+<a name="ln1258">                              ks-&gt;write(xml);</a>
+<a name="ln1259">                              delete ks;</a>
+<a name="ln1260">                              keySigWritten = true;</a>
+<a name="ln1261">                              }</a>
+<a name="ln1262">                        // we will miss a time sig!</a>
+<a name="ln1263">                        Fraction tsf = sigmap()-&gt;timesig(segment-&gt;tick()).timesig();</a>
+<a name="ln1264">                        TimeSig* ts = new TimeSig(this);</a>
+<a name="ln1265">                        ts-&gt;setSig(tsf);</a>
+<a name="ln1266">                        ts-&gt;write(xml);</a>
+<a name="ln1267">                        delete ts;</a>
+<a name="ln1268">                        timeSigWritten = true;</a>
+<a name="ln1269">                        }</a>
+<a name="ln1270">                  if (needMove) {</a>
+<a name="ln1271">                        voiceTagWritten |= writeVoiceMove(xml, segment, startTick, track, &amp;lastTrackWritten);</a>
+<a name="ln1272">                        needMove = false;</a>
+<a name="ln1273">                        }</a>
+<a name="ln1274">                  if (e-&gt;isChordRest()) {</a>
+<a name="ln1275">                        ChordRest* cr = toChordRest(e);</a>
+<a name="ln1276">                        cr-&gt;writeTupletStart(xml);</a>
+<a name="ln1277">                        }</a>
+<a name="ln1278">//                  if (segment-&gt;isEndBarLine() &amp;&amp; (m-&gt;mmRestCount() &lt; 0 || m-&gt;mmRest())) {</a>
+<a name="ln1279">//                        BarLine* bl = toBarLine(e);</a>
+<a name="ln1280">//TODO                        bl-&gt;setBarLineType(m-&gt;endBarLineType());</a>
+<a name="ln1281">//                        bl-&gt;setVisible(m-&gt;endBarLineVisible());</a>
+<a name="ln1282">//                        }</a>
+<a name="ln1283">                  e-&gt;write(xml);</a>
+<a name="ln1284"> </a>
+<a name="ln1285">                  if (e-&gt;isChordRest()) {</a>
+<a name="ln1286">                        ChordRest* cr = toChordRest(e);</a>
+<a name="ln1287">                        cr-&gt;writeTupletEnd(xml);</a>
+<a name="ln1288">                        }</a>
+<a name="ln1289"> </a>
+<a name="ln1290">                  if (!(e-&gt;isRest() &amp;&amp; toRest(e)-&gt;isGap()))</a>
+<a name="ln1291">                        segment-&gt;write(xml);    // write only once</a>
+<a name="ln1292">                  if (forceTimeSig) {</a>
+<a name="ln1293">                        if (segment-&gt;segmentType() == SegmentType::KeySig)</a>
+<a name="ln1294">                              keySigWritten = true;</a>
+<a name="ln1295">                        if (segment-&gt;segmentType() == SegmentType::TimeSig)</a>
+<a name="ln1296">                              timeSigWritten = true;</a>
+<a name="ln1297">                        if (segment-&gt;segmentType() == SegmentType::ChordRest)</a>
+<a name="ln1298">                              crWritten = true;</a>
+<a name="ln1299">                        }</a>
+<a name="ln1300">                  }</a>
+<a name="ln1301"> </a>
+<a name="ln1302">            //write spanner ending after the last segment, on the last tick</a>
+<a name="ln1303">            if (clip || eseg == 0) {</a>
+<a name="ln1304">                  for (Spanner* s : spanners) {</a>
+<a name="ln1305">                        if ((s-&gt;tick2() == endTick)</a>
+<a name="ln1306">                          &amp;&amp; !s-&gt;isSlur()</a>
+<a name="ln1307">                          &amp;&amp; (s-&gt;track2() == track || (s-&gt;track2() == -1 &amp;&amp; s-&gt;track() == track))</a>
+<a name="ln1308">                          &amp;&amp; (!clip || s-&gt;tick() &gt;= sseg-&gt;tick())</a>
+<a name="ln1309">                          ) {</a>
+<a name="ln1310">                              s-&gt;writeSpannerEnd(xml, lastMeasure(), track, endTick);</a>
+<a name="ln1311">                              }</a>
+<a name="ln1312">                        }</a>
+<a name="ln1313">                  }</a>
+<a name="ln1314"> </a>
+<a name="ln1315">            if (voiceTagWritten)</a>
+<a name="ln1316">                  xml.etag(); // &lt;/voice&gt;</a>
+<a name="ln1317">            }</a>
+<a name="ln1318">      }</a>
+<a name="ln1319"> </a>
+<a name="ln1320">//---------------------------------------------------------</a>
+<a name="ln1321">//   searchTuplet</a>
+<a name="ln1322">//    search complete Dom for tuplet id</a>
+<a name="ln1323">//    last resort in case of error</a>
+<a name="ln1324">//---------------------------------------------------------</a>
+<a name="ln1325"> </a>
+<a name="ln1326">Tuplet* Score::searchTuplet(XmlReader&amp; /*e*/, int /*id*/)</a>
+<a name="ln1327">      {</a>
+<a name="ln1328">      return 0;</a>
+<a name="ln1329">      }</a>
+<a name="ln1330"> </a>
+<a name="ln1331">}</a>
+<a name="ln1332"> </a>
+
+</code></pre>
+<div class="balloon" rel="926"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1020"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1254"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'voiceTagWritten' should be checked here.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

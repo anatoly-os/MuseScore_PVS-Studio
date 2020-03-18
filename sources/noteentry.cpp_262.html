@@ -1,0 +1,761 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>noteentry.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2016 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;utils.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;chord.h&quot;</a>
+<a name="ln16">#include &quot;measure.h&quot;</a>
+<a name="ln17">#include &quot;tie.h&quot;</a>
+<a name="ln18">#include &quot;tuplet.h&quot;</a>
+<a name="ln19">#include &quot;staff.h&quot;</a>
+<a name="ln20">#include &quot;part.h&quot;</a>
+<a name="ln21">#include &quot;drumset.h&quot;</a>
+<a name="ln22">#include &quot;slur.h&quot;</a>
+<a name="ln23">#include &quot;navigate.h&quot;</a>
+<a name="ln24">#include &quot;stringdata.h&quot;</a>
+<a name="ln25">#include &quot;undo.h&quot;</a>
+<a name="ln26">#include &quot;range.h&quot;</a>
+<a name="ln27">#include &quot;excerpt.h&quot;</a>
+<a name="ln28">#include &quot;accidental.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">namespace Ms {</a>
+<a name="ln31"> </a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33">//   noteValForPosition</a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35"> </a>
+<a name="ln36">NoteVal Score::noteValForPosition(Position pos, AccidentalType at, bool &amp;error)</a>
+<a name="ln37">      {</a>
+<a name="ln38">      error           = false;</a>
+<a name="ln39">      Segment* s      = pos.segment;</a>
+<a name="ln40">      int line        = pos.line;</a>
+<a name="ln41">      Fraction tick   = s-&gt;tick();</a>
+<a name="ln42">      int staffIdx    = pos.staffIdx;</a>
+<a name="ln43">      Staff* st       = staff(staffIdx);</a>
+<a name="ln44">      ClefType clef   = st-&gt;clef(tick);</a>
+<a name="ln45">      const Instrument* instr = st-&gt;part()-&gt;instrument(s-&gt;tick());</a>
+<a name="ln46">      NoteVal nval;</a>
+<a name="ln47">      const StringData* stringData = 0;</a>
+<a name="ln48"> </a>
+<a name="ln49">      switch (st-&gt;staffType(tick)-&gt;group()) {</a>
+<a name="ln50">            case StaffGroup::PERCUSSION: {</a>
+<a name="ln51">                  if (_is.rest())</a>
+<a name="ln52">                        break;</a>
+<a name="ln53">                  const Drumset* ds = instr-&gt;drumset();</a>
+<a name="ln54">                  nval.pitch        = _is.drumNote();</a>
+<a name="ln55">                  if (nval.pitch &lt; 0) {</a>
+<a name="ln56">                        error = true;</a>
+<a name="ln57">                        return nval;</a>
+<a name="ln58">                        }</a>
+<a name="ln59">                  nval.headGroup = ds-&gt;noteHead(nval.pitch);</a>
+<a name="ln60">                  if (nval.headGroup == NoteHead::Group::HEAD_INVALID) {</a>
+<a name="ln61">                        error = true;</a>
+<a name="ln62">                        return nval;</a>
+<a name="ln63">                        }</a>
+<a name="ln64">                  break;</a>
+<a name="ln65">                  }</a>
+<a name="ln66">            case StaffGroup::TAB: {</a>
+<a name="ln67">                  if (_is.rest()) {</a>
+<a name="ln68">                        error = true;</a>
+<a name="ln69">                        return nval;</a>
+<a name="ln70">                        }</a>
+<a name="ln71">                  stringData = instr-&gt;stringData();</a>
+<a name="ln72">                  line = st-&gt;staffType(tick)-&gt;visualStringToPhys(line);</a>
+<a name="ln73">                  if (line &lt; 0 || line &gt;= stringData-&gt;strings()) {</a>
+<a name="ln74">                        error = true;</a>
+<a name="ln75">                        return nval;</a>
+<a name="ln76">                        }</a>
+<a name="ln77">                  // build a default NoteVal for that string</a>
+<a name="ln78">                  nval.string = line;</a>
+<a name="ln79">                  if (pos.fret != FRET_NONE)          // if a fret is given, use it</a>
+<a name="ln80">                        nval.fret = pos.fret;</a>
+<a name="ln81">                  else {                              // if no fret, use 0 as default</a>
+<a name="ln82">                        _is.setString(line);</a>
+<a name="ln83">                        nval.fret = 0;</a>
+<a name="ln84">                        }</a>
+<a name="ln85">                  // reduce within fret limit</a>
+<a name="ln86">                  if (nval.fret &gt; stringData-&gt;frets())</a>
+<a name="ln87">                        nval.fret = stringData-&gt;frets();</a>
+<a name="ln88">                  // for open strings, only accepts fret 0 (strings in StringData are from bottom to top)</a>
+<a name="ln89">                  int   strgDataIdx = stringData-&gt;strings() - line - 1;</a>
+<a name="ln90">                  if (nval.fret &gt; 0 &amp;&amp; stringData-&gt;stringList().at(strgDataIdx).open == true)</a>
+<a name="ln91">                        nval.fret = 0;</a>
+<a name="ln92">                  nval.pitch = stringData-&gt;getPitch(line, nval.fret, st, tick);</a>
+<a name="ln93">                  break;</a>
+<a name="ln94">                  }</a>
+<a name="ln95"> </a>
+<a name="ln96">            case StaffGroup::STANDARD: {</a>
+<a name="ln97">                  AccidentalVal acci = (at == AccidentalType::NONE ? s-&gt;measure()-&gt;findAccidental(s, staffIdx, line, error) : Accidental::subtype2value(at));</a>
+<a name="ln98">                  if (error)</a>
+<a name="ln99">                        return nval;</a>
+<a name="ln100">                  int step           = absStep(line, clef);</a>
+<a name="ln101">                  int octave         = step/7;</a>
+<a name="ln102">                  nval.pitch         = step2pitch(step) + octave * 12 + int(acci);</a>
+<a name="ln103">                  if (styleB(Sid::concertPitch))</a>
+<a name="ln104">                        nval.tpc1 = step2tpc(step % 7, acci);</a>
+<a name="ln105">                  else {</a>
+<a name="ln106">                        nval.pitch += instr-&gt;transpose().chromatic;</a>
+<a name="ln107">                        nval.tpc2 = step2tpc(step % 7, acci);</a>
+<a name="ln108">                        Interval v = st-&gt;part()-&gt;instrument(tick)-&gt;transpose();</a>
+<a name="ln109">                        if (v.isZero())</a>
+<a name="ln110">                              nval.tpc1 = nval.tpc2;</a>
+<a name="ln111">                        else</a>
+<a name="ln112">                              nval.tpc1 = Ms::transposeTpc(nval.tpc2, v, true);</a>
+<a name="ln113">                        }</a>
+<a name="ln114">                  }</a>
+<a name="ln115">                  break;</a>
+<a name="ln116">            }</a>
+<a name="ln117">      return nval;</a>
+<a name="ln118">      }</a>
+<a name="ln119"> </a>
+<a name="ln120">//---------------------------------------------------------</a>
+<a name="ln121">//   addPitch</a>
+<a name="ln122">//---------------------------------------------------------</a>
+<a name="ln123"> </a>
+<a name="ln124">Note* Score::addPitch(NoteVal&amp; nval, bool addFlag)</a>
+<a name="ln125">      {</a>
+<a name="ln126">      if (addFlag) {</a>
+<a name="ln127">            Chord* c = toChord(_is.lastSegment()-&gt;element(_is.track()));</a>
+<a name="ln128"> </a>
+<a name="ln129">            if (c == 0 || !c-&gt;isChord()) {</a>
+<a name="ln130">                  qDebug(&quot;Score::addPitch: cr %s&quot;, c ? c-&gt;name() : &quot;zero&quot;);</a>
+<a name="ln131">                  return 0;</a>
+<a name="ln132">                  }</a>
+<a name="ln133">            Note* note = addNote(c, nval);</a>
+<a name="ln134">            if (_is.lastSegment() == _is.segment()) {</a>
+<a name="ln135">                  NoteEntryMethod entryMethod = _is.noteEntryMethod();</a>
+<a name="ln136">                  if (entryMethod != NoteEntryMethod::REALTIME_AUTO &amp;&amp; entryMethod != NoteEntryMethod::REALTIME_MANUAL)</a>
+<a name="ln137">                        _is.moveToNextInputPos();</a>
+<a name="ln138">                  }</a>
+<a name="ln139">            return note;</a>
+<a name="ln140">            }</a>
+<a name="ln141">      expandVoice();</a>
+<a name="ln142"> </a>
+<a name="ln143">      // insert note</a>
+<a name="ln144">      Direction stemDirection = Direction::AUTO;</a>
+<a name="ln145">      int track               = _is.track();</a>
+<a name="ln146">      if (_is.drumNote() != -1) {</a>
+<a name="ln147">            nval.pitch        = _is.drumNote();</a>
+<a name="ln148">            const Drumset* ds = _is.drumset();</a>
+<a name="ln149">            nval.headGroup    = ds-&gt;noteHead(nval.pitch);</a>
+<a name="ln150">            stemDirection     = ds-&gt;stemDirection(nval.pitch);</a>
+<a name="ln151">            track             = ds-&gt;voice(nval.pitch) + (_is.track() / VOICES) * VOICES;</a>
+<a name="ln152">            _is.setTrack(track);</a>
+<a name="ln153">            expandVoice();</a>
+<a name="ln154">            }</a>
+<a name="ln155">      if (!_is.cr())</a>
+<a name="ln156">            return 0;</a>
+<a name="ln157">      Fraction duration;</a>
+<a name="ln158">      if (_is.usingNoteEntryMethod(NoteEntryMethod::REPITCH)) {</a>
+<a name="ln159">            duration = _is.cr()-&gt;ticks();</a>
+<a name="ln160">            }</a>
+<a name="ln161">      else if (_is.usingNoteEntryMethod(NoteEntryMethod::REALTIME_AUTO) || _is.usingNoteEntryMethod(NoteEntryMethod::REALTIME_MANUAL)) {</a>
+<a name="ln162">            // FIXME: truncate duration at barline in real-time modes.</a>
+<a name="ln163">            //   The user might try to enter a duration that is too long to fit in the remaining space in the measure.</a>
+<a name="ln164">            //   We could split the duration at the barline and continue into the next bar, but this would create extra</a>
+<a name="ln165">            //   notes, extra ties, and extra pain. Instead, we simply truncate the duration at the barline.</a>
+<a name="ln166">            Fraction ticks2measureEnd = _is.segment()-&gt;measure()-&gt;ticks() - _is.segment()-&gt;rtick();</a>
+<a name="ln167">            duration = _is.duration() &gt; ticks2measureEnd ? ticks2measureEnd : _is.duration().fraction();</a>
+<a name="ln168">            }</a>
+<a name="ln169">      else {</a>
+<a name="ln170">            duration = _is.duration().fraction();</a>
+<a name="ln171">            }</a>
+<a name="ln172">      Note* note = 0;</a>
+<a name="ln173">      Note* firstTiedNote = 0;</a>
+<a name="ln174">      Note* lastTiedNote = 0;</a>
+<a name="ln175">      if (_is.usingNoteEntryMethod(NoteEntryMethod::REPITCH) &amp;&amp; _is.cr()-&gt;isChord()) {</a>
+<a name="ln176">            // repitch mode for MIDI input (where we are given a pitch) is handled here</a>
+<a name="ln177">            // for keyboard input (where we are given a staff position), there is a separate function Score::repitchNote()</a>
+<a name="ln178">            // the code is similar enough that it could possibly be refactored</a>
+<a name="ln179">            Chord* chord = toChord(_is.cr());</a>
+<a name="ln180">            note = new Note(this);</a>
+<a name="ln181">            note-&gt;setParent(chord);</a>
+<a name="ln182">            note-&gt;setTrack(chord-&gt;track());</a>
+<a name="ln183">            note-&gt;setNval(nval);</a>
+<a name="ln184">            lastTiedNote = note;</a>
+<a name="ln185">            if (!addFlag) {</a>
+<a name="ln186">                  std::vector&lt;Note*&gt; notes = chord-&gt;notes();</a>
+<a name="ln187">                  // break all ties into current chord</a>
+<a name="ln188">                  // these will exist only if user explicitly moved cursor to a tied-into note</a>
+<a name="ln189">                  // in ordinary use, cursor will autoamtically skip past these during note entry</a>
+<a name="ln190">                  for (Note* n : notes) {</a>
+<a name="ln191">                        if (n-&gt;tieBack())</a>
+<a name="ln192">                              undoRemoveElement(n-&gt;tieBack());</a>
+<a name="ln193">                        }</a>
+<a name="ln194">                  // for single note chords only, preserve ties by changing pitch of all forward notes</a>
+<a name="ln195">                  // the tie forward itself will be added later</a>
+<a name="ln196">                  // multi-note chords get reduced to single note chords anyhow since we remove the old notes below</a>
+<a name="ln197">                  // so there will be no way to preserve those ties</a>
+<a name="ln198">                  if (notes.size() == 1 &amp;&amp; notes.front()-&gt;tieFor()) {</a>
+<a name="ln199">                        Note* tn = notes.front()-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln200">                        while (tn) {</a>
+<a name="ln201">                              Chord* tc = tn-&gt;chord();</a>
+<a name="ln202">                              if (tc-&gt;notes().size() != 1) {</a>
+<a name="ln203">                                    undoRemoveElement(tn-&gt;tieBack());</a>
+<a name="ln204">                                    break;</a>
+<a name="ln205">                                    }</a>
+<a name="ln206">                              if (!firstTiedNote)</a>
+<a name="ln207">                                    firstTiedNote = tn;</a>
+<a name="ln208">                              lastTiedNote = tn;</a>
+<a name="ln209">                              undoChangePitch(tn, note-&gt;pitch(), note-&gt;tpc1(), note-&gt;tpc2());</a>
+<a name="ln210">                              if (tn-&gt;tieFor())</a>
+<a name="ln211">                                    tn = tn-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln212">                              else</a>
+<a name="ln213">                                    break;</a>
+<a name="ln214">                              }</a>
+<a name="ln215">                        }</a>
+<a name="ln216">                  // remove all notes from chord</a>
+<a name="ln217">                  // the new note will be added below</a>
+<a name="ln218">                  while (!chord-&gt;notes().empty())</a>
+<a name="ln219">                        undoRemoveElement(chord-&gt;notes().front());</a>
+<a name="ln220">                  }</a>
+<a name="ln221">            // add new note to chord</a>
+<a name="ln222">            undoAddElement(note);</a>
+<a name="ln223">            setPlayNote(true);</a>
+<a name="ln224">            // recreate tie forward if there is a note to tie to</a>
+<a name="ln225">            // one-sided ties will not be recreated</a>
+<a name="ln226">            if (firstTiedNote) {</a>
+<a name="ln227">                  Tie* tie = new Tie(this);</a>
+<a name="ln228">                  tie-&gt;setStartNote(note);</a>
+<a name="ln229">                  tie-&gt;setEndNote(firstTiedNote);</a>
+<a name="ln230">                  tie-&gt;setTrack(note-&gt;track());</a>
+<a name="ln231">                  undoAddElement(tie);</a>
+<a name="ln232">                  }</a>
+<a name="ln233">            select(lastTiedNote);</a>
+<a name="ln234">            }</a>
+<a name="ln235">      else if (!_is.usingNoteEntryMethod(NoteEntryMethod::REPITCH)) {</a>
+<a name="ln236">            Segment* seg = setNoteRest(_is.segment(), track, nval, duration, stemDirection);</a>
+<a name="ln237">            if (seg) {</a>
+<a name="ln238">                  note = toChord(seg-&gt;element(track))-&gt;upNote();</a>
+<a name="ln239">                  }</a>
+<a name="ln240">            }</a>
+<a name="ln241"> </a>
+<a name="ln242">      if (_is.slur()) {</a>
+<a name="ln243">            //</a>
+<a name="ln244">            // extend slur</a>
+<a name="ln245">            //</a>
+<a name="ln246">            ChordRest* e = searchNote(_is.tick(), _is.track());</a>
+<a name="ln247">            if (e) {</a>
+<a name="ln248">                  Fraction stick = Fraction(0, 1);</a>
+<a name="ln249">                  Element* ee = _is.slur()-&gt;startElement();</a>
+<a name="ln250">                  if (ee-&gt;isChordRest())</a>
+<a name="ln251">                        stick = toChordRest(ee)-&gt;tick();</a>
+<a name="ln252">                  else if (ee-&gt;isNote())</a>
+<a name="ln253">                        stick = toNote(ee)-&gt;chord()-&gt;tick();</a>
+<a name="ln254">                  if (stick == e-&gt;tick()) {</a>
+<a name="ln255">                        _is.slur()-&gt;setTick(stick);</a>
+<a name="ln256">                        _is.slur()-&gt;setStartElement(e);</a>
+<a name="ln257">                        }</a>
+<a name="ln258">                  else {</a>
+<a name="ln259">                        _is.slur()-&gt;setTick2(e-&gt;tick());</a>
+<a name="ln260">                        _is.slur()-&gt;setEndElement(e);</a>
+<a name="ln261">                        }</a>
+<a name="ln262">                  }</a>
+<a name="ln263">            else</a>
+<a name="ln264">                  qDebug(&quot;addPitch: cannot find slur note&quot;);</a>
+<a name="ln265">            }</a>
+<a name="ln266">      if (_is.usingNoteEntryMethod(NoteEntryMethod::REPITCH)) {</a>
+<a name="ln267">            // move cursor to next note, but skip tied notes (they were already repitched above)</a>
+<a name="ln268">            ChordRest* next = lastTiedNote ? nextChordRest(lastTiedNote-&gt;chord()) : nextChordRest(_is.cr());</a>
+<a name="ln269">            while (next &amp;&amp; !next-&gt;isChord())</a>
+<a name="ln270">                  next = nextChordRest(next);</a>
+<a name="ln271">            if (next)</a>
+<a name="ln272">                  _is.moveInputPos(next-&gt;segment());</a>
+<a name="ln273">            }</a>
+<a name="ln274">      else {</a>
+<a name="ln275">            NoteEntryMethod entryMethod = _is.noteEntryMethod();</a>
+<a name="ln276">            if (entryMethod != NoteEntryMethod::REALTIME_AUTO &amp;&amp; entryMethod != NoteEntryMethod::REALTIME_MANUAL)</a>
+<a name="ln277">                  _is.moveToNextInputPos();</a>
+<a name="ln278">            }</a>
+<a name="ln279">      return note;</a>
+<a name="ln280">      }</a>
+<a name="ln281"> </a>
+<a name="ln282">//---------------------------------------------------------</a>
+<a name="ln283">//   putNote</a>
+<a name="ln284">//    mouse click in state NoteType::ENTRY</a>
+<a name="ln285">//---------------------------------------------------------</a>
+<a name="ln286"> </a>
+<a name="ln287">void Score::putNote(const QPointF&amp; pos, bool replace, bool insert)</a>
+<a name="ln288">      {</a>
+<a name="ln289">      Position p;</a>
+<a name="ln290">      if (!getPosition(&amp;p, pos, _is.voice())) {</a>
+<a name="ln291">            qDebug(&quot;cannot put note here, get position failed&quot;);</a>
+<a name="ln292">            return;</a>
+<a name="ln293">            }</a>
+<a name="ln294">      Score* score = p.segment-&gt;score();</a>
+<a name="ln295">      // it is not safe to call Score::repitchNote() if p is on a TAB staff</a>
+<a name="ln296">      bool isTablature = staff(p.staffIdx)-&gt;isTabStaff(p.segment-&gt;tick());</a>
+<a name="ln297">      if (score-&gt;inputState().usingNoteEntryMethod(NoteEntryMethod::REPITCH) &amp;&amp; !isTablature)</a>
+<a name="ln298">            score-&gt;repitchNote(p, replace);</a>
+<a name="ln299">      else {</a>
+<a name="ln300">            if (insert</a>
+<a name="ln301">               || score-&gt;inputState().usingNoteEntryMethod(NoteEntryMethod::TIMEWISE))</a>
+<a name="ln302">                  score-&gt;insertChord(p);</a>
+<a name="ln303">            else</a>
+<a name="ln304">                  score-&gt;putNote(p, replace);</a>
+<a name="ln305">            }</a>
+<a name="ln306">      }</a>
+<a name="ln307"> </a>
+<a name="ln308">void Score::putNote(const Position&amp; p, bool replace)</a>
+<a name="ln309">      {</a>
+<a name="ln310">      Staff* st   = staff(p.staffIdx);</a>
+<a name="ln311">      Segment* s  = p.segment;</a>
+<a name="ln312"> </a>
+<a name="ln313">      _is.setTrack(p.staffIdx * VOICES + _is.voice());</a>
+<a name="ln314">      _is.setSegment(s);</a>
+<a name="ln315"> </a>
+<a name="ln316">      if (score()-&gt;excerpt() &amp;&amp; !score()-&gt;excerpt()-&gt;tracks().isEmpty() &amp;&amp; score()-&gt;excerpt()-&gt;tracks().key(_is.track(), -1) == -1)</a>
+<a name="ln317">            return;</a>
+<a name="ln318"> </a>
+<a name="ln319">      Direction stemDirection = Direction::AUTO;</a>
+<a name="ln320">      bool error;</a>
+<a name="ln321">      NoteVal nval = noteValForPosition(p, _is.accidentalType(), error);</a>
+<a name="ln322">      if (error)</a>
+<a name="ln323">            return;</a>
+<a name="ln324"> </a>
+<a name="ln325">      const StringData* stringData = 0;</a>
+<a name="ln326">      switch (st-&gt;staffType(s-&gt;tick())-&gt;group()) {</a>
+<a name="ln327">            case StaffGroup::PERCUSSION: {</a>
+<a name="ln328">                  const Drumset* ds = st-&gt;part()-&gt;instrument(s-&gt;tick())-&gt;drumset();</a>
+<a name="ln329">                  stemDirection     = ds-&gt;stemDirection(nval.pitch);</a>
+<a name="ln330">                  break;</a>
+<a name="ln331">                  }</a>
+<a name="ln332">            case StaffGroup::TAB:</a>
+<a name="ln333">                  stringData = st-&gt;part()-&gt;instrument(s-&gt;tick())-&gt;stringData();</a>
+<a name="ln334">                  _is.setDrumNote(-1);</a>
+<a name="ln335">                  break;</a>
+<a name="ln336">            case StaffGroup::STANDARD:</a>
+<a name="ln337">                  _is.setDrumNote(-1);</a>
+<a name="ln338">                  break;</a>
+<a name="ln339">            }</a>
+<a name="ln340"> </a>
+<a name="ln341">      expandVoice();</a>
+<a name="ln342">      ChordRest* cr = _is.cr();</a>
+<a name="ln343">      bool addToChord = false;</a>
+<a name="ln344"> </a>
+<a name="ln345">      if (cr) {</a>
+<a name="ln346">            // retrieve total duration of current chord</a>
+<a name="ln347">            TDuration d = cr-&gt;durationType();</a>
+<a name="ln348">            // if not in replace mode AND chord duration == input duration AND not rest input</a>
+<a name="ln349">            // we need to add to current chord (otherwise, we will need to replace it or create a new one)</a>
+<a name="ln350">            if (!replace</a>
+<a name="ln351">               &amp;&amp; (d == _is.duration())</a>
+<a name="ln352">               &amp;&amp; cr-&gt;isChord()</a>
+<a name="ln353">               &amp;&amp; !_is.rest())</a>
+<a name="ln354">                  {</a>
+<a name="ln355">                  if (st-&gt;isTabStaff(cr-&gt;tick())) {      // TAB</a>
+<a name="ln356">                        // if a note on same string already exists, update to new pitch/fret</a>
+<a name="ln357">                        foreach (Note* note, toChord(cr)-&gt;notes())</a>
+<a name="ln358">                              if (note-&gt;string() == nval.string) {       // if string is the same</a>
+<a name="ln359">                                    // if adding a new digit will keep fret number within fret limit,</a>
+<a name="ln360">                                    // add a digit to existing fret number</a>
+<a name="ln361">                                    if (stringData) {</a>
+<a name="ln362">                                          int fret = note-&gt;fret() * 10 + nval.fret;</a>
+<a name="ln363">                                          if (fret &lt;= stringData-&gt;frets() ) {</a>
+<a name="ln364">                                                nval.fret = fret;</a>
+<a name="ln365">                                                nval.pitch = stringData-&gt;getPitch(nval.string, nval.fret, st, s-&gt;tick());</a>
+<a name="ln366">                                                }</a>
+<a name="ln367">                                          else</a>
+<a name="ln368">                                                qDebug(&quot;can't increase fret to %d&quot;, fret);</a>
+<a name="ln369">                                          }</a>
+<a name="ln370">                                    // set fret number (original or combined) in all linked notes</a>
+<a name="ln371">                                    int tpc1 = note-&gt;tpc1default(nval.pitch);</a>
+<a name="ln372">                                    int tpc2 = note-&gt;tpc2default(nval.pitch);</a>
+<a name="ln373">                                    undoChangeFretting(note, nval.pitch, nval.string, nval.fret, tpc1, tpc2);</a>
+<a name="ln374">                                    setPlayNote(true);</a>
+<a name="ln375">                                    return;</a>
+<a name="ln376">                                    }</a>
+<a name="ln377">                        }</a>
+<a name="ln378">                  else {                        // not TAB</a>
+<a name="ln379">                        // if a note with the same pitch already exists in the chord, remove it</a>
+<a name="ln380">                        Chord* chord = toChord(cr);</a>
+<a name="ln381">                        Note* note = chord-&gt;findNote(nval.pitch);</a>
+<a name="ln382">                        if (note) {</a>
+<a name="ln383">                              if (chord-&gt;notes().size() &gt; 1)</a>
+<a name="ln384">                                    undoRemoveElement(note);</a>
+<a name="ln385">                              return;</a>
+<a name="ln386">                              }</a>
+<a name="ln387">                        }</a>
+<a name="ln388">                  addToChord = true;            // if no special case, add note to chord</a>
+<a name="ln389">                  }</a>
+<a name="ln390">            }</a>
+<a name="ln391">      bool forceAccidental = false;</a>
+<a name="ln392">      if (_is.accidentalType() != AccidentalType::NONE) {</a>
+<a name="ln393">            NoteVal nval2 = noteValForPosition(p, AccidentalType::NONE, error);</a>
+<a name="ln394">            forceAccidental = (nval.pitch == nval2.pitch);</a>
+<a name="ln395">            }</a>
+<a name="ln396">      if (addToChord &amp;&amp; cr-&gt;isChord()) {</a>
+<a name="ln397">            // if adding, add!</a>
+<a name="ln398">            addNote(toChord(cr), nval, forceAccidental);</a>
+<a name="ln399">            _is.setAccidentalType(AccidentalType::NONE);</a>
+<a name="ln400">            return;</a>
+<a name="ln401">            }</a>
+<a name="ln402">      else {</a>
+<a name="ln403">            // if not adding, replace current chord (or create a new one)</a>
+<a name="ln404"> </a>
+<a name="ln405">            if (_is.rest())</a>
+<a name="ln406">                  nval.pitch = -1;</a>
+<a name="ln407">            setNoteRest(_is.segment(), _is.track(), nval, _is.duration().fraction(), stemDirection, forceAccidental);</a>
+<a name="ln408">            _is.setAccidentalType(AccidentalType::NONE);</a>
+<a name="ln409">            }</a>
+<a name="ln410">      if (!st-&gt;isTabStaff(cr-&gt;tick()))</a>
+<a name="ln411">            _is.moveToNextInputPos();</a>
+<a name="ln412">      }</a>
+<a name="ln413"> </a>
+<a name="ln414">//---------------------------------------------------------</a>
+<a name="ln415">//   repitchNote</a>
+<a name="ln416">//---------------------------------------------------------</a>
+<a name="ln417"> </a>
+<a name="ln418">void Score::repitchNote(const Position&amp; p, bool replace)</a>
+<a name="ln419">      {</a>
+<a name="ln420">      Segment* s      = p.segment;</a>
+<a name="ln421">      Fraction tick   = s-&gt;tick();</a>
+<a name="ln422">      Staff* st       = staff(p.staffIdx);</a>
+<a name="ln423">      ClefType clef   = st-&gt;clef(tick);</a>
+<a name="ln424"> </a>
+<a name="ln425">      NoteVal nval;</a>
+<a name="ln426">      bool error = false;</a>
+<a name="ln427">      AccidentalType at = _is.accidentalType();</a>
+<a name="ln428">      AccidentalVal acci = (at == AccidentalType::NONE ? s-&gt;measure()-&gt;findAccidental(s, p.staffIdx, p.line, error) : Accidental::subtype2value(at));</a>
+<a name="ln429">      if (error)</a>
+<a name="ln430">            return;</a>
+<a name="ln431">      int step   = absStep(p.line, clef);</a>
+<a name="ln432">      int octave = step / 7;</a>
+<a name="ln433">      nval.pitch = step2pitch(step) + octave * 12 + int(acci);</a>
+<a name="ln434"> </a>
+<a name="ln435">      if (styleB(Sid::concertPitch))</a>
+<a name="ln436">            nval.tpc1 = step2tpc(step % 7, acci);</a>
+<a name="ln437">      else {</a>
+<a name="ln438">            nval.pitch += st-&gt;part()-&gt;instrument(s-&gt;tick())-&gt;transpose().chromatic;</a>
+<a name="ln439">            nval.tpc2 = step2tpc(step % 7, acci);</a>
+<a name="ln440">            }</a>
+<a name="ln441"> </a>
+<a name="ln442">      if (!_is.segment())</a>
+<a name="ln443">            return;</a>
+<a name="ln444"> </a>
+<a name="ln445">      Chord* chord;</a>
+<a name="ln446">      ChordRest* cr = _is.cr();</a>
+<a name="ln447">      if (!cr) {</a>
+<a name="ln448">            cr = _is.segment()-&gt;nextChordRest(_is.track());</a>
+<a name="ln449">            if (!cr)</a>
+<a name="ln450">                  return;</a>
+<a name="ln451">            }</a>
+<a name="ln452">      if (cr-&gt;isRest()) { //skip rests</a>
+<a name="ln453">            ChordRest* next = nextChordRest(cr);</a>
+<a name="ln454">            while(next &amp;&amp; !next-&gt;isChord())</a>
+<a name="ln455">                  next = nextChordRest(next);</a>
+<a name="ln456">            if (next)</a>
+<a name="ln457">                  _is.moveInputPos(next-&gt;segment());</a>
+<a name="ln458">            return;</a>
+<a name="ln459">            }</a>
+<a name="ln460">      else {</a>
+<a name="ln461">            chord = toChord(cr);</a>
+<a name="ln462">            }</a>
+<a name="ln463">      Note* note = new Note(this);</a>
+<a name="ln464">      note-&gt;setParent(chord);</a>
+<a name="ln465">      note-&gt;setTrack(chord-&gt;track());</a>
+<a name="ln466">      note-&gt;setNval(nval);</a>
+<a name="ln467"> </a>
+<a name="ln468">      Note* firstTiedNote = 0;</a>
+<a name="ln469">      Note* lastTiedNote = note;</a>
+<a name="ln470">      if (replace) {</a>
+<a name="ln471">            std::vector&lt;Note*&gt; notes = chord-&gt;notes();</a>
+<a name="ln472">            // break all ties into current chord</a>
+<a name="ln473">            // these will exist only if user explicitly moved cursor to a tied-into note</a>
+<a name="ln474">            // in ordinary use, cursor will autoamtically skip past these during note entry</a>
+<a name="ln475">            for (Note* n : notes) {</a>
+<a name="ln476">                  if (n-&gt;tieBack())</a>
+<a name="ln477">                        undoRemoveElement(n-&gt;tieBack());</a>
+<a name="ln478">                  }</a>
+<a name="ln479">            // for single note chords only, preserve ties by changing pitch of all forward notes</a>
+<a name="ln480">            // the tie forward itself will be added later</a>
+<a name="ln481">            // multi-note chords get reduced to single note chords anyhow since we remove the old notes below</a>
+<a name="ln482">            // so there will be no way to preserve those ties</a>
+<a name="ln483">            if (notes.size() == 1 &amp;&amp; notes.front()-&gt;tieFor()) {</a>
+<a name="ln484">                  Note* tn = notes.front()-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln485">                  while (tn) {</a>
+<a name="ln486">                        Chord* tc = tn-&gt;chord();</a>
+<a name="ln487">                        if (tc-&gt;notes().size() != 1) {</a>
+<a name="ln488">                              undoRemoveElement(tn-&gt;tieBack());</a>
+<a name="ln489">                              break;</a>
+<a name="ln490">                              }</a>
+<a name="ln491">                        if (!firstTiedNote)</a>
+<a name="ln492">                              firstTiedNote = tn;</a>
+<a name="ln493">                        lastTiedNote = tn;</a>
+<a name="ln494">                        undoChangePitch(tn, note-&gt;pitch(), note-&gt;tpc1(), note-&gt;tpc2());</a>
+<a name="ln495">                        if (tn-&gt;tieFor())</a>
+<a name="ln496">                              tn = tn-&gt;tieFor()-&gt;endNote();</a>
+<a name="ln497">                        else</a>
+<a name="ln498">                              break;</a>
+<a name="ln499">                        }</a>
+<a name="ln500">                  }</a>
+<a name="ln501">            // remove all notes from chord</a>
+<a name="ln502">            // the new note will be added below</a>
+<a name="ln503">            while (!chord-&gt;notes().empty())</a>
+<a name="ln504">                  undoRemoveElement(chord-&gt;notes().front());</a>
+<a name="ln505">      }</a>
+<a name="ln506">      // add new note to chord</a>
+<a name="ln507">      undoAddElement(note);</a>
+<a name="ln508">      bool forceAccidental = false;</a>
+<a name="ln509">      if (_is.accidentalType() != AccidentalType::NONE) {</a>
+<a name="ln510">            NoteVal nval2 = noteValForPosition(p, AccidentalType::NONE, error);</a>
+<a name="ln511">            forceAccidental = (nval.pitch == nval2.pitch);</a>
+<a name="ln512">            }</a>
+<a name="ln513">      if (forceAccidental) {</a>
+<a name="ln514">            int tpc = styleB(Sid::concertPitch) ? nval.tpc1 : nval.tpc2;</a>
+<a name="ln515">            AccidentalVal alter = tpc2alter(tpc);</a>
+<a name="ln516">            at = Accidental::value2subtype(alter);</a>
+<a name="ln517">            Accidental* a = new Accidental(this);</a>
+<a name="ln518">            a-&gt;setAccidentalType(at);</a>
+<a name="ln519">            a-&gt;setRole(AccidentalRole::USER);</a>
+<a name="ln520">            a-&gt;setParent(note);</a>
+<a name="ln521">            undoAddElement(a);</a>
+<a name="ln522">            }</a>
+<a name="ln523">      setPlayNote(true);</a>
+<a name="ln524">      setPlayChord(true);</a>
+<a name="ln525">      // recreate tie forward if there is a note to tie to</a>
+<a name="ln526">      // one-sided ties will not be recreated</a>
+<a name="ln527">      if (firstTiedNote) {</a>
+<a name="ln528">            Tie* tie = new Tie(this);</a>
+<a name="ln529">            tie-&gt;setStartNote(note);</a>
+<a name="ln530">            tie-&gt;setEndNote(firstTiedNote);</a>
+<a name="ln531">            tie-&gt;setTrack(note-&gt;track());</a>
+<a name="ln532">            undoAddElement(tie);</a>
+<a name="ln533">            }</a>
+<a name="ln534">      select(lastTiedNote);</a>
+<a name="ln535">      // move to next Chord</a>
+<a name="ln536">      ChordRest* next = nextChordRest(lastTiedNote-&gt;chord());</a>
+<a name="ln537">      while (next &amp;&amp; !next-&gt;isChord())</a>
+<a name="ln538">            next = nextChordRest(next);</a>
+<a name="ln539">      if (next)</a>
+<a name="ln540">            _is.moveInputPos(next-&gt;segment());</a>
+<a name="ln541">      }</a>
+<a name="ln542"> </a>
+<a name="ln543">//---------------------------------------------------------</a>
+<a name="ln544">//   insertChord</a>
+<a name="ln545">//---------------------------------------------------------</a>
+<a name="ln546"> </a>
+<a name="ln547">void Score::insertChord(const Position&amp; pos)</a>
+<a name="ln548">      {</a>
+<a name="ln549">      // insert</a>
+<a name="ln550">      // TODO:</a>
+<a name="ln551">      //    - check voices</a>
+<a name="ln552">      //    - split chord/rest</a>
+<a name="ln553"> </a>
+<a name="ln554">      Element* el = selection().element();</a>
+<a name="ln555">      if (!el || !(el-&gt;isNote() || el-&gt;isRest()))</a>
+<a name="ln556">            return;</a>
+<a name="ln557">      Segment* seg = pos.segment;</a>
+<a name="ln558">      if (seg-&gt;splitsTuplet()) {</a>
+<a name="ln559">            MScore::setError(CANNOT_INSERT_TUPLET);</a>
+<a name="ln560">            return;</a>
+<a name="ln561">            }</a>
+<a name="ln562">      if (_is.insertMode())</a>
+<a name="ln563">            globalInsertChord(pos);</a>
+<a name="ln564">      else</a>
+<a name="ln565">            localInsertChord(pos);</a>
+<a name="ln566">      }</a>
+<a name="ln567"> </a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569">//   localInsertChord</a>
+<a name="ln570">//---------------------------------------------------------</a>
+<a name="ln571"> </a>
+<a name="ln572">void Score::localInsertChord(const Position&amp; pos)</a>
+<a name="ln573">      {</a>
+<a name="ln574">      const TDuration duration = _is.duration();</a>
+<a name="ln575">      const Fraction fraction  = duration.fraction();</a>
+<a name="ln576">      const Fraction len       = fraction;</a>
+<a name="ln577">      Segment* seg             = pos.segment;</a>
+<a name="ln578">      Fraction tick            = seg-&gt;tick();</a>
+<a name="ln579">      Measure* measure         = seg-&gt;measure()-&gt;isMMRest() ? seg-&gt;measure()-&gt;mmRestFirst() : seg-&gt;measure();</a>
+<a name="ln580">      const Fraction targetMeasureLen = measure-&gt;ticks() + fraction;</a>
+<a name="ln581"> </a>
+<a name="ln582">      // Shift spanners, enlarge the measure.</a>
+<a name="ln583">      // The approach is similar to that in Measure::adjustToLen() but does</a>
+<a name="ln584">      // insert time to the middle of the measure rather than to the end.</a>
+<a name="ln585">      undoInsertTime(tick, len);</a>
+<a name="ln586">      undo(new InsertTime(this, tick, len));</a>
+<a name="ln587"> </a>
+<a name="ln588">      for (Score* score : scoreList()) {</a>
+<a name="ln589">            Measure* m = score-&gt;tick2measure(tick);</a>
+<a name="ln590">            undo(new ChangeMeasureLen(m, targetMeasureLen));</a>
+<a name="ln591">            Segment* scoreSeg = m-&gt;tick2segment(tick);</a>
+<a name="ln592">            for (Segment* s = scoreSeg; s; s = s-&gt;next())</a>
+<a name="ln593">                  s-&gt;undoChangeProperty(Pid::TICK, s-&gt;rtick() + len);</a>
+<a name="ln594">            }</a>
+<a name="ln595"> </a>
+<a name="ln596">      // Fill the inserted time with rests.</a>
+<a name="ln597">      // This is better to be done in master score to cover all staves.</a>
+<a name="ln598">      MasterScore* ms = masterScore();</a>
+<a name="ln599">      Measure* msMeasure = ms-&gt;tick2measure(tick);</a>
+<a name="ln600">      const int msTracks = ms-&gt;ntracks();</a>
+<a name="ln601"> </a>
+<a name="ln602">      Segment* firstSeg = msMeasure-&gt;first(SegmentType::ChordRest);</a>
+<a name="ln603">      for (int track = 0; track &lt; msTracks; ++track) {</a>
+<a name="ln604">            Element* maybeRest = firstSeg-&gt;element(track);</a>
+<a name="ln605">            bool measureIsFull = false;</a>
+<a name="ln606"> </a>
+<a name="ln607">            // I. Convert any measure rests into normal (non-measure) rest(s) of equivalent duration</a>
+<a name="ln608">            if (maybeRest &amp;&amp; maybeRest-&gt;isRest() &amp;&amp; toRest(maybeRest)-&gt;durationType().isMeasure()) {</a>
+<a name="ln609">                  ms-&gt;undoRemoveElement(maybeRest);</a>
+<a name="ln610">                  Rest* measureRest = toRest(maybeRest);</a>
+<a name="ln611">                  // If measure rest is situated at measure start we will fill</a>
+<a name="ln612">                  // the whole measure with rests.</a>
+<a name="ln613">                  measureIsFull = measureRest-&gt;rtick().isZero();</a>
+<a name="ln614">                  const Fraction fillLen = measureIsFull ? targetMeasureLen : measureRest-&gt;ticks();</a>
+<a name="ln615">                  ms-&gt;setRest(measureRest-&gt;tick(), track, fillLen, /* useDots */ false, /* tuplet */ nullptr, /* useFullMeasureRest */ false);</a>
+<a name="ln616">                  }</a>
+<a name="ln617"> </a>
+<a name="ln618">            // II. Make chord or rest in other track longer if it crosses the insert area</a>
+<a name="ln619">            if (!measureIsFull) {</a>
+<a name="ln620">                  ChordRest* cr = ms-&gt;findCR(tick, track);</a>
+<a name="ln621">                  if (cr &amp;&amp; cr-&gt;tick() &lt; tick &amp;&amp; (cr-&gt;tick() + cr-&gt;actualTicks()) &gt; tick) {</a>
+<a name="ln622">                        if (cr-&gt;isRest()) {</a>
+<a name="ln623">                              const Fraction fillLen = cr-&gt;ticks() + fraction;</a>
+<a name="ln624">                              ms-&gt;undoRemoveElement(cr);</a>
+<a name="ln625">                              ms-&gt;setRest(cr-&gt;tick(), track, fillLen, /* useDots */ false, /* tuplet */ nullptr, /* useFullMeasureRest */ false);</a>
+<a name="ln626">                              }</a>
+<a name="ln627">                        else if (cr-&gt;isChord()) {</a>
+<a name="ln628">                              Chord* chord = toChord(cr);</a>
+<a name="ln629">                              std::vector&lt;TDuration&gt; durations = toDurationList(chord-&gt;ticks() + fraction, /* useDots */ true);</a>
+<a name="ln630">                              Fraction p = chord-&gt;tick();</a>
+<a name="ln631">                              ms-&gt;undoRemoveElement(chord);</a>
+<a name="ln632">                              Chord* prevChord = nullptr;</a>
+<a name="ln633">                              for (const TDuration&amp; dur : durations) {</a>
+<a name="ln634">                                    Chord* prototype = prevChord ? prevChord : chord;</a>
+<a name="ln635">                                    const bool genTie = bool(prevChord);</a>
+<a name="ln636">                                    prevChord = ms-&gt;addChord(p, dur, prototype, genTie, /* tuplet */ nullptr);</a>
+<a name="ln637">                                    p += dur.fraction();</a>
+<a name="ln638">                                    }</a>
+<a name="ln639">                              // TODO: reconnect ties if this chord was tied to other</a>
+<a name="ln640">                              }</a>
+<a name="ln641">                        measureIsFull = true;</a>
+<a name="ln642">                        }</a>
+<a name="ln643">                  }</a>
+<a name="ln644"> </a>
+<a name="ln645">            // III. insert rest(s) to fill the inserted space</a>
+<a name="ln646">            if (!measureIsFull &amp;&amp; msMeasure-&gt;hasVoice(track))</a>
+<a name="ln647">                  ms-&gt;setRest(tick, track, fraction, /* useDots */ false, /* tuplet */ nullptr);</a>
+<a name="ln648">            }</a>
+<a name="ln649"> </a>
+<a name="ln650">      // Put the note itself.</a>
+<a name="ln651">      Segment* s = measure-&gt;undoGetSegment(SegmentType::ChordRest, tick);</a>
+<a name="ln652">      Position p(pos);</a>
+<a name="ln653">      p.segment = s;</a>
+<a name="ln654">      putNote(p, true);</a>
+<a name="ln655">      }</a>
+<a name="ln656"> </a>
+<a name="ln657">//---------------------------------------------------------</a>
+<a name="ln658">//   globalInsertChord</a>
+<a name="ln659">//---------------------------------------------------------</a>
+<a name="ln660"> </a>
+<a name="ln661">void Score::globalInsertChord(const Position&amp; pos)</a>
+<a name="ln662">      {</a>
+<a name="ln663">      ChordRest* cr = selection().cr();</a>
+<a name="ln664">      int track = cr ? cr-&gt;track() : -1;</a>
+<a name="ln665">      deselectAll();</a>
+<a name="ln666">      Segment* s1        = pos.segment;</a>
+<a name="ln667">      Segment* s2        = lastSegment();</a>
+<a name="ln668">      TDuration duration = _is.duration();</a>
+<a name="ln669">      Fraction fraction  = duration.fraction();</a>
+<a name="ln670">      ScoreRange r;</a>
+<a name="ln671"> </a>
+<a name="ln672">      r.read(s1, s2, false);</a>
+<a name="ln673"> </a>
+<a name="ln674">      int strack = 0;                      // for now for all tracks</a>
+<a name="ln675">      int etrack = nstaves() * VOICES;</a>
+<a name="ln676">      Fraction stick  = s1-&gt;tick();</a>
+<a name="ln677">      Fraction etick  = s2-&gt;tick();</a>
+<a name="ln678">      Fraction ticks  = fraction;</a>
+<a name="ln679">      Fraction len    = r.ticks();</a>
+<a name="ln680"> </a>
+<a name="ln681">      if (!r.truncate(fraction))</a>
+<a name="ln682">            appendMeasures(1);</a>
+<a name="ln683"> </a>
+<a name="ln684">      putNote(pos, true);</a>
+<a name="ln685">      Fraction dtick = s1-&gt;tick() + ticks;</a>
+<a name="ln686">      int voiceOffsets[VOICES] { 0, 0, 0, 0 };</a>
+<a name="ln687">      len = r.ticks();</a>
+<a name="ln688">      for (int staffIdx = 0; staffIdx &lt; nstaves(); ++staffIdx)</a>
+<a name="ln689">            makeGap1(dtick, staffIdx, r.ticks(), voiceOffsets);</a>
+<a name="ln690">      r.write(this, dtick);</a>
+<a name="ln691"> </a>
+<a name="ln692">      for (auto i :  spanner()) {</a>
+<a name="ln693">            Spanner* s = i.second;</a>
+<a name="ln694">            if (s-&gt;track() &gt;= strack &amp;&amp; s-&gt;track() &lt; etrack) {</a>
+<a name="ln695">                  if (s-&gt;tick() &gt;= stick &amp;&amp; s-&gt;tick() &lt; etick)</a>
+<a name="ln696">                        s-&gt;undoChangeProperty(Pid::SPANNER_TICK, s-&gt;tick() + ticks);</a>
+<a name="ln697">                  else if (s-&gt;tick2() &gt;= stick &amp;&amp; s-&gt;tick2() &lt; etick)</a>
+<a name="ln698">                        s-&gt;undoChangeProperty(Pid::SPANNER_TICKS, s-&gt;ticks() + ticks);</a>
+<a name="ln699">                  }</a>
+<a name="ln700">            }</a>
+<a name="ln701"> </a>
+<a name="ln702">      if (track != -1) {</a>
+<a name="ln703">            Measure* m = tick2measure(dtick);</a>
+<a name="ln704">            Segment* s = m-&gt;findSegment(SegmentType::ChordRest, dtick);</a>
+<a name="ln705">            Element* e = s-&gt;element(track);</a>
+<a name="ln706">            if (e)</a>
+<a name="ln707">                  select(e-&gt;isChord() ? toChord(e)-&gt;notes().front() : e);</a>
+<a name="ln708">            }</a>
+<a name="ln709">      }</a>
+<a name="ln710"> </a>
+<a name="ln711"> </a>
+<a name="ln712">} // namespace Ms</a>
+<a name="ln713"> </a>
+
+</code></pre>
+<div class="balloon" rel="185"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!addFlag' is always true.</p></div>
+<div class="balloon" rel="410"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1004/" target="_blank">V1004</a> The 'cr' pointer was used unsafely after it was verified against nullptr. Check lines: 345, 410.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

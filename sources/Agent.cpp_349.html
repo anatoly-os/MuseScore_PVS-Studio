@@ -1,0 +1,162 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>Agent.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/* -*- c-basic-offset: 4 indent-tabs-mode: nil -*-  vi:set ts=8 sts=4 sw=4: */</a>
+<a name="ln2"> </a>
+<a name="ln3">/*</a>
+<a name="ln4">  Vamp feature extraction plugin for the BeatRoot beat tracker.</a>
+<a name="ln5"> </a>
+<a name="ln6">  Centre for Digital Music, Queen Mary, University of London.</a>
+<a name="ln7">  This file copyright 2011 Simon Dixon, Chris Cannam and QMUL.</a>
+<a name="ln8"> </a>
+<a name="ln9">  This program is free software; you can redistribute it and/or</a>
+<a name="ln10">  modify it under the terms of the GNU General Public License as</a>
+<a name="ln11">  published by the Free Software Foundation; either version 2 of the</a>
+<a name="ln12">  License, or (at your option) any later version.  See the file</a>
+<a name="ln13">  COPYING included with this distribution for more information.</a>
+<a name="ln14">*/</a>
+<a name="ln15"> </a>
+<a name="ln16">#include &quot;Agent.h&quot;</a>
+<a name="ln17">#include &quot;BeatTracker.h&quot;</a>
+<a name="ln18">#include &quot;AgentList.h&quot;</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &lt;cmath&gt;</a>
+<a name="ln21"> </a>
+<a name="ln22"> </a>
+<a name="ln23">const double AgentParameters::DEFAULT_POST_MARGIN_FACTOR = 0.3;</a>
+<a name="ln24">const double AgentParameters::DEFAULT_PRE_MARGIN_FACTOR = 0.15;</a>
+<a name="ln25">const double AgentParameters::DEFAULT_MAX_CHANGE = 0.2;</a>
+<a name="ln26">const double AgentParameters::DEFAULT_EXPIRY_TIME = 10.0;</a>
+<a name="ln27"> </a>
+<a name="ln28">const double Agent::INNER_MARGIN = 0.040;</a>
+<a name="ln29">const double Agent::CONF_FACTOR = 0.5;</a>
+<a name="ln30">const double Agent::DEFAULT_CORRECTION_FACTOR = 50.0;</a>
+<a name="ln31"> </a>
+<a name="ln32">int Agent::idCounter = 0;</a>
+<a name="ln33"> </a>
+<a name="ln34"> </a>
+<a name="ln35">Agent::Agent(const AgentParameters &amp;params, double ibi)</a>
+<a name="ln36">      : idNumber(idCounter++)</a>
+<a name="ln37">      , phaseScore(0.0)</a>
+<a name="ln38">      , beatCount(0)</a>
+<a name="ln39">      , beatInterval(ibi)</a>
+<a name="ln40">      , initialBeatInterval(ibi)</a>
+<a name="ln41">      , beatTime(-1.0)</a>
+<a name="ln42">      , maxChange(params.maxChange)</a>
+<a name="ln43">      , preMargin(ibi * params.preMarginFactor)</a>
+<a name="ln44">      , postMargin(ibi * params.postMarginFactor)</a>
+<a name="ln45">      , innerMargin(INNER_MARGIN)</a>
+<a name="ln46">      , correctionFactor(DEFAULT_CORRECTION_FACTOR)</a>
+<a name="ln47">      , expiryTime(params.expiryTime)</a>
+<a name="ln48">      {</a>
+<a name="ln49">      }</a>
+<a name="ln50"> </a>
+<a name="ln51">Agent *Agent::clone() const</a>
+<a name="ln52">      {</a>
+<a name="ln53">      Agent *a = new Agent(*this);</a>
+<a name="ln54">      a-&gt;idNumber = idCounter++;</a>
+<a name="ln55">      return a;</a>
+<a name="ln56">      }</a>
+<a name="ln57"> </a>
+<a name="ln58">void Agent::accept(const Event &amp;e, double err, int beats)</a>
+<a name="ln59">      {</a>
+<a name="ln60">      beatTime = e.time;</a>
+<a name="ln61">      events.push_back(e);</a>
+<a name="ln62">      if (std::fabs(initialBeatInterval - beatInterval - err / correctionFactor)</a>
+<a name="ln63">                  &lt; maxChange * initialBeatInterval) {</a>
+<a name="ln64">            beatInterval += err / correctionFactor;         // Adjust tempo</a>
+<a name="ln65">            }</a>
+<a name="ln66">      beatCount += beats;</a>
+<a name="ln67">      double conFactor = 1.0 - CONF_FACTOR * err</a>
+<a name="ln68">                  / (err &gt; 0 ? postMargin: -preMargin);</a>
+<a name="ln69">      phaseScore += conFactor * e.salience;</a>
+<a name="ln70">      }</a>
+<a name="ln71"> </a>
+<a name="ln72">bool Agent::considerAsBeat(const Event &amp;e, AgentList &amp;a)</a>
+<a name="ln73">      {</a>
+<a name="ln74">      if (beatTime &lt; 0) {	// first event</a>
+<a name="ln75">            accept(e, 0, 1);</a>
+<a name="ln76">            return true;</a>
+<a name="ln77">            }</a>
+<a name="ln78">      else {			// subsequent events</a>
+<a name="ln79">            EventList::iterator last = events.end();</a>
+<a name="ln80">            --last;</a>
+<a name="ln81">            if (e.time - last-&gt;time &gt; expiryTime) {</a>
+<a name="ln82">                  phaseScore = -1.0;	// flag agent to be deleted</a>
+<a name="ln83">                  return false;</a>
+<a name="ln84">                  }</a>
+<a name="ln85">            double beats = nearbyint((e.time - beatTime) / beatInterval);</a>
+<a name="ln86">            double err = e.time - beatTime - beats * beatInterval;</a>
+<a name="ln87">            if ((beats &gt; 0) &amp;&amp; (-preMargin &lt;= err) &amp;&amp; (err &lt;= postMargin)) {</a>
+<a name="ln88">                  if (std::fabs(err) &gt; innerMargin) {</a>
+<a name="ln89">                                    // Create new agent that skips this event (avoids</a>
+<a name="ln90">                                    // large phase jump)</a>
+<a name="ln91">                        a.add(clone());</a>
+<a name="ln92">                        }</a>
+<a name="ln93">                  accept(e, err, (int)beats);</a>
+<a name="ln94">                  return true;</a>
+<a name="ln95">                  }</a>
+<a name="ln96">            }</a>
+<a name="ln97">      return false;</a>
+<a name="ln98">      }</a>
+<a name="ln99"> </a>
+<a name="ln100">void Agent::fillBeats(double start)</a>
+<a name="ln101">      {</a>
+<a name="ln102">      EventList::iterator it = events.begin();</a>
+<a name="ln103">      if (it == events.end())</a>
+<a name="ln104">            return;</a>
+<a name="ln105">      double prevBeat = it-&gt;time;</a>
+<a name="ln106">      for (++it; it != events.end(); ++it) {</a>
+<a name="ln107">            double nextBeat = it-&gt;time;</a>
+<a name="ln108">            double beats = nearbyint((nextBeat - prevBeat) / beatInterval - 0.01);   // prefer slow</a>
+<a name="ln109">            double currentInterval = (nextBeat - prevBeat) / beats;</a>
+<a name="ln110">            for ( ; (nextBeat &gt; start) &amp;&amp; (beats &gt; 1.5); --beats) {</a>
+<a name="ln111">                  prevBeat += currentInterval;</a>
+<a name="ln112">                  events.insert(it, Event(prevBeat, 0));</a>
+<a name="ln113">                  }</a>
+<a name="ln114">            prevBeat = nextBeat;</a>
+<a name="ln115">            }</a>
+<a name="ln116">      }</a>
+
+</code></pre>
+<div class="balloon" rel="10"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

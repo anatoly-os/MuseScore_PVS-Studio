@@ -1,0 +1,1320 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>capxml.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2013 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">//    CapXML import filter</a>
+<a name="ln21">//    Supports the CapXML 1.0 file format version 1.0.8 (capella 2008)</a>
+<a name="ln22">//    The implementation shares as much code as possible with the capella</a>
+<a name="ln23">//    (.cap) importer (capella.cpp and capella.h)</a>
+<a name="ln24">//    If statements in the parser match the element order in the schema definition</a>
+<a name="ln25"> </a>
+<a name="ln26">#include &lt;assert.h&gt;</a>
+<a name="ln27">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln28">#include &quot;thirdparty/qzip/qzipreader_p.h&quot;</a>
+<a name="ln29">#include &quot;capella.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">namespace Ms {</a>
+<a name="ln32"> </a>
+<a name="ln33">//---------------------------------------------------------</a>
+<a name="ln34">//   capxReadFont</a>
+<a name="ln35">//---------------------------------------------------------</a>
+<a name="ln36"> </a>
+<a name="ln37">static QFont capxReadFont(XmlReader&amp; e)</a>
+<a name="ln38">      {</a>
+<a name="ln39">      QFont f;</a>
+<a name="ln40">      QString family = e.attribute(&quot;face&quot;);</a>
+<a name="ln41">      if (family != &quot;&quot;)</a>
+<a name="ln42">            f.setFamily(family);</a>
+<a name="ln43">      qreal pointSize = e.doubleAttribute(&quot;height&quot;, 0);</a>
+<a name="ln44">      if (pointSize &gt; 0.5)</a>
+<a name="ln45">            f.setPointSizeF(pointSize);</a>
+<a name="ln46">      int weight = e.intAttribute(&quot;weight&quot;);</a>
+<a name="ln47">      if (weight &lt; 200)</a>
+<a name="ln48">            f.setWeight(QFont::Light);</a>
+<a name="ln49">      else if (weight &lt; 550)</a>
+<a name="ln50">            f.setWeight(QFont::Normal);</a>
+<a name="ln51">      else</a>
+<a name="ln52">            f.setWeight(QFont::Bold);</a>
+<a name="ln53">      f.setItalic(e.attribute(&quot;italic&quot;, &quot;false&quot;) == &quot;true&quot;);</a>
+<a name="ln54">      // qDebug(&quot;capxReadFont family '%s' ps %g w %d it '%s'&quot;, qPrintable(family), pointSize, weight, qPrintable(italic));</a>
+<a name="ln55">      e.readNext();</a>
+<a name="ln56">      return f;</a>
+<a name="ln57">      }</a>
+<a name="ln58"> </a>
+<a name="ln59">//---------------------------------------------------------</a>
+<a name="ln60">//   qstring2timestep -- convert string to TIMESTEP</a>
+<a name="ln61">//---------------------------------------------------------</a>
+<a name="ln62"> </a>
+<a name="ln63">static bool qstring2timestep(QString&amp; str, TIMESTEP&amp; tstp)</a>
+<a name="ln64">      {</a>
+<a name="ln65">      if      (str == &quot;1/1&quot;)   { tstp = TIMESTEP::D1;      return true; }</a>
+<a name="ln66">      else if (str == &quot;1/2&quot;)   { tstp = TIMESTEP::D2;      return true; }</a>
+<a name="ln67">      else if (str == &quot;1/4&quot;)   { tstp = TIMESTEP::D4;      return true; }</a>
+<a name="ln68">      else if (str == &quot;1/8&quot;)   { tstp = TIMESTEP::D8;      return true; }</a>
+<a name="ln69">      else if (str == &quot;1/16&quot;)  { tstp = TIMESTEP::D16;     return true; }</a>
+<a name="ln70">      else if (str == &quot;1/32&quot;)  { tstp = TIMESTEP::D32;     return true; }</a>
+<a name="ln71">      else if (str == &quot;1/64&quot;)  { tstp = TIMESTEP::D64;     return true; }</a>
+<a name="ln72">      else if (str == &quot;1/128&quot;) { tstp = TIMESTEP::D128;    return true; }</a>
+<a name="ln73">      else if (str == &quot;2/1&quot;)   { tstp = TIMESTEP::D_BREVE; return true; }</a>
+<a name="ln74">      return false;</a>
+<a name="ln75">      }</a>
+<a name="ln76"> </a>
+<a name="ln77">//---------------------------------------------------------</a>
+<a name="ln78">//   BasicDrawObj::readCapx -- capx equivalent of BasicDrawObj::read</a>
+<a name="ln79">//---------------------------------------------------------</a>
+<a name="ln80"> </a>
+<a name="ln81">void BasicDrawObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln82">      {</a>
+<a name="ln83">      nNotes = e.intAttribute(&quot;noteRange&quot;, 0);</a>
+<a name="ln84">      qDebug(&quot;nNotes %d&quot;, nNotes);</a>
+<a name="ln85">      e.readNext();</a>
+<a name="ln86">      }</a>
+<a name="ln87"> </a>
+<a name="ln88">//---------------------------------------------------------</a>
+<a name="ln89">//   BasicDurationalObj::readCapxDisplay -- capx equivalent of BasicDurationalObj::read</a>
+<a name="ln90">//   reads the &lt;display&gt; element only</a>
+<a name="ln91">//---------------------------------------------------------</a>
+<a name="ln92"> </a>
+<a name="ln93">void BasicDurationalObj::readCapxDisplay(XmlReader&amp; e)</a>
+<a name="ln94">      {</a>
+<a name="ln95">      invisible = e.attribute(&quot;invisible&quot;) == &quot;true&quot;;</a>
+<a name="ln96">      e.readNext();</a>
+<a name="ln97">      }</a>
+<a name="ln98"> </a>
+<a name="ln99">//---------------------------------------------------------</a>
+<a name="ln100">//   BasicDurationalObj::readCapx -- capx equivalent of BasicDurationalObj::read</a>
+<a name="ln101">//---------------------------------------------------------</a>
+<a name="ln102"> </a>
+<a name="ln103">void BasicDurationalObj::readCapx(XmlReader&amp; e, unsigned int&amp; fullm)</a>
+<a name="ln104">      {</a>
+<a name="ln105">      nDots      = 0;</a>
+<a name="ln106">      noDuration = false;</a>
+<a name="ln107">      postGrace  = false;</a>
+<a name="ln108">      bSmall     = false;</a>
+<a name="ln109">      invisible  = false;</a>
+<a name="ln110">      notBlack   = false;</a>
+<a name="ln111">      color = Qt::black;</a>
+<a name="ln112">      t = TIMESTEP::D1;</a>
+<a name="ln113">      horizontalShift = 0;</a>
+<a name="ln114">      count = 0;</a>
+<a name="ln115">      tripartite   = 0;</a>
+<a name="ln116">      isProlonging = 0;</a>
+<a name="ln117">      QString base = e.attribute(&quot;base&quot;);</a>
+<a name="ln118">      bool res = false;</a>
+<a name="ln119">      // try to convert base to timestep (&quot;first pattern&quot;)</a>
+<a name="ln120">      res = qstring2timestep(base, t);</a>
+<a name="ln121">      if (!res) {</a>
+<a name="ln122">            // try multi-measure rest (&quot;second pattern&quot;)</a>
+<a name="ln123">            int i = base.toInt();</a>
+<a name="ln124">            if (i &gt; 0)</a>
+<a name="ln125">                  fullm = i;</a>
+<a name="ln126">            else</a>
+<a name="ln127">                  qDebug(&quot;BasicDurationalObj::readCapx: invalid base: '%s'&quot;, qPrintable(base));</a>
+<a name="ln128">            }</a>
+<a name="ln129">      nDots = e.intAttribute(&quot;dots&quot;, 0);</a>
+<a name="ln130">      noDuration = e.attribute(&quot;noDuration&quot;, &quot;false&quot;) == &quot;true&quot;;</a>
+<a name="ln131">      while (e.readNextStartElement()) {</a>
+<a name="ln132">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln133">            if (tag == &quot;tuplet&quot;) {</a>
+<a name="ln134">                  count = e.attribute(&quot;count&quot;).toInt();</a>
+<a name="ln135">                  tripartite = e.attribute(&quot;tripartite&quot;, &quot;false&quot;) == &quot;true&quot;;</a>
+<a name="ln136">                  isProlonging = e.attribute(&quot;prolong&quot;, &quot;false&quot;) == &quot;true&quot;;</a>
+<a name="ln137">                  e.readNext();</a>
+<a name="ln138">                  }</a>
+<a name="ln139">            else</a>
+<a name="ln140">                  e.unknown();</a>
+<a name="ln141">            }</a>
+<a name="ln142">      qDebug(&quot;DurationObj ndots %d nodur %d postgr %d bsm %d inv %d notbl %d t %d hsh %d cnt %d trp %d ispro %d fullm %d&quot;,</a>
+<a name="ln143">             nDots, noDuration, postGrace, bSmall, invisible, notBlack, int(t), horizontalShift, count, tripartite, isProlonging, fullm</a>
+<a name="ln144">             );</a>
+<a name="ln145">      }</a>
+<a name="ln146"> </a>
+<a name="ln147">//---------------------------------------------------------</a>
+<a name="ln148">//   BasicDurationalObj::readCapxObjectArray</a>
+<a name="ln149">//---------------------------------------------------------</a>
+<a name="ln150"> </a>
+<a name="ln151">void BasicDurationalObj::readCapxObjectArray(XmlReader&amp; e)</a>
+<a name="ln152">      {</a>
+<a name="ln153">      objects = cap-&gt;readCapxDrawObjectArray(e);</a>
+<a name="ln154">      }</a>
+<a name="ln155"> </a>
+<a name="ln156">//---------------------------------------------------------</a>
+<a name="ln157">//   CapExplicitBarline::readCapx -- capx equivalent of CapExplicitBarline::read</a>
+<a name="ln158">//---------------------------------------------------------</a>
+<a name="ln159"> </a>
+<a name="ln160">void CapExplicitBarline::readCapx(XmlReader&amp; e)</a>
+<a name="ln161">      {</a>
+<a name="ln162">      QString type = e.attribute(&quot;type&quot;, &quot;single&quot;);</a>
+<a name="ln163">      if (type == &quot;single&quot;) _type = BarLineType::NORMAL;</a>
+<a name="ln164">      else if (type == &quot;double&quot;) _type = BarLineType::DOUBLE;</a>
+<a name="ln165">      else if (type == &quot;end&quot;) _type = BarLineType::END;</a>
+<a name="ln166">      else if (type == &quot;repEnd&quot;) _type = BarLineType::END_REPEAT;</a>
+<a name="ln167">      else if (type == &quot;repBegin&quot;) _type = BarLineType::START_REPEAT;</a>
+<a name="ln168">      else if (type == &quot;repEndBegin&quot;) _type = BarLineType::END_START_REPEAT;</a>
+<a name="ln169">      else if (type == &quot;dashed&quot;) _type = BarLineType::BROKEN;</a>
+<a name="ln170">      else _type = BarLineType::NORMAL; // default</a>
+<a name="ln171">      _barMode = 0;</a>
+<a name="ln172">      while (e.readNextStartElement()) {</a>
+<a name="ln173">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln174">            if (tag == &quot;drawObjects&quot;) {</a>
+<a name="ln175">                  e.skipCurrentElement();</a>
+<a name="ln176">                  }</a>
+<a name="ln177">            else</a>
+<a name="ln178">                  e.unknown();</a>
+<a name="ln179">            }</a>
+<a name="ln180">      e.readNext();</a>
+<a name="ln181">      }</a>
+<a name="ln182"> </a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184">//   CapClef::readCapx -- capx equivalent of CapClef::read</a>
+<a name="ln185">//---------------------------------------------------------</a>
+<a name="ln186"> </a>
+<a name="ln187">void CapClef::readCapx(XmlReader&amp; e)</a>
+<a name="ln188">      {</a>
+<a name="ln189">      QString clef = e.attribute(&quot;clef&quot;);</a>
+<a name="ln190">      if (clef == &quot;G2-&quot;) {</a>
+<a name="ln191">            form = Form::G;</a>
+<a name="ln192">            line = ClefLine::L2;</a>
+<a name="ln193">            oct = Oct::OCT_BASSA;</a>
+<a name="ln194">            }</a>
+<a name="ln195">      else if (clef == &quot;treble&quot;) {</a>
+<a name="ln196">            form = Form::G;</a>
+<a name="ln197">            line = ClefLine::L2;</a>
+<a name="ln198">            oct = Oct::OCT_NULL;</a>
+<a name="ln199">            }</a>
+<a name="ln200">      else if (clef == &quot;bass&quot;) {</a>
+<a name="ln201">            form = Form::F;</a>
+<a name="ln202">            line = ClefLine::L4;</a>
+<a name="ln203">            oct = Oct::OCT_NULL;</a>
+<a name="ln204">            }</a>
+<a name="ln205">      else {</a>
+<a name="ln206">            /* default */ form = Form::G;</a>
+<a name="ln207">            line = ClefLine::L2;</a>
+<a name="ln208">            oct = Oct::OCT_NULL;</a>
+<a name="ln209">            }</a>
+<a name="ln210">      qDebug(&quot;Clef::read '%s' -&gt; form %d line %d oct %d&quot;, qPrintable(clef), int(form), int(line), int(oct));</a>
+<a name="ln211">      e.readNext();</a>
+<a name="ln212">      }</a>
+<a name="ln213"> </a>
+<a name="ln214">//---------------------------------------------------------</a>
+<a name="ln215">//   CapKey::readCapx -- capx equivalent of CapKey::read</a>
+<a name="ln216">//---------------------------------------------------------</a>
+<a name="ln217"> </a>
+<a name="ln218">void CapKey::readCapx(XmlReader&amp; e)</a>
+<a name="ln219">      {</a>
+<a name="ln220">      signature = e.intAttribute(&quot;fifths&quot;, 0);</a>
+<a name="ln221">      qDebug(&quot;Key %d&quot;, signature);</a>
+<a name="ln222">      e.readNext();</a>
+<a name="ln223">      }</a>
+<a name="ln224"> </a>
+<a name="ln225">//---------------------------------------------------------</a>
+<a name="ln226">//   qstring2timesig -- convert string to timesig</a>
+<a name="ln227">//   return true on success</a>
+<a name="ln228">//---------------------------------------------------------</a>
+<a name="ln229"> </a>
+<a name="ln230">static void qstring2timesig(QString&amp; time, uchar&amp; numerator, int&amp; log2Denom, bool&amp; allaBreve)</a>
+<a name="ln231">      {</a>
+<a name="ln232">      bool res = true;</a>
+<a name="ln233">      numerator = 4; log2Denom = 2; allaBreve = false; // set default</a>
+<a name="ln234">      if (time == &quot;allaBreve&quot;) { numerator = 2; log2Denom = 1; allaBreve = true; }</a>
+<a name="ln235">      else if (time == &quot;longAllaBreve&quot;) { numerator = 4; log2Denom = 1; allaBreve = true; }</a>
+<a name="ln236">      else if (time == &quot;C&quot;) { numerator = 4; log2Denom = 2; allaBreve = false; }</a>
+<a name="ln237">      else if (time == &quot;infinite&quot;) { qDebug(&quot;Meter infinite&quot;); } // not supported by MuseScore ?</a>
+<a name="ln238">      else {</a>
+<a name="ln239">            QStringList splitTime = time.split(&quot;/&quot;);</a>
+<a name="ln240">            if (splitTime.size() == 2) {</a>
+<a name="ln241">                  numerator = splitTime.at(0).toInt();</a>
+<a name="ln242">                  QString denom = splitTime.at(1);</a>
+<a name="ln243">                  if (denom == &quot;1&quot;) log2Denom = 0;</a>
+<a name="ln244">                  else if (denom == &quot;2&quot;) log2Denom = 1;</a>
+<a name="ln245">                  else if (denom == &quot;4&quot;) log2Denom = 2;</a>
+<a name="ln246">                  else if (denom == &quot;8&quot;) log2Denom = 3;</a>
+<a name="ln247">                  else if (denom == &quot;16&quot;) log2Denom = 4;</a>
+<a name="ln248">                  else if (denom == &quot;32&quot;) log2Denom = 5;</a>
+<a name="ln249">                  else if (denom == &quot;64&quot;) log2Denom = 6;</a>
+<a name="ln250">                  else if (denom == &quot;128&quot;) log2Denom = 7;</a>
+<a name="ln251">                  else res = false;</a>
+<a name="ln252">                  }</a>
+<a name="ln253">            else res = false;</a>
+<a name="ln254">            }</a>
+<a name="ln255">      // TODO: recovery required if decoding the timesig failed ?</a>
+<a name="ln256">      qDebug(&quot;Meter '%s' res %d %d/%d allaBreve %d&quot;, qPrintable(time), res, numerator, log2Denom, allaBreve);</a>
+<a name="ln257">      }</a>
+<a name="ln258"> </a>
+<a name="ln259">//---------------------------------------------------------</a>
+<a name="ln260">//   CapMeter::readCapx -- capx equivalent of CapMeter::read</a>
+<a name="ln261">//---------------------------------------------------------</a>
+<a name="ln262"> </a>
+<a name="ln263">void CapMeter::readCapx(XmlReader&amp; e)</a>
+<a name="ln264">      {</a>
+<a name="ln265">      qDebug(&quot;CapMeter::readCapx&quot;);</a>
+<a name="ln266">      QString time = e.attribute(&quot;time&quot;);</a>
+<a name="ln267">      qstring2timesig(time, numerator, log2Denom, allaBreve);</a>
+<a name="ln268">      e.readNext();</a>
+<a name="ln269">      }</a>
+<a name="ln270"> </a>
+<a name="ln271">//---------------------------------------------------------</a>
+<a name="ln272">//   ChordObj::readCapxStem -- read &lt;stem&gt; element</a>
+<a name="ln273">//---------------------------------------------------------</a>
+<a name="ln274"> </a>
+<a name="ln275">void ChordObj::readCapxStem(XmlReader&amp; e)</a>
+<a name="ln276">      {</a>
+<a name="ln277">      QString dir = e.attribute(&quot;dir&quot;);</a>
+<a name="ln278">      if (dir == &quot;up&quot;) stemDir = StemDir::UP;</a>
+<a name="ln279">      else if (dir == &quot;down&quot;) stemDir = StemDir::DOWN;</a>
+<a name="ln280">      else if (dir == &quot;none&quot;) stemDir = StemDir::NONE;</a>
+<a name="ln281">      e.readNext();</a>
+<a name="ln282">      }</a>
+<a name="ln283"> </a>
+<a name="ln284">//---------------------------------------------------------</a>
+<a name="ln285">//   ChordObj::readCapxArticulation -- read &lt;articulation&gt; element</a>
+<a name="ln286">//---------------------------------------------------------</a>
+<a name="ln287"> </a>
+<a name="ln288">void ChordObj::readCapxArticulation(XmlReader&amp; e)</a>
+<a name="ln289">      {</a>
+<a name="ln290">      QString art = e.attribute(&quot;type&quot;);</a>
+<a name="ln291">      if      (art == &quot;staccato&quot;)        articulation = 1;</a>
+<a name="ln292">      else if (art == &quot;tenuto&quot;)          articulation = 2;</a>
+<a name="ln293">      else if (art == &quot;staccato tenuto&quot;) articulation = 3;</a>
+<a name="ln294">      else if (art == &quot;staccatissimo&quot;)   articulation = 4;</a>
+<a name="ln295">      else if (art == &quot;normalAccent&quot;)    articulation = 5;</a>
+<a name="ln296">      else if (art == &quot;strongAccent&quot;)    articulation = 6;</a>
+<a name="ln297">      else if (art == &quot;weakBeat&quot;)        articulation = 7;</a>
+<a name="ln298">      else if (art == &quot;strongBeat&quot;)      articulation = 8;</a>
+<a name="ln299">      else                               articulation = 0;</a>
+<a name="ln300">      e.readNext();</a>
+<a name="ln301">      }</a>
+<a name="ln302"> </a>
+<a name="ln303">//---------------------------------------------------------</a>
+<a name="ln304">//   ChordObj::readCapx -- capx equivalent of ChordObj::read</a>
+<a name="ln305">//---------------------------------------------------------</a>
+<a name="ln306"> </a>
+<a name="ln307">void ChordObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln308">      {</a>
+<a name="ln309">      stemDir      = StemDir::AUTO;</a>
+<a name="ln310">      dStemLength  = 0;</a>
+<a name="ln311">      nTremoloBars = 0;</a>
+<a name="ln312">      articulation = 0;</a>
+<a name="ln313">      leftTie      = false;</a>
+<a name="ln314">      rightTie     = false;</a>
+<a name="ln315">      beamShift    = 0;</a>
+<a name="ln316">      beamSlope    = 0;</a>
+<a name="ln317">      beamMode      = BeamMode::AUTO;</a>
+<a name="ln318">      notationStave = 0;</a>
+<a name="ln319"> </a>
+<a name="ln320">      while (e.readNextStartElement()) {</a>
+<a name="ln321">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln322">            if (tag == &quot;duration&quot;) {</a>
+<a name="ln323">                  unsigned int dummy;</a>
+<a name="ln324">                  BasicDurationalObj::readCapx(e, dummy);</a>
+<a name="ln325">                  }</a>
+<a name="ln326">            else if (tag == &quot;display&quot;) {</a>
+<a name="ln327">                  BasicDurationalObj::readCapxDisplay(e);</a>
+<a name="ln328">                  }</a>
+<a name="ln329">            else if (tag == &quot;stem&quot;) {</a>
+<a name="ln330">                  readCapxStem(e);</a>
+<a name="ln331">                  }</a>
+<a name="ln332">            else if (tag == &quot;beam&quot;) {</a>
+<a name="ln333">                  qDebug(&quot;ChordObj::readCapx: found beam (skipping)&quot;);</a>
+<a name="ln334">                  e.skipCurrentElement();</a>
+<a name="ln335">                  }</a>
+<a name="ln336">            else if (tag == &quot;articulation&quot;) {</a>
+<a name="ln337">                  readCapxArticulation(e);</a>
+<a name="ln338">                  }</a>
+<a name="ln339">            else if (tag == &quot;lyric&quot;) {</a>
+<a name="ln340">                  readCapxLyrics(e);</a>
+<a name="ln341">                  }</a>
+<a name="ln342">            else if (tag == &quot;drawObjects&quot;) {</a>
+<a name="ln343">                  readCapxObjectArray(e);</a>
+<a name="ln344">                  }</a>
+<a name="ln345">            else if (tag == &quot;heads&quot;) {</a>
+<a name="ln346">                  readCapxNotes(e);</a>
+<a name="ln347">                  }</a>
+<a name="ln348">            else</a>
+<a name="ln349">                  e.unknown();</a>
+<a name="ln350">            }</a>
+<a name="ln351">      }</a>
+<a name="ln352"> </a>
+<a name="ln353">//---------------------------------------------------------</a>
+<a name="ln354">//   pitchStr2Char -- convert pitch string (&quot;[A-G][0-9]&quot;) to signed char</a>
+<a name="ln355">//   notes:</a>
+<a name="ln356">//   - in .capx middle C is called C5 (which is C4 in MusicXML)</a>
+<a name="ln357">//   - middle C is MIDI note number 60</a>
+<a name="ln358">//   - in .cap, pitch contains the diatonic note number relative to clef and key</a>
+<a name="ln359">//   - as .capx contains absolute notes, store the MIDI note number instead</a>
+<a name="ln360">//---------------------------------------------------------</a>
+<a name="ln361"> </a>
+<a name="ln362">static signed char pitchStr2Char(QString&amp; strPitch)</a>
+<a name="ln363">      {</a>
+<a name="ln364">      QRegExp pitchRegExp(&quot;[A-G][0-9]&quot;);</a>
+<a name="ln365"> </a>
+<a name="ln366">      if (!pitchRegExp.exactMatch(strPitch)) {</a>
+<a name="ln367">            qDebug(&quot;pitchStr2Char: illegal pitch '%s'&quot;, qPrintable(strPitch));</a>
+<a name="ln368">            return 0;</a>
+<a name="ln369">            }</a>
+<a name="ln370"> </a>
+<a name="ln371">      QString steps(&quot;C.D.EF.G.A.B&quot;);</a>
+<a name="ln372">      int istep  = steps.indexOf(strPitch.left(1));</a>
+<a name="ln373">      int octave = strPitch.right(1).toInt();</a>
+<a name="ln374">      int pitch  = istep + 12 * octave;</a>
+<a name="ln375"> </a>
+<a name="ln376">      if (pitch &lt; 0)</a>
+<a name="ln377">            pitch = -1;</a>
+<a name="ln378">      if (pitch &gt; 127)</a>
+<a name="ln379">            pitch = -1;</a>
+<a name="ln380"> </a>
+<a name="ln381">      qDebug(&quot;pitchStr2Char: '%s' -&gt; %d&quot;, qPrintable(strPitch), pitch);</a>
+<a name="ln382"> </a>
+<a name="ln383">      return static_cast&lt;signed char&gt;(pitch);</a>
+<a name="ln384">      }</a>
+<a name="ln385"> </a>
+<a name="ln386">//---------------------------------------------------------</a>
+<a name="ln387">//   ChordObj::readCapxLyrics -- read the lyrics in a capx chord</a>
+<a name="ln388">//---------------------------------------------------------</a>
+<a name="ln389"> </a>
+<a name="ln390">void ChordObj::readCapxLyrics(XmlReader&amp; e)</a>
+<a name="ln391">      {</a>
+<a name="ln392">      while (e.readNextStartElement()) {</a>
+<a name="ln393">            if (e.name() == &quot;verse&quot;) {</a>
+<a name="ln394">                  Verse v;</a>
+<a name="ln395">                  v.leftAlign = true;        // not used by capella.cpp</a>
+<a name="ln396">                  v.extender  = false;       // not used by capella.cpp</a>
+<a name="ln397">                  v.hyphen    = e.attribute(&quot;hyphen&quot;) == &quot;true&quot;;</a>
+<a name="ln398">                  v.num       = e.intAttribute(&quot;i&quot;, 0);</a>
+<a name="ln399">                  v.verseNumber = e.attribute(&quot;verseNumber&quot;); // not used by capella.cpp</a>
+<a name="ln400">                  v.text = e.readElementText();</a>
+<a name="ln401">                  verse.append(v);</a>
+<a name="ln402">                  }</a>
+<a name="ln403">            else</a>
+<a name="ln404">                  e.unknown();</a>
+<a name="ln405">            }</a>
+<a name="ln406">      }</a>
+<a name="ln407"> </a>
+<a name="ln408">//---------------------------------------------------------</a>
+<a name="ln409">//   ChordObj::readCapxNotes -- read the notes in a capx chord</a>
+<a name="ln410">//---------------------------------------------------------</a>
+<a name="ln411"> </a>
+<a name="ln412">void ChordObj::readCapxNotes(XmlReader&amp; e)</a>
+<a name="ln413">      {</a>
+<a name="ln414">      while (e.readNextStartElement()) {</a>
+<a name="ln415">            if (e.name() == &quot;head&quot;) {</a>
+<a name="ln416">                  QString pitch = e.attribute(&quot;pitch&quot;);</a>
+<a name="ln417">                  QString sstep;</a>
+<a name="ln418">                  while (e.readNextStartElement()) {</a>
+<a name="ln419">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln420">                        if (tag == &quot;alter&quot;) {</a>
+<a name="ln421">                              sstep = e.attribute(&quot;step&quot;);</a>
+<a name="ln422">                              e.readNext();</a>
+<a name="ln423">                              }</a>
+<a name="ln424">                        else if (tag == &quot;tie&quot;) {</a>
+<a name="ln425">                              rightTie = e.attribute(&quot;begin&quot;) == &quot;true&quot;;</a>
+<a name="ln426">                              e.readNext();</a>
+<a name="ln427">                              }</a>
+<a name="ln428">                        else</a>
+<a name="ln429">                              e.unknown();</a>
+<a name="ln430">                        }</a>
+<a name="ln431">                  qDebug(&quot;ChordObj::readCapxNotes: pitch '%s' altstep '%s'&quot;,</a>
+<a name="ln432">                         qPrintable(pitch), qPrintable(sstep));</a>
+<a name="ln433">                  int istep = sstep.toInt();</a>
+<a name="ln434">                  CNote n;</a>
+<a name="ln435">                  n.pitch = pitchStr2Char(pitch);</a>
+<a name="ln436">                  n.explAlteration = 0;</a>
+<a name="ln437">                  n.headType = 0;</a>
+<a name="ln438">                  n.alteration = istep;</a>
+<a name="ln439">                  n.silent = 0;</a>
+<a name="ln440">                  notes.append(n);</a>
+<a name="ln441">                  }</a>
+<a name="ln442">            else</a>
+<a name="ln443">                  e.unknown();</a>
+<a name="ln444">            }</a>
+<a name="ln445">      }</a>
+<a name="ln446"> </a>
+<a name="ln447">//---------------------------------------------------------</a>
+<a name="ln448">//   RestObj::readCapx -- capx equivalent of RestObj::read</a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450"> </a>
+<a name="ln451">void RestObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln452">      {</a>
+<a name="ln453">      bVerticalCentered = false;</a>
+<a name="ln454">      fullMeasures = 0;</a>
+<a name="ln455">      vertShift    = 0;</a>
+<a name="ln456">      while (e.readNextStartElement()) {</a>
+<a name="ln457">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln458">            if (tag == &quot;duration&quot;) {</a>
+<a name="ln459">                  BasicDurationalObj::readCapx(e, fullMeasures);</a>
+<a name="ln460">                  }</a>
+<a name="ln461">            else if (tag == &quot;display&quot;) {</a>
+<a name="ln462">                  BasicDurationalObj::readCapxDisplay(e);</a>
+<a name="ln463">                  }</a>
+<a name="ln464">            else if (tag == &quot;verticalPos&quot;) {</a>
+<a name="ln465">                  qDebug(&quot;RestObj::readCapx: found verticalPos (skipping)&quot;);</a>
+<a name="ln466">                  e.skipCurrentElement();</a>
+<a name="ln467">                  }</a>
+<a name="ln468">            else if (tag == &quot;drawObjects&quot;) {</a>
+<a name="ln469">                  readCapxObjectArray(e);</a>
+<a name="ln470">                  }</a>
+<a name="ln471">            else</a>
+<a name="ln472">                  e.unknown();</a>
+<a name="ln473">            }</a>
+<a name="ln474">      }</a>
+<a name="ln475"> </a>
+<a name="ln476">//---------------------------------------------------------</a>
+<a name="ln477">//   SimpleTextObj::readCapx -- capx equivalent of SimpleTextObj::read</a>
+<a name="ln478">//---------------------------------------------------------</a>
+<a name="ln479"> </a>
+<a name="ln480">void SimpleTextObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln481">      {</a>
+<a name="ln482">      double x = e.doubleAttribute(&quot;x&quot;);</a>
+<a name="ln483">      double y = e.doubleAttribute(&quot;y&quot;);</a>
+<a name="ln484">      QString stralign = e.attribute(&quot;align&quot;, &quot;left&quot;);</a>
+<a name="ln485">      align = 0;</a>
+<a name="ln486">      if (stralign == &quot;center&quot;)</a>
+<a name="ln487">            align = 1;</a>
+<a name="ln488">      else if (stralign == &quot;right&quot;)</a>
+<a name="ln489">            align = 2;</a>
+<a name="ln490">      relPos = QPointF(x, y);</a>
+<a name="ln491">      relPos *= 32.0;</a>
+<a name="ln492">      // qDebug(&quot;x %g y %g align %s&quot;, x, y, qPrintable(align));</a>
+<a name="ln493">      while (e.readNextStartElement()) {</a>
+<a name="ln494">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln495">            if (tag == &quot;font&quot;) {</a>
+<a name="ln496">                  _font = capxReadFont(e);</a>
+<a name="ln497">                  }</a>
+<a name="ln498">            else if (tag == &quot;content&quot;) {</a>
+<a name="ln499">                  _text = e.readElementText();</a>
+<a name="ln500">                  // qDebug(&quot;SimpleTextObj::readCapx: found content '%s'&quot;, qPrintable(_text));</a>
+<a name="ln501">                  }</a>
+<a name="ln502">            else</a>
+<a name="ln503">                  e.unknown();</a>
+<a name="ln504">            }</a>
+<a name="ln505">      }</a>
+<a name="ln506"> </a>
+<a name="ln507">//---------------------------------------------------------</a>
+<a name="ln508">//   SlurObj::readCapx -- capx equivalent of SlurObj::read</a>
+<a name="ln509">//---------------------------------------------------------</a>
+<a name="ln510"> </a>
+<a name="ln511">void SlurObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln512">      {</a>
+<a name="ln513">      // nothing to be done yet</a>
+<a name="ln514">      e.skipCurrentElement();</a>
+<a name="ln515">      }</a>
+<a name="ln516"> </a>
+<a name="ln517">//---------------------------------------------------------</a>
+<a name="ln518">//   VoltaObj::readCapx -- capx equivalent of VoltaObj::read</a>
+<a name="ln519">//---------------------------------------------------------</a>
+<a name="ln520"> </a>
+<a name="ln521">void VoltaObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln522">      {</a>
+<a name="ln523">      bLeft           = e.attribute(&quot;leftBent&quot;, &quot;true&quot;) == &quot;true&quot;;</a>
+<a name="ln524">      bRight          = e.attribute(&quot;rightBent&quot;, &quot;true&quot;) == &quot;true&quot;;</a>
+<a name="ln525">      bDotted         = e.attribute(&quot;dotted&quot;, &quot;false&quot;) == &quot;true&quot;;</a>
+<a name="ln526">      allNumbers      = e.attribute(&quot;allNumbers&quot;, &quot;false&quot;) == &quot;true&quot;;</a>
+<a name="ln527">      int firstNumber = e.intAttribute(&quot;firstNumber&quot;, 0);</a>
+<a name="ln528">      int lastNumber  = e.intAttribute(&quot;lastNumber&quot;, 0);</a>
+<a name="ln529">      if (firstNumber == 0) {</a>
+<a name="ln530">            // don't know what this means (spec: no number)</a>
+<a name="ln531">            // cap status equivalent to no first or last number</a>
+<a name="ln532">            from = 1;</a>
+<a name="ln533">            to   = 0;</a>
+<a name="ln534">            }</a>
+<a name="ln535">      else {</a>
+<a name="ln536">            from = firstNumber;</a>
+<a name="ln537">            to   = (lastNumber == 0) ? firstNumber : lastNumber;</a>
+<a name="ln538">            }</a>
+<a name="ln539">      qDebug(&quot;VoltaObj::read firstNumber %d lastNumber %d&quot;, firstNumber, lastNumber);</a>
+<a name="ln540">      qDebug(&quot;VoltaObj::read x0 %d x1 %d y %d bLeft %d bRight %d bDotted %d allNumbers %d from %d to %d&quot;,</a>
+<a name="ln541">             x0, x1, y, bLeft, bRight, bDotted, allNumbers, from, to);</a>
+<a name="ln542">      e.readNext();</a>
+<a name="ln543">      }</a>
+<a name="ln544"> </a>
+<a name="ln545">//---------------------------------------------------------</a>
+<a name="ln546">//   TrillObj::readCapx -- capx equivalent of TrillObj::read</a>
+<a name="ln547">//---------------------------------------------------------</a>
+<a name="ln548"> </a>
+<a name="ln549">void TrillObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln550">      {</a>
+<a name="ln551">      double x0d  = e.doubleAttribute(&quot;x1&quot;, 0.0);</a>
+<a name="ln552">      double x1d  = e.doubleAttribute(&quot;x2&quot;, 0.0);</a>
+<a name="ln553">      double yd   = e.doubleAttribute(&quot;y&quot;, 0.0);</a>
+<a name="ln554">      trillSign   = e.attribute(&quot;tr&quot;, &quot;true&quot;) == &quot;true&quot;;</a>
+<a name="ln555">      x0 = (int)round(x0d * 32.0);</a>
+<a name="ln556">      x1 = (int)round(x1d * 32.0);</a>
+<a name="ln557">      y  = (int)round(yd * 32.0);</a>
+<a name="ln558">      // color       -&gt; skipped</a>
+<a name="ln559">      qDebug(&quot;TrillObj::read x0 %d x1 %d y %d trillSign %d&quot;, x0, x1, y, trillSign);</a>
+<a name="ln560">      e.readNext();</a>
+<a name="ln561">      }</a>
+<a name="ln562"> </a>
+<a name="ln563">//---------------------------------------------------------</a>
+<a name="ln564">//   WedgeObj::readCapx -- capx equivalent of WedgeObj::read</a>
+<a name="ln565">//---------------------------------------------------------</a>
+<a name="ln566"> </a>
+<a name="ln567">void WedgeObj::readCapx(XmlReader&amp; e)</a>
+<a name="ln568">      {</a>
+<a name="ln569">      // TODO: read LineObj properties</a>
+<a name="ln570">      decresc          = e.attribute(&quot;decrescendo&quot;, &quot;false&quot;) == &quot;true&quot;;</a>
+<a name="ln571">      double dheight   = e.doubleAttribute(&quot;span&quot;, 1.0);</a>
+<a name="ln572">      height = (int)round(dheight * 32.0);</a>
+<a name="ln573">      e.readNext();</a>
+<a name="ln574">      }</a>
+<a name="ln575"> </a>
+<a name="ln576">//---------------------------------------------------------</a>
+<a name="ln577">//   readCapxDrawObjectArray -- capx equivalent of readDrawObjectArray()</a>
+<a name="ln578">//---------------------------------------------------------</a>
+<a name="ln579"> </a>
+<a name="ln580">QList&lt;BasicDrawObj*&gt; Capella::readCapxDrawObjectArray(XmlReader&amp; e)</a>
+<a name="ln581">      {</a>
+<a name="ln582">      QList&lt;BasicDrawObj*&gt; ol;</a>
+<a name="ln583">      while (e.readNextStartElement()) {</a>
+<a name="ln584">            if (e.name() == &quot;drawObj&quot;) {</a>
+<a name="ln585">                  BasicDrawObj* bdo = 0;</a>
+<a name="ln586">                  while (e.readNextStartElement()) {</a>
+<a name="ln587">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln588">                        if (tag == &quot;basic&quot;) {</a>
+<a name="ln589">                              // note: the &lt;basic&gt; element always follows the DrawObject it applies to</a>
+<a name="ln590">                              if (bdo)</a>
+<a name="ln591">                                    bdo-&gt;readCapx(e);</a>
+<a name="ln592">                              else</a>
+<a name="ln593">                                    e.skipCurrentElement();</a>
+<a name="ln594">                              }</a>
+<a name="ln595">                        else if (tag == &quot;line&quot;) {</a>
+<a name="ln596">                              qDebug(&quot;readCapxDrawObjectArray: found line (skipping)&quot;);</a>
+<a name="ln597">                              e.skipCurrentElement();</a>
+<a name="ln598">                              }</a>
+<a name="ln599">                        else if (tag == &quot;rectangle&quot;) {</a>
+<a name="ln600">                              qDebug(&quot;readCapxDrawObjectArray: found rectangle (skipping)&quot;);</a>
+<a name="ln601">                              e.skipCurrentElement();</a>
+<a name="ln602">                              }</a>
+<a name="ln603">                        else if (tag == &quot;ellipse&quot;) {</a>
+<a name="ln604">                              qDebug(&quot;readCapxDrawObjectArray: found ellipse (skipping)&quot;);</a>
+<a name="ln605">                              e.skipCurrentElement();</a>
+<a name="ln606">                              }</a>
+<a name="ln607">                        else if (tag == &quot;polygon&quot;) {</a>
+<a name="ln608">                              qDebug(&quot;readCapxDrawObjectArray: found polygon (skipping)&quot;);</a>
+<a name="ln609">                              e.skipCurrentElement();</a>
+<a name="ln610">                              }</a>
+<a name="ln611">                        else if (tag == &quot;metafile&quot;) {</a>
+<a name="ln612">                              qDebug(&quot;readCapxDrawObjectArray: found metafile (skipping)&quot;);</a>
+<a name="ln613">                              e.skipCurrentElement();</a>
+<a name="ln614">                              }</a>
+<a name="ln615">                        else if (tag == &quot;text&quot;) {</a>
+<a name="ln616">                              SimpleTextObj* o = new SimpleTextObj(this);</a>
+<a name="ln617">                              bdo = o; // save o to handle the &quot;basic&quot; tag (which sometimes follows)</a>
+<a name="ln618">                              o-&gt;readCapx(e);</a>
+<a name="ln619">                              ol.append(o);</a>
+<a name="ln620">                              }</a>
+<a name="ln621">                        else if (tag == &quot;richText&quot;) {</a>
+<a name="ln622">                              qDebug(&quot;readCapxDrawObjectArray: found richText (skipping)&quot;);</a>
+<a name="ln623">                              e.skipCurrentElement();</a>
+<a name="ln624">                              }</a>
+<a name="ln625">                        else if (tag == &quot;guitar&quot;) {</a>
+<a name="ln626">                              qDebug(&quot;readCapxDrawObjectArray: found guitar (skipping)&quot;);</a>
+<a name="ln627">                              e.skipCurrentElement();</a>
+<a name="ln628">                              }</a>
+<a name="ln629">                        else if (tag == &quot;slur&quot;) {</a>
+<a name="ln630">                              SlurObj* o = new SlurObj(this);</a>
+<a name="ln631">                              bdo = o; // save o to handle the &quot;basic&quot; tag (which sometimes follows)</a>
+<a name="ln632">                              o-&gt;readCapx(e);</a>
+<a name="ln633">                              ol.append(o);</a>
+<a name="ln634">                              }</a>
+<a name="ln635">                        else if (tag == &quot;wavyLine&quot;) {</a>
+<a name="ln636">                              qDebug(&quot;readCapxDrawObjectArray: found wavyLine (skipping)&quot;);</a>
+<a name="ln637">                              e.skipCurrentElement();</a>
+<a name="ln638">                              }</a>
+<a name="ln639">                        else if (tag == &quot;bracket&quot;) {</a>
+<a name="ln640">                              qDebug(&quot;readCapxDrawObjectArray: found bracket (skipping)&quot;);</a>
+<a name="ln641">                              e.skipCurrentElement();</a>
+<a name="ln642">                              }</a>
+<a name="ln643">                        else if (tag == &quot;wedge&quot;) {</a>
+<a name="ln644">                              WedgeObj* o = new WedgeObj(this);</a>
+<a name="ln645">                              bdo = o; // save o to handle the &quot;basic&quot; tag (which sometimes follows)</a>
+<a name="ln646">                              o-&gt;readCapx(e);</a>
+<a name="ln647">                              ol.append(o);</a>
+<a name="ln648">                              }</a>
+<a name="ln649">                        else if (tag == &quot;notelines&quot;) {</a>
+<a name="ln650">                              qDebug(&quot;readCapxDrawObjectArray: found notelines (skipping)&quot;);</a>
+<a name="ln651">                              e.skipCurrentElement();</a>
+<a name="ln652">                              }</a>
+<a name="ln653">                        else if (tag == &quot;volta&quot;) {</a>
+<a name="ln654">                              VoltaObj* o = new VoltaObj(this);</a>
+<a name="ln655">                              bdo = o; // save o to handle the &quot;basic&quot; tag (which sometimes follows)</a>
+<a name="ln656">                              o-&gt;readCapx(e);</a>
+<a name="ln657">                              ol.append(o);</a>
+<a name="ln658">                              }</a>
+<a name="ln659">                        else if (tag == &quot;trill&quot;) {</a>
+<a name="ln660">                              TrillObj* o = new TrillObj(this);</a>
+<a name="ln661">                              bdo = o; // save o to handle the &quot;basic&quot; tag (which sometimes follows)</a>
+<a name="ln662">                              o-&gt;readCapx(e);</a>
+<a name="ln663">                              ol.append(o);</a>
+<a name="ln664">                              }</a>
+<a name="ln665">                        else if (tag == &quot;transposable&quot;) {</a>
+<a name="ln666">                              qDebug(&quot;readCapxDrawObjectArray: found transposable (skipping)&quot;);</a>
+<a name="ln667">                              e.skipCurrentElement();</a>
+<a name="ln668">                              }</a>
+<a name="ln669">                        else if (tag == &quot;group&quot;) {</a>
+<a name="ln670">                              qDebug(&quot;readCapxDrawObjectArray: found group (skipping)&quot;);</a>
+<a name="ln671">                              e.skipCurrentElement();</a>
+<a name="ln672">                              }</a>
+<a name="ln673">                        else</a>
+<a name="ln674">                              e.unknown();</a>
+<a name="ln675">                        }</a>
+<a name="ln676">                  }</a>
+<a name="ln677">            else</a>
+<a name="ln678">                  e.unknown();</a>
+<a name="ln679">            }</a>
+<a name="ln680">      return ol;</a>
+<a name="ln681">      }</a>
+<a name="ln682"> </a>
+<a name="ln683">//---------------------------------------------------------</a>
+<a name="ln684">//   readCapxVoice -- capx equivalent of readVoice(CapStaff* cs, int idx)</a>
+<a name="ln685">//---------------------------------------------------------</a>
+<a name="ln686"> </a>
+<a name="ln687">void Capella::readCapxVoice(XmlReader&amp; e, CapStaff* cs, int idx)</a>
+<a name="ln688">      {</a>
+<a name="ln689">      CapVoice* v   = new CapVoice;</a>
+<a name="ln690">      v-&gt;voiceNo    = idx;</a>
+<a name="ln691">      v-&gt;y0Lyrics   = 0;</a>
+<a name="ln692">      v-&gt;dyLyrics   = 0;</a>
+<a name="ln693">      // v-&gt;lyricsFont = 0;</a>
+<a name="ln694">      v-&gt;stemDir    = 0;</a>
+<a name="ln695"> </a>
+<a name="ln696">      while (e.readNextStartElement()) {</a>
+<a name="ln697">            if (e.name() == &quot;lyricsSettings&quot;) {</a>
+<a name="ln698">                  qDebug(&quot;readCapxVoice: found lyricsSettings (skipping)&quot;);</a>
+<a name="ln699">                  e.skipCurrentElement();</a>
+<a name="ln700">                  }</a>
+<a name="ln701">            else if (e.name() == &quot;noteObjects&quot;) {</a>
+<a name="ln702">                  while (e.readNextStartElement()) {</a>
+<a name="ln703">                        const QStringRef&amp; tag(e.name());</a>
+<a name="ln704">                        if (tag == &quot;clefSign&quot;) {</a>
+<a name="ln705">                              CapClef* clef = new CapClef(this);</a>
+<a name="ln706">                              clef-&gt;readCapx(e);</a>
+<a name="ln707">                              v-&gt;objects.append(clef);</a>
+<a name="ln708">                              }</a>
+<a name="ln709">                        else if (tag == &quot;keySign&quot;) {</a>
+<a name="ln710">                              CapKey* key = new CapKey(this);</a>
+<a name="ln711">                              key-&gt;readCapx(e);</a>
+<a name="ln712">                              v-&gt;objects.append(key);</a>
+<a name="ln713">                              }</a>
+<a name="ln714">                        else if (tag == &quot;timeSign&quot;) {</a>
+<a name="ln715">                              CapMeter* meter = new CapMeter(this);</a>
+<a name="ln716">                              meter-&gt;readCapx(e);</a>
+<a name="ln717">                              v-&gt;objects.append(meter);</a>
+<a name="ln718">                              }</a>
+<a name="ln719">                        else if (tag == &quot;barline&quot;) {</a>
+<a name="ln720">                              CapExplicitBarline* bl = new CapExplicitBarline(this);</a>
+<a name="ln721">                              bl-&gt;readCapx(e);</a>
+<a name="ln722">                              v-&gt;objects.append(bl);</a>
+<a name="ln723">                              }</a>
+<a name="ln724">                        else if (tag == &quot;chord&quot;) {</a>
+<a name="ln725">                              ChordObj* chord = new ChordObj(this);</a>
+<a name="ln726">                              chord-&gt;readCapx(e);</a>
+<a name="ln727">                              v-&gt;objects.append(chord);</a>
+<a name="ln728">                              }</a>
+<a name="ln729">                        else if (tag == &quot;rest&quot;) {</a>
+<a name="ln730">                              RestObj* rest = new RestObj(this);</a>
+<a name="ln731">                              rest-&gt;readCapx(e);</a>
+<a name="ln732">                              v-&gt;objects.append(rest);</a>
+<a name="ln733">                              }</a>
+<a name="ln734">                        else</a>
+<a name="ln735">                              e.unknown();</a>
+<a name="ln736">                        }</a>
+<a name="ln737">                  }</a>
+<a name="ln738">            else</a>
+<a name="ln739">                  e.unknown();</a>
+<a name="ln740">            }</a>
+<a name="ln741"> </a>
+<a name="ln742">      cs-&gt;voices.append(v);</a>
+<a name="ln743">      }</a>
+<a name="ln744"> </a>
+<a name="ln745">//---------------------------------------------------------</a>
+<a name="ln746">//   findStaffIndex -- find index of layout in staffLayouts</a>
+<a name="ln747">//---------------------------------------------------------</a>
+<a name="ln748"> </a>
+<a name="ln749">static int findStaffIndex(const QString&amp; layout, const QList&lt;CapStaffLayout*&gt;&amp; staffLayouts)</a>
+<a name="ln750">      {</a>
+<a name="ln751">      int index = 0;</a>
+<a name="ln752">      for (const auto&amp; capStaffLayout : staffLayouts) {</a>
+<a name="ln753">            if (capStaffLayout-&gt;descr == layout)</a>
+<a name="ln754">                  return index;</a>
+<a name="ln755">            ++index;</a>
+<a name="ln756">            }</a>
+<a name="ln757">      qFatal(&quot;staff layout '%s' not found&quot;, qPrintable(layout));</a>
+<a name="ln758">      return 0;</a>
+<a name="ln759">      }</a>
+<a name="ln760"> </a>
+<a name="ln761">//---------------------------------------------------------</a>
+<a name="ln762">//   readCapxStaff -- capx equivalent of readStaff(CapSystem* system)</a>
+<a name="ln763">//---------------------------------------------------------</a>
+<a name="ln764"> </a>
+<a name="ln765">void Capella::readCapxStaff(XmlReader&amp; e, CapSystem* system)</a>
+<a name="ln766">      {</a>
+<a name="ln767">      qDebug(&quot;Capella::readCapxStaff&quot;);</a>
+<a name="ln768">      CapStaff* staff = new CapStaff;</a>
+<a name="ln769">      QString layout = e.attribute(&quot;layout&quot;);</a>
+<a name="ln770">      QString time = e.attribute(&quot;defaultTime&quot;);</a>
+<a name="ln771">      qstring2timesig(time, staff-&gt;numerator, staff-&gt;log2Denom, staff-&gt;allaBreve);</a>
+<a name="ln772"> </a>
+<a name="ln773">      staff-&gt;iLayout   = findStaffIndex(layout,staffLayouts());</a>
+<a name="ln774">      staff-&gt;topDistX  = 0;</a>
+<a name="ln775">      staff-&gt;btmDistX  = 0;</a>
+<a name="ln776">      staff-&gt;color     = Qt::black;</a>
+<a name="ln777"> </a>
+<a name="ln778">      while (e.readNextStartElement()) {</a>
+<a name="ln779">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln780">            if (tag == &quot;extraDistance&quot;) {</a>
+<a name="ln781">                  qDebug(&quot;readCapxStaff: found extraDistance (skipping)&quot;);</a>
+<a name="ln782">                  e.skipCurrentElement();</a>
+<a name="ln783">                  }</a>
+<a name="ln784">            else if (tag == &quot;voices&quot;) {</a>
+<a name="ln785">                  int i = 0;</a>
+<a name="ln786">                  while (e.readNextStartElement()) {</a>
+<a name="ln787">                        if (e.name() == &quot;voice&quot;) {</a>
+<a name="ln788">                              readCapxVoice(e, staff, i);</a>
+<a name="ln789">                              ++i;</a>
+<a name="ln790">                              }</a>
+<a name="ln791">                        else</a>
+<a name="ln792">                              e.unknown();</a>
+<a name="ln793">                        }</a>
+<a name="ln794">                  }</a>
+<a name="ln795">            else</a>
+<a name="ln796">                  e.unknown();</a>
+<a name="ln797">            }</a>
+<a name="ln798"> </a>
+<a name="ln799">      system-&gt;staves[staff-&gt;iLayout] = staff;</a>
+<a name="ln800">      }</a>
+<a name="ln801"> </a>
+<a name="ln802">//---------------------------------------------------------</a>
+<a name="ln803">//   initUnreadStaves</a>
+<a name="ln804">//---------------------------------------------------------</a>
+<a name="ln805"> </a>
+<a name="ln806">static void initUnreadStaves(QList&lt;CapStaff*&gt;&amp; staves)</a>
+<a name="ln807">      {</a>
+<a name="ln808">      // find the first staff actually read</a>
+<a name="ln809">      CapStaff* firstNonEmptyStaff = nullptr;</a>
+<a name="ln810">      for (const auto staff : staves) {</a>
+<a name="ln811">            if (staff &amp;&amp; !firstNonEmptyStaff)</a>
+<a name="ln812">                  firstNonEmptyStaff = staff;</a>
+<a name="ln813">            }</a>
+<a name="ln814"> </a>
+<a name="ln815">      // copy its data to the staves present in the file</a>
+<a name="ln816">      for (int i = 0; i &lt; staves.size(); ++i) {</a>
+<a name="ln817">            if (!(staves.at(i))) {</a>
+<a name="ln818">                  auto staff = new CapStaff;</a>
+<a name="ln819">                  staff-&gt;numerator = firstNonEmptyStaff-&gt;numerator;</a>
+<a name="ln820">                  staff-&gt;log2Denom = firstNonEmptyStaff-&gt;log2Denom;</a>
+<a name="ln821">                  staff-&gt;allaBreve = firstNonEmptyStaff-&gt;allaBreve;</a>
+<a name="ln822">                  staff-&gt;iLayout = i;</a>
+<a name="ln823">                  staves[i] = staff;</a>
+<a name="ln824">                  }</a>
+<a name="ln825">            }</a>
+<a name="ln826">      }</a>
+<a name="ln827"> </a>
+<a name="ln828">//---------------------------------------------------------</a>
+<a name="ln829">//   readCapxSystem -- capx equivalent of readSystem()</a>
+<a name="ln830">//---------------------------------------------------------</a>
+<a name="ln831"> </a>
+<a name="ln832">void Capella::readCapxSystem(XmlReader&amp; e)</a>
+<a name="ln833">      {</a>
+<a name="ln834">      CapSystem* s = new CapSystem;</a>
+<a name="ln835">      s-&gt;nAddBarCount   = 0;</a>
+<a name="ln836">      s-&gt;bBarCountReset = 0;</a>
+<a name="ln837">      s-&gt;explLeftIndent = 0; // ?? TODO ?? use in capella.cpp commented out</a>
+<a name="ln838"> </a>
+<a name="ln839">      s-&gt;beamMode = BeamMode::AUTO;</a>
+<a name="ln840">      s-&gt;tempo    = 0;</a>
+<a name="ln841">      s-&gt;color    = Qt::black;</a>
+<a name="ln842"> </a>
+<a name="ln843">      unsigned char b  = 0;</a>
+<a name="ln844">      s-&gt;bJustified    = b &amp; 2;</a>
+<a name="ln845">      s-&gt;bPageBreak    = (b &amp; 4) != 0;</a>
+<a name="ln846">      s-&gt;instrNotation = (b &gt;&gt; 3) &amp; 7;</a>
+<a name="ln847"> </a>
+<a name="ln848">      // set all staves in this system to &quot;not yet read&quot;</a>
+<a name="ln849">      for (int i = 0; i &lt; _staffLayouts.size(); ++i)</a>
+<a name="ln850">            s-&gt;staves.append(nullptr);</a>
+<a name="ln851"> </a>
+<a name="ln852">      // read staves</a>
+<a name="ln853">      while (e.readNextStartElement()) {</a>
+<a name="ln854">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln855">            if (tag == &quot;barCount&quot;) {</a>
+<a name="ln856">                  qDebug(&quot;readCapxSystem: found barCount (skipping)&quot;);</a>
+<a name="ln857">                  e.skipCurrentElement();</a>
+<a name="ln858">                  }</a>
+<a name="ln859">            else if (tag == &quot;staves&quot;) {</a>
+<a name="ln860">                  while (e.readNextStartElement()) {</a>
+<a name="ln861">                        if (e.name() == &quot;staff&quot;)</a>
+<a name="ln862">                              readCapxStaff(e, s);</a>
+<a name="ln863">                        else</a>
+<a name="ln864">                              e.unknown();</a>
+<a name="ln865">                        }</a>
+<a name="ln866">                  }</a>
+<a name="ln867">            else</a>
+<a name="ln868">                  e.unknown();</a>
+<a name="ln869">            }</a>
+<a name="ln870"> </a>
+<a name="ln871">      // initializes staves not read</a>
+<a name="ln872">      initUnreadStaves(s-&gt;staves);</a>
+<a name="ln873"> </a>
+<a name="ln874">      systems.append(s);</a>
+<a name="ln875">      }</a>
+<a name="ln876"> </a>
+<a name="ln877">//---------------------------------------------------------</a>
+<a name="ln878">//   capxSystems -- read the capx &lt;systems&gt; element</a>
+<a name="ln879">//---------------------------------------------------------</a>
+<a name="ln880"> </a>
+<a name="ln881">void Capella::capxSystems(XmlReader&amp; e)</a>
+<a name="ln882">      {</a>
+<a name="ln883">      while (e.readNextStartElement()) {</a>
+<a name="ln884">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln885">            if (tag == &quot;system&quot;) {</a>
+<a name="ln886">                  readCapxSystem(e);</a>
+<a name="ln887">                  }</a>
+<a name="ln888">            else</a>
+<a name="ln889">                  e.unknown();</a>
+<a name="ln890">            }</a>
+<a name="ln891">      }</a>
+<a name="ln892"> </a>
+<a name="ln893">//---------------------------------------------------------</a>
+<a name="ln894">//   capxNotation -- read the capx &lt;notation&gt; element</a>
+<a name="ln895">//---------------------------------------------------------</a>
+<a name="ln896"> </a>
+<a name="ln897">static void capxNotation(XmlReader&amp; e, uchar&amp; barlineMode, uchar&amp; barlineFrom, uchar&amp; barlineTo)</a>
+<a name="ln898">      {</a>
+<a name="ln899">      while (e.readNextStartElement()) {</a>
+<a name="ln900">            if (e.name() == &quot;barlines&quot;) {</a>
+<a name="ln901">                  QString mode = e.attribute(&quot;mode&quot;, &quot;full&quot;);</a>
+<a name="ln902">                  if (mode == &quot;full&quot;) barlineMode = 3;</a>
+<a name="ln903">                  else if (mode == &quot;none&quot;) barlineMode = 2;     // correct ? not handled by capella.cpp anyway</a>
+<a name="ln904">                  else if (mode == &quot;internal&quot;) barlineMode = 1;</a>
+<a name="ln905">                  else if (mode == &quot;external&quot;) barlineMode = 0; // correct ? not handled by capella.cpp anyway</a>
+<a name="ln906">                  else barlineMode = 1;</a>
+<a name="ln907">                  barlineFrom = e.intAttribute(&quot;from&quot;);</a>
+<a name="ln908">                  barlineTo   = e.intAttribute(&quot;to&quot;);</a>
+<a name="ln909">                  e.readNext();</a>
+<a name="ln910">                  }</a>
+<a name="ln911">            else</a>
+<a name="ln912">                  e.unknown();</a>
+<a name="ln913">            }</a>
+<a name="ln914">      }</a>
+<a name="ln915"> </a>
+<a name="ln916">//---------------------------------------------------------</a>
+<a name="ln917">//   readCapxStaveLayout -- capx equivalent of readStaveLayout(CapStaffLayout*, int)</a>
+<a name="ln918">//   read the staffLayout element</a>
+<a name="ln919">//---------------------------------------------------------</a>
+<a name="ln920"> </a>
+<a name="ln921">void Capella::readCapxStaveLayout(XmlReader&amp; e, CapStaffLayout* sl, int /*idx*/)</a>
+<a name="ln922">      {</a>
+<a name="ln923">      // initialize same variables as readStaveLayout(CapStaffLayout*, int)</a>
+<a name="ln924"> </a>
+<a name="ln925">      sl-&gt;barlineMode = 0;</a>
+<a name="ln926">      sl-&gt;noteLines   = 0;</a>
+<a name="ln927"> </a>
+<a name="ln928">      sl-&gt;bSmall      = 0; // TODO (unclear where this is in the capx file)</a>
+<a name="ln929"> </a>
+<a name="ln930">      sl-&gt;topDist      = 0;</a>
+<a name="ln931">      sl-&gt;btmDist      = 0;</a>
+<a name="ln932">      sl-&gt;groupDist    = 0;</a>
+<a name="ln933">      sl-&gt;barlineFrom = 0;</a>
+<a name="ln934">      sl-&gt;barlineTo   = 0;</a>
+<a name="ln935"> </a>
+<a name="ln936">      unsigned char clef = 0;</a>
+<a name="ln937">      sl-&gt;form = Form(clef &amp; 7);</a>
+<a name="ln938">      sl-&gt;line = ClefLine((clef &gt;&gt; 3) &amp; 7);</a>
+<a name="ln939">      sl-&gt;oct  = Oct((clef &gt;&gt; 6));</a>
+<a name="ln940">      // qDebug(&quot;   clef %x  form %d, line %d, oct %d&quot;, clef, sl-&gt;form, sl-&gt;line, sl-&gt;oct);</a>
+<a name="ln941"> </a>
+<a name="ln942">      // Schlagzeuginformation</a>
+<a name="ln943">      unsigned char b   = 0; // ?? TODO ?? sl-&gt;soundMapIn and sl-&gt;soundMapOut are not used</a>
+<a name="ln944">      sl-&gt;bPercussion  = b &amp; 1;    // Schlagzeugkanal verwenden</a>
+<a name="ln945">      sl-&gt;bSoundMapIn  = b &amp; 2;</a>
+<a name="ln946">      sl-&gt;bSoundMapOut = b &amp; 4;</a>
+<a name="ln947">      /*</a>
+<a name="ln948">      if (sl-&gt;bSoundMapIn) {      // Umleitungstabelle fr Eingabe vom Keyboard</a>
+<a name="ln949">            uchar iMin = readByte();</a>
+<a name="ln950">            Q_UNUSED(iMin);</a>
+<a name="ln951">            uchar n    = readByte();</a>
+<a name="ln952">            Q_ASSERT(n &gt; 0 and iMin + n &lt;= 128);</a>
+<a name="ln953">            f-&gt;read(sl-&gt;soundMapIn, n);</a>
+<a name="ln954">            curPos += n;</a>
+<a name="ln955">            }</a>
+<a name="ln956">      if (sl-&gt;bSoundMapOut) {     // Umleitungstabelle fr das Vorspielen</a>
+<a name="ln957">            unsigned char iMin = readByte();</a>
+<a name="ln958">            unsigned char n    = readByte();</a>
+<a name="ln959">            Q_ASSERT(n &gt; 0 and iMin + n &lt;= 128);</a>
+<a name="ln960">            f-&gt;read(sl-&gt;soundMapOut, n);</a>
+<a name="ln961">            curPos += n;</a>
+<a name="ln962">            }</a>
+<a name="ln963">      */</a>
+<a name="ln964">      sl-&gt;sound  = 0;</a>
+<a name="ln965">      sl-&gt;volume = 0;</a>
+<a name="ln966">      sl-&gt;transp = 0;</a>
+<a name="ln967"> </a>
+<a name="ln968">      qDebug(&quot;readCapxStaveLayout&quot;);</a>
+<a name="ln969">      sl-&gt;descr = e.attribute(&quot;description&quot;);</a>
+<a name="ln970">      while (e.readNextStartElement()) {</a>
+<a name="ln971">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln972">            if (tag == &quot;notation&quot;) {</a>
+<a name="ln973">                  capxNotation(e, sl-&gt;barlineMode, sl-&gt;barlineFrom, sl-&gt;barlineTo);</a>
+<a name="ln974">                  }</a>
+<a name="ln975">            else if (tag == &quot;distances&quot;) {</a>
+<a name="ln976">                  qDebug(&quot;readCapxStaveLayout: found distances (skipping)&quot;);</a>
+<a name="ln977">                  e.skipCurrentElement();</a>
+<a name="ln978">                  }</a>
+<a name="ln979">            else if (tag == &quot;instrument&quot;) {</a>
+<a name="ln980">                  sl-&gt;name = e.attribute(&quot;name&quot;);</a>
+<a name="ln981">                  sl-&gt;abbrev = e.attribute(&quot;abbrev&quot;);</a>
+<a name="ln982">                  // elements name and abbrev overrule attributes name and abbrev</a>
+<a name="ln983">                  while (e.readNextStartElement()) {</a>
+<a name="ln984">                        const QStringRef&amp; t(e.name());</a>
+<a name="ln985">                        if (t == &quot;name&quot;)</a>
+<a name="ln986">                              sl-&gt;name = e.readElementText();</a>
+<a name="ln987">                        else if (t == &quot;abbrev&quot;)</a>
+<a name="ln988">                              sl-&gt;abbrev = e.readElementText();</a>
+<a name="ln989">                        else</a>
+<a name="ln990">                              e.unknown();</a>
+<a name="ln991">                        }</a>
+<a name="ln992">                  }</a>
+<a name="ln993">            else if (tag == &quot;sound&quot;) {</a>
+<a name="ln994">                  sl-&gt;sound = e.intAttribute(&quot;instr&quot;, 0);</a>
+<a name="ln995">                  sl-&gt;volume = e.intAttribute(&quot;volume&quot;, 0);</a>
+<a name="ln996">                  sl-&gt;transp = e.intAttribute(&quot;transpose&quot;, 0);</a>
+<a name="ln997">                  e.readNext();</a>
+<a name="ln998">                  }</a>
+<a name="ln999">            else</a>
+<a name="ln1000">                  e.unknown();</a>
+<a name="ln1001">            }</a>
+<a name="ln1002">      qDebug(&quot;   descr '%s' name '%s' abbrev '%s'&quot;,</a>
+<a name="ln1003">             qPrintable(sl-&gt;descr), qPrintable(sl-&gt;name), qPrintable(sl-&gt;abbrev));</a>
+<a name="ln1004">      qDebug(&quot;   sound %d vol %d transp %d&quot;, sl-&gt;sound, sl-&gt;volume, sl-&gt;transp);</a>
+<a name="ln1005">      qDebug(&quot;readCapxStaveLayout done&quot;);</a>
+<a name="ln1006">      }</a>
+<a name="ln1007"> </a>
+<a name="ln1008">//---------------------------------------------------------</a>
+<a name="ln1009">//   capxLayoutBrackets -- read the capx &lt;brackets&gt; element (when child of &lt;layout)</a>
+<a name="ln1010">//---------------------------------------------------------</a>
+<a name="ln1011"> </a>
+<a name="ln1012">static void capxLayoutBrackets(XmlReader&amp; e, QList&lt;CapBracket&gt;&amp; bracketList)</a>
+<a name="ln1013">      {</a>
+<a name="ln1014">      int i = 0; // bracket count</a>
+<a name="ln1015">      while (e.readNextStartElement()) {</a>
+<a name="ln1016">            if (e.name() == &quot;bracket&quot;) {</a>
+<a name="ln1017">                  CapBracket b;</a>
+<a name="ln1018">                  b.from  = e.intAttribute(&quot;from&quot;);</a>
+<a name="ln1019">                  b.to    = e.intAttribute(&quot;to&quot;);</a>
+<a name="ln1020">                  b.curly = e.attribute(&quot;curly&quot;) == &quot;true&quot;;</a>
+<a name="ln1021">                  // qDebug(&quot;Bracket%d %d-%d curly %d&quot;, i, b.from, b.to, b.curly);</a>
+<a name="ln1022">                  bracketList.append(b);</a>
+<a name="ln1023">                  e.readNext();</a>
+<a name="ln1024">                  ++i;</a>
+<a name="ln1025">                  }</a>
+<a name="ln1026">            else</a>
+<a name="ln1027">                  e.unknown();</a>
+<a name="ln1028">            }</a>
+<a name="ln1029">      }</a>
+<a name="ln1030"> </a>
+<a name="ln1031">//---------------------------------------------------------</a>
+<a name="ln1032">//   capxLayoutDistances -- read the capx &lt;Distances&gt; element (when child of &lt;layout)</a>
+<a name="ln1033">//---------------------------------------------------------</a>
+<a name="ln1034"> </a>
+<a name="ln1035">static void capxLayoutDistances(XmlReader&amp; e, double&amp; smallLineDist, double&amp; normalLineDist, int&amp; topDist)</a>
+<a name="ln1036">      {</a>
+<a name="ln1037">      while (e.readNextStartElement()) {</a>
+<a name="ln1038">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1039">            if (tag == &quot;staffLines&quot;) {</a>
+<a name="ln1040">                  smallLineDist = e.doubleAttribute(&quot;small&quot;);</a>
+<a name="ln1041">                  normalLineDist = e.doubleAttribute(&quot;normal&quot;);</a>
+<a name="ln1042">                  e.readNext();</a>
+<a name="ln1043">                  }</a>
+<a name="ln1044">            else if (tag == &quot;systems&quot;) {</a>
+<a name="ln1045">                  topDist = e.intAttribute(&quot;top&quot;);</a>
+<a name="ln1046">                  e.readNext();</a>
+<a name="ln1047">                  }</a>
+<a name="ln1048">            else</a>
+<a name="ln1049">                  e.unknown();</a>
+<a name="ln1050">            }</a>
+<a name="ln1051">      }</a>
+<a name="ln1052"> </a>
+<a name="ln1053">//---------------------------------------------------------</a>
+<a name="ln1054">//   capxLayoutStaves -- read the capx &lt;staves&gt; element (when child of &lt;layout)</a>
+<a name="ln1055">//---------------------------------------------------------</a>
+<a name="ln1056"> </a>
+<a name="ln1057">void Capella::capxLayoutStaves(XmlReader&amp; e)</a>
+<a name="ln1058">      {</a>
+<a name="ln1059">      int iStave = 0;</a>
+<a name="ln1060">      while (e.readNextStartElement()) {</a>
+<a name="ln1061">            if (e.name() == &quot;staffLayout&quot;) {</a>
+<a name="ln1062">                  CapStaffLayout* sl = new CapStaffLayout;</a>
+<a name="ln1063">                  readCapxStaveLayout(e, sl, iStave);</a>
+<a name="ln1064">                  _staffLayouts.append(sl);</a>
+<a name="ln1065">                  ++iStave;</a>
+<a name="ln1066">                  }</a>
+<a name="ln1067">            else</a>
+<a name="ln1068">                  e.unknown();</a>
+<a name="ln1069">            }</a>
+<a name="ln1070">      }</a>
+<a name="ln1071"> </a>
+<a name="ln1072">//---------------------------------------------------------</a>
+<a name="ln1073">//   capxLayout -- read the capx &lt;layout&gt; element</a>
+<a name="ln1074">//   rough equivalent of readLayout() read part</a>
+<a name="ln1075">//---------------------------------------------------------</a>
+<a name="ln1076"> </a>
+<a name="ln1077">void Capella::capxLayout(XmlReader&amp; e)</a>
+<a name="ln1078">      {</a>
+<a name="ln1079">      while (e.readNextStartElement()) {</a>
+<a name="ln1080">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1081">            if (tag == &quot;pages&quot;) {</a>
+<a name="ln1082">                  qDebug(&quot;capxLayout: found pages (skipping)&quot;);</a>
+<a name="ln1083">                  e.skipCurrentElement();</a>
+<a name="ln1084">                  }</a>
+<a name="ln1085">            else if (tag == &quot;distances&quot;) {</a>
+<a name="ln1086">                  capxLayoutDistances(e, smallLineDist, normalLineDist, topDist);</a>
+<a name="ln1087">                  // qDebug(&quot;Capella::capxLayout(): smallLineDist %g normalLineDist %g topDist %d&quot;,</a>
+<a name="ln1088">                  //        smallLineDist, normalLineDist, topDist);</a>
+<a name="ln1089">                  }</a>
+<a name="ln1090">            else if (tag == &quot;instrumentNames&quot;) {</a>
+<a name="ln1091">                  qDebug(&quot;capxLayout: found instrumentNames (skipping)&quot;);</a>
+<a name="ln1092">                  e.skipCurrentElement();</a>
+<a name="ln1093">                  }</a>
+<a name="ln1094">            else if (tag == &quot;style&quot;) {</a>
+<a name="ln1095">                  qDebug(&quot;capxLayout: found style (skipping)&quot;);</a>
+<a name="ln1096">                  e.skipCurrentElement();</a>
+<a name="ln1097">                  }</a>
+<a name="ln1098">            else if (tag == &quot;staves&quot;) {</a>
+<a name="ln1099">                  capxLayoutStaves(e);</a>
+<a name="ln1100">                  }</a>
+<a name="ln1101">            else if (tag == &quot;brackets&quot;) {</a>
+<a name="ln1102">                  capxLayoutBrackets(e, brackets);</a>
+<a name="ln1103">                  }</a>
+<a name="ln1104">            else if (tag == &quot;spacing&quot;) {</a>
+<a name="ln1105">                  qDebug(&quot;capxLayout: found spacing (skipping)&quot;);</a>
+<a name="ln1106">                  e.skipCurrentElement();</a>
+<a name="ln1107">                  }</a>
+<a name="ln1108">            else if (tag == &quot;beamFlattening&quot;) {</a>
+<a name="ln1109">                  qDebug(&quot;capxLayout: found beamFlattening (skipping)&quot;);</a>
+<a name="ln1110">                  e.skipCurrentElement();</a>
+<a name="ln1111">                  }</a>
+<a name="ln1112">            else</a>
+<a name="ln1113">                  e.unknown();</a>
+<a name="ln1114">            }</a>
+<a name="ln1115">      }</a>
+<a name="ln1116"> </a>
+<a name="ln1117">//---------------------------------------------------------</a>
+<a name="ln1118">//   initCapxLayout -- capx equivalent of readLayout() initialize part</a>
+<a name="ln1119">//---------------------------------------------------------</a>
+<a name="ln1120"> </a>
+<a name="ln1121">void Capella::initCapxLayout()</a>
+<a name="ln1122">      {</a>
+<a name="ln1123">      // initialize same variables as readLayout()</a>
+<a name="ln1124"> </a>
+<a name="ln1125">      smallLineDist  = 1.2;  // TODO verify default</a>
+<a name="ln1126">      normalLineDist = 1.76; // TODO verify default</a>
+<a name="ln1127"> </a>
+<a name="ln1128">      topDist        = 14;   // TODO verify default</a>
+<a name="ln1129">      interDist      = 0;    // TODO verify default</a>
+<a name="ln1130"> </a>
+<a name="ln1131">      txtAlign   = 0;</a>
+<a name="ln1132">      adjustVert = 0;</a>
+<a name="ln1133"> </a>
+<a name="ln1134">      unsigned char b          = 0;</a>
+<a name="ln1135">      redundantKeys    = b &amp; 1;</a>
+<a name="ln1136">      modernDoubleNote = b &amp; 2;</a>
+<a name="ln1137">      Q_ASSERT((b &amp; 0xFC) == 0); // bits 2...7 reserviert</a>
+<a name="ln1138"> </a>
+<a name="ln1139">      bSystemSeparators = 0;</a>
+<a name="ln1140">      nUnnamed           = 0;</a>
+<a name="ln1141"> </a>
+<a name="ln1142">      // namesFont = ... // ?? not used ??</a>
+<a name="ln1143"> </a>
+<a name="ln1144">      // Note: readLayout() also reads stave layout (using readStaveLayout(sl, iStave))</a>
+<a name="ln1145">      // and system brackets. Here this is handled by readCapx(XmlReader&amp; e).</a>
+<a name="ln1146">      }</a>
+<a name="ln1147"> </a>
+<a name="ln1148">//---------------------------------------------------------</a>
+<a name="ln1149">//   readCapx -- capx equivalent of read(QFile* fp)</a>
+<a name="ln1150">//---------------------------------------------------------</a>
+<a name="ln1151"> </a>
+<a name="ln1152">void Capella::readCapx(XmlReader&amp; e)</a>
+<a name="ln1153">      {</a>
+<a name="ln1154">      // initialize same variables as read(QFile* fp)</a>
+<a name="ln1155"> </a>
+<a name="ln1156">      f      = 0;</a>
+<a name="ln1157">      curPos = 0;</a>
+<a name="ln1158"> </a>
+<a name="ln1159">      author   = 0;</a>
+<a name="ln1160">      keywords = 0;</a>
+<a name="ln1161">      comment  = 0;</a>
+<a name="ln1162"> </a>
+<a name="ln1163">      nRel   = 0;</a>
+<a name="ln1164">      nAbs   = 0;</a>
+<a name="ln1165">      unsigned char b   = 0;</a>
+<a name="ln1166">      bUseRealSize      = b &amp; 1;</a>
+<a name="ln1167">      bAllowCompression = b &amp; 2;</a>
+<a name="ln1168">      bPrintLandscape   = b &amp; 16;</a>
+<a name="ln1169"> </a>
+<a name="ln1170">      beamRelMin0 = 0;</a>
+<a name="ln1171">      beamRelMin1 = 0;</a>
+<a name="ln1172">      beamRelMax0 = 0;</a>
+<a name="ln1173">      beamRelMax1 = 0;</a>
+<a name="ln1174"> </a>
+<a name="ln1175">      backgroundChord = new ChordObj(this);         // contains graphic objects on the page background</a>
+<a name="ln1176">      bShowBarCount    = 0;</a>
+<a name="ln1177">      barNumberFrame   = 0;</a>
+<a name="ln1178">      nBarDistX        = 0;</a>
+<a name="ln1179">      nBarDistY        = 0;</a>
+<a name="ln1180">      // QFont barNumFont = ... // not used ?</a>
+<a name="ln1181">      nFirstPage       = 0;</a>
+<a name="ln1182">      leftPageMargins  = 0;</a>
+<a name="ln1183">      topPageMargins   = 0;</a>
+<a name="ln1184">      rightPageMargins = 0;</a>
+<a name="ln1185">      btmPageMargins   = 0;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">      // Now do the equivalent of:</a>
+<a name="ln1188">      // readLayout(); (called only once)</a>
+<a name="ln1189">      // readExtra();  (this is a NOP)</a>
+<a name="ln1190">      // readDrawObjectArray();</a>
+<a name="ln1191">      // for (unsigned i = 0; i &lt; nSystems; i++)</a>
+<a name="ln1192">      //       readSystem();</a>
+<a name="ln1193"> </a>
+<a name="ln1194">      initCapxLayout();</a>
+<a name="ln1195"> </a>
+<a name="ln1196">      // read stave layout</a>
+<a name="ln1197">      // read systems</a>
+<a name="ln1198">      while (e.readNextStartElement()) {</a>
+<a name="ln1199">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln1200">            if (tag == &quot;info&quot;) {</a>
+<a name="ln1201">                  qDebug(&quot;importCapXml: found info (skipping)&quot;);</a>
+<a name="ln1202">                  e.skipCurrentElement();</a>
+<a name="ln1203">                  }</a>
+<a name="ln1204">            else if (tag == &quot;layout&quot;) {</a>
+<a name="ln1205">                  capxLayout(e);</a>
+<a name="ln1206">                  }</a>
+<a name="ln1207">            else if (tag == &quot;gallery&quot;) {</a>
+<a name="ln1208">                  qDebug(&quot;capxLayout: found gallery (skipping)&quot;);</a>
+<a name="ln1209">                  e.skipCurrentElement();</a>
+<a name="ln1210">                  }</a>
+<a name="ln1211">            else if (tag == &quot;pageObjects&quot;) {</a>
+<a name="ln1212">                  backgroundChord-&gt;readCapxObjectArray(e);</a>
+<a name="ln1213">                  }</a>
+<a name="ln1214">            else if (tag == &quot;barCount&quot;) {</a>
+<a name="ln1215">                  qDebug(&quot;importCapXml: found barCount (skipping)&quot;);</a>
+<a name="ln1216">                  e.skipCurrentElement();</a>
+<a name="ln1217">                  }</a>
+<a name="ln1218">            else if (tag == &quot;systems&quot;) {</a>
+<a name="ln1219">                  capxSystems(e);</a>
+<a name="ln1220">                  }</a>
+<a name="ln1221">            else</a>
+<a name="ln1222">                  e.unknown();</a>
+<a name="ln1223">            }</a>
+<a name="ln1224">      }</a>
+<a name="ln1225"> </a>
+<a name="ln1226">//---------------------------------------------------------</a>
+<a name="ln1227">//   importCapXml</a>
+<a name="ln1228">//---------------------------------------------------------</a>
+<a name="ln1229"> </a>
+<a name="ln1230">void convertCapella(Score* score, Capella* cap, bool capxMode);</a>
+<a name="ln1231"> </a>
+<a name="ln1232">Score::FileError importCapXml(MasterScore* score, const QString&amp; name)</a>
+<a name="ln1233">      {</a>
+<a name="ln1234">      qDebug(&quot;importCapXml(score %p, name %s)&quot;, score, qPrintable(name));</a>
+<a name="ln1235">      MQZipReader uz(name);</a>
+<a name="ln1236">      if (!uz.exists()) {</a>
+<a name="ln1237">            qDebug(&quot;importCapXml: &lt;%s&gt; not found&quot;, qPrintable(name));</a>
+<a name="ln1238">            return Score::FileError::FILE_NOT_FOUND;</a>
+<a name="ln1239">            }</a>
+<a name="ln1240"> </a>
+<a name="ln1241">      QByteArray dbuf = uz.fileData(&quot;score.xml&quot;);</a>
+<a name="ln1242">      XmlReader e(dbuf);</a>
+<a name="ln1243">      e.setDocName(name);</a>
+<a name="ln1244">      Capella cf;</a>
+<a name="ln1245"> </a>
+<a name="ln1246">      while (e.readNextStartElement()) {</a>
+<a name="ln1247">            if (e.name() == &quot;score&quot;) {</a>
+<a name="ln1248">                  const QString&amp; xmlns = e.attribute(&quot;xmlns&quot;, &quot;&lt;none&gt;&quot;); // doesn't work ???</a>
+<a name="ln1249">                  qDebug(&quot;importCapXml: found score, namespace '%s'&quot;, qPrintable(xmlns));</a>
+<a name="ln1250">                  cf.readCapx(e);</a>
+<a name="ln1251">                  }</a>
+<a name="ln1252">            else</a>
+<a name="ln1253">                  e.unknown();</a>
+<a name="ln1254">            }</a>
+<a name="ln1255"> </a>
+<a name="ln1256">      convertCapella(score, &amp;cf, true);</a>
+<a name="ln1257">      return Score::FileError::FILE_NO_ERROR;</a>
+<a name="ln1258">      }</a>
+<a name="ln1259">}</a>
+<a name="ln1260"> </a>
+
+</code></pre>
+<div class="balloon" rel="127"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="367"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="844"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 2' is always false.</p></div>
+<div class="balloon" rel="845"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '(b & 4) != 0' is always false.</p></div>
+<div class="balloon" rel="944"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 1' is always false.</p></div>
+<div class="balloon" rel="945"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 2' is always false.</p></div>
+<div class="balloon" rel="946"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 4' is always false.</p></div>
+<div class="balloon" rel="1135"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 1' is always false.</p></div>
+<div class="balloon" rel="1136"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 2' is always false.</p></div>
+<div class="balloon" rel="1166"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 1' is always false.</p></div>
+<div class="balloon" rel="1167"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 2' is always false.</p></div>
+<div class="balloon" rel="1168"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'b & 16' is always false.</p></div>
+<div class="balloon" rel="1237"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1249"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

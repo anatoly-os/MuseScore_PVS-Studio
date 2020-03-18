@@ -1,0 +1,679 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>editdrumset.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2007 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;editdrumset.h&quot;</a>
+<a name="ln21">#include &quot;menus.h&quot;</a>
+<a name="ln22">#include &quot;musescore.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/utils.h&quot;</a>
+<a name="ln25">#include &quot;libmscore/chord.h&quot;</a>
+<a name="ln26">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln27">#include &quot;libmscore/note.h&quot;</a>
+<a name="ln28">#include &quot;libmscore/stem.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">namespace Ms {</a>
+<a name="ln31"> </a>
+<a name="ln32">enum Column : char { PITCH, NOTE, SHORTCUT, NAME };</a>
+<a name="ln33"> </a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35">//   noteHeadNames</a>
+<a name="ln36">//   &quot;Sol&quot; and &quot;Alt. Brevis&quot; omitted,</a>
+<a name="ln37">//   as not being useful for drums</a>
+<a name="ln38">//---------------------------------------------------------</a>
+<a name="ln39"> </a>
+<a name="ln40">NoteHead::Group noteHeadNames[] = {</a>
+<a name="ln41">      NoteHead::Group::HEAD_NORMAL,</a>
+<a name="ln42">      NoteHead::Group::HEAD_CROSS,</a>
+<a name="ln43">      NoteHead::Group::HEAD_PLUS,</a>
+<a name="ln44">      NoteHead::Group::HEAD_XCIRCLE,</a>
+<a name="ln45">      NoteHead::Group::HEAD_WITHX,</a>
+<a name="ln46">      NoteHead::Group::HEAD_TRIANGLE_UP,</a>
+<a name="ln47">      NoteHead::Group::HEAD_TRIANGLE_DOWN,</a>
+<a name="ln48">      NoteHead::Group::HEAD_SLASH,</a>
+<a name="ln49">      NoteHead::Group::HEAD_SLASHED1,</a>
+<a name="ln50">      NoteHead::Group::HEAD_SLASHED2,</a>
+<a name="ln51">      NoteHead::Group::HEAD_DIAMOND,</a>
+<a name="ln52">      NoteHead::Group::HEAD_DIAMOND_OLD,</a>
+<a name="ln53">      NoteHead::Group::HEAD_CIRCLED,</a>
+<a name="ln54">      NoteHead::Group::HEAD_CIRCLED_LARGE,</a>
+<a name="ln55">      NoteHead::Group::HEAD_LARGE_ARROW,</a>
+<a name="ln56">      NoteHead::Group::HEAD_DO,</a>
+<a name="ln57">      NoteHead::Group::HEAD_RE,</a>
+<a name="ln58">      NoteHead::Group::HEAD_MI,</a>
+<a name="ln59">      NoteHead::Group::HEAD_FA,</a>
+<a name="ln60">      NoteHead::Group::HEAD_LA,</a>
+<a name="ln61">      NoteHead::Group::HEAD_TI,</a>
+<a name="ln62">      NoteHead::Group::HEAD_CUSTOM</a>
+<a name="ln63">      };</a>
+<a name="ln64"> </a>
+<a name="ln65">//---------------------------------------------------------</a>
+<a name="ln66">//   operator&lt;</a>
+<a name="ln67">//---------------------------------------------------------</a>
+<a name="ln68"> </a>
+<a name="ln69">bool EditDrumsetTreeWidgetItem::operator&lt;(const QTreeWidgetItem &amp; other) const</a>
+<a name="ln70">      {</a>
+<a name="ln71">      if (treeWidget()-&gt;sortColumn() == Column::PITCH)</a>
+<a name="ln72">            return data(Column::PITCH, Qt::UserRole) &lt; other.data(Column::PITCH, Qt::UserRole);</a>
+<a name="ln73">      else</a>
+<a name="ln74">            return QTreeWidgetItem::operator&lt;(other);</a>
+<a name="ln75">      }</a>
+<a name="ln76"> </a>
+<a name="ln77">//---------------------------------------------------------</a>
+<a name="ln78">//   EditDrumset</a>
+<a name="ln79">//---------------------------------------------------------</a>
+<a name="ln80"> </a>
+<a name="ln81">struct SymbolIcon {</a>
+<a name="ln82">      SymId id;</a>
+<a name="ln83">      QIcon icon;</a>
+<a name="ln84">      SymbolIcon(SymId i, QIcon j)</a>
+<a name="ln85">            : id(i), icon(j)</a>
+<a name="ln86">            {}</a>
+<a name="ln87"> </a>
+<a name="ln88">      static SymbolIcon generateIcon(const SymId&amp; id, double w, double h, double defaultScale)</a>
+<a name="ln89">            {</a>
+<a name="ln90">            QIcon icon;</a>
+<a name="ln91">            QPixmap image(w, h);</a>
+<a name="ln92">            image.fill(Qt::transparent);</a>
+<a name="ln93">            QPainter painter(&amp;image);</a>
+<a name="ln94">            const QRectF&amp; bbox = ScoreFont::fallbackFont()-&gt;bbox(id, 1);</a>
+<a name="ln95">            const qreal actualSymbolScale = std::min(w / bbox.width(), h / bbox.height());</a>
+<a name="ln96">            qreal mag = std::min(defaultScale, actualSymbolScale);</a>
+<a name="ln97">            const qreal&amp; xStShift = (w - mag * bbox.width()) / 2 - mag*bbox.left();</a>
+<a name="ln98">            const qreal&amp; yStShift = (h - mag * bbox.height()) / 2 - mag*bbox.top();</a>
+<a name="ln99">            const QPointF&amp; stPtPos = QPointF(xStShift, yStShift);</a>
+<a name="ln100">            ScoreFont::fallbackFont()-&gt;draw(id, &amp;painter, mag, stPtPos);</a>
+<a name="ln101">            painter.end();</a>
+<a name="ln102">            icon.addPixmap(image);</a>
+<a name="ln103">            return SymbolIcon(id, icon);</a>
+<a name="ln104">            }</a>
+<a name="ln105">};</a>
+<a name="ln106"> </a>
+<a name="ln107">EditDrumset::EditDrumset(const Drumset* ds, QWidget* parent)</a>
+<a name="ln108">   : QDialog(parent)</a>
+<a name="ln109">      {</a>
+<a name="ln110">      setObjectName(&quot;EditDrumset&quot;);</a>
+<a name="ln111"> </a>
+<a name="ln112">      nDrumset = *ds;</a>
+<a name="ln113">      setupUi(this);</a>
+<a name="ln114">      setWindowFlags(this-&gt;windowFlags() &amp; ~Qt::WindowContextHelpButtonHint);</a>
+<a name="ln115"> </a>
+<a name="ln116">      drumNote-&gt;setGrid(70, 80);</a>
+<a name="ln117">      drumNote-&gt;setDrawGrid(false);</a>
+<a name="ln118">      drumNote-&gt;setReadOnly(true);</a>
+<a name="ln119"> </a>
+<a name="ln120">      updatePitchesList();</a>
+<a name="ln121"> </a>
+<a name="ln122">      for (auto g : noteHeadNames)</a>
+<a name="ln123">            noteHead-&gt;addItem(NoteHead::group2userName(g), int(g));</a>
+<a name="ln124"> </a>
+<a name="ln125">      connect(pitchList, SIGNAL(currentItemChanged(QTreeWidgetItem*,QTreeWidgetItem*)),</a>
+<a name="ln126">         SLOT(itemChanged(QTreeWidgetItem*, QTreeWidgetItem*)));</a>
+<a name="ln127">      connect(buttonBox, SIGNAL(clicked(QAbstractButton*)), this, SLOT(bboxClicked(QAbstractButton*)));</a>
+<a name="ln128">      connect(name, SIGNAL(textChanged(const QString&amp;)), SLOT(nameChanged(const QString&amp;)));</a>
+<a name="ln129">      connect(noteHead, SIGNAL(currentIndexChanged(int)), SLOT(valueChanged()));</a>
+<a name="ln130">      connect(staffLine, SIGNAL(valueChanged(int)), SLOT(valueChanged()));</a>
+<a name="ln131">      connect(voice, SIGNAL(currentIndexChanged(int)), SLOT(valueChanged()));</a>
+<a name="ln132">      connect(stemDirection, SIGNAL(currentIndexChanged(int)), SLOT(valueChanged()));</a>
+<a name="ln133">      connect(shortcut, SIGNAL(currentIndexChanged(int)), SLOT(shortcutChanged()));</a>
+<a name="ln134">      connect(loadButton, SIGNAL(clicked()), SLOT(load()));</a>
+<a name="ln135">      connect(saveButton, SIGNAL(clicked()), SLOT(save()));</a>
+<a name="ln136">      pitchList-&gt;setColumnWidth(0, 40);</a>
+<a name="ln137">      pitchList-&gt;setColumnWidth(1, 60);</a>
+<a name="ln138">      pitchList-&gt;setColumnWidth(2, 30);</a>
+<a name="ln139"> </a>
+<a name="ln140">      QStringList validNoteheadRanges = { &quot;Noteheads&quot;, &quot;Round and square noteheads&quot;, &quot;Slash noteheads&quot;, &quot;Shape note noteheads&quot;, &quot;Shape note noteheads supplement&quot; };</a>
+<a name="ln141">      QSet&lt;QString&gt; excludeSym = {&quot;noteheadParenthesisLeft&quot;, &quot;noteheadParenthesisRight&quot;, &quot;noteheadParenthesis&quot;, &quot;noteheadNull&quot;};</a>
+<a name="ln142">      QStringList primaryNoteheads = {</a>
+<a name="ln143">            &quot;noteheadXOrnate&quot;,</a>
+<a name="ln144">            &quot;noteheadXBlack&quot;,</a>
+<a name="ln145">            &quot;noteheadXHalf&quot;,</a>
+<a name="ln146">            &quot;noteheadXWhole&quot;,</a>
+<a name="ln147">            &quot;noteheadXDoubleWhole&quot;,</a>
+<a name="ln148">            &quot;noteheadSlashedBlack1&quot;,</a>
+<a name="ln149">            &quot;noteheadSlashedHalf1&quot;,</a>
+<a name="ln150">            &quot;noteheadSlashedWhole1&quot;,</a>
+<a name="ln151">            &quot;noteheadSlashedDoubleWhole1&quot;,</a>
+<a name="ln152">            &quot;noteheadSlashedBlack2&quot;,</a>
+<a name="ln153">            &quot;noteheadSlashedHalf2&quot;,</a>
+<a name="ln154">            &quot;noteheadSlashedWhole2&quot;,</a>
+<a name="ln155">            &quot;noteheadSlashedDoubleWhole2&quot;,</a>
+<a name="ln156">            &quot;noteheadSquareBlack&quot;,</a>
+<a name="ln157">            &quot;noteheadMoonBlack&quot;,</a>
+<a name="ln158">            &quot;noteheadTriangleUpRightBlack&quot;,</a>
+<a name="ln159">            &quot;noteheadTriangleDownBlack&quot;,</a>
+<a name="ln160">            &quot;noteheadTriangleUpBlack&quot;,</a>
+<a name="ln161">            &quot;noteheadTriangleLeftBlack&quot;,</a>
+<a name="ln162">            &quot;noteheadTriangleRoundDownBlack&quot;,</a>
+<a name="ln163">            &quot;noteheadDiamondBlack&quot;,</a>
+<a name="ln164">            &quot;noteheadDiamondHalf&quot;,</a>
+<a name="ln165">            &quot;noteheadDiamondWhole&quot;,</a>
+<a name="ln166">            &quot;noteheadDiamondDoubleWhole&quot;,</a>
+<a name="ln167">            &quot;noteheadRoundWhiteWithDot&quot;,</a>
+<a name="ln168">            &quot;noteheadVoidWithX&quot;,</a>
+<a name="ln169">            &quot;noteheadHalfWithX&quot;,</a>
+<a name="ln170">            &quot;noteheadWholeWithX&quot;,</a>
+<a name="ln171">            &quot;noteheadDoubleWholeWithX&quot;,</a>
+<a name="ln172">            &quot;noteheadLargeArrowUpBlack&quot;,</a>
+<a name="ln173">            &quot;noteheadLargeArrowUpHalf&quot;,</a>
+<a name="ln174">            &quot;noteheadLargeArrowUpWhole&quot;,</a>
+<a name="ln175">            &quot;noteheadLargeArrowUpDoubleWhole&quot;</a>
+<a name="ln176">      };</a>
+<a name="ln177"> </a>
+<a name="ln178">      int w = quarterCmb-&gt;iconSize().width()  * qApp-&gt;devicePixelRatio();</a>
+<a name="ln179">      int h = quarterCmb-&gt;iconSize().height() * qApp-&gt;devicePixelRatio();</a>
+<a name="ln180">      //default scale is 0.3, will use smaller scale for large noteheads symbols</a>
+<a name="ln181">      const qreal defaultScale = 0.3 * qApp-&gt;devicePixelRatio();</a>
+<a name="ln182"> </a>
+<a name="ln183">      QList&lt;SymbolIcon&gt; resNoteheads;</a>
+<a name="ln184">      for (auto symName : primaryNoteheads) {</a>
+<a name="ln185">             SymId id = Sym::name2id(symName);</a>
+<a name="ln186">             resNoteheads.append(SymbolIcon::generateIcon(id, w, h, defaultScale));</a>
+<a name="ln187">             }</a>
+<a name="ln188"> </a>
+<a name="ln189">      for (QString range : validNoteheadRanges) {</a>
+<a name="ln190">            for (auto symName : (*smuflRanges())[range]) {</a>
+<a name="ln191">                   SymId id = Sym::name2id(symName);</a>
+<a name="ln192">                   if (!excludeSym.contains(symName) &amp;&amp; !primaryNoteheads.contains(symName))</a>
+<a name="ln193">                         resNoteheads.append(SymbolIcon::generateIcon(id, w, h, defaultScale));</a>
+<a name="ln194">                   }</a>
+<a name="ln195">            }</a>
+<a name="ln196"> </a>
+<a name="ln197">      QComboBox* combos[] = { wholeCmb, halfCmb, quarterCmb, doubleWholeCmb };</a>
+<a name="ln198">      for (QComboBox* combo : combos) {</a>
+<a name="ln199">            for (auto si : resNoteheads) {</a>
+<a name="ln200">                  SymId id = si.id;</a>
+<a name="ln201">                  QIcon icon = si.icon;</a>
+<a name="ln202">                  combo-&gt;view()-&gt;setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);</a>
+<a name="ln203">                  combo-&gt;addItem(icon, Sym::id2userName(id), Sym::id2name(id));</a>
+<a name="ln204">                  }</a>
+<a name="ln205">            }</a>
+<a name="ln206">      wholeCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(SymId::noteheadWhole)));</a>
+<a name="ln207">      halfCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(SymId::noteheadHalf)));</a>
+<a name="ln208">      quarterCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(SymId::noteheadBlack)));</a>
+<a name="ln209">      doubleWholeCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(SymId::noteheadDoubleWhole)));</a>
+<a name="ln210"> </a>
+<a name="ln211">      connect(customGbox, SIGNAL(toggled(bool)), this, SLOT(customGboxToggled(bool)));</a>
+<a name="ln212">      connect(quarterCmb, SIGNAL(currentIndexChanged(int)), SLOT(customQuarterChanged(int)));</a>
+<a name="ln213"> </a>
+<a name="ln214">      MuseScore::restoreGeometry(this);</a>
+<a name="ln215">      </a>
+<a name="ln216">      Q_ASSERT(pitchList-&gt;topLevelItemCount() &gt; 0);</a>
+<a name="ln217">      pitchList-&gt;setCurrentItem(pitchList-&gt;topLevelItem(0));</a>
+<a name="ln218">      pitchList-&gt;setFocus();</a>
+<a name="ln219">      }</a>
+<a name="ln220"> </a>
+<a name="ln221">//---------------------------------------------------------</a>
+<a name="ln222">//   customGboxToggled</a>
+<a name="ln223">//---------------------------------------------------------</a>
+<a name="ln224"> </a>
+<a name="ln225">void EditDrumset::customGboxToggled(bool checked) {</a>
+<a name="ln226">      noteHead-&gt;setEnabled(!checked);</a>
+<a name="ln227">      if (checked)</a>
+<a name="ln228">            noteHead-&gt;setCurrentIndex(noteHead-&gt;findData(int(NoteHead::Group::HEAD_CUSTOM)));</a>
+<a name="ln229">      else</a>
+<a name="ln230">            noteHead-&gt;setCurrentIndex(noteHead-&gt;findData(int(NoteHead::Group::HEAD_NORMAL)));</a>
+<a name="ln231">}</a>
+<a name="ln232"> </a>
+<a name="ln233">//---------------------------------------------------------</a>
+<a name="ln234">//   updatePitchesList</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">void EditDrumset::updatePitchesList()</a>
+<a name="ln238">      {</a>
+<a name="ln239">      pitchList-&gt;clear();</a>
+<a name="ln240">      for (int i = 0; i &lt; 128; ++i) {</a>
+<a name="ln241">            QTreeWidgetItem* item = new EditDrumsetTreeWidgetItem(pitchList);</a>
+<a name="ln242">            item-&gt;setText(Column::PITCH, QString(&quot;%1&quot;).arg(i));</a>
+<a name="ln243">            item-&gt;setText(Column::NOTE, pitch2string(i));</a>
+<a name="ln244">            if (nDrumset.shortcut(i) == 0)</a>
+<a name="ln245">                  item-&gt;setText(Column::SHORTCUT, &quot;&quot;);</a>
+<a name="ln246">            else {</a>
+<a name="ln247">                  QString s(QChar(nDrumset.shortcut(i)));</a>
+<a name="ln248">                  item-&gt;setText(Column::SHORTCUT, s);</a>
+<a name="ln249">                  }</a>
+<a name="ln250">            item-&gt;setText(Column::NAME, qApp-&gt;translate(&quot;drumset&quot;, nDrumset.name(i).toUtf8().constData()));</a>
+<a name="ln251">            item-&gt;setData(Column::PITCH, Qt::UserRole, i);</a>
+<a name="ln252">            }</a>
+<a name="ln253">      pitchList-&gt;sortItems(3, Qt::SortOrder::DescendingOrder);</a>
+<a name="ln254">      }</a>
+<a name="ln255"> </a>
+<a name="ln256">//---------------------------------------------------------</a>
+<a name="ln257">//   refreshPitchesList</a>
+<a name="ln258">//---------------------------------------------------------</a>
+<a name="ln259">void EditDrumset::refreshPitchesList()</a>
+<a name="ln260">      {</a>
+<a name="ln261">      for (int i = 0; i &lt; pitchList-&gt;topLevelItemCount(); ++i) {</a>
+<a name="ln262">            QTreeWidgetItem* item = pitchList-&gt;topLevelItem(i);</a>
+<a name="ln263">            int pitch = item-&gt;data(0, Qt::UserRole).toInt();</a>
+<a name="ln264">            if (nDrumset.shortcut(pitch) == 0)</a>
+<a name="ln265">                  item-&gt;setText(Column::SHORTCUT, &quot;&quot;);</a>
+<a name="ln266">            else {</a>
+<a name="ln267">                  QString s(QChar(nDrumset.shortcut(pitch)));</a>
+<a name="ln268">                  item-&gt;setText(Column::SHORTCUT, s);</a>
+<a name="ln269">                  }</a>
+<a name="ln270">            item-&gt;setText(Column::NAME, qApp-&gt;translate(&quot;drumset&quot;, nDrumset.name(pitch).toUtf8().constData()));</a>
+<a name="ln271">            item-&gt;setData(0, Qt::UserRole, pitch);</a>
+<a name="ln272">            }</a>
+<a name="ln273">      }</a>
+<a name="ln274"> </a>
+<a name="ln275">void EditDrumset::setEnabledPitchControls(bool enable)</a>
+<a name="ln276">      {</a>
+<a name="ln277">      customGbox-&gt;setEnabled(enable);</a>
+<a name="ln278">      noteHead-&gt;setEnabled(enable);</a>
+<a name="ln279">      voice-&gt;setEnabled(enable);</a>
+<a name="ln280">      shortcut-&gt;setEnabled(enable);</a>
+<a name="ln281">      staffLine-&gt;setEnabled(enable);</a>
+<a name="ln282">      stemDirection-&gt;setEnabled(enable);</a>
+<a name="ln283">      drumNote-&gt;setEnabled(enable);</a>
+<a name="ln284">      label_2-&gt;setEnabled(enable);</a>
+<a name="ln285">      label_3-&gt;setEnabled(enable);</a>
+<a name="ln286">      label_4-&gt;setEnabled(enable);</a>
+<a name="ln287">      label_5-&gt;setEnabled(enable);</a>
+<a name="ln288">      label_6-&gt;setEnabled(enable);</a>
+<a name="ln289">      }</a>
+<a name="ln290"> </a>
+<a name="ln291">//---------------------------------------------------------</a>
+<a name="ln292">//   nameChanged</a>
+<a name="ln293">//---------------------------------------------------------</a>
+<a name="ln294"> </a>
+<a name="ln295">void EditDrumset::nameChanged(const QString&amp; n)</a>
+<a name="ln296">      {</a>
+<a name="ln297">      QTreeWidgetItem* item = pitchList-&gt;currentItem();</a>
+<a name="ln298">      if (item) {</a>
+<a name="ln299">            item-&gt;setText(Column::NAME, n);</a>
+<a name="ln300">            int pitch = item-&gt;data(Column::PITCH, Qt::UserRole).toInt();</a>
+<a name="ln301">            if (!n.isEmpty()) {</a>
+<a name="ln302">                  if (!nDrumset.isValid(pitch))</a>
+<a name="ln303">                        noteHead-&gt;setCurrentIndex(0);</a>
+<a name="ln304">                  }</a>
+<a name="ln305">            else</a>
+<a name="ln306">                  nDrumset.drum(pitch).name.clear();</a>
+<a name="ln307">            }</a>
+<a name="ln308">      setEnabledPitchControls(!n.isEmpty());</a>
+<a name="ln309">      }</a>
+<a name="ln310"> </a>
+<a name="ln311">//---------------------------------------------------------</a>
+<a name="ln312">//   shortcutChanged</a>
+<a name="ln313">//---------------------------------------------------------</a>
+<a name="ln314"> </a>
+<a name="ln315">void EditDrumset::shortcutChanged()</a>
+<a name="ln316">      {</a>
+<a name="ln317">      QTreeWidgetItem* item = pitchList-&gt;currentItem();</a>
+<a name="ln318">      if (!item)</a>
+<a name="ln319">            return;</a>
+<a name="ln320"> </a>
+<a name="ln321">      int pitch = item-&gt;data(Column::PITCH, Qt::UserRole).toInt();</a>
+<a name="ln322">      int sc;</a>
+<a name="ln323">      if (shortcut-&gt;currentIndex() == 7)</a>
+<a name="ln324">            sc = 0;</a>
+<a name="ln325">      else</a>
+<a name="ln326">            sc = &quot;ABCDEFG&quot;[shortcut-&gt;currentIndex()];</a>
+<a name="ln327"> </a>
+<a name="ln328">      if (QString(QChar(nDrumset.drum(pitch).shortcut)) != shortcut-&gt;currentText()) {</a>
+<a name="ln329">            //</a>
+<a name="ln330">            // remove conflicting shortcuts</a>
+<a name="ln331">            //</a>
+<a name="ln332">            for (int i = 0; i &lt; DRUM_INSTRUMENTS; ++i) {</a>
+<a name="ln333">                  if (i == pitch)</a>
+<a name="ln334">                        continue;</a>
+<a name="ln335">                  if (nDrumset.drum(i).shortcut == sc)</a>
+<a name="ln336">                        nDrumset.drum(i).shortcut = 0;</a>
+<a name="ln337">                  }</a>
+<a name="ln338">            nDrumset.drum(pitch).shortcut = sc;</a>
+<a name="ln339">            if (shortcut-&gt;currentIndex() == 7)</a>
+<a name="ln340">                  item-&gt;setText(Column::SHORTCUT, &quot;&quot;);</a>
+<a name="ln341">            else</a>
+<a name="ln342">                  item-&gt;setText(Column::SHORTCUT, shortcut-&gt;currentText());</a>
+<a name="ln343">            }</a>
+<a name="ln344">      refreshPitchesList();</a>
+<a name="ln345">      }</a>
+<a name="ln346"> </a>
+<a name="ln347">//---------------------------------------------------------</a>
+<a name="ln348">//   bboxClicked</a>
+<a name="ln349">//---------------------------------------------------------</a>
+<a name="ln350">void EditDrumset::bboxClicked(QAbstractButton* button)</a>
+<a name="ln351">      {</a>
+<a name="ln352">      QDialogButtonBox::ButtonRole br = buttonBox-&gt;buttonRole(button);</a>
+<a name="ln353">      switch(br) {</a>
+<a name="ln354">            case QDialogButtonBox::ApplyRole:</a>
+<a name="ln355">                  apply();</a>
+<a name="ln356">                  break;</a>
+<a name="ln357"> </a>
+<a name="ln358">            case QDialogButtonBox::AcceptRole:</a>
+<a name="ln359">                  apply();</a>
+<a name="ln360">                  // fall through</a>
+<a name="ln361"> </a>
+<a name="ln362">            case QDialogButtonBox::RejectRole:</a>
+<a name="ln363">                  close();</a>
+<a name="ln364">                  break;</a>
+<a name="ln365"> </a>
+<a name="ln366">            default:</a>
+<a name="ln367">                  qDebug(&quot;EditDrumSet: unknown button&quot;);</a>
+<a name="ln368">                  break;</a>
+<a name="ln369">            }</a>
+<a name="ln370">      }</a>
+<a name="ln371"> </a>
+<a name="ln372">//---------------------------------------------------------</a>
+<a name="ln373">//   apply</a>
+<a name="ln374">//---------------------------------------------------------</a>
+<a name="ln375">void EditDrumset::apply()</a>
+<a name="ln376">      {</a>
+<a name="ln377">      valueChanged();  //save last changes in name</a>
+<a name="ln378">      }</a>
+<a name="ln379"> </a>
+<a name="ln380">//---------------------------------------------------------</a>
+<a name="ln381">//   fillCustomNoteheadsDataFromComboboxes</a>
+<a name="ln382">//---------------------------------------------------------</a>
+<a name="ln383">void EditDrumset::fillCustomNoteheadsDataFromComboboxes(int pitch)</a>
+<a name="ln384">      {</a>
+<a name="ln385">      nDrumset.drum(pitch).notehead = NoteHead::Group::HEAD_CUSTOM;</a>
+<a name="ln386">      nDrumset.drum(pitch).noteheads[int(NoteHead::Type::HEAD_WHOLE)] = Sym::name2id(wholeCmb-&gt;currentData().toString());</a>
+<a name="ln387">      nDrumset.drum(pitch).noteheads[int(NoteHead::Type::HEAD_QUARTER)] = Sym::name2id(quarterCmb-&gt;currentData().toString());</a>
+<a name="ln388">      nDrumset.drum(pitch).noteheads[int(NoteHead::Type::HEAD_HALF)] = Sym::name2id(halfCmb-&gt;currentData().toString());</a>
+<a name="ln389">      nDrumset.drum(pitch).noteheads[int(NoteHead::Type::HEAD_BREVIS)] = Sym::name2id(doubleWholeCmb-&gt;currentData().toString());</a>
+<a name="ln390">      }</a>
+<a name="ln391"> </a>
+<a name="ln392">void EditDrumset::fillNoteheadsComboboxes(bool customGroup, int pitch)</a>
+<a name="ln393">      {</a>
+<a name="ln394">      if (customGroup) {</a>
+<a name="ln395">            wholeCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(nDrumset.noteHeads(pitch, NoteHead::Type::HEAD_WHOLE))));</a>
+<a name="ln396">            halfCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(nDrumset.noteHeads(pitch, NoteHead::Type::HEAD_HALF))));</a>
+<a name="ln397">            quarterCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(nDrumset.noteHeads(pitch, NoteHead::Type::HEAD_QUARTER))));</a>
+<a name="ln398">            doubleWholeCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(nDrumset.noteHeads(pitch, NoteHead::Type::HEAD_BREVIS))));</a>
+<a name="ln399">            }</a>
+<a name="ln400">      else {</a>
+<a name="ln401">            const auto group = nDrumset.drum(pitch).notehead;</a>
+<a name="ln402">            if (group == NoteHead::Group::HEAD_INVALID)</a>
+<a name="ln403">                  return;</a>
+<a name="ln404"> </a>
+<a name="ln405">            wholeCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(Note::noteHead(0, group, NoteHead::Type::HEAD_WHOLE))));</a>
+<a name="ln406">            halfCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(Note::noteHead(0, group, NoteHead::Type::HEAD_HALF))));</a>
+<a name="ln407">            quarterCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(Note::noteHead(0, group, NoteHead::Type::HEAD_QUARTER))));</a>
+<a name="ln408">            doubleWholeCmb-&gt;setCurrentIndex(quarterCmb-&gt;findData(Sym::id2name(Note::noteHead(0, group, NoteHead::Type::HEAD_BREVIS))));</a>
+<a name="ln409">            }</a>
+<a name="ln410">      }</a>
+<a name="ln411"> </a>
+<a name="ln412">//---------------------------------------------------------</a>
+<a name="ln413">//   itemChanged</a>
+<a name="ln414">//---------------------------------------------------------</a>
+<a name="ln415">void EditDrumset::itemChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous)</a>
+<a name="ln416">      {</a>
+<a name="ln417">      if (previous) {</a>
+<a name="ln418">            int pitch = previous-&gt;data(0, Qt::UserRole).toInt();</a>
+<a name="ln419">            nDrumset.drum(pitch).name          = name-&gt;text();</a>
+<a name="ln420">            if (customGbox-&gt;isChecked())</a>
+<a name="ln421">                  fillCustomNoteheadsDataFromComboboxes(pitch);</a>
+<a name="ln422">            else {</a>
+<a name="ln423">                  const QVariant currData = noteHead-&gt;currentData();</a>
+<a name="ln424">                  if (currData.isValid())</a>
+<a name="ln425">                        nDrumset.drum(pitch).notehead = NoteHead::Group(currData.toInt());</a>
+<a name="ln426">                  }</a>
+<a name="ln427"> </a>
+<a name="ln428">            nDrumset.drum(pitch).line          = staffLine-&gt;value();</a>
+<a name="ln429">            nDrumset.drum(pitch).voice         = voice-&gt;currentIndex();</a>
+<a name="ln430">            if (shortcut-&gt;currentIndex() == 7)</a>
+<a name="ln431">                  nDrumset.drum(pitch).shortcut = 0;</a>
+<a name="ln432">            else</a>
+<a name="ln433">                  nDrumset.drum(pitch).shortcut = &quot;ABCDEFG&quot;[shortcut-&gt;currentIndex()];</a>
+<a name="ln434">            nDrumset.drum(pitch).stemDirection = Direction(stemDirection-&gt;currentIndex());</a>
+<a name="ln435">            previous-&gt;setText(Column::NAME, qApp-&gt;translate(&quot;drumset&quot;, nDrumset.name(pitch).toUtf8().constData()));</a>
+<a name="ln436">            }</a>
+<a name="ln437">      if (current == 0)</a>
+<a name="ln438">            return;</a>
+<a name="ln439"> </a>
+<a name="ln440">      staffLine-&gt;blockSignals(true);</a>
+<a name="ln441">      voice-&gt;blockSignals(true);</a>
+<a name="ln442">      stemDirection-&gt;blockSignals(true);</a>
+<a name="ln443">      noteHead-&gt;blockSignals(true);</a>
+<a name="ln444"> </a>
+<a name="ln445">      int pitch = current-&gt;data(0, Qt::UserRole).toInt();</a>
+<a name="ln446">      name-&gt;setText(qApp-&gt;translate(&quot;drumset&quot;, nDrumset.name(pitch).toUtf8().constData()));</a>
+<a name="ln447">      staffLine-&gt;setValue(nDrumset.line(pitch));</a>
+<a name="ln448">      qDebug(&quot;BEFORE %d&quot;, nDrumset.voice(pitch));</a>
+<a name="ln449">      voice-&gt;setCurrentIndex(nDrumset.voice(pitch));</a>
+<a name="ln450">      qDebug(&quot;AFTER %d&quot;, nDrumset.voice(pitch));</a>
+<a name="ln451">      stemDirection-&gt;setCurrentIndex(int(nDrumset.stemDirection(pitch)));</a>
+<a name="ln452"> </a>
+<a name="ln453">      NoteHead::Group nh = nDrumset.noteHead(pitch);</a>
+<a name="ln454">      bool isCustomGroup = (nh == NoteHead::Group::HEAD_CUSTOM);</a>
+<a name="ln455">      if (nDrumset.isValid(pitch))</a>
+<a name="ln456">            setCustomNoteheadsGUIEnabled(isCustomGroup);</a>
+<a name="ln457">      noteHead-&gt;setCurrentIndex(noteHead-&gt;findData(int(nh)));</a>
+<a name="ln458">      fillNoteheadsComboboxes(isCustomGroup, pitch);</a>
+<a name="ln459"> </a>
+<a name="ln460">      if (nDrumset.shortcut(pitch) == 0)</a>
+<a name="ln461">            shortcut-&gt;setCurrentIndex(7);</a>
+<a name="ln462">      else</a>
+<a name="ln463">            shortcut-&gt;setCurrentIndex(nDrumset.shortcut(pitch) - 'A');</a>
+<a name="ln464"> </a>
+<a name="ln465">      staffLine-&gt;blockSignals(false);</a>
+<a name="ln466">      voice-&gt;blockSignals(false);</a>
+<a name="ln467">      stemDirection-&gt;blockSignals(false);</a>
+<a name="ln468">      noteHead-&gt;blockSignals(false);</a>
+<a name="ln469"> </a>
+<a name="ln470">      updateExample();</a>
+<a name="ln471">      }</a>
+<a name="ln472"> </a>
+<a name="ln473">//---------------------------------------------------------</a>
+<a name="ln474">//   setCustomNoteheadsGUIEnabled</a>
+<a name="ln475">//---------------------------------------------------------</a>
+<a name="ln476">void EditDrumset::setCustomNoteheadsGUIEnabled(bool enabled)</a>
+<a name="ln477">      {</a>
+<a name="ln478">      customGbox-&gt;setChecked(enabled);</a>
+<a name="ln479">      noteHead-&gt;setEnabled(!enabled);</a>
+<a name="ln480">      if (enabled)</a>
+<a name="ln481">            noteHead-&gt;setCurrentIndex(noteHead-&gt;findData(int(NoteHead::Group::HEAD_CUSTOM)));</a>
+<a name="ln482">      }</a>
+<a name="ln483"> </a>
+<a name="ln484">//---------------------------------------------------------</a>
+<a name="ln485">//   valueChanged</a>
+<a name="ln486">//---------------------------------------------------------</a>
+<a name="ln487">void EditDrumset::valueChanged()</a>
+<a name="ln488">      {</a>
+<a name="ln489">      if(!pitchList-&gt;currentItem())</a>
+<a name="ln490">            return;</a>
+<a name="ln491">      int pitch = pitchList-&gt;currentItem()-&gt;data(Column::PITCH, Qt::UserRole).toInt();</a>
+<a name="ln492">      nDrumset.drum(pitch).name          = name-&gt;text();</a>
+<a name="ln493">      if (customGbox-&gt;isChecked() || noteHead-&gt;currentIndex() == noteHead-&gt;findData(int(NoteHead::Group::HEAD_CUSTOM))) {</a>
+<a name="ln494">            fillCustomNoteheadsDataFromComboboxes(pitch);</a>
+<a name="ln495">            setCustomNoteheadsGUIEnabled(true);</a>
+<a name="ln496">            }</a>
+<a name="ln497">      else {</a>
+<a name="ln498">            nDrumset.drum(pitch).notehead = NoteHead::Group(noteHead-&gt;currentData().toInt());</a>
+<a name="ln499">            fillNoteheadsComboboxes(false, pitch);</a>
+<a name="ln500">            setCustomNoteheadsGUIEnabled(false);</a>
+<a name="ln501">      }</a>
+<a name="ln502">      </a>
+<a name="ln503">      nDrumset.drum(pitch).line          = staffLine-&gt;value();</a>
+<a name="ln504">      nDrumset.drum(pitch).voice         = voice-&gt;currentIndex();</a>
+<a name="ln505">      nDrumset.drum(pitch).stemDirection = Direction(stemDirection-&gt;currentIndex());</a>
+<a name="ln506">      if (QString(QChar(nDrumset.drum(pitch).shortcut)) != shortcut-&gt;currentText()) {</a>
+<a name="ln507">            if (shortcut-&gt;currentText().isEmpty())</a>
+<a name="ln508">                  nDrumset.drum(pitch).shortcut = 0;</a>
+<a name="ln509">            else</a>
+<a name="ln510">                  nDrumset.drum(pitch).shortcut = shortcut-&gt;currentText().at(0).toLatin1();</a>
+<a name="ln511">            }</a>
+<a name="ln512">      updateExample();</a>
+<a name="ln513">      }</a>
+<a name="ln514"> </a>
+<a name="ln515">//---------------------------------------------------------</a>
+<a name="ln516">//   updateExample</a>
+<a name="ln517">//---------------------------------------------------------</a>
+<a name="ln518">void EditDrumset::updateExample()</a>
+<a name="ln519">      {</a>
+<a name="ln520">      int pitch = pitchList-&gt;currentItem()-&gt;data(0, Qt::UserRole).toInt();</a>
+<a name="ln521">      if (!nDrumset.isValid(pitch)) {</a>
+<a name="ln522">            drumNote-&gt;add(0,  0, &quot;&quot;);</a>
+<a name="ln523">            return;</a>
+<a name="ln524">            }</a>
+<a name="ln525">      int line      = nDrumset.line(pitch);</a>
+<a name="ln526">      NoteHead::Group nh = nDrumset.noteHead(pitch);</a>
+<a name="ln527">      int v         = nDrumset.voice(pitch);</a>
+<a name="ln528">      Direction dir = nDrumset.stemDirection(pitch);</a>
+<a name="ln529">      bool up = (Direction::UP == dir) || (Direction::AUTO == dir &amp;&amp; line &gt; 4);</a>
+<a name="ln530">      Chord* chord = new Chord(gscore);</a>
+<a name="ln531">      chord-&gt;setDurationType(TDuration::DurationType::V_QUARTER);</a>
+<a name="ln532">      chord-&gt;setStemDirection(dir);</a>
+<a name="ln533">      chord-&gt;setTrack(v);</a>
+<a name="ln534">      chord-&gt;setUp(up);</a>
+<a name="ln535">      Note* note = new Note(gscore);</a>
+<a name="ln536">      note-&gt;setParent(chord);</a>
+<a name="ln537">      note-&gt;setTrack(v);</a>
+<a name="ln538">      note-&gt;setPitch(pitch);</a>
+<a name="ln539">      note-&gt;setTpcFromPitch();</a>
+<a name="ln540">      note-&gt;setLine(line);</a>
+<a name="ln541">      note-&gt;setPos(0.0, gscore-&gt;spatium() * .5 * line);</a>
+<a name="ln542">      note-&gt;setHeadType(NoteHead::Type::HEAD_QUARTER);</a>
+<a name="ln543">      note-&gt;setHeadGroup(nh);</a>
+<a name="ln544">      note-&gt;setCachedNoteheadSym(Sym::name2id(quarterCmb-&gt;currentData().toString()));</a>
+<a name="ln545">      chord-&gt;add(note);</a>
+<a name="ln546">      Stem* stem = new Stem(gscore);</a>
+<a name="ln547">      stem-&gt;setLen((up ? -3.0 : 3.0) * gscore-&gt;spatium());</a>
+<a name="ln548">      chord-&gt;add(stem);</a>
+<a name="ln549">      drumNote-&gt;add(0,  chord, qApp-&gt;translate(&quot;drumset&quot;, nDrumset.name(pitch).toUtf8().constData()));</a>
+<a name="ln550">      }</a>
+<a name="ln551"> </a>
+<a name="ln552">//---------------------------------------------------------</a>
+<a name="ln553">//   load</a>
+<a name="ln554">//---------------------------------------------------------</a>
+<a name="ln555"> </a>
+<a name="ln556">void EditDrumset::load()</a>
+<a name="ln557">      {</a>
+<a name="ln558">      QString fname = mscore-&gt;getDrumsetFilename(true);</a>
+<a name="ln559">      if (fname.isEmpty())</a>
+<a name="ln560">            return;</a>
+<a name="ln561"> </a>
+<a name="ln562">      QFile fp(fname);</a>
+<a name="ln563">      if (!fp.open(QIODevice::ReadOnly))</a>
+<a name="ln564">            return;</a>
+<a name="ln565"> </a>
+<a name="ln566">      XmlReader e(&amp;fp);</a>
+<a name="ln567">      nDrumset.clear();</a>
+<a name="ln568">      while (e.readNextStartElement()) {</a>
+<a name="ln569">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln570">                  if (e.attribute(&quot;version&quot;) != MSC_VERSION) {</a>
+<a name="ln571">                        QMessageBox::StandardButton b = QMessageBox::warning(this, tr(&quot;Drumset file too old&quot;),</a>
+<a name="ln572">                                                                             tr(&quot;MuseScore may not be able to load this drumset file.&quot;),</a>
+<a name="ln573">                                                                             QMessageBox::Cancel|QMessageBox::Ignore, QMessageBox::Cancel);</a>
+<a name="ln574">                        if (b != QMessageBox::Ignore) // covers Cancel and Esc</a>
+<a name="ln575">                              return;</a>
+<a name="ln576">                        }</a>
+<a name="ln577">                  while (e.readNextStartElement()) {</a>
+<a name="ln578">                        if (e.name() == &quot;Drum&quot;)</a>
+<a name="ln579">                              nDrumset.load(e);</a>
+<a name="ln580">                        else</a>
+<a name="ln581">                              e.unknown();</a>
+<a name="ln582">                        }</a>
+<a name="ln583">                  }</a>
+<a name="ln584">            }</a>
+<a name="ln585">      fp.close();</a>
+<a name="ln586">      updatePitchesList();</a>
+<a name="ln587">      }</a>
+<a name="ln588"> </a>
+<a name="ln589">//---------------------------------------------------------</a>
+<a name="ln590">//   save</a>
+<a name="ln591">//---------------------------------------------------------</a>
+<a name="ln592"> </a>
+<a name="ln593">void EditDrumset::save()</a>
+<a name="ln594">      {</a>
+<a name="ln595">      QString fname = mscore-&gt;getDrumsetFilename(false);</a>
+<a name="ln596">      if (fname.isEmpty())</a>
+<a name="ln597">            return;</a>
+<a name="ln598"> </a>
+<a name="ln599">      QFile f(fname);</a>
+<a name="ln600">      if (!f.open(QIODevice::WriteOnly)) {</a>
+<a name="ln601">            QString s = tr(&quot;Open File\n%1\nfailed: %2&quot;).arg(f.fileName()).arg(strerror(errno));</a>
+<a name="ln602">            QMessageBox::critical(mscore, tr(&quot;Open File&quot;), s);</a>
+<a name="ln603">            return;</a>
+<a name="ln604">            }</a>
+<a name="ln605">      valueChanged();  //save last changes in name</a>
+<a name="ln606">      XmlWriter xml(0, &amp;f);</a>
+<a name="ln607">      xml.header();</a>
+<a name="ln608">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln609">      nDrumset.save(xml);</a>
+<a name="ln610">      xml.etag();</a>
+<a name="ln611">      if (f.error() != QFile::NoError) {</a>
+<a name="ln612">            QString s = tr(&quot;Write File failed: %1&quot;).arg(f.errorString());</a>
+<a name="ln613">            QMessageBox::critical(this, tr(&quot;Write Drumset&quot;), s);</a>
+<a name="ln614">            }</a>
+<a name="ln615">      }</a>
+<a name="ln616"> </a>
+<a name="ln617">//---------------------------------------------------------</a>
+<a name="ln618">//   hideEvent</a>
+<a name="ln619">//---------------------------------------------------------</a>
+<a name="ln620">void EditDrumset::hideEvent(QHideEvent* event)</a>
+<a name="ln621">      {</a>
+<a name="ln622">      MuseScore::saveGeometry(this);</a>
+<a name="ln623">      QDialog::hideEvent(event);</a>
+<a name="ln624">      }</a>
+<a name="ln625"> </a>
+<a name="ln626">//---------------------------------------------------------</a>
+<a name="ln627">//   customQuarterChanged</a>
+<a name="ln628">//---------------------------------------------------------</a>
+<a name="ln629">void EditDrumset::customQuarterChanged(int)</a>
+<a name="ln630">      {</a>
+<a name="ln631">      updateExample();</a>
+<a name="ln632">      }</a>
+<a name="ln633">}</a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,655 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>psmodule.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  psmodule.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    PSNames module implementation (body).                                */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln21">#include FT_INTERNAL_OBJECTS_H</a>
+<a name="ln22">#include FT_SERVICE_POSTSCRIPT_CMAPS_H</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;psmodule.h&quot;</a>
+<a name="ln25">#include &quot;pstables.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">#include &quot;psnamerr.h&quot;</a>
+<a name="ln28">#include &quot;pspic.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30"> </a>
+<a name="ln31">#ifdef FT_CONFIG_OPTION_POSTSCRIPT_NAMES</a>
+<a name="ln32"> </a>
+<a name="ln33"> </a>
+<a name="ln34">#ifdef FT_CONFIG_OPTION_ADOBE_GLYPH_LIST</a>
+<a name="ln35"> </a>
+<a name="ln36"> </a>
+<a name="ln37">#define VARIANT_BIT         0x80000000UL</a>
+<a name="ln38">#define BASE_GLYPH( code )  ( (FT_UInt32)( (code) &amp; ~VARIANT_BIT ) )</a>
+<a name="ln39"> </a>
+<a name="ln40"> </a>
+<a name="ln41">  /* Return the Unicode value corresponding to a given glyph.  Note that */</a>
+<a name="ln42">  /* we do deal with glyph variants by detecting a non-initial dot in    */</a>
+<a name="ln43">  /* the name, as in `A.swash' or `e.final'; in this case, the           */</a>
+<a name="ln44">  /* VARIANT_BIT is set in the return value.                             */</a>
+<a name="ln45">  /*                                                                     */</a>
+<a name="ln46">  static FT_UInt32</a>
+<a name="ln47">  ps_unicode_value( const char*  glyph_name )</a>
+<a name="ln48">  {</a>
+<a name="ln49">    /* If the name begins with `uni', then the glyph name may be a */</a>
+<a name="ln50">    /* hard-coded unicode character code.                          */</a>
+<a name="ln51">    if ( glyph_name[0] == 'u' &amp;&amp;</a>
+<a name="ln52">         glyph_name[1] == 'n' &amp;&amp;</a>
+<a name="ln53">         glyph_name[2] == 'i' )</a>
+<a name="ln54">    {</a>
+<a name="ln55">      /* determine whether the next four characters following are */</a>
+<a name="ln56">      /* hexadecimal.                                             */</a>
+<a name="ln57"> </a>
+<a name="ln58">      /* XXX: Add code to deal with ligatures, i.e. glyph names like */</a>
+<a name="ln59">      /*      `uniXXXXYYYYZZZZ'...                                   */</a>
+<a name="ln60"> </a>
+<a name="ln61">      FT_Int       count;</a>
+<a name="ln62">      FT_UInt32    value = 0;</a>
+<a name="ln63">      const char*  p     = glyph_name + 3;</a>
+<a name="ln64"> </a>
+<a name="ln65"> </a>
+<a name="ln66">      for ( count = 4; count &gt; 0; count--, p++ )</a>
+<a name="ln67">      {</a>
+<a name="ln68">        char          c = *p;</a>
+<a name="ln69">        unsigned int  d;</a>
+<a name="ln70"> </a>
+<a name="ln71"> </a>
+<a name="ln72">        d = (unsigned char)c - '0';</a>
+<a name="ln73">        if ( d &gt;= 10 )</a>
+<a name="ln74">        {</a>
+<a name="ln75">          d = (unsigned char)c - 'A';</a>
+<a name="ln76">          if ( d &gt;= 6 )</a>
+<a name="ln77">            d = 16;</a>
+<a name="ln78">          else</a>
+<a name="ln79">            d += 10;</a>
+<a name="ln80">        }</a>
+<a name="ln81"> </a>
+<a name="ln82">        /* Exit if a non-uppercase hexadecimal character was found   */</a>
+<a name="ln83">        /* -- this also catches character codes below `0' since such */</a>
+<a name="ln84">        /* negative numbers cast to `unsigned int' are far too big.  */</a>
+<a name="ln85">        if ( d &gt;= 16 )</a>
+<a name="ln86">          break;</a>
+<a name="ln87"> </a>
+<a name="ln88">        value = ( value &lt;&lt; 4 ) + d;</a>
+<a name="ln89">      }</a>
+<a name="ln90"> </a>
+<a name="ln91">      /* there must be exactly four hex digits */</a>
+<a name="ln92">      if ( count == 0 )</a>
+<a name="ln93">      {</a>
+<a name="ln94">        if ( *p == '\0' )</a>
+<a name="ln95">          return value;</a>
+<a name="ln96">        if ( *p == '.' )</a>
+<a name="ln97">          return (FT_UInt32)( value | VARIANT_BIT );</a>
+<a name="ln98">      }</a>
+<a name="ln99">    }</a>
+<a name="ln100"> </a>
+<a name="ln101">    /* If the name begins with `u', followed by four to six uppercase */</a>
+<a name="ln102">    /* hexadecimal digits, it is a hard-coded unicode character code. */</a>
+<a name="ln103">    if ( glyph_name[0] == 'u' )</a>
+<a name="ln104">    {</a>
+<a name="ln105">      FT_Int       count;</a>
+<a name="ln106">      FT_UInt32    value = 0;</a>
+<a name="ln107">      const char*  p     = glyph_name + 1;</a>
+<a name="ln108"> </a>
+<a name="ln109"> </a>
+<a name="ln110">      for ( count = 6; count &gt; 0; count--, p++ )</a>
+<a name="ln111">      {</a>
+<a name="ln112">        char          c = *p;</a>
+<a name="ln113">        unsigned int  d;</a>
+<a name="ln114"> </a>
+<a name="ln115"> </a>
+<a name="ln116">        d = (unsigned char)c - '0';</a>
+<a name="ln117">        if ( d &gt;= 10 )</a>
+<a name="ln118">        {</a>
+<a name="ln119">          d = (unsigned char)c - 'A';</a>
+<a name="ln120">          if ( d &gt;= 6 )</a>
+<a name="ln121">            d = 16;</a>
+<a name="ln122">          else</a>
+<a name="ln123">            d += 10;</a>
+<a name="ln124">        }</a>
+<a name="ln125"> </a>
+<a name="ln126">        if ( d &gt;= 16 )</a>
+<a name="ln127">          break;</a>
+<a name="ln128"> </a>
+<a name="ln129">        value = ( value &lt;&lt; 4 ) + d;</a>
+<a name="ln130">      }</a>
+<a name="ln131"> </a>
+<a name="ln132">      if ( count &lt;= 2 )</a>
+<a name="ln133">      {</a>
+<a name="ln134">        if ( *p == '\0' )</a>
+<a name="ln135">          return value;</a>
+<a name="ln136">        if ( *p == '.' )</a>
+<a name="ln137">          return (FT_UInt32)( value | VARIANT_BIT );</a>
+<a name="ln138">      }</a>
+<a name="ln139">    }</a>
+<a name="ln140"> </a>
+<a name="ln141">    /* Look for a non-initial dot in the glyph name in order to */</a>
+<a name="ln142">    /* find variants like `A.swash', `e.final', etc.            */</a>
+<a name="ln143">    {</a>
+<a name="ln144">      const char*  p   = glyph_name;</a>
+<a name="ln145">      const char*  dot = NULL;</a>
+<a name="ln146"> </a>
+<a name="ln147"> </a>
+<a name="ln148">      for ( ; *p; p++ )</a>
+<a name="ln149">      {</a>
+<a name="ln150">        if ( *p == '.' &amp;&amp; p &gt; glyph_name )</a>
+<a name="ln151">        {</a>
+<a name="ln152">          dot = p;</a>
+<a name="ln153">          break;</a>
+<a name="ln154">        }</a>
+<a name="ln155">      }</a>
+<a name="ln156"> </a>
+<a name="ln157">      /* now look up the glyph in the Adobe Glyph List */</a>
+<a name="ln158">      if ( !dot )</a>
+<a name="ln159">        return (FT_UInt32)ft_get_adobe_glyph_index( glyph_name, p );</a>
+<a name="ln160">      else</a>
+<a name="ln161">        return (FT_UInt32)( ft_get_adobe_glyph_index( glyph_name, dot ) |</a>
+<a name="ln162">                            VARIANT_BIT );</a>
+<a name="ln163">    }</a>
+<a name="ln164">  }</a>
+<a name="ln165"> </a>
+<a name="ln166"> </a>
+<a name="ln167">  /* ft_qsort callback to sort the unicode map */</a>
+<a name="ln168">  FT_CALLBACK_DEF( int )</a>
+<a name="ln169">  compare_uni_maps( const void*  a,</a>
+<a name="ln170">                    const void*  b )</a>
+<a name="ln171">  {</a>
+<a name="ln172">    PS_UniMap*  map1 = (PS_UniMap*)a;</a>
+<a name="ln173">    PS_UniMap*  map2 = (PS_UniMap*)b;</a>
+<a name="ln174">    FT_UInt32   unicode1 = BASE_GLYPH( map1-&gt;unicode );</a>
+<a name="ln175">    FT_UInt32   unicode2 = BASE_GLYPH( map2-&gt;unicode );</a>
+<a name="ln176"> </a>
+<a name="ln177"> </a>
+<a name="ln178">    /* sort base glyphs before glyph variants */</a>
+<a name="ln179">    if ( unicode1 == unicode2 )</a>
+<a name="ln180">    {</a>
+<a name="ln181">      if ( map1-&gt;unicode &gt; map2-&gt;unicode )</a>
+<a name="ln182">        return 1;</a>
+<a name="ln183">      else if ( map1-&gt;unicode &lt; map2-&gt;unicode )</a>
+<a name="ln184">        return -1;</a>
+<a name="ln185">      else</a>
+<a name="ln186">        return 0;</a>
+<a name="ln187">    }</a>
+<a name="ln188">    else</a>
+<a name="ln189">    {</a>
+<a name="ln190">      if ( unicode1 &gt; unicode2 )</a>
+<a name="ln191">        return 1;</a>
+<a name="ln192">      else if ( unicode1 &lt; unicode2 )</a>
+<a name="ln193">        return -1;</a>
+<a name="ln194">      else</a>
+<a name="ln195">        return 0;</a>
+<a name="ln196">    }</a>
+<a name="ln197">  }</a>
+<a name="ln198"> </a>
+<a name="ln199"> </a>
+<a name="ln200">  /* support for extra glyphs not handled (well) in AGL; */</a>
+<a name="ln201">  /* we add extra mappings for them if necessary         */</a>
+<a name="ln202"> </a>
+<a name="ln203">#define EXTRA_GLYPH_LIST_SIZE  10</a>
+<a name="ln204"> </a>
+<a name="ln205">  static const FT_UInt32  ft_extra_glyph_unicodes[EXTRA_GLYPH_LIST_SIZE] =</a>
+<a name="ln206">  {</a>
+<a name="ln207">    /* WGL 4 */</a>
+<a name="ln208">    0x0394,</a>
+<a name="ln209">    0x03A9,</a>
+<a name="ln210">    0x2215,</a>
+<a name="ln211">    0x00AD,</a>
+<a name="ln212">    0x02C9,</a>
+<a name="ln213">    0x03BC,</a>
+<a name="ln214">    0x2219,</a>
+<a name="ln215">    0x00A0,</a>
+<a name="ln216">    /* Romanian */</a>
+<a name="ln217">    0x021A,</a>
+<a name="ln218">    0x021B</a>
+<a name="ln219">  };</a>
+<a name="ln220"> </a>
+<a name="ln221">  static const char  ft_extra_glyph_names[] =</a>
+<a name="ln222">  {</a>
+<a name="ln223">    'D','e','l','t','a',0,</a>
+<a name="ln224">    'O','m','e','g','a',0,</a>
+<a name="ln225">    'f','r','a','c','t','i','o','n',0,</a>
+<a name="ln226">    'h','y','p','h','e','n',0,</a>
+<a name="ln227">    'm','a','c','r','o','n',0,</a>
+<a name="ln228">    'm','u',0,</a>
+<a name="ln229">    'p','e','r','i','o','d','c','e','n','t','e','r','e','d',0,</a>
+<a name="ln230">    's','p','a','c','e',0,</a>
+<a name="ln231">    'T','c','o','m','m','a','a','c','c','e','n','t',0,</a>
+<a name="ln232">    't','c','o','m','m','a','a','c','c','e','n','t',0</a>
+<a name="ln233">  };</a>
+<a name="ln234"> </a>
+<a name="ln235">  static const FT_Int</a>
+<a name="ln236">  ft_extra_glyph_name_offsets[EXTRA_GLYPH_LIST_SIZE] =</a>
+<a name="ln237">  {</a>
+<a name="ln238">     0,</a>
+<a name="ln239">     6,</a>
+<a name="ln240">    12,</a>
+<a name="ln241">    21,</a>
+<a name="ln242">    28,</a>
+<a name="ln243">    35,</a>
+<a name="ln244">    38,</a>
+<a name="ln245">    53,</a>
+<a name="ln246">    59,</a>
+<a name="ln247">    72</a>
+<a name="ln248">  };</a>
+<a name="ln249"> </a>
+<a name="ln250"> </a>
+<a name="ln251">  static void</a>
+<a name="ln252">  ps_check_extra_glyph_name( const char*  gname,</a>
+<a name="ln253">                             FT_UInt      glyph,</a>
+<a name="ln254">                             FT_UInt*     extra_glyphs,</a>
+<a name="ln255">                             FT_UInt     *states )</a>
+<a name="ln256">  {</a>
+<a name="ln257">    FT_UInt  n;</a>
+<a name="ln258"> </a>
+<a name="ln259"> </a>
+<a name="ln260">    for ( n = 0; n &lt; EXTRA_GLYPH_LIST_SIZE; n++ )</a>
+<a name="ln261">    {</a>
+<a name="ln262">      if ( ft_strcmp( ft_extra_glyph_names +</a>
+<a name="ln263">                        ft_extra_glyph_name_offsets[n], gname ) == 0 )</a>
+<a name="ln264">      {</a>
+<a name="ln265">        if ( states[n] == 0 )</a>
+<a name="ln266">        {</a>
+<a name="ln267">          /* mark this extra glyph as a candidate for the cmap */</a>
+<a name="ln268">          states[n]     = 1;</a>
+<a name="ln269">          extra_glyphs[n] = glyph;</a>
+<a name="ln270">        }</a>
+<a name="ln271"> </a>
+<a name="ln272">        return;</a>
+<a name="ln273">      }</a>
+<a name="ln274">    }</a>
+<a name="ln275">  }</a>
+<a name="ln276"> </a>
+<a name="ln277"> </a>
+<a name="ln278">  static void</a>
+<a name="ln279">  ps_check_extra_glyph_unicode( FT_UInt32  uni_char,</a>
+<a name="ln280">                                FT_UInt   *states )</a>
+<a name="ln281">  {</a>
+<a name="ln282">    FT_UInt  n;</a>
+<a name="ln283"> </a>
+<a name="ln284"> </a>
+<a name="ln285">    for ( n = 0; n &lt; EXTRA_GLYPH_LIST_SIZE; n++ )</a>
+<a name="ln286">    {</a>
+<a name="ln287">      if ( uni_char == ft_extra_glyph_unicodes[n] )</a>
+<a name="ln288">      {</a>
+<a name="ln289">        /* disable this extra glyph from being added to the cmap */</a>
+<a name="ln290">        states[n] = 2;</a>
+<a name="ln291"> </a>
+<a name="ln292">        return;</a>
+<a name="ln293">      }</a>
+<a name="ln294">    }</a>
+<a name="ln295">  }</a>
+<a name="ln296"> </a>
+<a name="ln297"> </a>
+<a name="ln298">  /* Build a table that maps Unicode values to glyph indices. */</a>
+<a name="ln299">  static FT_Error</a>
+<a name="ln300">  ps_unicodes_init( FT_Memory             memory,</a>
+<a name="ln301">                    PS_Unicodes           table,</a>
+<a name="ln302">                    FT_UInt               num_glyphs,</a>
+<a name="ln303">                    PS_GetGlyphNameFunc   get_glyph_name,</a>
+<a name="ln304">                    PS_FreeGlyphNameFunc  free_glyph_name,</a>
+<a name="ln305">                    FT_Pointer            glyph_data )</a>
+<a name="ln306">  {</a>
+<a name="ln307">    FT_Error  error;</a>
+<a name="ln308"> </a>
+<a name="ln309">    FT_UInt  extra_glyph_list_states[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };</a>
+<a name="ln310">    FT_UInt  extra_glyphs[EXTRA_GLYPH_LIST_SIZE];</a>
+<a name="ln311"> </a>
+<a name="ln312"> </a>
+<a name="ln313">    /* we first allocate the table */</a>
+<a name="ln314">    table-&gt;num_maps = 0;</a>
+<a name="ln315">    table-&gt;maps     = NULL;</a>
+<a name="ln316"> </a>
+<a name="ln317">    if ( !FT_NEW_ARRAY( table-&gt;maps, num_glyphs + EXTRA_GLYPH_LIST_SIZE ) )</a>
+<a name="ln318">    {</a>
+<a name="ln319">      FT_UInt     n;</a>
+<a name="ln320">      FT_UInt     count;</a>
+<a name="ln321">      PS_UniMap*  map;</a>
+<a name="ln322">      FT_UInt32   uni_char;</a>
+<a name="ln323"> </a>
+<a name="ln324"> </a>
+<a name="ln325">      map = table-&gt;maps;</a>
+<a name="ln326"> </a>
+<a name="ln327">      for ( n = 0; n &lt; num_glyphs; n++ )</a>
+<a name="ln328">      {</a>
+<a name="ln329">        const char*  gname = get_glyph_name( glyph_data, n );</a>
+<a name="ln330"> </a>
+<a name="ln331"> </a>
+<a name="ln332">        if ( gname )</a>
+<a name="ln333">        {</a>
+<a name="ln334">          ps_check_extra_glyph_name( gname, n,</a>
+<a name="ln335">                                     extra_glyphs, extra_glyph_list_states );</a>
+<a name="ln336">          uni_char = ps_unicode_value( gname );</a>
+<a name="ln337"> </a>
+<a name="ln338">          if ( BASE_GLYPH( uni_char ) != 0 )</a>
+<a name="ln339">          {</a>
+<a name="ln340">            ps_check_extra_glyph_unicode( uni_char,</a>
+<a name="ln341">                                          extra_glyph_list_states );</a>
+<a name="ln342">            map-&gt;unicode     = uni_char;</a>
+<a name="ln343">            map-&gt;glyph_index = n;</a>
+<a name="ln344">            map++;</a>
+<a name="ln345">          }</a>
+<a name="ln346"> </a>
+<a name="ln347">          if ( free_glyph_name )</a>
+<a name="ln348">            free_glyph_name( glyph_data, gname );</a>
+<a name="ln349">        }</a>
+<a name="ln350">      }</a>
+<a name="ln351"> </a>
+<a name="ln352">      for ( n = 0; n &lt; EXTRA_GLYPH_LIST_SIZE; n++ )</a>
+<a name="ln353">      {</a>
+<a name="ln354">        if ( extra_glyph_list_states[n] == 1 )</a>
+<a name="ln355">        {</a>
+<a name="ln356">          /* This glyph name has an additional representation. */</a>
+<a name="ln357">          /* Add it to the cmap.                               */</a>
+<a name="ln358"> </a>
+<a name="ln359">          map-&gt;unicode     = ft_extra_glyph_unicodes[n];</a>
+<a name="ln360">          map-&gt;glyph_index = extra_glyphs[n];</a>
+<a name="ln361">          map++;</a>
+<a name="ln362">        }</a>
+<a name="ln363">      }</a>
+<a name="ln364"> </a>
+<a name="ln365">      /* now compress the table a bit */</a>
+<a name="ln366">      count = (FT_UInt)( map - table-&gt;maps );</a>
+<a name="ln367"> </a>
+<a name="ln368">      if ( count == 0 )</a>
+<a name="ln369">      {</a>
+<a name="ln370">        /* No unicode chars here! */</a>
+<a name="ln371">        FT_FREE( table-&gt;maps );</a>
+<a name="ln372">        if ( !error )</a>
+<a name="ln373">          error = FT_THROW( No_Unicode_Glyph_Name );</a>
+<a name="ln374">      }</a>
+<a name="ln375">      else</a>
+<a name="ln376">      {</a>
+<a name="ln377">        /* Reallocate if the number of used entries is much smaller. */</a>
+<a name="ln378">        if ( count &lt; num_glyphs / 2 )</a>
+<a name="ln379">        {</a>
+<a name="ln380">          (void)FT_RENEW_ARRAY( table-&gt;maps, num_glyphs, count );</a>
+<a name="ln381">          error = FT_Err_Ok;</a>
+<a name="ln382">        }</a>
+<a name="ln383"> </a>
+<a name="ln384">        /* Sort the table in increasing order of unicode values, */</a>
+<a name="ln385">        /* taking care of glyph variants.                        */</a>
+<a name="ln386">        ft_qsort( table-&gt;maps, count, sizeof ( PS_UniMap ),</a>
+<a name="ln387">                  compare_uni_maps );</a>
+<a name="ln388">      }</a>
+<a name="ln389"> </a>
+<a name="ln390">      table-&gt;num_maps = count;</a>
+<a name="ln391">    }</a>
+<a name="ln392"> </a>
+<a name="ln393">    return error;</a>
+<a name="ln394">  }</a>
+<a name="ln395"> </a>
+<a name="ln396"> </a>
+<a name="ln397">  static FT_UInt</a>
+<a name="ln398">  ps_unicodes_char_index( PS_Unicodes  table,</a>
+<a name="ln399">                          FT_UInt32    unicode )</a>
+<a name="ln400">  {</a>
+<a name="ln401">    PS_UniMap  *min, *max, *mid, *result = NULL;</a>
+<a name="ln402"> </a>
+<a name="ln403"> </a>
+<a name="ln404">    /* Perform a binary search on the table. */</a>
+<a name="ln405"> </a>
+<a name="ln406">    min = table-&gt;maps;</a>
+<a name="ln407">    max = min + table-&gt;num_maps - 1;</a>
+<a name="ln408"> </a>
+<a name="ln409">    while ( min &lt;= max )</a>
+<a name="ln410">    {</a>
+<a name="ln411">      FT_UInt32  base_glyph;</a>
+<a name="ln412"> </a>
+<a name="ln413"> </a>
+<a name="ln414">      mid = min + ( ( max - min ) &gt;&gt; 1 );</a>
+<a name="ln415"> </a>
+<a name="ln416">      if ( mid-&gt;unicode == unicode )</a>
+<a name="ln417">      {</a>
+<a name="ln418">        result = mid;</a>
+<a name="ln419">        break;</a>
+<a name="ln420">      }</a>
+<a name="ln421"> </a>
+<a name="ln422">      base_glyph = BASE_GLYPH( mid-&gt;unicode );</a>
+<a name="ln423"> </a>
+<a name="ln424">      if ( base_glyph == unicode )</a>
+<a name="ln425">        result = mid; /* remember match but continue search for base glyph */</a>
+<a name="ln426"> </a>
+<a name="ln427">      if ( min == max )</a>
+<a name="ln428">        break;</a>
+<a name="ln429"> </a>
+<a name="ln430">      if ( base_glyph &lt; unicode )</a>
+<a name="ln431">        min = mid + 1;</a>
+<a name="ln432">      else</a>
+<a name="ln433">        max = mid - 1;</a>
+<a name="ln434">    }</a>
+<a name="ln435"> </a>
+<a name="ln436">    if ( result )</a>
+<a name="ln437">      return result-&gt;glyph_index;</a>
+<a name="ln438">    else</a>
+<a name="ln439">      return 0;</a>
+<a name="ln440">  }</a>
+<a name="ln441"> </a>
+<a name="ln442"> </a>
+<a name="ln443">  static FT_UInt32</a>
+<a name="ln444">  ps_unicodes_char_next( PS_Unicodes  table,</a>
+<a name="ln445">                         FT_UInt32   *unicode )</a>
+<a name="ln446">  {</a>
+<a name="ln447">    FT_UInt    result    = 0;</a>
+<a name="ln448">    FT_UInt32  char_code = *unicode + 1;</a>
+<a name="ln449"> </a>
+<a name="ln450"> </a>
+<a name="ln451">    {</a>
+<a name="ln452">      FT_UInt     min = 0;</a>
+<a name="ln453">      FT_UInt     max = table-&gt;num_maps;</a>
+<a name="ln454">      FT_UInt     mid;</a>
+<a name="ln455">      PS_UniMap*  map;</a>
+<a name="ln456">      FT_UInt32   base_glyph;</a>
+<a name="ln457"> </a>
+<a name="ln458"> </a>
+<a name="ln459">      while ( min &lt; max )</a>
+<a name="ln460">      {</a>
+<a name="ln461">        mid = min + ( ( max - min ) &gt;&gt; 1 );</a>
+<a name="ln462">        map = table-&gt;maps + mid;</a>
+<a name="ln463"> </a>
+<a name="ln464">        if ( map-&gt;unicode == char_code )</a>
+<a name="ln465">        {</a>
+<a name="ln466">          result = map-&gt;glyph_index;</a>
+<a name="ln467">          goto Exit;</a>
+<a name="ln468">        }</a>
+<a name="ln469"> </a>
+<a name="ln470">        base_glyph = BASE_GLYPH( map-&gt;unicode );</a>
+<a name="ln471"> </a>
+<a name="ln472">        if ( base_glyph == char_code )</a>
+<a name="ln473">          result = map-&gt;glyph_index;</a>
+<a name="ln474"> </a>
+<a name="ln475">        if ( base_glyph &lt; char_code )</a>
+<a name="ln476">          min = mid + 1;</a>
+<a name="ln477">        else</a>
+<a name="ln478">          max = mid;</a>
+<a name="ln479">      }</a>
+<a name="ln480"> </a>
+<a name="ln481">      if ( result )</a>
+<a name="ln482">        goto Exit;               /* we have a variant glyph */</a>
+<a name="ln483"> </a>
+<a name="ln484">      /* we didn't find it; check whether we have a map just above it */</a>
+<a name="ln485">      char_code = 0;</a>
+<a name="ln486"> </a>
+<a name="ln487">      if ( min &lt; table-&gt;num_maps )</a>
+<a name="ln488">      {</a>
+<a name="ln489">        map       = table-&gt;maps + min;</a>
+<a name="ln490">        result    = map-&gt;glyph_index;</a>
+<a name="ln491">        char_code = BASE_GLYPH( map-&gt;unicode );</a>
+<a name="ln492">      }</a>
+<a name="ln493">    }</a>
+<a name="ln494"> </a>
+<a name="ln495">  Exit:</a>
+<a name="ln496">    *unicode = char_code;</a>
+<a name="ln497">    return result;</a>
+<a name="ln498">  }</a>
+<a name="ln499"> </a>
+<a name="ln500"> </a>
+<a name="ln501">#endif /* FT_CONFIG_OPTION_ADOBE_GLYPH_LIST */</a>
+<a name="ln502"> </a>
+<a name="ln503"> </a>
+<a name="ln504">  static const char*</a>
+<a name="ln505">  ps_get_macintosh_name( FT_UInt  name_index )</a>
+<a name="ln506">  {</a>
+<a name="ln507">    if ( name_index &gt;= FT_NUM_MAC_NAMES )</a>
+<a name="ln508">      name_index = 0;</a>
+<a name="ln509"> </a>
+<a name="ln510">    return ft_standard_glyph_names + ft_mac_names[name_index];</a>
+<a name="ln511">  }</a>
+<a name="ln512"> </a>
+<a name="ln513"> </a>
+<a name="ln514">  static const char*</a>
+<a name="ln515">  ps_get_standard_strings( FT_UInt  sid )</a>
+<a name="ln516">  {</a>
+<a name="ln517">    if ( sid &gt;= FT_NUM_SID_NAMES )</a>
+<a name="ln518">      return 0;</a>
+<a name="ln519"> </a>
+<a name="ln520">    return ft_standard_glyph_names + ft_sid_names[sid];</a>
+<a name="ln521">  }</a>
+<a name="ln522"> </a>
+<a name="ln523"> </a>
+<a name="ln524">#ifdef FT_CONFIG_OPTION_ADOBE_GLYPH_LIST</a>
+<a name="ln525"> </a>
+<a name="ln526">  FT_DEFINE_SERVICE_PSCMAPSREC(</a>
+<a name="ln527">    pscmaps_interface,</a>
+<a name="ln528">    (PS_Unicode_ValueFunc)     ps_unicode_value,</a>
+<a name="ln529">    (PS_Unicodes_InitFunc)     ps_unicodes_init,</a>
+<a name="ln530">    (PS_Unicodes_CharIndexFunc)ps_unicodes_char_index,</a>
+<a name="ln531">    (PS_Unicodes_CharNextFunc) ps_unicodes_char_next,</a>
+<a name="ln532"> </a>
+<a name="ln533">    (PS_Macintosh_NameFunc)    ps_get_macintosh_name,</a>
+<a name="ln534">    (PS_Adobe_Std_StringsFunc) ps_get_standard_strings,</a>
+<a name="ln535"> </a>
+<a name="ln536">    t1_standard_encoding,</a>
+<a name="ln537">    t1_expert_encoding )</a>
+<a name="ln538"> </a>
+<a name="ln539">#else</a>
+<a name="ln540"> </a>
+<a name="ln541">  FT_DEFINE_SERVICE_PSCMAPSREC(</a>
+<a name="ln542">    pscmaps_interface,</a>
+<a name="ln543">    NULL,</a>
+<a name="ln544">    NULL,</a>
+<a name="ln545">    NULL,</a>
+<a name="ln546">    NULL,</a>
+<a name="ln547"> </a>
+<a name="ln548">    (PS_Macintosh_NameFunc)    ps_get_macintosh_name,</a>
+<a name="ln549">    (PS_Adobe_Std_StringsFunc) ps_get_standard_strings,</a>
+<a name="ln550"> </a>
+<a name="ln551">    t1_standard_encoding,</a>
+<a name="ln552">    t1_expert_encoding )</a>
+<a name="ln553"> </a>
+<a name="ln554">#endif /* FT_CONFIG_OPTION_ADOBE_GLYPH_LIST */</a>
+<a name="ln555"> </a>
+<a name="ln556"> </a>
+<a name="ln557">  FT_DEFINE_SERVICEDESCREC1(</a>
+<a name="ln558">    pscmaps_services,</a>
+<a name="ln559">    FT_SERVICE_ID_POSTSCRIPT_CMAPS, &amp;PSCMAPS_INTERFACE_GET )</a>
+<a name="ln560"> </a>
+<a name="ln561"> </a>
+<a name="ln562">  static FT_Pointer</a>
+<a name="ln563">  psnames_get_service( FT_Module    module,</a>
+<a name="ln564">                       const char*  service_id )</a>
+<a name="ln565">  {</a>
+<a name="ln566">    /* PSCMAPS_SERVICES_GET dereferences `library' in PIC mode */</a>
+<a name="ln567">#ifdef FT_CONFIG_OPTION_PIC</a>
+<a name="ln568">    FT_Library  library;</a>
+<a name="ln569"> </a>
+<a name="ln570"> </a>
+<a name="ln571">    if ( !module )</a>
+<a name="ln572">      return NULL;</a>
+<a name="ln573">    library = module-&gt;library;</a>
+<a name="ln574">    if ( !library )</a>
+<a name="ln575">      return NULL;</a>
+<a name="ln576">#else</a>
+<a name="ln577">    FT_UNUSED( module );</a>
+<a name="ln578">#endif</a>
+<a name="ln579"> </a>
+<a name="ln580">    return ft_service_list_lookup( PSCMAPS_SERVICES_GET, service_id );</a>
+<a name="ln581">  }</a>
+<a name="ln582"> </a>
+<a name="ln583">#endif /* FT_CONFIG_OPTION_POSTSCRIPT_NAMES */</a>
+<a name="ln584"> </a>
+<a name="ln585"> </a>
+<a name="ln586">#ifndef FT_CONFIG_OPTION_POSTSCRIPT_NAMES</a>
+<a name="ln587">#define PUT_PS_NAMES_SERVICE( a )  NULL</a>
+<a name="ln588">#else</a>
+<a name="ln589">#define PUT_PS_NAMES_SERVICE( a )  a</a>
+<a name="ln590">#endif</a>
+<a name="ln591"> </a>
+<a name="ln592">  FT_DEFINE_MODULE(</a>
+<a name="ln593">    psnames_module_class,</a>
+<a name="ln594"> </a>
+<a name="ln595">    0,  /* this is not a font driver, nor a renderer */</a>
+<a name="ln596">    sizeof ( FT_ModuleRec ),</a>
+<a name="ln597"> </a>
+<a name="ln598">    &quot;psnames&quot;,  /* driver name                         */</a>
+<a name="ln599">    0x10000L,   /* driver version                      */</a>
+<a name="ln600">    0x20000L,   /* driver requires FreeType 2 or above */</a>
+<a name="ln601"> </a>
+<a name="ln602">    PUT_PS_NAMES_SERVICE(</a>
+<a name="ln603">      (void*)&amp;PSCMAPS_INTERFACE_GET ),   /* module specific interface */</a>
+<a name="ln604">    (FT_Module_Constructor)NULL,</a>
+<a name="ln605">    (FT_Module_Destructor) NULL,</a>
+<a name="ln606">    (FT_Module_Requester)  PUT_PS_NAMES_SERVICE( psnames_get_service ) )</a>
+<a name="ln607"> </a>
+<a name="ln608"> </a>
+<a name="ln609">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="372"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!error' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1717 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>barline.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2016 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;barline.h&quot;</a>
+<a name="ln14">#include &quot;score.h&quot;</a>
+<a name="ln15">#include &quot;sym.h&quot;</a>
+<a name="ln16">#include &quot;staff.h&quot;</a>
+<a name="ln17">#include &quot;part.h&quot;</a>
+<a name="ln18">#include &quot;system.h&quot;</a>
+<a name="ln19">#include &quot;measure.h&quot;</a>
+<a name="ln20">#include &quot;segment.h&quot;</a>
+<a name="ln21">#include &quot;articulation.h&quot;</a>
+<a name="ln22">#include &quot;stafftype.h&quot;</a>
+<a name="ln23">#include &quot;xml.h&quot;</a>
+<a name="ln24">#include &quot;marker.h&quot;</a>
+<a name="ln25">#include &quot;stafflines.h&quot;</a>
+<a name="ln26">#include &quot;spanner.h&quot;</a>
+<a name="ln27">#include &quot;undo.h&quot;</a>
+<a name="ln28">#include &quot;fermata.h&quot;</a>
+<a name="ln29">#include &quot;symbol.h&quot;</a>
+<a name="ln30">#include &quot;image.h&quot;</a>
+<a name="ln31"> </a>
+<a name="ln32">namespace Ms {</a>
+<a name="ln33"> </a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35">//   undoChangeBarLineType</a>
+<a name="ln36">//---------------------------------------------------------</a>
+<a name="ln37"> </a>
+<a name="ln38">static void undoChangeBarLineType(BarLine* bl, BarLineType barType, bool allStaves)</a>
+<a name="ln39">      {</a>
+<a name="ln40">      Measure* m = bl-&gt;measure();</a>
+<a name="ln41">      if (!m)</a>
+<a name="ln42">            return;</a>
+<a name="ln43"> </a>
+<a name="ln44">      if (barType == BarLineType::START_REPEAT) {</a>
+<a name="ln45">            m = m-&gt;nextMeasure();</a>
+<a name="ln46">            if (!m)</a>
+<a name="ln47">                  return;</a>
+<a name="ln48">            }</a>
+<a name="ln49">      else if (bl-&gt;barLineType() == BarLineType::START_REPEAT) {</a>
+<a name="ln50">            if (barType != BarLineType::END_REPEAT)</a>
+<a name="ln51">                  m-&gt;undoChangeProperty(Pid::REPEAT_START, false);</a>
+<a name="ln52">            m = m-&gt;prevMeasure();</a>
+<a name="ln53">            if (!m)</a>
+<a name="ln54">                  return;</a>
+<a name="ln55">            }</a>
+<a name="ln56"> </a>
+<a name="ln57">      switch (barType) {</a>
+<a name="ln58">            case BarLineType::END:</a>
+<a name="ln59">            case BarLineType::NORMAL:</a>
+<a name="ln60">            case BarLineType::DOUBLE:</a>
+<a name="ln61">            case BarLineType::BROKEN:</a>
+<a name="ln62">            case BarLineType::DOTTED: {</a>
+<a name="ln63">                  Segment* segment = bl-&gt;segment();</a>
+<a name="ln64">                  SegmentType segmentType = segment-&gt;segmentType();</a>
+<a name="ln65">                  if (segmentType == SegmentType::EndBarLine) {</a>
+<a name="ln66">                        // when setting barline type on mmrest, set for underlying measure (and linked staves)</a>
+<a name="ln67">                        // createMMRest will then set for the mmrest directly</a>
+<a name="ln68">                        Measure* m2 = m-&gt;isMMRest() ? m-&gt;mmRestLast() : m;</a>
+<a name="ln69"> </a>
+<a name="ln70">                        bool generated;</a>
+<a name="ln71">                        if (bl-&gt;barLineType() == barType)</a>
+<a name="ln72">                              generated = bl-&gt;generated();  // no change: keep current status</a>
+<a name="ln73">                        else if (!bl-&gt;generated() &amp;&amp; (barType == BarLineType::NORMAL))</a>
+<a name="ln74">                              generated = true;             // currently non-generated, changing to normal: assume generated</a>
+<a name="ln75">                        else</a>
+<a name="ln76">                              generated = false;            // otherwise assume non-generated</a>
+<a name="ln77"> </a>
+<a name="ln78">                        if (allStaves) {</a>
+<a name="ln79">                              // use all staves of master score; we will take care of parts in loop through linked staves below</a>
+<a name="ln80">                              m2 = bl-&gt;masterScore()-&gt;tick2measure(m2-&gt;tick());</a>
+<a name="ln81">                              if (!m2)</a>
+<a name="ln82">                                    return;     // should never happen</a>
+<a name="ln83">                              segment = m2-&gt;undoGetSegment(segment-&gt;segmentType(), segment-&gt;tick());</a>
+<a name="ln84">                              }</a>
+<a name="ln85">                        const std::vector&lt;Element*&gt;&amp; elist = allStaves ? segment-&gt;elist() : std::vector&lt;Element*&gt; { bl };</a>
+<a name="ln86">                        for (Element* e : elist) {</a>
+<a name="ln87">                              if (!e || !e-&gt;staff() || !e-&gt;isBarLine())</a>
+<a name="ln88">                                    continue;</a>
+<a name="ln89"> </a>
+<a name="ln90">                              // handle linked staves/parts:</a>
+<a name="ln91">                              // barlines themselves are not necessarily linked,</a>
+<a name="ln92">                              // so use staffList to find linked staves</a>
+<a name="ln93">                              BarLine* sbl = toBarLine(e);</a>
+<a name="ln94">                              for (Staff* lstaff : sbl-&gt;staff()-&gt;staffList()) {</a>
+<a name="ln95">                                    Score* lscore = lstaff-&gt;score();</a>
+<a name="ln96">                                    int ltrack = lstaff-&gt;idx() * VOICES;</a>
+<a name="ln97"> </a>
+<a name="ln98">                                    // handle mmrests:</a>
+<a name="ln99">                                    // set the barline on the underlying measure</a>
+<a name="ln100">                                    // this will copied to the mmrest during layout, in createMMRest</a>
+<a name="ln101">                                    Measure* lmeasure = lscore-&gt;tick2measure(m2-&gt;tick());</a>
+<a name="ln102">                                    if (!lmeasure)</a>
+<a name="ln103">                                          continue;</a>
+<a name="ln104"> </a>
+<a name="ln105">                                    lmeasure-&gt;undoChangeProperty(Pid::REPEAT_END, false);</a>
+<a name="ln106">                                    Segment* lsegment = lmeasure-&gt;undoGetSegmentR(SegmentType::EndBarLine, lmeasure-&gt;ticks());</a>
+<a name="ln107">                                    BarLine* lbl = toBarLine(lsegment-&gt;element(ltrack));</a>
+<a name="ln108">                                    if (!lbl) {</a>
+<a name="ln109">                                          lbl = new BarLine(lscore);</a>
+<a name="ln110">                                          lbl-&gt;setParent(lsegment);</a>
+<a name="ln111">                                          lbl-&gt;setTrack(ltrack);</a>
+<a name="ln112">                                          lbl-&gt;setSpanStaff(lstaff-&gt;barLineSpan());</a>
+<a name="ln113">                                          lbl-&gt;setSpanFrom(lstaff-&gt;barLineFrom());</a>
+<a name="ln114">                                          lbl-&gt;setSpanTo(lstaff-&gt;barLineTo());</a>
+<a name="ln115">                                          lbl-&gt;setBarLineType(barType);</a>
+<a name="ln116">                                          lbl-&gt;setGenerated(generated);</a>
+<a name="ln117">                                          lscore-&gt;addElement(lbl);</a>
+<a name="ln118">                                          if (!generated)</a>
+<a name="ln119">                                                lbl-&gt;linkTo(sbl);</a>
+<a name="ln120">                                          }</a>
+<a name="ln121">                                    else {</a>
+<a name="ln122">                                          lscore-&gt;undo(new ChangeProperty(lbl, Pid::GENERATED, generated, PropertyFlags::NOSTYLE));</a>
+<a name="ln123">                                          lscore-&gt;undo(new ChangeProperty(lbl, Pid::BARLINE_TYPE, QVariant::fromValue(barType), PropertyFlags::NOSTYLE));</a>
+<a name="ln124">                                          // set generated flag before and after so it sticks on type change and also works on undo/redo</a>
+<a name="ln125">                                          lscore-&gt;undo(new ChangeProperty(lbl, Pid::GENERATED, generated, PropertyFlags::NOSTYLE));</a>
+<a name="ln126">                                          if (lbl != sbl &amp;&amp; !generated &amp;&amp; !lbl-&gt;links())</a>
+<a name="ln127">                                                lscore-&gt;undo(new Link(lbl, sbl));</a>
+<a name="ln128">                                          else if (lbl != sbl &amp;&amp; generated &amp;&amp; lbl-&gt;isLinked(sbl))</a>
+<a name="ln129">                                                lscore-&gt;undo(new Unlink(lbl));</a>
+<a name="ln130">                                          }</a>
+<a name="ln131">                                    }</a>
+<a name="ln132">                              }</a>
+<a name="ln133">                        }</a>
+<a name="ln134">                  else if (segmentType == SegmentType::BeginBarLine) {</a>
+<a name="ln135">                        Segment* segment1 = m-&gt;undoGetSegmentR(SegmentType::BeginBarLine, Fraction(0, 1));</a>
+<a name="ln136">                        for (Element* e : segment1-&gt;elist()) {</a>
+<a name="ln137">                              if (e) {</a>
+<a name="ln138">                                    e-&gt;score()-&gt;undo(new ChangeProperty(e, Pid::GENERATED, false, PropertyFlags::NOSTYLE));</a>
+<a name="ln139">                                    e-&gt;score()-&gt;undo(new ChangeProperty(e, Pid::BARLINE_TYPE, QVariant::fromValue(barType), PropertyFlags::NOSTYLE));</a>
+<a name="ln140">                                    // set generated flag before and after so it sticks on type change and also works on undo/redo</a>
+<a name="ln141">                                    e-&gt;score()-&gt;undo(new ChangeProperty(e, Pid::GENERATED, false, PropertyFlags::NOSTYLE));</a>
+<a name="ln142">                                    }</a>
+<a name="ln143">                              }</a>
+<a name="ln144">                        }</a>
+<a name="ln145">                  }</a>
+<a name="ln146">                  break;</a>
+<a name="ln147">            case BarLineType::START_REPEAT: {</a>
+<a name="ln148">                  Measure* m2 = m-&gt;isMMRest() ? m-&gt;mmRestFirst() : m;</a>
+<a name="ln149">                  for (Score* lscore : m2-&gt;score()-&gt;scoreList()) {</a>
+<a name="ln150">                        Measure* lmeasure = lscore-&gt;tick2measure(m2-&gt;tick());</a>
+<a name="ln151">                        if (lmeasure)</a>
+<a name="ln152">                              lmeasure-&gt;undoChangeProperty(Pid::REPEAT_START, true);</a>
+<a name="ln153">                        }</a>
+<a name="ln154">                  }</a>
+<a name="ln155">                  break;</a>
+<a name="ln156">            case BarLineType::END_REPEAT: {</a>
+<a name="ln157">                  Measure* m2 = m-&gt;isMMRest() ? m-&gt;mmRestLast() : m;</a>
+<a name="ln158">                  for (Score* lscore : m2-&gt;score()-&gt;scoreList()) {</a>
+<a name="ln159">                        Measure* lmeasure = lscore-&gt;tick2measure(m2-&gt;tick());</a>
+<a name="ln160">                        if (lmeasure)</a>
+<a name="ln161">                              lmeasure-&gt;undoChangeProperty(Pid::REPEAT_END, true);</a>
+<a name="ln162">                        }</a>
+<a name="ln163">                  }</a>
+<a name="ln164">                  break;</a>
+<a name="ln165">            case BarLineType::END_START_REPEAT: {</a>
+<a name="ln166">                  Measure* m2 = m-&gt;isMMRest() ? m-&gt;mmRestLast() : m;</a>
+<a name="ln167">                  for (Score* lscore : m2-&gt;score()-&gt;scoreList()) {</a>
+<a name="ln168">                        Measure* lmeasure = lscore-&gt;tick2measure(m2-&gt;tick());</a>
+<a name="ln169">                        if (lmeasure) {</a>
+<a name="ln170">                              lmeasure-&gt;undoChangeProperty(Pid::REPEAT_END, true);</a>
+<a name="ln171">                              lmeasure = lmeasure-&gt;nextMeasure();</a>
+<a name="ln172">                              if (lmeasure)</a>
+<a name="ln173">                                    lmeasure-&gt;undoChangeProperty(Pid::REPEAT_START, true);</a>
+<a name="ln174">                              }</a>
+<a name="ln175">                        }</a>
+<a name="ln176">                  }</a>
+<a name="ln177">                  break;</a>
+<a name="ln178">            }</a>
+<a name="ln179">      }</a>
+<a name="ln180"> </a>
+<a name="ln181">//---------------------------------------------------------</a>
+<a name="ln182">//   BarLineEditData</a>
+<a name="ln183">//---------------------------------------------------------</a>
+<a name="ln184"> </a>
+<a name="ln185">class BarLineEditData : public ElementEditData {</a>
+<a name="ln186">   public:</a>
+<a name="ln187">      qreal yoff1;</a>
+<a name="ln188">      qreal yoff2;</a>
+<a name="ln189">      virtual EditDataType type() override      { return EditDataType::BarLineEditData; }</a>
+<a name="ln190">      };</a>
+<a name="ln191"> </a>
+<a name="ln192">//---------------------------------------------------------</a>
+<a name="ln193">//   BarLineTable</a>
+<a name="ln194">//---------------------------------------------------------</a>
+<a name="ln195"> </a>
+<a name="ln196">const std::vector&lt;BarLineTableItem&gt; BarLine::barLineTable {</a>
+<a name="ln197">      { BarLineType::NORMAL,           QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;Normal barline&quot;),   &quot;normal&quot; },</a>
+<a name="ln198">      { BarLineType::DOUBLE,           QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;Double barline&quot;),   &quot;double&quot; },</a>
+<a name="ln199">      { BarLineType::START_REPEAT,     QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;Start repeat&quot;),     &quot;start-repeat&quot; },</a>
+<a name="ln200">      { BarLineType::END_REPEAT,       QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;End repeat&quot;),       &quot;end-repeat&quot; },</a>
+<a name="ln201">      { BarLineType::BROKEN,           QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;Dashed barline&quot;),   &quot;dashed&quot; },</a>
+<a name="ln202">      { BarLineType::END,              QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;Final barline&quot;),    &quot;end&quot; },</a>
+<a name="ln203">      { BarLineType::END_START_REPEAT, QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;End-start repeat&quot;), &quot;end-start-repeat&quot; },</a>
+<a name="ln204">      { BarLineType::DOTTED,           QT_TRANSLATE_NOOP(&quot;Palette&quot;, &quot;Dotted barline&quot;),   &quot;dotted&quot; },</a>
+<a name="ln205">      };</a>
+<a name="ln206"> </a>
+<a name="ln207">//---------------------------------------------------------</a>
+<a name="ln208">//   barLineTableItem</a>
+<a name="ln209">//---------------------------------------------------------</a>
+<a name="ln210"> </a>
+<a name="ln211">const BarLineTableItem* BarLine::barLineTableItem(unsigned i)</a>
+<a name="ln212">      {</a>
+<a name="ln213">      if (i &gt;= barLineTable.size())</a>
+<a name="ln214">            return 0;</a>
+<a name="ln215">      return &amp;barLineTable[i];</a>
+<a name="ln216">      }</a>
+<a name="ln217"> </a>
+<a name="ln218">//---------------------------------------------------------</a>
+<a name="ln219">//   userTypeName</a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221"> </a>
+<a name="ln222">QString BarLine::userTypeName(BarLineType t)</a>
+<a name="ln223">      {</a>
+<a name="ln224">      for (const auto&amp; i : barLineTable) {</a>
+<a name="ln225">           if (i.type == t)</a>
+<a name="ln226">                 return qApp-&gt;translate(&quot;Palette&quot;, i.userName);</a>
+<a name="ln227">           }</a>
+<a name="ln228">      return QString();</a>
+<a name="ln229">      }</a>
+<a name="ln230"> </a>
+<a name="ln231">//---------------------------------------------------------</a>
+<a name="ln232">//   barLineTypeName</a>
+<a name="ln233">//</a>
+<a name="ln234">//    Instance form returning the name string of the bar line type and</a>
+<a name="ln235">//    static form returning the name string for an arbitrary bar line type.</a>
+<a name="ln236">//---------------------------------------------------------</a>
+<a name="ln237"> </a>
+<a name="ln238">QString BarLine::barLineTypeName() const</a>
+<a name="ln239">      {</a>
+<a name="ln240">      return barLineTypeName(barLineType());</a>
+<a name="ln241">      }</a>
+<a name="ln242"> </a>
+<a name="ln243">QString BarLine::barLineTypeName(BarLineType t)</a>
+<a name="ln244">      {</a>
+<a name="ln245">      for (const auto&amp; i : barLineTable) {</a>
+<a name="ln246">           if (i.type == t)</a>
+<a name="ln247">                 return i.name;</a>
+<a name="ln248">            }</a>
+<a name="ln249">      return QString(&quot;??&quot;);</a>
+<a name="ln250">      }</a>
+<a name="ln251"> </a>
+<a name="ln252">//---------------------------------------------------------</a>
+<a name="ln253">//   setBarLineType</a>
+<a name="ln254">//</a>
+<a name="ln255">//    Set the bar line type from the type name string.</a>
+<a name="ln256">//    Does not update _customSubtype or _generated flags: to be used when reading from a score file</a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258"> </a>
+<a name="ln259">void BarLine::setBarLineType(const QString&amp; s)</a>
+<a name="ln260">      {</a>
+<a name="ln261">      _barLineType = barLineType(s);</a>
+<a name="ln262">      }</a>
+<a name="ln263"> </a>
+<a name="ln264">//---------------------------------------------------------</a>
+<a name="ln265">//   barLineType</a>
+<a name="ln266">//---------------------------------------------------------</a>
+<a name="ln267"> </a>
+<a name="ln268">BarLineType BarLine::barLineType(const QString&amp; s)</a>
+<a name="ln269">      {</a>
+<a name="ln270">      for (const auto&amp; i : barLineTable) {</a>
+<a name="ln271">            if (i.name == s)</a>
+<a name="ln272">                  return i.type;</a>
+<a name="ln273">            }</a>
+<a name="ln274">      return BarLineType::NORMAL;   // silent default</a>
+<a name="ln275">      }</a>
+<a name="ln276"> </a>
+<a name="ln277">//---------------------------------------------------------</a>
+<a name="ln278">//   BarLine</a>
+<a name="ln279">//---------------------------------------------------------</a>
+<a name="ln280"> </a>
+<a name="ln281">BarLine::BarLine(Score* s)</a>
+<a name="ln282">   : Element(s)</a>
+<a name="ln283">      {</a>
+<a name="ln284">      setHeight(4 * spatium()); // for use in palettes</a>
+<a name="ln285">      }</a>
+<a name="ln286"> </a>
+<a name="ln287">BarLine::BarLine(const BarLine&amp; bl)</a>
+<a name="ln288">   : Element(bl)</a>
+<a name="ln289">      {</a>
+<a name="ln290">      _spanStaff   = bl._spanStaff;</a>
+<a name="ln291">      _spanFrom    = bl._spanFrom;</a>
+<a name="ln292">      _spanTo      = bl._spanTo;</a>
+<a name="ln293">      _barLineType = bl._barLineType;</a>
+<a name="ln294">      y1           = bl.y1;</a>
+<a name="ln295">      y2           = bl.y2;</a>
+<a name="ln296"> </a>
+<a name="ln297">      for (Element* e : bl._el)</a>
+<a name="ln298">            add(e-&gt;clone());</a>
+<a name="ln299">      }</a>
+<a name="ln300"> </a>
+<a name="ln301">BarLine::~BarLine()</a>
+<a name="ln302">      {</a>
+<a name="ln303">      qDeleteAll(_el);</a>
+<a name="ln304">      }</a>
+<a name="ln305"> </a>
+<a name="ln306">//---------------------------------------------------------</a>
+<a name="ln307">//   canvasPos</a>
+<a name="ln308">//---------------------------------------------------------</a>
+<a name="ln309"> </a>
+<a name="ln310">QPointF BarLine::canvasPos() const</a>
+<a name="ln311">      {</a>
+<a name="ln312">      QPointF pos = Element::canvasPos();</a>
+<a name="ln313">      if (parent()) {</a>
+<a name="ln314">            System* system = measure()-&gt;system();</a>
+<a name="ln315">            qreal yoff = system ? system-&gt;staff(staffIdx())-&gt;y() : 0.0;</a>
+<a name="ln316">            pos.ry() += yoff;</a>
+<a name="ln317">            }</a>
+<a name="ln318">      return pos;</a>
+<a name="ln319">      }</a>
+<a name="ln320"> </a>
+<a name="ln321">//---------------------------------------------------------</a>
+<a name="ln322">//   pagePos</a>
+<a name="ln323">//---------------------------------------------------------</a>
+<a name="ln324"> </a>
+<a name="ln325">QPointF BarLine::pagePos() const</a>
+<a name="ln326">      {</a>
+<a name="ln327">      if (segment() == 0)</a>
+<a name="ln328">            return pos();</a>
+<a name="ln329">      System* system = segment()-&gt;measure()-&gt;system();</a>
+<a name="ln330"> </a>
+<a name="ln331">      qreal yp = y();</a>
+<a name="ln332">      if (system) {</a>
+<a name="ln333">            // get first not hidden staff</a>
+<a name="ln334">            int startIdx        = staffIdx();</a>
+<a name="ln335">            int endIdx          = startIdx + (spanStaff() ? 1 : 0);</a>
+<a name="ln336">            int staffIdx1       = startIdx;</a>
+<a name="ln337">            Staff* staff1       = score()-&gt;staff(staffIdx1);</a>
+<a name="ln338">            SysStaff* sysStaff1 = system-&gt;staff(staffIdx1);</a>
+<a name="ln339"> </a>
+<a name="ln340">            while (staff1 &amp;&amp; sysStaff1 &amp;&amp; !(sysStaff1-&gt;show() &amp;&amp; staff1-&gt;show())) {</a>
+<a name="ln341">                  if (++staffIdx1 &gt;= endIdx) {</a>
+<a name="ln342">                        // no visible staves spanned; just use first</a>
+<a name="ln343">                        staffIdx1 = startIdx;</a>
+<a name="ln344">                        break;</a>
+<a name="ln345">                        }</a>
+<a name="ln346">                  staff1 = score()-&gt;staff(staffIdx1);</a>
+<a name="ln347">                  sysStaff1 = system-&gt;staff(staffIdx1);</a>
+<a name="ln348">                  }</a>
+<a name="ln349">            yp += system-&gt;staffYpage(staffIdx1);</a>
+<a name="ln350">            }</a>
+<a name="ln351">      return QPointF(pageX(), yp);</a>
+<a name="ln352">      }</a>
+<a name="ln353"> </a>
+<a name="ln354">//---------------------------------------------------------</a>
+<a name="ln355">//   prevVisiblespannedStaff</a>
+<a name="ln356">//---------------------------------------------------------</a>
+<a name="ln357"> </a>
+<a name="ln358">int prevVisibleSpannedStaff(const BarLine* bl)</a>
+<a name="ln359">      {</a>
+<a name="ln360">      Score* score = bl-&gt;score();</a>
+<a name="ln361">      int staffIdx = bl-&gt;staffIdx();</a>
+<a name="ln362">      Segment* segment = bl-&gt;segment();</a>
+<a name="ln363">      for (int i = staffIdx - 1; i &gt;= 0; --i)  {</a>
+<a name="ln364">            BarLine* nbl = toBarLine(segment-&gt;element(i * VOICES));</a>
+<a name="ln365">            if (!nbl || !nbl-&gt;spanStaff())</a>
+<a name="ln366">                  break;</a>
+<a name="ln367">            Staff* s = score-&gt;staff(i);</a>
+<a name="ln368">            if (s-&gt;part()-&gt;show() &amp;&amp; bl-&gt;measure()-&gt;visible(i)) {</a>
+<a name="ln369">                  return i;</a>
+<a name="ln370">                  }</a>
+<a name="ln371">            }</a>
+<a name="ln372">      return staffIdx;</a>
+<a name="ln373">      }</a>
+<a name="ln374"> </a>
+<a name="ln375">//---------------------------------------------------------</a>
+<a name="ln376">//   nextVisiblespannedStaff</a>
+<a name="ln377">//---------------------------------------------------------</a>
+<a name="ln378"> </a>
+<a name="ln379">int nextVisibleSpannedStaff(const BarLine* bl)</a>
+<a name="ln380">      {</a>
+<a name="ln381">      Score* score = bl-&gt;score();</a>
+<a name="ln382">      int nstaves = score-&gt;nstaves();</a>
+<a name="ln383">      int staffIdx = bl-&gt;staffIdx();</a>
+<a name="ln384">      Segment* segment = bl-&gt;segment();</a>
+<a name="ln385">      for (int i = staffIdx + 1; i &lt; nstaves; ++i)  {</a>
+<a name="ln386">            Staff* s = score-&gt;staff(i);</a>
+<a name="ln387">            if (s-&gt;part()-&gt;show() &amp;&amp; bl-&gt;measure()-&gt;visible(i))</a>
+<a name="ln388">                  return i;</a>
+<a name="ln389">            BarLine* nbl = toBarLine(segment-&gt;element(i * VOICES));</a>
+<a name="ln390">            if (!nbl || !nbl-&gt;spanStaff())</a>
+<a name="ln391">                  break;</a>
+<a name="ln392">            }</a>
+<a name="ln393">      return staffIdx;</a>
+<a name="ln394">      }</a>
+<a name="ln395"> </a>
+<a name="ln396">//---------------------------------------------------------</a>
+<a name="ln397">//   getY</a>
+<a name="ln398">//---------------------------------------------------------</a>
+<a name="ln399"> </a>
+<a name="ln400">void BarLine::getY() const</a>
+<a name="ln401">      {</a>
+<a name="ln402">      qreal _spatium = spatium();</a>
+<a name="ln403">      if (!parent()) {</a>
+<a name="ln404">            // for use in palette</a>
+<a name="ln405">            y1 = _spanFrom   * _spatium * .5;</a>
+<a name="ln406">            y2 = (8-_spanTo) * _spatium * .5;</a>
+<a name="ln407">            return;</a>
+<a name="ln408">            }</a>
+<a name="ln409">      int staffIdx1       = staffIdx();</a>
+<a name="ln410">      const Staff* staff1 = score()-&gt;staff(staffIdx1);</a>
+<a name="ln411">      int staffIdx2       = staffIdx1;</a>
+<a name="ln412">      int nstaves         = score()-&gt;nstaves();</a>
+<a name="ln413"> </a>
+<a name="ln414">      Measure* measure = segment()-&gt;measure();</a>
+<a name="ln415">      if (_spanStaff)</a>
+<a name="ln416">            staffIdx2 = nextVisibleSpannedStaff(this);</a>
+<a name="ln417"> </a>
+<a name="ln418">      System* system = measure-&gt;system();</a>
+<a name="ln419">      if (!system)</a>
+<a name="ln420">            return;</a>
+<a name="ln421"> </a>
+<a name="ln422">      // test start and end staff visibility</a>
+<a name="ln423"> </a>
+<a name="ln424"> </a>
+<a name="ln425">      // base y on top visible staff in barline span</a>
+<a name="ln426">      // after skipping ones with hideSystemBarLine set</a>
+<a name="ln427">      // and accounting for staves that are shown but have invisible measures</a>
+<a name="ln428"> </a>
+<a name="ln429">      Fraction tick        = segment()-&gt;measure()-&gt;tick();</a>
+<a name="ln430">      const StaffType* st1 = staff1-&gt;staffType(tick);</a>
+<a name="ln431"> </a>
+<a name="ln432">      int from    = _spanFrom;</a>
+<a name="ln433">      int to      = _spanTo;</a>
+<a name="ln434">      int oneLine = st1-&gt;lines() == 1;</a>
+<a name="ln435">      if (oneLine &amp;&amp; _spanFrom == 0) {</a>
+<a name="ln436">            from = BARLINE_SPAN_1LINESTAFF_FROM;</a>
+<a name="ln437">            if (!_spanStaff || (staffIdx1 == nstaves - 1))</a>
+<a name="ln438">                  to = BARLINE_SPAN_1LINESTAFF_TO;</a>
+<a name="ln439">            }</a>
+<a name="ln440">      SysStaff* sysStaff1  = system-&gt;staff(staffIdx1);</a>
+<a name="ln441">      qreal yp = sysStaff1-&gt;y();</a>
+<a name="ln442">      qreal spatium1 = st1-&gt;spatium(score());</a>
+<a name="ln443">      qreal d  = st1-&gt;lineDistance().val() * spatium1;</a>
+<a name="ln444">      qreal yy = measure-&gt;staffLines(staffIdx1)-&gt;y1() - yp;</a>
+<a name="ln445">      qreal lw = score()-&gt;styleS(Sid::staffLineWidth).val() * spatium1 * .5;</a>
+<a name="ln446">      y1       = yy + from * d * .5 - lw;</a>
+<a name="ln447">      if (staffIdx2 != staffIdx1)</a>
+<a name="ln448">            y2 = measure-&gt;staffLines(staffIdx2)-&gt;y1() - yp - to * d * .5;</a>
+<a name="ln449">      else</a>
+<a name="ln450">            y2 = yy + (st1-&gt;lines() * 2 - 2 + to) * d * .5 + lw;</a>
+<a name="ln451">      }</a>
+<a name="ln452"> </a>
+<a name="ln453">//---------------------------------------------------------</a>
+<a name="ln454">//   drawDots</a>
+<a name="ln455">//---------------------------------------------------------</a>
+<a name="ln456"> </a>
+<a name="ln457">void BarLine::drawDots(QPainter* painter, qreal x) const</a>
+<a name="ln458">      {</a>
+<a name="ln459">      qreal _spatium = spatium();</a>
+<a name="ln460"> </a>
+<a name="ln461">      qreal y1l;</a>
+<a name="ln462">      qreal y2l;</a>
+<a name="ln463">      if (parent() == 0) {    // for use in palette (always Bravura)</a>
+<a name="ln464">            //Bravura shifted repeatDot symbol 0.5sp upper in the font itself (1.272)</a>
+<a name="ln465">            y1l = 1.5 * _spatium;</a>
+<a name="ln466">            y2l = 2.5 * _spatium;</a>
+<a name="ln467">            }</a>
+<a name="ln468">      else {</a>
+<a name="ln469">            const StaffType* st = staffType();</a>
+<a name="ln470"> </a>
+<a name="ln471">            //workaround to make new Bravura font work correctly with repeatDots</a>
+<a name="ln472">            qreal offset = score()-&gt;scoreFont()-&gt;name() == &quot;Bravura&quot; ? 0 : 0.5 * score()-&gt;spatium() * mag();</a>
+<a name="ln473">            y1l          = st-&gt;doty1() * _spatium + offset;</a>
+<a name="ln474">            y2l          = st-&gt;doty2() * _spatium + offset;</a>
+<a name="ln475">            }</a>
+<a name="ln476">      drawSymbol(SymId::repeatDot, painter, QPointF(x, y1l));</a>
+<a name="ln477">      drawSymbol(SymId::repeatDot, painter, QPointF(x, y2l));</a>
+<a name="ln478">      }</a>
+<a name="ln479"> </a>
+<a name="ln480">//---------------------------------------------------------</a>
+<a name="ln481">//   drawTips</a>
+<a name="ln482">//---------------------------------------------------------</a>
+<a name="ln483"> </a>
+<a name="ln484">void BarLine::drawTips(QPainter* painter, bool reversed, qreal x) const</a>
+<a name="ln485">      {</a>
+<a name="ln486">      if (reversed) {</a>
+<a name="ln487">            if (isTop())</a>
+<a name="ln488">                  drawSymbol(SymId::reversedBracketTop, painter, QPointF(x - symWidth(SymId::reversedBracketTop), y1));</a>
+<a name="ln489">            if (isBottom())</a>
+<a name="ln490">                  drawSymbol(SymId::reversedBracketBottom, painter, QPointF(x - symWidth(SymId::reversedBracketBottom), y2));</a>
+<a name="ln491">            }</a>
+<a name="ln492">      else {</a>
+<a name="ln493">            if (isTop())</a>
+<a name="ln494">                  drawSymbol(SymId::bracketTop, painter, QPointF(x, y1));</a>
+<a name="ln495">            if (isBottom())</a>
+<a name="ln496">                  drawSymbol(SymId::bracketBottom, painter, QPointF(x, y2));</a>
+<a name="ln497">            }</a>
+<a name="ln498">      }</a>
+<a name="ln499"> </a>
+<a name="ln500">//---------------------------------------------------------</a>
+<a name="ln501">//   isTop</a>
+<a name="ln502">//---------------------------------------------------------</a>
+<a name="ln503"> </a>
+<a name="ln504">bool BarLine::isTop() const</a>
+<a name="ln505">      {</a>
+<a name="ln506">      int idx = staffIdx();</a>
+<a name="ln507">      if (idx == 0)</a>
+<a name="ln508">            return true;</a>
+<a name="ln509">      else</a>
+<a name="ln510">            return (prevVisibleSpannedStaff(this) == idx);</a>
+<a name="ln511">      }</a>
+<a name="ln512"> </a>
+<a name="ln513">//---------------------------------------------------------</a>
+<a name="ln514">//   isBottom</a>
+<a name="ln515">//---------------------------------------------------------</a>
+<a name="ln516"> </a>
+<a name="ln517">bool BarLine::isBottom() const</a>
+<a name="ln518">      {</a>
+<a name="ln519">      if (!_spanStaff)</a>
+<a name="ln520">            return true;</a>
+<a name="ln521">      int idx = staffIdx();</a>
+<a name="ln522">      if (idx == score()-&gt;nstaves() - 1)</a>
+<a name="ln523">            return true;</a>
+<a name="ln524">      else</a>
+<a name="ln525">            return (nextVisibleSpannedStaff(this) == idx);</a>
+<a name="ln526">      }</a>
+<a name="ln527"> </a>
+<a name="ln528">//---------------------------------------------------------</a>
+<a name="ln529">//   draw</a>
+<a name="ln530">//---------------------------------------------------------</a>
+<a name="ln531"> </a>
+<a name="ln532">void BarLine::draw(QPainter* painter) const</a>
+<a name="ln533">      {</a>
+<a name="ln534">      switch (barLineType()) {</a>
+<a name="ln535">            case BarLineType::NORMAL: {</a>
+<a name="ln536">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln537">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln538">                  painter-&gt;drawLine(QLineF(lw * .5, y1, lw * .5, y2));</a>
+<a name="ln539">                  }</a>
+<a name="ln540">                  break;</a>
+<a name="ln541"> </a>
+<a name="ln542">            case BarLineType::BROKEN: {</a>
+<a name="ln543">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln544">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::DashLine, Qt::FlatCap));</a>
+<a name="ln545">                  painter-&gt;drawLine(QLineF(lw * .5, y1, lw * .5, y2));</a>
+<a name="ln546">                  }</a>
+<a name="ln547">                  break;</a>
+<a name="ln548"> </a>
+<a name="ln549">            case BarLineType::DOTTED: {</a>
+<a name="ln550">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln551">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::DotLine, Qt::FlatCap));</a>
+<a name="ln552">                  painter-&gt;drawLine(QLineF(lw * .5, y1, lw * .5, y2));</a>
+<a name="ln553">                  }</a>
+<a name="ln554">                  break;</a>
+<a name="ln555"> </a>
+<a name="ln556">            case BarLineType::END: {</a>
+<a name="ln557">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln558">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln559">                  qreal x  = lw * .5;</a>
+<a name="ln560">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln561"> </a>
+<a name="ln562">                  qreal lw2 = score()-&gt;styleP(Sid::endBarWidth) * mag();</a>
+<a name="ln563">                  painter-&gt;setPen(QPen(curColor(), lw2, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln564">                  x  += score()-&gt;styleP(Sid::endBarDistance) * mag();</a>
+<a name="ln565">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln566">                  }</a>
+<a name="ln567">                  break;</a>
+<a name="ln568"> </a>
+<a name="ln569">            case BarLineType::DOUBLE: {</a>
+<a name="ln570">                  qreal lw2 = score()-&gt;styleP(Sid::doubleBarWidth)    * mag();</a>
+<a name="ln571">                  painter-&gt;setPen(QPen(curColor(), lw2, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln572">                  qreal x = lw2 * .5;</a>
+<a name="ln573">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln574">                  x += score()-&gt;styleP(Sid::doubleBarDistance) * mag();</a>
+<a name="ln575">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln576">                  }</a>
+<a name="ln577">                  break;</a>
+<a name="ln578"> </a>
+<a name="ln579">            case BarLineType::START_REPEAT: {</a>
+<a name="ln580">                  qreal lw2 = score()-&gt;styleP(Sid::endBarWidth) * mag();</a>
+<a name="ln581">                  painter-&gt;setPen(QPen(curColor(), lw2, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln582">                  qreal x = lw2 * .5;</a>
+<a name="ln583">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln584"> </a>
+<a name="ln585">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln586">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln587">                  x  += score()-&gt;styleP(Sid::endBarDistance) * mag();</a>
+<a name="ln588">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln589"> </a>
+<a name="ln590">                  x += score()-&gt;styleP(Sid::repeatBarlineDotSeparation) * mag();</a>
+<a name="ln591">                  x -= symBbox(SymId::repeatDot).width() * .5;</a>
+<a name="ln592">                  drawDots(painter, x);</a>
+<a name="ln593"> </a>
+<a name="ln594">                  if (score()-&gt;styleB(Sid::repeatBarTips))</a>
+<a name="ln595">                        drawTips(painter, false, 0.0);</a>
+<a name="ln596">                  }</a>
+<a name="ln597">                  break;</a>
+<a name="ln598"> </a>
+<a name="ln599">            case BarLineType::END_REPEAT: {</a>
+<a name="ln600">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln601">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln602"> </a>
+<a name="ln603">                  qreal x = 0.0; // symBbox(SymId::repeatDot).width() * .5;</a>
+<a name="ln604">                  drawDots(painter, x);</a>
+<a name="ln605"> </a>
+<a name="ln606">                  x += score()-&gt;styleP(Sid::repeatBarlineDotSeparation) * mag();</a>
+<a name="ln607">                  x += symBbox(SymId::repeatDot).width() * .5;</a>
+<a name="ln608">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln609"> </a>
+<a name="ln610">                  x  += score()-&gt;styleP(Sid::endBarDistance) * mag();</a>
+<a name="ln611"> </a>
+<a name="ln612">                  qreal lw2 = score()-&gt;styleP(Sid::endBarWidth) * mag();</a>
+<a name="ln613">                  painter-&gt;setPen(QPen(curColor(), lw2, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln614">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln615"> </a>
+<a name="ln616">                  if (score()-&gt;styleB(Sid::repeatBarTips))</a>
+<a name="ln617">                        drawTips(painter, true, x + lw2 * .5);</a>
+<a name="ln618">                  }</a>
+<a name="ln619">                  break;</a>
+<a name="ln620">            case BarLineType::END_START_REPEAT: {</a>
+<a name="ln621">                  qreal lw = score()-&gt;styleP(Sid::barWidth) * mag();</a>
+<a name="ln622">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln623"> </a>
+<a name="ln624">                  qreal x = 0.0; // symBbox(SymId::repeatDot).width() * .5;</a>
+<a name="ln625">                  drawDots(painter, x);</a>
+<a name="ln626"> </a>
+<a name="ln627">                  x += score()-&gt;styleP(Sid::repeatBarlineDotSeparation) * mag();</a>
+<a name="ln628">                  x += symBbox(SymId::repeatDot).width() * .5;</a>
+<a name="ln629">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln630"> </a>
+<a name="ln631">                  x  += score()-&gt;styleP(Sid::endBarDistance) * mag();</a>
+<a name="ln632"> </a>
+<a name="ln633">                  qreal lw2 = score()-&gt;styleP(Sid::endBarWidth) * mag();</a>
+<a name="ln634">                  painter-&gt;setPen(QPen(curColor(), lw2, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln635">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln636"> </a>
+<a name="ln637">                  if (score()-&gt;styleB(Sid::repeatBarTips))</a>
+<a name="ln638">                        drawTips(painter, true, x + lw2 * .5);</a>
+<a name="ln639"> </a>
+<a name="ln640">                  painter-&gt;setPen(QPen(curColor(), lw, Qt::SolidLine, Qt::FlatCap));</a>
+<a name="ln641">                  x  += score()-&gt;styleP(Sid::endBarDistance) * mag();</a>
+<a name="ln642">                  painter-&gt;drawLine(QLineF(x, y1, x, y2));</a>
+<a name="ln643"> </a>
+<a name="ln644">                  x += score()-&gt;styleP(Sid::repeatBarlineDotSeparation) * mag();</a>
+<a name="ln645">                  x -= symBbox(SymId::repeatDot).width() * .5;</a>
+<a name="ln646">                  drawDots(painter, x);</a>
+<a name="ln647"> </a>
+<a name="ln648">                  if (score()-&gt;styleB(Sid::repeatBarTips))</a>
+<a name="ln649">                        drawTips(painter, false, 0.0);</a>
+<a name="ln650">                  }</a>
+<a name="ln651">                  break;</a>
+<a name="ln652">            }</a>
+<a name="ln653">      Segment* s = segment();</a>
+<a name="ln654">      if (s &amp;&amp; s-&gt;isEndBarLineType() &amp;&amp; !score()-&gt;printing() &amp;&amp; score()-&gt;showUnprintable()) {</a>
+<a name="ln655">            Measure* m = s-&gt;measure();</a>
+<a name="ln656">            if (m-&gt;isIrregular() &amp;&amp; score()-&gt;markIrregularMeasures() &amp;&amp; !m-&gt;isMMRest()) {</a>
+<a name="ln657">                  painter-&gt;setPen(MScore::layoutBreakColor);</a>
+<a name="ln658">                  QFont f(&quot;FreeSerif&quot;);</a>
+<a name="ln659">                  f.setPointSizeF(12 * spatium() * MScore::pixelRatio / SPATIUM20);</a>
+<a name="ln660">                  f.setBold(true);</a>
+<a name="ln661">                  QString str = m-&gt;ticks() &gt; m-&gt;timesig() ? &quot;+&quot; : &quot;-&quot;;</a>
+<a name="ln662">                  QRectF r = QFontMetricsF(f, MScore::paintDevice()).boundingRect(str);</a>
+<a name="ln663">                  painter-&gt;setFont(f);</a>
+<a name="ln664">                  painter-&gt;drawText(-r.width(), 0.0, str);</a>
+<a name="ln665">                  }</a>
+<a name="ln666">            }</a>
+<a name="ln667">      }</a>
+<a name="ln668"> </a>
+<a name="ln669">//---------------------------------------------------------</a>
+<a name="ln670">//   drawEditMode</a>
+<a name="ln671">//---------------------------------------------------------</a>
+<a name="ln672"> </a>
+<a name="ln673">void BarLine::drawEditMode(QPainter* p, EditData&amp; ed)</a>
+<a name="ln674">      {</a>
+<a name="ln675">      Element::drawEditMode(p, ed);</a>
+<a name="ln676">      BarLineEditData* bed = static_cast&lt;BarLineEditData*&gt;(ed.getData(this));</a>
+<a name="ln677">      y1 += bed-&gt;yoff1;</a>
+<a name="ln678">      y2 += bed-&gt;yoff2;</a>
+<a name="ln679">      QPointF pos(canvasPos());</a>
+<a name="ln680">      p-&gt;translate(pos);</a>
+<a name="ln681">      BarLine::draw(p);</a>
+<a name="ln682">      p-&gt;translate(-pos);</a>
+<a name="ln683">      y1 -= bed-&gt;yoff1;</a>
+<a name="ln684">      y2 -= bed-&gt;yoff2;</a>
+<a name="ln685">      }</a>
+<a name="ln686"> </a>
+<a name="ln687">//---------------------------------------------------------</a>
+<a name="ln688">//   write</a>
+<a name="ln689">//---------------------------------------------------------</a>
+<a name="ln690"> </a>
+<a name="ln691">void BarLine::write(XmlWriter&amp; xml) const</a>
+<a name="ln692">      {</a>
+<a name="ln693">      xml.stag(this);</a>
+<a name="ln694"> </a>
+<a name="ln695">      writeProperty(xml, Pid::BARLINE_TYPE);</a>
+<a name="ln696">      writeProperty(xml, Pid::BARLINE_SPAN);</a>
+<a name="ln697">      writeProperty(xml, Pid::BARLINE_SPAN_FROM);</a>
+<a name="ln698">      writeProperty(xml, Pid::BARLINE_SPAN_TO);</a>
+<a name="ln699"> </a>
+<a name="ln700">      for (const Element* e : _el)</a>
+<a name="ln701">            e-&gt;write(xml);</a>
+<a name="ln702">      Element::writeProperties(xml);</a>
+<a name="ln703">      xml.etag();</a>
+<a name="ln704">      }</a>
+<a name="ln705"> </a>
+<a name="ln706">//---------------------------------------------------------</a>
+<a name="ln707">//   read</a>
+<a name="ln708">//---------------------------------------------------------</a>
+<a name="ln709"> </a>
+<a name="ln710">void BarLine::read(XmlReader&amp; e)</a>
+<a name="ln711">      {</a>
+<a name="ln712">      resetProperty(Pid::BARLINE_SPAN);</a>
+<a name="ln713">      resetProperty(Pid::BARLINE_SPAN_FROM);</a>
+<a name="ln714">      resetProperty(Pid::BARLINE_SPAN_TO);</a>
+<a name="ln715"> </a>
+<a name="ln716">      while (e.readNextStartElement()) {</a>
+<a name="ln717">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln718">            if (tag == &quot;subtype&quot;)</a>
+<a name="ln719">                  setBarLineType(e.readElementText());</a>
+<a name="ln720">            else if (tag == &quot;span&quot;)</a>
+<a name="ln721">                  _spanStaff  = e.readBool();</a>
+<a name="ln722">            else if (tag == &quot;spanFromOffset&quot;)</a>
+<a name="ln723">                  _spanFrom = e.readInt();</a>
+<a name="ln724">            else if (tag == &quot;spanToOffset&quot;)</a>
+<a name="ln725">                  _spanTo = e.readInt();</a>
+<a name="ln726">            else if (tag == &quot;Articulation&quot;) {</a>
+<a name="ln727">                  Articulation* a = new Articulation(score());</a>
+<a name="ln728">                  a-&gt;read(e);</a>
+<a name="ln729">                  add(a);</a>
+<a name="ln730">                  }</a>
+<a name="ln731">            else if (tag == &quot;Symbol&quot;) {</a>
+<a name="ln732">                  Symbol* s = new Symbol(score());</a>
+<a name="ln733">                  s-&gt;setTrack(track());</a>
+<a name="ln734">                  s-&gt;read(e);</a>
+<a name="ln735">                  add(s);</a>
+<a name="ln736">                  }</a>
+<a name="ln737">            else if (tag == &quot;Image&quot;) {</a>
+<a name="ln738">                  if (MScore::noImages)</a>
+<a name="ln739">                        e.skipCurrentElement();</a>
+<a name="ln740">                  else {</a>
+<a name="ln741">                        Image* image = new Image(score());</a>
+<a name="ln742">                        image-&gt;setTrack(track());</a>
+<a name="ln743">                        image-&gt;read(e);</a>
+<a name="ln744">                        add(image);</a>
+<a name="ln745">                        }</a>
+<a name="ln746">                  }</a>
+<a name="ln747">            else if (!Element::readProperties(e))</a>
+<a name="ln748">                  e.unknown();</a>
+<a name="ln749">            }</a>
+<a name="ln750">      }</a>
+<a name="ln751"> </a>
+<a name="ln752">//---------------------------------------------------------</a>
+<a name="ln753">//   acceptDrop</a>
+<a name="ln754">//---------------------------------------------------------</a>
+<a name="ln755"> </a>
+<a name="ln756">bool BarLine::acceptDrop(EditData&amp; data) const</a>
+<a name="ln757">      {</a>
+<a name="ln758">      ElementType type = data.dropElement-&gt;type();</a>
+<a name="ln759">      if (type == ElementType::BAR_LINE) {</a>
+<a name="ln760">            return true;</a>
+<a name="ln761">            }</a>
+<a name="ln762">      else {</a>
+<a name="ln763">            return ((type == ElementType::ARTICULATION || type == ElementType::FERMATA || type == ElementType::SYMBOL || type == ElementType::IMAGE)</a>
+<a name="ln764">               &amp;&amp; segment()</a>
+<a name="ln765">               &amp;&amp; segment()-&gt;isEndBarLineType());</a>
+<a name="ln766">            }</a>
+<a name="ln767">      // Prevent unreachable code warning</a>
+<a name="ln768">      // return false;</a>
+<a name="ln769">      }</a>
+<a name="ln770"> </a>
+<a name="ln771">//---------------------------------------------------------</a>
+<a name="ln772">//   drop</a>
+<a name="ln773">//---------------------------------------------------------</a>
+<a name="ln774"> </a>
+<a name="ln775">Element* BarLine::drop(EditData&amp; data)</a>
+<a name="ln776">      {</a>
+<a name="ln777">      Element* e = data.dropElement;</a>
+<a name="ln778"> </a>
+<a name="ln779">      if (e-&gt;isBarLine()) {</a>
+<a name="ln780">            BarLine* bl    = toBarLine(e);</a>
+<a name="ln781">            BarLineType st = bl-&gt;barLineType();</a>
+<a name="ln782"> </a>
+<a name="ln783">            // if no change in subtype or no change in span, do nothing</a>
+<a name="ln784">            if (st == barLineType() &amp;&amp; !bl-&gt;spanFrom() &amp;&amp; !bl-&gt;spanTo()) {</a>
+<a name="ln785">                  delete e;</a>
+<a name="ln786">                  return 0;</a>
+<a name="ln787">                  }</a>
+<a name="ln788"> </a>
+<a name="ln789">            // check if the new property can apply to this single bar line</a>
+<a name="ln790">            BarLineType bt = BarLineType::START_REPEAT | BarLineType::END_REPEAT | BarLineType::END_START_REPEAT;</a>
+<a name="ln791">            bool oldRepeat = barLineType()     &amp; bt;</a>
+<a name="ln792">            bool newRepeat = bl-&gt;barLineType() &amp; bt;</a>
+<a name="ln793"> </a>
+<a name="ln794">            // if ctrl was used and repeats are not involved,</a>
+<a name="ln795">            // or if drop refers to span rather than subtype =&gt;</a>
+<a name="ln796">            // single bar line drop</a>
+<a name="ln797"> </a>
+<a name="ln798">            if ((data.control() &amp;&amp; !oldRepeat &amp;&amp; !newRepeat) || (bl-&gt;spanFrom() || bl-&gt;spanTo()) ) {</a>
+<a name="ln799">                  // if drop refers to span, update this bar line span</a>
+<a name="ln800">                  if (bl-&gt;spanFrom() || bl-&gt;spanTo()) {</a>
+<a name="ln801">                        // if dropped spanFrom or spanTo are below the middle of standard staff (5 lines)</a>
+<a name="ln802">                        // adjust to the number of staff lines</a>
+<a name="ln803">                        // TODO:barlines</a>
+<a name="ln804">                        int spanFrom   = bl-&gt;spanFrom();</a>
+<a name="ln805">                        int spanTo     = bl-&gt;spanTo();</a>
+<a name="ln806">                        undoChangeProperty(Pid::BARLINE_SPAN, false);</a>
+<a name="ln807">                        undoChangeProperty(Pid::BARLINE_SPAN_FROM, spanFrom);</a>
+<a name="ln808">                        undoChangeProperty(Pid::BARLINE_SPAN_TO, spanTo);</a>
+<a name="ln809">                        }</a>
+<a name="ln810">                  // if drop refers to subtype, update this bar line subtype</a>
+<a name="ln811">                  else {</a>
+<a name="ln812">                        undoChangeBarLineType(this, st, false);</a>
+<a name="ln813">                        }</a>
+<a name="ln814">                  }</a>
+<a name="ln815">            else {</a>
+<a name="ln816">                  undoChangeBarLineType(this, st, true);</a>
+<a name="ln817">                  }</a>
+<a name="ln818">            delete e;</a>
+<a name="ln819">            }</a>
+<a name="ln820">      else if (e-&gt;isArticulation()) {</a>
+<a name="ln821">            Articulation* atr = toArticulation(e);</a>
+<a name="ln822">            atr-&gt;setParent(this);</a>
+<a name="ln823">            atr-&gt;setTrack(track());</a>
+<a name="ln824">            score()-&gt;undoAddElement(atr);</a>
+<a name="ln825">            return atr;</a>
+<a name="ln826">            }</a>
+<a name="ln827">      else if (e-&gt;isSymbol() || e-&gt;isImage()) {</a>
+<a name="ln828">            e-&gt;setParent(this);</a>
+<a name="ln829">            e-&gt;setTrack(track());</a>
+<a name="ln830">            score()-&gt;undoAddElement(e);</a>
+<a name="ln831">            return e;</a>
+<a name="ln832">            }</a>
+<a name="ln833">      else if (e-&gt;isFermata()) {</a>
+<a name="ln834">            e-&gt;setPlacement(track() &amp; 1 ? Placement::BELOW : Placement::ABOVE);</a>
+<a name="ln835">            for (Element* el: segment()-&gt;annotations())</a>
+<a name="ln836">                  if (el-&gt;isFermata() &amp;&amp; (el-&gt;track() == track())) {</a>
+<a name="ln837">                        if (el-&gt;subtype() == e-&gt;subtype()) {</a>
+<a name="ln838">                              delete e;</a>
+<a name="ln839">                              return el;</a>
+<a name="ln840">                        }</a>
+<a name="ln841">                        else {</a>
+<a name="ln842">                              e-&gt;setPlacement(el-&gt;placement());</a>
+<a name="ln843">                              e-&gt;setTrack(track());</a>
+<a name="ln844">                              e-&gt;setParent(segment());</a>
+<a name="ln845">                              score()-&gt;undoChangeElement(el, e);</a>
+<a name="ln846">                              return e;</a>
+<a name="ln847">                        }</a>
+<a name="ln848">                  }</a>
+<a name="ln849">            e-&gt;setTrack(track());</a>
+<a name="ln850">            e-&gt;setParent(segment());</a>
+<a name="ln851">            score()-&gt;undoAddElement(e);</a>
+<a name="ln852">            return e;</a>
+<a name="ln853">            }</a>
+<a name="ln854">      return 0;</a>
+<a name="ln855">      }</a>
+<a name="ln856"> </a>
+<a name="ln857">//---------------------------------------------------------</a>
+<a name="ln858">//   gripsPositions</a>
+<a name="ln859">//---------------------------------------------------------</a>
+<a name="ln860"> </a>
+<a name="ln861">std::vector&lt;QPointF&gt; BarLine::gripsPositions(const EditData&amp; ed) const</a>
+<a name="ln862">      {</a>
+<a name="ln863">      const BarLineEditData* bed = static_cast&lt;const BarLineEditData*&gt;(ed.getData(this));</a>
+<a name="ln864"> </a>
+<a name="ln865">      qreal lw = score()-&gt;styleP(Sid::barWidth) * staff()-&gt;mag(tick());</a>
+<a name="ln866">      getY();</a>
+<a name="ln867"> </a>
+<a name="ln868">      const QPointF pp = pagePos();</a>
+<a name="ln869"> </a>
+<a name="ln870">      return {</a>
+<a name="ln871">            QPointF(lw * .5, y1 + bed-&gt;yoff1) + pp,</a>
+<a name="ln872">            QPointF(lw * .5, y2 + bed-&gt;yoff2) + pp</a>
+<a name="ln873">            };</a>
+<a name="ln874">      }</a>
+<a name="ln875"> </a>
+<a name="ln876">//---------------------------------------------------------</a>
+<a name="ln877">//   startEdit</a>
+<a name="ln878">//---------------------------------------------------------</a>
+<a name="ln879"> </a>
+<a name="ln880">void BarLine::startEdit(EditData&amp; ed)</a>
+<a name="ln881">      {</a>
+<a name="ln882">      BarLineEditData* bed = new BarLineEditData();</a>
+<a name="ln883">      bed-&gt;e     = this;</a>
+<a name="ln884">      bed-&gt;yoff1 = 0;</a>
+<a name="ln885">      bed-&gt;yoff2 = 0;</a>
+<a name="ln886">      ed.addData(bed);</a>
+<a name="ln887">      }</a>
+<a name="ln888"> </a>
+<a name="ln889">//---------------------------------------------------------</a>
+<a name="ln890">//   endEdit</a>
+<a name="ln891">//---------------------------------------------------------</a>
+<a name="ln892"> </a>
+<a name="ln893">void BarLine::endEdit(EditData&amp;)</a>
+<a name="ln894">      {</a>
+<a name="ln895">#if 0 // TODO</a>
+<a name="ln896">      if (ctrlDrag) {                           // if single bar line edit</a>
+<a name="ln897">            char newSpanStaff = _spanStaff;          // copy edited span values</a>
+<a name="ln898">            char newSpanFrom  = _spanFrom;</a>
+<a name="ln899">            char newSpanTo    = _spanTo;</a>
+<a name="ln900">            _spanStaff        = _origSpanStaff;      // restore original span values</a>
+<a name="ln901">            _spanFrom         = _origSpanFrom;</a>
+<a name="ln902">            _spanTo           = _origSpanTo;</a>
+<a name="ln903">            // for mid-measure barline in root score, update parts</a>
+<a name="ln904">            if (midMeasure &amp;&amp; score()-&gt;isMaster() &amp;&amp; score()-&gt;excerpts().size() &gt; 0) {</a>
+<a name="ln905">                  int currIdx = staffIdx();</a>
+<a name="ln906">                  Measure* m = segment()-&gt;measure();</a>
+<a name="ln907">                  // change linked barlines as necessary</a>
+<a name="ln908">                  int lastIdx = currIdx + qMax(_span, newSpanStaff);</a>
+<a name="ln909">                  for (int idx = currIdx; idx &lt; lastIdx; ++idx) {</a>
+<a name="ln910">                        Staff* staff = score()-&gt;staff(idx);</a>
+<a name="ln911">                        LinkedStaves* ls = staff-&gt;linkedStaves();</a>
+<a name="ln912">                        if (ls) {</a>
+<a name="ln913">                              for (Staff* lstaff : ls-&gt;staves()) {</a>
+<a name="ln914">                                    Score* lscore = lstaff-&gt;score();</a>
+<a name="ln915">                                    // don't change barlines in root score</a>
+<a name="ln916">                                    if (lscore == staff-&gt;score())</a>
+<a name="ln917">                                          continue;</a>
+<a name="ln918">                                    // change barline only in top staff of part</a>
+<a name="ln919">                                    if (lstaff != lscore-&gt;staff(0))</a>
+<a name="ln920">                                          continue;</a>
+<a name="ln921">                                    int spannedStaves = qMax(currIdx + newSpanStaff - idx, 0);</a>
+<a name="ln922">                                    int lNewSpan = qMin(spannedStaves, lscore-&gt;nstaves());</a>
+<a name="ln923">                                    Measure* lm = lscore-&gt;tick2measure(m-&gt;tick());</a>
+<a name="ln924">                                    Segment* lseg = lm-&gt;undoGetSegmentR(SegmentType::BarLine, rtick());</a>
+<a name="ln925">                                    BarLine* lbl = toBarLine(lseg-&gt;element(0));</a>
+<a name="ln926">                                    if (lbl) {</a>
+<a name="ln927">                                          // already a barline here</a>
+<a name="ln928">                                          if (lNewSpan &gt; 0) {</a>
+<a name="ln929">                                                // keep barline, but update span if necessary</a>
+<a name="ln930">                                                if (lbl-&gt;span() != lNewSpan)</a>
+<a name="ln931">                                                      lbl-&gt;undoChangeProperty(Pid::BARLINE_SPAN, lNewSpan);</a>
+<a name="ln932">                                                }</a>
+<a name="ln933">                                          else {</a>
+<a name="ln934">                                                // remove barline</a>
+<a name="ln935">                                                lbl-&gt;unlink();</a>
+<a name="ln936">                                                lbl-&gt;score()-&gt;undoRemoveElement(lbl);</a>
+<a name="ln937">                                                }</a>
+<a name="ln938">                                          }</a>
+<a name="ln939">                                    else {</a>
+<a name="ln940">                                          // new barline needed</a>
+<a name="ln941">                                          lbl = toBarLine(linkedClone());</a>
+<a name="ln942">                                          lbl-&gt;setSpan(lNewSpan);</a>
+<a name="ln943">                                          lbl-&gt;setTrack(lstaff-&gt;idx() * VOICES);</a>
+<a name="ln944">                                          lbl-&gt;setScore(lscore);</a>
+<a name="ln945">                                          lbl-&gt;setParent(lseg);</a>
+<a name="ln946">                                          lscore-&gt;undoAddElement(lbl);</a>
+<a name="ln947">                                          }</a>
+<a name="ln948">                                    }</a>
+<a name="ln949">                              }</a>
+<a name="ln950">                        }</a>
+<a name="ln951">                  }</a>
+<a name="ln952">            undoChangeProperty(Pid::BARLINE_SPAN,      newSpanStaff);</a>
+<a name="ln953">            undoChangeProperty(Pid::BARLINE_SPAN_FROM, newSpanFrom);</a>
+<a name="ln954">            undoChangeProperty(Pid::BARLINE_SPAN_FROM, newSpanTo);</a>
+<a name="ln955">            return;</a>
+<a name="ln956">            }</a>
+<a name="ln957"> </a>
+<a name="ln958">      // if same as staff settings, do nothing</a>
+<a name="ln959">      if (staff()-&gt;barLineSpan() == _spanStaff &amp;&amp; staff()-&gt;barLineFrom() == _spanFrom &amp;&amp; staff()-&gt;barLineTo() == _spanTo)</a>
+<a name="ln960">            return;</a>
+<a name="ln961"> </a>
+<a name="ln962">//      int idx1 = staffIdx();</a>
+<a name="ln963">      if (_span != staff()-&gt;barLineSpan()) {</a>
+<a name="ln964">            // if now bar lines span more staves</a>
+<a name="ln965">            if (_span &gt; staff()-&gt;barLineSpan()) {</a>
+<a name="ln966">                  int idx2 = idx1 + _span;</a>
+<a name="ln967">                  // set span 0 to all additional staves</a>
+<a name="ln968">                  for (int idx = idx1 + 1; idx &lt; idx2; ++idx) {</a>
+<a name="ln969">                        // Mensurstrich special case:</a>
+<a name="ln970">                        // if line spans to top line of a stave AND current staff is</a>
+<a name="ln971">                        //    the last spanned staff BUT NOT the last score staff</a>
+<a name="ln972">                        //          keep its bar lines</a>
+<a name="ln973">                        // otherwise remove them</a>
+<a name="ln974">                        if (_spanTo &gt; 0 || !(idx == idx2-1 &amp;&amp; idx != score()-&gt;nstaves()-1)) {</a>
+<a name="ln975">                              Staff* staff = score()-&gt;staff(idx);</a>
+<a name="ln976">                              staff-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN,      0);</a>
+<a name="ln977">                              staff-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_FROM, 0);</a>
+<a name="ln978">                              staff-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_TO,   (staff-&gt;lines(tick())-1)*2);</a>
+<a name="ln979">                              }</a>
+<a name="ln980">                        }</a>
+<a name="ln981">                  }</a>
+<a name="ln982">            // if now bar lines span fewer staves</a>
+<a name="ln983">            else {</a>
+<a name="ln984">                  int idx1 = staffIdx() + _span;</a>
+<a name="ln985">                  int idx2 = staffIdx() + staff()-&gt;barLineSpan();</a>
+<a name="ln986">                  // set standard span for each no-longer-spanned staff</a>
+<a name="ln987">                  for (int idx = idx1; idx &lt; idx2; ++idx) {</a>
+<a name="ln988">                        Staff* staff = score()-&gt;staff(idx);</a>
+<a name="ln989">                        int lines = staff-&gt;lines(tick());</a>
+<a name="ln990">                        int spanFrom = 0;</a>
+<a name="ln991">                        int spanTo   = 0;</a>
+<a name="ln992">                        staff-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN,      1);</a>
+<a name="ln993">                        staff-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_FROM, spanFrom);</a>
+<a name="ln994">                        staff-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_TO,   spanTo);</a>
+<a name="ln995">                        }</a>
+<a name="ln996">                  }</a>
+<a name="ln997">            }</a>
+<a name="ln998">      // update span for the staff the edited bar line belongs to</a>
+<a name="ln999">      staff()-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN,      _spanStaff);</a>
+<a name="ln1000">      staff()-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_FROM, _spanFrom);</a>
+<a name="ln1001">      staff()-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_TO,   _spanTo);</a>
+<a name="ln1002">#endif</a>
+<a name="ln1003">      }</a>
+<a name="ln1004"> </a>
+<a name="ln1005">//---------------------------------------------------------</a>
+<a name="ln1006">//   editDrag</a>
+<a name="ln1007">//---------------------------------------------------------</a>
+<a name="ln1008"> </a>
+<a name="ln1009">void BarLine::editDrag(EditData&amp; ed)</a>
+<a name="ln1010">      {</a>
+<a name="ln1011">      BarLineEditData* bed = static_cast&lt;BarLineEditData*&gt;(ed.getData(this));</a>
+<a name="ln1012"> </a>
+<a name="ln1013">      qreal lineDist = staff()-&gt;lineDistance(tick()) * spatium();</a>
+<a name="ln1014">      getY();</a>
+<a name="ln1015">      if (ed.curGrip == Grip::START) {</a>
+<a name="ln1016">            // Start grip moving is useless currently, so disable it</a>
+<a name="ln1017">            return;</a>
+<a name="ln1018">#if 0</a>
+<a name="ln1019">            // min offset for top grip is line -1 (-2 for 1-line staves)</a>
+<a name="ln1020">            // max offset is 1 line above bottom grip or 1 below last staff line, whichever comes first</a>
+<a name="ln1021">            int lines = staff()-&gt;lines(tick());</a>
+<a name="ln1022">            qreal min = (-y1 - lines == 1) ? lineDist * 2 : lineDist;</a>
+<a name="ln1023">            qreal max = y2 - y1 - lineDist;                                   // 1 line above bottom grip</a>
+<a name="ln1024">            qreal lastmax = (lines - _spanFrom/2) * lineDist;      // 1 line below last staff line</a>
+<a name="ln1025">            if (lastmax &lt; max)</a>
+<a name="ln1026">                  max = lastmax;</a>
+<a name="ln1027">            // update yoff1 and bring it within limits</a>
+<a name="ln1028">            bed-&gt;yoff1 += ed.delta.y();</a>
+<a name="ln1029">            if (bed-&gt;yoff1 &lt; min)</a>
+<a name="ln1030">                  bed-&gt;yoff1 = min;</a>
+<a name="ln1031">            if (bed-&gt;yoff1 &gt; max)</a>
+<a name="ln1032">                  bed-&gt;yoff1 = max;</a>
+<a name="ln1033">#endif</a>
+<a name="ln1034">            }</a>
+<a name="ln1035">      else {</a>
+<a name="ln1036">            // min for bottom grip is 1 line below top grip</a>
+<a name="ln1037">            const qreal min = y1 - y2 + lineDist;</a>
+<a name="ln1038">            // max is the bottom of the system</a>
+<a name="ln1039">            const System* system = segment() ? segment()-&gt;system() : nullptr;</a>
+<a name="ln1040">            const int st = staffIdx();</a>
+<a name="ln1041">            const qreal max = (system &amp;&amp; st != -1) ? (system-&gt;height() - y2 - system-&gt;staff(st)-&gt;y()) : std::numeric_limits&lt;qreal&gt;::max();</a>
+<a name="ln1042">            // update yoff2 and bring it within limit</a>
+<a name="ln1043">            bed-&gt;yoff2 += ed.delta.y();</a>
+<a name="ln1044">            if (bed-&gt;yoff2 &lt; min)</a>
+<a name="ln1045">                  bed-&gt;yoff2 = min;</a>
+<a name="ln1046">            if (bed-&gt;yoff2 &gt; max)</a>
+<a name="ln1047">                  bed-&gt;yoff2 = max;</a>
+<a name="ln1048">            }</a>
+<a name="ln1049">      }</a>
+<a name="ln1050"> </a>
+<a name="ln1051">//---------------------------------------------------------</a>
+<a name="ln1052">//   endEditDrag</a>
+<a name="ln1053">//    snap to nearest staff / staff line</a>
+<a name="ln1054">//---------------------------------------------------------</a>
+<a name="ln1055"> </a>
+<a name="ln1056">void BarLine::endEditDrag(EditData&amp; ed)</a>
+<a name="ln1057">      {</a>
+<a name="ln1058">      getY();</a>
+<a name="ln1059">      BarLineEditData* bed = static_cast&lt;BarLineEditData*&gt;(ed.getData(this));</a>
+<a name="ln1060">      y1 += bed-&gt;yoff1;</a>
+<a name="ln1061">      y2 += bed-&gt;yoff2;</a>
+<a name="ln1062"> </a>
+<a name="ln1063">      qreal ay0      = pagePos().y();</a>
+<a name="ln1064">      qreal ay2      = ay0 + y2;                     // absolute (page-relative) bar line bottom coord</a>
+<a name="ln1065">      int staffIdx1  = staffIdx();</a>
+<a name="ln1066">      System* syst   = segment()-&gt;measure()-&gt;system();</a>
+<a name="ln1067">      qreal systTopY = syst-&gt;pagePos().y();</a>
+<a name="ln1068"> </a>
+<a name="ln1069">      // determine new span value</a>
+<a name="ln1070">      int staffIdx2;</a>
+<a name="ln1071">      int numOfStaves = syst-&gt;staves()-&gt;size();</a>
+<a name="ln1072">      if (staffIdx1 + 1 &gt;= numOfStaves)</a>
+<a name="ln1073">            // if initial staff is last staff, ending staff must be the same</a>
+<a name="ln1074">            staffIdx2 = staffIdx1;</a>
+<a name="ln1075"> </a>
+<a name="ln1076">      else {</a>
+<a name="ln1077">            // if there are other staves after it, look for staff nearest to bar line bottom coord</a>
+<a name="ln1078">            qreal staff1TopY = syst-&gt;staff(staffIdx1)-&gt;y() + systTopY;</a>
+<a name="ln1079"> </a>
+<a name="ln1080">            for (staffIdx2 = staffIdx1 + 1; staffIdx2 &lt; numOfStaves; ++staffIdx2) {</a>
+<a name="ln1081">                  // compute 1st staff height, absolute top Y of 2nd staff and height of blank between the staves</a>
+<a name="ln1082">                  Staff * staff1      = score()-&gt;staff(staffIdx2-1);</a>
+<a name="ln1083">                  qreal staff1Hght    = (staff1-&gt;lines(tick())-1) * staff1-&gt;lineDistance(tick()) * spatium();</a>
+<a name="ln1084">                  qreal staff2TopY    = systTopY   + syst-&gt;staff(staffIdx2)-&gt;y();</a>
+<a name="ln1085">                  qreal blnkBtwnStaff = staff2TopY - staff1TopY - staff1Hght;</a>
+<a name="ln1086">                  // if bar line bottom coord is above than mid-way of blank between staves...</a>
+<a name="ln1087">                  if (ay2 &lt; (staff1TopY + staff1Hght + blnkBtwnStaff * .5))</a>
+<a name="ln1088">                        break;                  // ...staff 1 is ending staff</a>
+<a name="ln1089">                  // if bar line is below, advance to next staff</a>
+<a name="ln1090">                  staff1TopY = staff2TopY;</a>
+<a name="ln1091">                  }</a>
+<a name="ln1092">            staffIdx2 -= 1;</a>
+<a name="ln1093">            }</a>
+<a name="ln1094"> </a>
+<a name="ln1095">      // determine new spanFrom and spanTo values</a>
+<a name="ln1096">      int newSpanFrom, newSpanTo;</a>
+<a name="ln1097">//      Staff * staff2    = score()-&gt;staff(staffIdx2);</a>
+<a name="ln1098">//      int staff1lines   = staff()-&gt;lines(tick());</a>
+<a name="ln1099">//      int staff2lines   = staff2-&gt;lines(tick());</a>
+<a name="ln1100"> </a>
+<a name="ln1101">#if 0       // TODO</a>
+<a name="ln1102">      if (shiftDrag) {                    // if precision dragging</a>
+<a name="ln1103">            newSpanFrom = _spanFrom;</a>
+<a name="ln1104">            if (yoff1 != 0.0) {</a>
+<a name="ln1105">                  // round bar line top coord to nearest line of 1st staff (in half line dist units)</a>
+<a name="ln1106">                  newSpanFrom = ((int)floor(y1 / (staff()-&gt;lineDistance(tick()) * spatium()) + 0.5 )) * 2;</a>
+<a name="ln1107">                  // min = 1 line dist above 1st staff line | max = 1 line dist below last staff line</a>
+<a name="ln1108">                  // except for 1-line staves</a>
+<a name="ln1109">                  int minFrom = staff1lines == 1 ? BARLINE_SPAN_1LINESTAFF_FROM : MIN_BARLINE_SPAN_FROMTO;</a>
+<a name="ln1110">                  if (newSpanFrom &lt;  minFrom)</a>
+<a name="ln1111">                        newSpanFrom = minFrom;</a>
+<a name="ln1112">                  if (newSpanFrom &gt; staff1lines * 2)</a>
+<a name="ln1113">                        newSpanFrom = staff1lines * 2;</a>
+<a name="ln1114">                  }</a>
+<a name="ln1115"> </a>
+<a name="ln1116">            newSpanTo = _spanTo;</a>
+<a name="ln1117">            if (yoff2 != 0.0) {</a>
+<a name="ln1118">                  // round bar line bottom coord to nearest line of 2nd staff (in half line dist units)</a>
+<a name="ln1119">                  qreal staff2TopY = systTopY + syst-&gt;staff(staffIdx2)-&gt;y();</a>
+<a name="ln1120">                  newSpanTo = ((int)floor( (ay2 - staff2TopY) / (staff2-&gt;lineDistance(tick()) * spatium()) + 0.5 )) * 2;</a>
+<a name="ln1121">                  // min = 1 line dist above 1st staff line | max = 1 line dist below last staff line</a>
+<a name="ln1122">                  int maxTo = staff2lines == 1 ? BARLINE_SPAN_1LINESTAFF_TO : staff2lines * 2;</a>
+<a name="ln1123">                  if (newSpanTo &lt;  MIN_BARLINE_SPAN_FROMTO)</a>
+<a name="ln1124">                        newSpanTo = MIN_BARLINE_SPAN_FROMTO;</a>
+<a name="ln1125">                  if (newSpanTo &gt; maxTo)</a>
+<a name="ln1126">                        newSpanTo = maxTo;</a>
+<a name="ln1127">                  }</a>
+<a name="ln1128">            }</a>
+<a name="ln1129">#endif</a>
+<a name="ln1130">//      else {                              // if coarse dragging</a>
+<a name="ln1131">         {                              // if coarse dragging</a>
+<a name="ln1132">            newSpanFrom = 0;</a>
+<a name="ln1133">            newSpanTo   = 0;</a>
+<a name="ln1134">            }</a>
+<a name="ln1135"> </a>
+<a name="ln1136">      bool localDrag = ed.control() || segment()-&gt;isBarLine();</a>
+<a name="ln1137">      if (localDrag) {</a>
+<a name="ln1138">            Segment* s = segment();</a>
+<a name="ln1139">            for (int staffIdx = staffIdx1; staffIdx &lt; staffIdx2; ++staffIdx) {</a>
+<a name="ln1140">                  BarLine* b = toBarLine(s-&gt;element(staffIdx * VOICES));</a>
+<a name="ln1141">                  if (!b) {</a>
+<a name="ln1142">                        b = toBarLine(linkedClone());</a>
+<a name="ln1143">                        b-&gt;setSpanStaff(true);</a>
+<a name="ln1144">                        b-&gt;setTrack(staffIdx * VOICES);</a>
+<a name="ln1145">                        b-&gt;setScore(score());</a>
+<a name="ln1146">                        b-&gt;setParent(s);</a>
+<a name="ln1147">                        score()-&gt;undoAddElement(b);</a>
+<a name="ln1148">                        }</a>
+<a name="ln1149">                  b-&gt;undoChangeProperty(Pid::BARLINE_SPAN, true);</a>
+<a name="ln1150">                  }</a>
+<a name="ln1151">            BarLine* b = toBarLine(s-&gt;element(staffIdx2 * VOICES));</a>
+<a name="ln1152">            if (b)</a>
+<a name="ln1153">                  b-&gt;undoChangeProperty(Pid::BARLINE_SPAN, false);</a>
+<a name="ln1154">            }</a>
+<a name="ln1155">      else {</a>
+<a name="ln1156">            for (int staffIdx = staffIdx1; staffIdx &lt; staffIdx2; ++staffIdx)</a>
+<a name="ln1157">                  score()-&gt;staff(staffIdx)-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN, true);</a>
+<a name="ln1158">            score()-&gt;staff(staffIdx2)-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN, false);</a>
+<a name="ln1159">            staff()-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_FROM, newSpanFrom);</a>
+<a name="ln1160">            staff()-&gt;undoChangeProperty(Pid::STAFF_BARLINE_SPAN_TO,   newSpanTo);</a>
+<a name="ln1161">            }</a>
+<a name="ln1162"> </a>
+<a name="ln1163">      bed-&gt;yoff1 = 0.0;</a>
+<a name="ln1164">      bed-&gt;yoff2 = 0.0;</a>
+<a name="ln1165">      }</a>
+<a name="ln1166"> </a>
+<a name="ln1167">//---------------------------------------------------------</a>
+<a name="ln1168">//   layoutWidth</a>
+<a name="ln1169">//---------------------------------------------------------</a>
+<a name="ln1170"> </a>
+<a name="ln1171">qreal BarLine::layoutWidth(Score* score, BarLineType type)</a>
+<a name="ln1172">      {</a>
+<a name="ln1173">      qreal dotwidth = score-&gt;scoreFont()-&gt;width(SymId::repeatDot, 1.0);</a>
+<a name="ln1174"> </a>
+<a name="ln1175">      qreal w {0.0};</a>
+<a name="ln1176">      switch (type) {</a>
+<a name="ln1177">            case BarLineType::DOUBLE:</a>
+<a name="ln1178">                  w = score-&gt;styleP(Sid::doubleBarWidth) + score-&gt;styleP(Sid::doubleBarDistance);</a>
+<a name="ln1179">                  break;</a>
+<a name="ln1180">            case BarLineType::END_START_REPEAT:</a>
+<a name="ln1181">                  w = score-&gt;styleP(Sid::endBarDistance) * 2</a>
+<a name="ln1182">                     + score-&gt;styleP(Sid::repeatBarlineDotSeparation) * 2</a>
+<a name="ln1183">                     + dotwidth;</a>
+<a name="ln1184">                  break;</a>
+<a name="ln1185">            case BarLineType::START_REPEAT:</a>
+<a name="ln1186">            case BarLineType::END_REPEAT:</a>
+<a name="ln1187">                  w = score-&gt;styleP(Sid::endBarWidth) * .5</a>
+<a name="ln1188">                     + score-&gt;styleP(Sid::endBarDistance)</a>
+<a name="ln1189">                     + score-&gt;styleP(Sid::repeatBarlineDotSeparation)</a>
+<a name="ln1190">                     + dotwidth * .5;</a>
+<a name="ln1191">                  break;</a>
+<a name="ln1192">            case BarLineType::END:</a>
+<a name="ln1193">                  w = (score-&gt;styleP(Sid::endBarWidth) + score-&gt;styleP(Sid::barWidth)) * .5</a>
+<a name="ln1194">                     + score-&gt;styleP(Sid::endBarDistance);</a>
+<a name="ln1195">                  break;</a>
+<a name="ln1196">            case BarLineType::BROKEN:</a>
+<a name="ln1197">            case BarLineType::NORMAL:</a>
+<a name="ln1198">            case BarLineType::DOTTED:</a>
+<a name="ln1199">                  w = score-&gt;styleP(Sid::barWidth);</a>
+<a name="ln1200">                  break;</a>
+<a name="ln1201">            }</a>
+<a name="ln1202">      return w;</a>
+<a name="ln1203">      }</a>
+<a name="ln1204"> </a>
+<a name="ln1205">//---------------------------------------------------------</a>
+<a name="ln1206">//   layoutRect</a>
+<a name="ln1207">//---------------------------------------------------------</a>
+<a name="ln1208"> </a>
+<a name="ln1209">QRectF BarLine::layoutRect() const</a>
+<a name="ln1210">      {</a>
+<a name="ln1211">      QRectF bb = bbox();</a>
+<a name="ln1212">      if (staff()) {</a>
+<a name="ln1213">            // actual height may include span to next staff</a>
+<a name="ln1214">            // but this should not be included in shapes or skylines</a>
+<a name="ln1215">            qreal sp = spatium();</a>
+<a name="ln1216">            int span = staff()-&gt;lines(tick()) - 1;</a>
+<a name="ln1217">            int sFrom;</a>
+<a name="ln1218">            int sTo;</a>
+<a name="ln1219">            if (span == 0 &amp;&amp; _spanTo == 0) {</a>
+<a name="ln1220">                  sFrom = BARLINE_SPAN_1LINESTAFF_FROM;</a>
+<a name="ln1221">                  sTo = _spanStaff ? 0 : BARLINE_SPAN_1LINESTAFF_TO;</a>
+<a name="ln1222">                  }</a>
+<a name="ln1223">            else {</a>
+<a name="ln1224">                  sFrom = _spanFrom;</a>
+<a name="ln1225">                  sTo = _spanStaff ? 0 : _spanTo;</a>
+<a name="ln1226">                  }</a>
+<a name="ln1227">            qreal y = sp * sFrom * 0.5;</a>
+<a name="ln1228">            qreal h = sp * (span + (sTo - sFrom) * 0.5);</a>
+<a name="ln1229">            if (score()-&gt;styleB(Sid::repeatBarTips)) {</a>
+<a name="ln1230">                  switch (barLineType()) {</a>
+<a name="ln1231">                        case BarLineType::START_REPEAT:</a>
+<a name="ln1232">                        case BarLineType::END_REPEAT:</a>
+<a name="ln1233">                        case BarLineType::END_START_REPEAT: {</a>
+<a name="ln1234">                              if (isTop()) {</a>
+<a name="ln1235">                                    qreal top = symBbox(SymId::bracketTop).height();</a>
+<a name="ln1236">                                    y -= top;</a>
+<a name="ln1237">                                    h += top;</a>
+<a name="ln1238">                                    }</a>
+<a name="ln1239">                              if (isBottom()) {</a>
+<a name="ln1240">                                    qreal bottom = symBbox(SymId::bracketBottom).height();</a>
+<a name="ln1241">                                    h += bottom;</a>
+<a name="ln1242">                                    }</a>
+<a name="ln1243">                              }</a>
+<a name="ln1244">                        default:</a>
+<a name="ln1245">                              break;</a>
+<a name="ln1246">                        }</a>
+<a name="ln1247">                  }</a>
+<a name="ln1248">            bb.setY(y);</a>
+<a name="ln1249">            bb.setHeight(h);</a>
+<a name="ln1250">            }</a>
+<a name="ln1251">      return bb;</a>
+<a name="ln1252">      }</a>
+<a name="ln1253"> </a>
+<a name="ln1254">//---------------------------------------------------------</a>
+<a name="ln1255">//   layout</a>
+<a name="ln1256">//---------------------------------------------------------</a>
+<a name="ln1257"> </a>
+<a name="ln1258">void BarLine::layout()</a>
+<a name="ln1259">      {</a>
+<a name="ln1260">      setPos(QPointF());</a>
+<a name="ln1261">      // barlines hidden on this staff</a>
+<a name="ln1262">      if (staff() &amp;&amp; segment()) {</a>
+<a name="ln1263">            if ((!staff()-&gt;staffType(tick())-&gt;showBarlines() &amp;&amp; segment()-&gt;segmentType() == SegmentType::EndBarLine)</a>
+<a name="ln1264">                || (staff()-&gt;hideSystemBarLine() &amp;&amp; segment()-&gt;segmentType() == SegmentType::BeginBarLine)) {</a>
+<a name="ln1265">                  setbbox(QRectF());</a>
+<a name="ln1266">                  return;</a>
+<a name="ln1267">                  }</a>
+<a name="ln1268">            }</a>
+<a name="ln1269"> </a>
+<a name="ln1270">      setMag(score()-&gt;styleB(Sid::scaleBarlines) &amp;&amp; staff() ? staff()-&gt;mag(tick()) : 1.0);</a>
+<a name="ln1271">      qreal _spatium = spatium();</a>
+<a name="ln1272">      y1 = _spatium * .5 * _spanFrom;</a>
+<a name="ln1273">      y2 = _spatium * .5 * (8.0 + _spanTo);</a>
+<a name="ln1274"> </a>
+<a name="ln1275">      qreal w = layoutWidth(score(), barLineType()) * mag();</a>
+<a name="ln1276">      QRectF r(0.0, y1, w, y2 - y1);</a>
+<a name="ln1277"> </a>
+<a name="ln1278">      if (score()-&gt;styleB(Sid::repeatBarTips)) {</a>
+<a name="ln1279">            switch (barLineType()) {</a>
+<a name="ln1280">                  case BarLineType::START_REPEAT:</a>
+<a name="ln1281">                        r |= symBbox(SymId::bracketTop).translated(0, y1);</a>
+<a name="ln1282">                        // r |= symBbox(SymId::bracketBottom).translated(0, y2);</a>
+<a name="ln1283">                        break;</a>
+<a name="ln1284">                  case BarLineType::END_REPEAT: {</a>
+<a name="ln1285">                        qreal w1 = 0.0;   //symBbox(SymId::reversedBracketTop).width();</a>
+<a name="ln1286">                        r |= symBbox(SymId::reversedBracketTop).translated(-w1, y1);</a>
+<a name="ln1287">                        // r |= symBbox(SymId::reversedBracketBottom).translated(0, y2);</a>
+<a name="ln1288">                        }</a>
+<a name="ln1289">                        break;</a>
+<a name="ln1290">                  case BarLineType::END_START_REPEAT: {</a>
+<a name="ln1291">                        qreal w1 = 0.0;   //symBbox(SymId::reversedBracketTop).width();</a>
+<a name="ln1292">                        r |= symBbox(SymId::reversedBracketTop).translated(-w1, y1);</a>
+<a name="ln1293">                        r |= symBbox(SymId::bracketTop).translated(0, y1);</a>
+<a name="ln1294">                        // r |= symBbox(SymId::reversedBracketBottom).translated(0, y2);</a>
+<a name="ln1295">                        }</a>
+<a name="ln1296">                        break;</a>
+<a name="ln1297">                  default:</a>
+<a name="ln1298">                        break;</a>
+<a name="ln1299">                  }</a>
+<a name="ln1300">            }</a>
+<a name="ln1301">      setbbox(r);</a>
+<a name="ln1302"> </a>
+<a name="ln1303">      for (Element* e : _el) {</a>
+<a name="ln1304">            e-&gt;layout();</a>
+<a name="ln1305">            if (e-&gt;isArticulation()) {</a>
+<a name="ln1306">                  Articulation* a  = toArticulation(e);</a>
+<a name="ln1307">                  Direction dir    = a-&gt;direction();</a>
+<a name="ln1308">                  qreal distance   = 0.5 * spatium();</a>
+<a name="ln1309">                  qreal x          = width() * .5;</a>
+<a name="ln1310">                  if (dir == Direction::DOWN) {</a>
+<a name="ln1311">                        qreal botY = y2 + distance;</a>
+<a name="ln1312">                        a-&gt;setPos(QPointF(x, botY));</a>
+<a name="ln1313">                        }</a>
+<a name="ln1314">                  else {</a>
+<a name="ln1315">                        qreal topY = y1 - distance;</a>
+<a name="ln1316">                        a-&gt;setPos(QPointF(x, topY));</a>
+<a name="ln1317">                        }</a>
+<a name="ln1318">                  }</a>
+<a name="ln1319">            }</a>
+<a name="ln1320">      }</a>
+<a name="ln1321"> </a>
+<a name="ln1322">//---------------------------------------------------------</a>
+<a name="ln1323">//   layout2</a>
+<a name="ln1324">//    called after system layout; set vertical dimensions</a>
+<a name="ln1325">//---------------------------------------------------------</a>
+<a name="ln1326"> </a>
+<a name="ln1327">void BarLine::layout2()</a>
+<a name="ln1328">      {</a>
+<a name="ln1329">      // barlines hidden on this staff</a>
+<a name="ln1330">      if (staff() &amp;&amp; segment()) {</a>
+<a name="ln1331">            if ((!staff()-&gt;staffType(tick())-&gt;showBarlines() &amp;&amp; segment()-&gt;segmentType() == SegmentType::EndBarLine)</a>
+<a name="ln1332">                || (staff()-&gt;hideSystemBarLine() &amp;&amp; segment()-&gt;segmentType() == SegmentType::BeginBarLine)) {</a>
+<a name="ln1333">                  setbbox(QRectF());</a>
+<a name="ln1334">                  return;</a>
+<a name="ln1335">                  }</a>
+<a name="ln1336">            }</a>
+<a name="ln1337"> </a>
+<a name="ln1338">      getY();</a>
+<a name="ln1339">      bbox().setTop(y1);</a>
+<a name="ln1340">      bbox().setBottom(y2);</a>
+<a name="ln1341"> </a>
+<a name="ln1342">      if (score()-&gt;styleB(Sid::repeatBarTips)) {</a>
+<a name="ln1343">            switch (barLineType()) {</a>
+<a name="ln1344">                  case BarLineType::START_REPEAT:</a>
+<a name="ln1345">                        bbox() |= symBbox(SymId::bracketTop).translated(0, y1);</a>
+<a name="ln1346">                        bbox() |= symBbox(SymId::bracketBottom).translated(0, y2);</a>
+<a name="ln1347">                        break;</a>
+<a name="ln1348">                  case BarLineType::END_REPEAT:</a>
+<a name="ln1349">                        {</a>
+<a name="ln1350">                        qreal w1 = 0.0;   //symBbox(SymId::reversedBracketTop).width();</a>
+<a name="ln1351">                        bbox() |= symBbox(SymId::reversedBracketTop).translated(-w1, y1);</a>
+<a name="ln1352">                        bbox() |= symBbox(SymId::reversedBracketBottom).translated(-w1, y2);</a>
+<a name="ln1353">                        break;</a>
+<a name="ln1354">                        }</a>
+<a name="ln1355">                  case BarLineType::END_START_REPEAT:</a>
+<a name="ln1356">                        {</a>
+<a name="ln1357">                        qreal w1 = 0.0;   //symBbox(SymId::reversedBracketTop).width();</a>
+<a name="ln1358">                        bbox() |= symBbox(SymId::reversedBracketTop).translated(-w1, y1);</a>
+<a name="ln1359">                        bbox() |= symBbox(SymId::reversedBracketBottom).translated(-w1, y2);</a>
+<a name="ln1360">                        bbox() |= symBbox(SymId::bracketTop).translated(0, y1);</a>
+<a name="ln1361">                        bbox() |= symBbox(SymId::bracketBottom).translated(0, y2);</a>
+<a name="ln1362">                        break;</a>
+<a name="ln1363">                        }</a>
+<a name="ln1364">                  default:</a>
+<a name="ln1365">                        break;</a>
+<a name="ln1366">                  }</a>
+<a name="ln1367">            }</a>
+<a name="ln1368">      }</a>
+<a name="ln1369"> </a>
+<a name="ln1370">//---------------------------------------------------------</a>
+<a name="ln1371">//   shape</a>
+<a name="ln1372">//---------------------------------------------------------</a>
+<a name="ln1373"> </a>
+<a name="ln1374">Shape BarLine::shape() const</a>
+<a name="ln1375">      {</a>
+<a name="ln1376">      Shape shape;</a>
+<a name="ln1377">#ifndef NDEBUG</a>
+<a name="ln1378">      shape.add(bbox(), name());</a>
+<a name="ln1379">#else</a>
+<a name="ln1380">      shape.add(bbox());</a>
+<a name="ln1381">#endif</a>
+<a name="ln1382">      return shape;</a>
+<a name="ln1383">      }</a>
+<a name="ln1384"> </a>
+<a name="ln1385">//---------------------------------------------------------</a>
+<a name="ln1386">//   scanElements</a>
+<a name="ln1387">//---------------------------------------------------------</a>
+<a name="ln1388"> </a>
+<a name="ln1389">void BarLine::scanElements(void* data, void (*func)(void*, Element*), bool all)</a>
+<a name="ln1390">      {</a>
+<a name="ln1391">      // if no width (staff has bar lines turned off) and not all requested, do nothing</a>
+<a name="ln1392">      if (width() == 0.0 &amp;&amp; !all)</a>
+<a name="ln1393">            return;</a>
+<a name="ln1394">      func(data, this);</a>
+<a name="ln1395">      for (Element* e : _el)</a>
+<a name="ln1396">            e-&gt;scanElements(data, func, all);</a>
+<a name="ln1397">      }</a>
+<a name="ln1398"> </a>
+<a name="ln1399">//---------------------------------------------------------</a>
+<a name="ln1400">//   setTrack</a>
+<a name="ln1401">//---------------------------------------------------------</a>
+<a name="ln1402"> </a>
+<a name="ln1403">void BarLine::setTrack(int t)</a>
+<a name="ln1404">      {</a>
+<a name="ln1405">      Element::setTrack(t);</a>
+<a name="ln1406">      for (Element* e : _el)</a>
+<a name="ln1407">            e-&gt;setTrack(t);</a>
+<a name="ln1408">      }</a>
+<a name="ln1409"> </a>
+<a name="ln1410">//---------------------------------------------------------</a>
+<a name="ln1411">//   setScore</a>
+<a name="ln1412">//---------------------------------------------------------</a>
+<a name="ln1413"> </a>
+<a name="ln1414">void BarLine::setScore(Score* s)</a>
+<a name="ln1415">      {</a>
+<a name="ln1416">      Element::setScore(s);</a>
+<a name="ln1417">      for (Element* e : _el)</a>
+<a name="ln1418">            e-&gt;setScore(s);</a>
+<a name="ln1419">      }</a>
+<a name="ln1420"> </a>
+<a name="ln1421">//---------------------------------------------------------</a>
+<a name="ln1422">//   add</a>
+<a name="ln1423">//---------------------------------------------------------</a>
+<a name="ln1424"> </a>
+<a name="ln1425">void BarLine::add(Element* e)</a>
+<a name="ln1426">      {</a>
+<a name="ln1427">      e-&gt;setParent(this);</a>
+<a name="ln1428">      switch (e-&gt;type()) {</a>
+<a name="ln1429">            case ElementType::ARTICULATION:</a>
+<a name="ln1430">            case ElementType::SYMBOL:</a>
+<a name="ln1431">            case ElementType::IMAGE:</a>
+<a name="ln1432">                  _el.push_back(e);</a>
+<a name="ln1433">                  setGenerated(false);</a>
+<a name="ln1434">                  break;</a>
+<a name="ln1435">            default:</a>
+<a name="ln1436">                  qDebug(&quot;BarLine::add() not impl. %s&quot;, e-&gt;name());</a>
+<a name="ln1437">                  delete e;</a>
+<a name="ln1438">                  break;</a>
+<a name="ln1439">            }</a>
+<a name="ln1440">      }</a>
+<a name="ln1441"> </a>
+<a name="ln1442">//---------------------------------------------------------</a>
+<a name="ln1443">//   remove</a>
+<a name="ln1444">//---------------------------------------------------------</a>
+<a name="ln1445"> </a>
+<a name="ln1446">void BarLine::remove(Element* e)</a>
+<a name="ln1447">      {</a>
+<a name="ln1448">      switch(e-&gt;type()) {</a>
+<a name="ln1449">            case ElementType::ARTICULATION:</a>
+<a name="ln1450">            case ElementType::SYMBOL:</a>
+<a name="ln1451">            case ElementType::IMAGE:</a>
+<a name="ln1452">                  if (!_el.remove(e))</a>
+<a name="ln1453">                        qDebug(&quot;BarLine::remove(): cannot find %s&quot;, e-&gt;name());</a>
+<a name="ln1454">                  break;</a>
+<a name="ln1455">            default:</a>
+<a name="ln1456">                  qDebug(&quot;BarLine::remove() not impl. %s&quot;, e-&gt;name());</a>
+<a name="ln1457">                  break;</a>
+<a name="ln1458">            }</a>
+<a name="ln1459">      }</a>
+<a name="ln1460"> </a>
+<a name="ln1461">//---------------------------------------------------------</a>
+<a name="ln1462">//   getProperty</a>
+<a name="ln1463">//---------------------------------------------------------</a>
+<a name="ln1464"> </a>
+<a name="ln1465">QVariant BarLine::getProperty(Pid id) const</a>
+<a name="ln1466">      {</a>
+<a name="ln1467">      switch (id) {</a>
+<a name="ln1468">            case Pid::BARLINE_TYPE:</a>
+<a name="ln1469">                  return QVariant::fromValue(_barLineType);</a>
+<a name="ln1470">            case Pid::BARLINE_SPAN:</a>
+<a name="ln1471">                  return spanStaff();</a>
+<a name="ln1472">            case Pid::BARLINE_SPAN_FROM:</a>
+<a name="ln1473">                  return int(spanFrom());</a>
+<a name="ln1474">            case Pid::BARLINE_SPAN_TO:</a>
+<a name="ln1475">                  return int(spanTo());</a>
+<a name="ln1476">            default:</a>
+<a name="ln1477">                  break;</a>
+<a name="ln1478">            }</a>
+<a name="ln1479">      return Element::getProperty(id);</a>
+<a name="ln1480">      }</a>
+<a name="ln1481"> </a>
+<a name="ln1482">//---------------------------------------------------------</a>
+<a name="ln1483">//   setProperty</a>
+<a name="ln1484">//---------------------------------------------------------</a>
+<a name="ln1485"> </a>
+<a name="ln1486">bool BarLine::setProperty(Pid id, const QVariant&amp; v)</a>
+<a name="ln1487">      {</a>
+<a name="ln1488">      switch (id) {</a>
+<a name="ln1489">            case Pid::BARLINE_TYPE:</a>
+<a name="ln1490">                  setBarLineType(v.value&lt;BarLineType&gt;());</a>
+<a name="ln1491">                  break;</a>
+<a name="ln1492">            case Pid::BARLINE_SPAN:</a>
+<a name="ln1493">                  setSpanStaff(v.toBool());</a>
+<a name="ln1494">                  break;</a>
+<a name="ln1495">            case Pid::BARLINE_SPAN_FROM:</a>
+<a name="ln1496">                  setSpanFrom(v.toInt());</a>
+<a name="ln1497">                  break;</a>
+<a name="ln1498">            case Pid::BARLINE_SPAN_TO:</a>
+<a name="ln1499">                  setSpanTo(v.toInt());</a>
+<a name="ln1500">                  break;</a>
+<a name="ln1501">            default:</a>
+<a name="ln1502">                  return Element::setProperty(id, v);</a>
+<a name="ln1503">            }</a>
+<a name="ln1504">      setGenerated(false);</a>
+<a name="ln1505">      triggerLayout();</a>
+<a name="ln1506">      return true;</a>
+<a name="ln1507">      }</a>
+<a name="ln1508"> </a>
+<a name="ln1509">//---------------------------------------------------------</a>
+<a name="ln1510">//   undoChangeProperty</a>
+<a name="ln1511">//---------------------------------------------------------</a>
+<a name="ln1512"> </a>
+<a name="ln1513">void BarLine::undoChangeProperty(Pid id, const QVariant&amp; v, PropertyFlags ps)</a>
+<a name="ln1514">      {</a>
+<a name="ln1515">      if (id == Pid::BARLINE_TYPE &amp;&amp; segment()) {</a>
+<a name="ln1516">            const BarLine* bl = this;</a>
+<a name="ln1517">            BarLineType blType = v.value&lt;BarLineType&gt;();</a>
+<a name="ln1518">            if (blType == BarLineType::START_REPEAT) { // change next measures endBarLine</a>
+<a name="ln1519">                  if (bl-&gt;measure()-&gt;nextMeasure())</a>
+<a name="ln1520">                        bl = bl-&gt;measure()-&gt;nextMeasure()-&gt;endBarLine();</a>
+<a name="ln1521">                  else</a>
+<a name="ln1522">                        bl = 0;</a>
+<a name="ln1523">                  }</a>
+<a name="ln1524">            if (bl)</a>
+<a name="ln1525">                  undoChangeBarLineType(const_cast&lt;BarLine*&gt;(bl), v.value&lt;BarLineType&gt;(), true);</a>
+<a name="ln1526">            }</a>
+<a name="ln1527">      else</a>
+<a name="ln1528">            ScoreElement::undoChangeProperty(id, v, ps);</a>
+<a name="ln1529">      }</a>
+<a name="ln1530"> </a>
+<a name="ln1531">//---------------------------------------------------------</a>
+<a name="ln1532">//   propertyDefault</a>
+<a name="ln1533">//---------------------------------------------------------</a>
+<a name="ln1534"> </a>
+<a name="ln1535">QVariant BarLine::propertyDefault(Pid propertyId) const</a>
+<a name="ln1536">      {</a>
+<a name="ln1537">      switch (propertyId) {</a>
+<a name="ln1538">            case Pid::BARLINE_TYPE:</a>
+<a name="ln1539">// dynamic default values are a bad idea: writing to xml the value maybe ommited resulting in</a>
+<a name="ln1540">//    wrong values on read (as the default may be different on read)</a>
+<a name="ln1541">//                  if (segment() &amp;&amp; segment()-&gt;measure() &amp;&amp; !segment()-&gt;measure()-&gt;nextMeasure())</a>
+<a name="ln1542">//                        return QVariant::fromValue(BarLineType::END);</a>
+<a name="ln1543">                  return QVariant::fromValue(BarLineType::NORMAL);</a>
+<a name="ln1544"> </a>
+<a name="ln1545">            case Pid::BARLINE_SPAN:</a>
+<a name="ln1546">                  return staff() ? staff()-&gt;barLineSpan() : false;</a>
+<a name="ln1547"> </a>
+<a name="ln1548">            case Pid::BARLINE_SPAN_FROM:</a>
+<a name="ln1549">                  return staff() ? staff()-&gt;barLineFrom() : 0;</a>
+<a name="ln1550"> </a>
+<a name="ln1551">            case Pid::BARLINE_SPAN_TO:</a>
+<a name="ln1552">                  return staff() ? staff()-&gt;barLineTo() : 0;</a>
+<a name="ln1553"> </a>
+<a name="ln1554">            default:</a>
+<a name="ln1555">                  break;</a>
+<a name="ln1556">            }</a>
+<a name="ln1557">      return Element::propertyDefault(propertyId);</a>
+<a name="ln1558">      }</a>
+<a name="ln1559"> </a>
+<a name="ln1560">//---------------------------------------------------------</a>
+<a name="ln1561">//   propertyId</a>
+<a name="ln1562">//---------------------------------------------------------</a>
+<a name="ln1563"> </a>
+<a name="ln1564">Pid BarLine::propertyId(const QStringRef&amp; name) const</a>
+<a name="ln1565">      {</a>
+<a name="ln1566">      if (name == &quot;subtype&quot;)</a>
+<a name="ln1567">            return Pid::BARLINE_TYPE;</a>
+<a name="ln1568">      return Element::propertyId(name);</a>
+<a name="ln1569">      }</a>
+<a name="ln1570"> </a>
+<a name="ln1571">//---------------------------------------------------------</a>
+<a name="ln1572">//   nextSegmentElement</a>
+<a name="ln1573">//---------------------------------------------------------</a>
+<a name="ln1574"> </a>
+<a name="ln1575">Element* BarLine::nextSegmentElement()</a>
+<a name="ln1576">      {</a>
+<a name="ln1577">      return segment()-&gt;firstInNextSegments(staffIdx());    //score()-&gt;inputState().prevTrack() / VOICES);</a>
+<a name="ln1578">      }</a>
+<a name="ln1579"> </a>
+<a name="ln1580">//---------------------------------------------------------</a>
+<a name="ln1581">//   prevSegmentElement</a>
+<a name="ln1582">//---------------------------------------------------------</a>
+<a name="ln1583"> </a>
+<a name="ln1584">Element* BarLine::prevSegmentElement()</a>
+<a name="ln1585">      {</a>
+<a name="ln1586">      return segment()-&gt;lastInPrevSegments(staffIdx());     //score()-&gt;inputState().prevTrack() / VOICES);</a>
+<a name="ln1587">      }</a>
+<a name="ln1588"> </a>
+<a name="ln1589">//---------------------------------------------------------</a>
+<a name="ln1590">//   accessibleInfo</a>
+<a name="ln1591">//---------------------------------------------------------</a>
+<a name="ln1592"> </a>
+<a name="ln1593">QString BarLine::accessibleInfo() const</a>
+<a name="ln1594">      {</a>
+<a name="ln1595">      return QString(&quot;%1: %2&quot;).arg(Element::accessibleInfo()).arg(BarLine::userTypeName(barLineType()));</a>
+<a name="ln1596">      }</a>
+<a name="ln1597"> </a>
+<a name="ln1598">//---------------------------------------------------------</a>
+<a name="ln1599">//   accessibleExtraInfo</a>
+<a name="ln1600">//---------------------------------------------------------</a>
+<a name="ln1601"> </a>
+<a name="ln1602">QString BarLine::accessibleExtraInfo() const</a>
+<a name="ln1603">      {</a>
+<a name="ln1604">      Segment* seg = segment();</a>
+<a name="ln1605">      QString rez;</a>
+<a name="ln1606"> </a>
+<a name="ln1607">      for (const Element* e : *el()) {</a>
+<a name="ln1608">            if (!score()-&gt;selectionFilter().canSelect(e))</a>
+<a name="ln1609">                  continue;</a>
+<a name="ln1610">            rez = QString(&quot;%1 %2&quot;).arg(rez).arg(e-&gt;screenReaderInfo());</a>
+<a name="ln1611">            }</a>
+<a name="ln1612"> </a>
+<a name="ln1613">      for (const Element* e : seg-&gt;annotations()) {</a>
+<a name="ln1614">            if (!score()-&gt;selectionFilter().canSelect(e))</a>
+<a name="ln1615">                  continue;</a>
+<a name="ln1616">            if (e-&gt;track() == track())</a>
+<a name="ln1617">                  rez = QString(&quot;%1 %2&quot;).arg(rez).arg(e-&gt;screenReaderInfo());</a>
+<a name="ln1618">            }</a>
+<a name="ln1619">      Measure* m = seg-&gt;measure();</a>
+<a name="ln1620"> </a>
+<a name="ln1621">      if (m) {    // always true?</a>
+<a name="ln1622">            //jumps</a>
+<a name="ln1623">            for (const Element* e : m-&gt;el()) {</a>
+<a name="ln1624">                  if (!score()-&gt;selectionFilter().canSelect(e)) continue;</a>
+<a name="ln1625">                  if (e-&gt;type() == ElementType::JUMP)</a>
+<a name="ln1626">                        rez= QString(&quot;%1 %2&quot;).arg(rez).arg(e-&gt;screenReaderInfo());</a>
+<a name="ln1627">                  if (e-&gt;type() == ElementType::MARKER) {</a>
+<a name="ln1628">                        const Marker* m1 = toMarker(e);</a>
+<a name="ln1629">                        if (m1-&gt;markerType() == Marker::Type::FINE)</a>
+<a name="ln1630">                              rez = QString(&quot;%1 %2&quot;).arg(rez).arg(e-&gt;screenReaderInfo());</a>
+<a name="ln1631">                        }</a>
+<a name="ln1632"> </a>
+<a name="ln1633">                  }</a>
+<a name="ln1634">            //markers</a>
+<a name="ln1635">            Measure* nextM = m-&gt;nextMeasureMM();</a>
+<a name="ln1636">            if (nextM) {</a>
+<a name="ln1637">                  for (const Element* e : nextM-&gt;el()) {</a>
+<a name="ln1638">                        if (!score()-&gt;selectionFilter().canSelect(e))</a>
+<a name="ln1639">                              continue;</a>
+<a name="ln1640">                        if (e-&gt;isMarker()) {</a>
+<a name="ln1641">                              if (toMarker(e)-&gt;markerType() == Marker::Type::FINE)</a>
+<a name="ln1642">                                    continue; //added above^</a>
+<a name="ln1643">                              rez = QString(&quot;%1 %2&quot;).arg(rez).arg(e-&gt;screenReaderInfo());</a>
+<a name="ln1644">                              }</a>
+<a name="ln1645">                        }</a>
+<a name="ln1646">                  }</a>
+<a name="ln1647">            }</a>
+<a name="ln1648"> </a>
+<a name="ln1649">      Fraction tick = seg-&gt;tick();</a>
+<a name="ln1650"> </a>
+<a name="ln1651">      auto spanners = score()-&gt;spannerMap().findOverlapping(tick.ticks(), tick.ticks());</a>
+<a name="ln1652">      for (auto interval : spanners) {</a>
+<a name="ln1653">            Spanner* s = interval.value;</a>
+<a name="ln1654">            if (!score()-&gt;selectionFilter().canSelect(s))</a>
+<a name="ln1655">                  continue;</a>
+<a name="ln1656">            if (s-&gt;type() == ElementType::VOLTA) {</a>
+<a name="ln1657">                  if (s-&gt;tick() == tick)</a>
+<a name="ln1658">                        rez = QObject::tr(&quot;%1 Start of %2&quot;).arg(rez).arg(s-&gt;screenReaderInfo());</a>
+<a name="ln1659">                  if (s-&gt;tick2() == tick)</a>
+<a name="ln1660">                        rez = QObject::tr(&quot;%1 End of %2&quot;).arg(rez).arg(s-&gt;screenReaderInfo());</a>
+<a name="ln1661">                  }</a>
+<a name="ln1662">            }</a>
+<a name="ln1663">      return rez;</a>
+<a name="ln1664">      }</a>
+<a name="ln1665"> </a>
+<a name="ln1666">}</a>
+<a name="ln1667"> </a>
+
+</code></pre>
+<div class="balloon" rel="1436"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1453"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1456"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="281"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: y1, y2.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

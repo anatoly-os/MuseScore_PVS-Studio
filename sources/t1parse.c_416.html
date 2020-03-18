@@ -1,0 +1,571 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>t1parse.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  t1parse.c                                                              */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    Type 1 parser (body).                                                */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 1996-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">  /*************************************************************************/</a>
+<a name="ln20">  /*                                                                       */</a>
+<a name="ln21">  /* The Type 1 parser is in charge of the following:                      */</a>
+<a name="ln22">  /*                                                                       */</a>
+<a name="ln23">  /*  - provide an implementation of a growing sequence of objects called  */</a>
+<a name="ln24">  /*    a `T1_Table' (used to build various tables needed by the loader).  */</a>
+<a name="ln25">  /*                                                                       */</a>
+<a name="ln26">  /*  - opening .pfb and .pfa files to extract their top-level and private */</a>
+<a name="ln27">  /*    dictionaries.                                                      */</a>
+<a name="ln28">  /*                                                                       */</a>
+<a name="ln29">  /*  - read numbers, arrays &amp; strings from any dictionary.                */</a>
+<a name="ln30">  /*                                                                       */</a>
+<a name="ln31">  /* See `t1load.c' to see how data is loaded from the font file.          */</a>
+<a name="ln32">  /*                                                                       */</a>
+<a name="ln33">  /*************************************************************************/</a>
+<a name="ln34"> </a>
+<a name="ln35"> </a>
+<a name="ln36">#include &lt;ft2build.h&gt;</a>
+<a name="ln37">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln38">#include FT_INTERNAL_STREAM_H</a>
+<a name="ln39">#include FT_INTERNAL_POSTSCRIPT_AUX_H</a>
+<a name="ln40"> </a>
+<a name="ln41">#include &quot;t1parse.h&quot;</a>
+<a name="ln42"> </a>
+<a name="ln43">#include &quot;t1errors.h&quot;</a>
+<a name="ln44"> </a>
+<a name="ln45"> </a>
+<a name="ln46">  /*************************************************************************/</a>
+<a name="ln47">  /*                                                                       */</a>
+<a name="ln48">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln49">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln50">  /* messages during execution.                                            */</a>
+<a name="ln51">  /*                                                                       */</a>
+<a name="ln52">#undef  FT_COMPONENT</a>
+<a name="ln53">#define FT_COMPONENT  trace_t1parse</a>
+<a name="ln54"> </a>
+<a name="ln55"> </a>
+<a name="ln56">  /*************************************************************************/</a>
+<a name="ln57">  /*************************************************************************/</a>
+<a name="ln58">  /*************************************************************************/</a>
+<a name="ln59">  /*****                                                               *****/</a>
+<a name="ln60">  /*****                   INPUT STREAM PARSER                         *****/</a>
+<a name="ln61">  /*****                                                               *****/</a>
+<a name="ln62">  /*************************************************************************/</a>
+<a name="ln63">  /*************************************************************************/</a>
+<a name="ln64">  /*************************************************************************/</a>
+<a name="ln65"> </a>
+<a name="ln66"> </a>
+<a name="ln67">  /* see Adobe Technical Note 5040.Download_Fonts.pdf */</a>
+<a name="ln68"> </a>
+<a name="ln69">  static FT_Error</a>
+<a name="ln70">  read_pfb_tag( FT_Stream   stream,</a>
+<a name="ln71">                FT_UShort  *atag,</a>
+<a name="ln72">                FT_ULong   *asize )</a>
+<a name="ln73">  {</a>
+<a name="ln74">    FT_Error   error;</a>
+<a name="ln75">    FT_UShort  tag;</a>
+<a name="ln76">    FT_ULong   size;</a>
+<a name="ln77"> </a>
+<a name="ln78"> </a>
+<a name="ln79">    *atag  = 0;</a>
+<a name="ln80">    *asize = 0;</a>
+<a name="ln81"> </a>
+<a name="ln82">    if ( !FT_READ_USHORT( tag ) )</a>
+<a name="ln83">    {</a>
+<a name="ln84">      if ( tag == 0x8001U || tag == 0x8002U )</a>
+<a name="ln85">      {</a>
+<a name="ln86">        if ( !FT_READ_ULONG_LE( size ) )</a>
+<a name="ln87">          *asize = size;</a>
+<a name="ln88">      }</a>
+<a name="ln89"> </a>
+<a name="ln90">      *atag = tag;</a>
+<a name="ln91">    }</a>
+<a name="ln92"> </a>
+<a name="ln93">    return error;</a>
+<a name="ln94">  }</a>
+<a name="ln95"> </a>
+<a name="ln96"> </a>
+<a name="ln97">  static FT_Error</a>
+<a name="ln98">  check_type1_format( FT_Stream    stream,</a>
+<a name="ln99">                      const char*  header_string,</a>
+<a name="ln100">                      size_t       header_length )</a>
+<a name="ln101">  {</a>
+<a name="ln102">    FT_Error   error;</a>
+<a name="ln103">    FT_UShort  tag;</a>
+<a name="ln104">    FT_ULong   dummy;</a>
+<a name="ln105"> </a>
+<a name="ln106"> </a>
+<a name="ln107">    if ( FT_STREAM_SEEK( 0 ) )</a>
+<a name="ln108">      goto Exit;</a>
+<a name="ln109"> </a>
+<a name="ln110">    error = read_pfb_tag( stream, &amp;tag, &amp;dummy );</a>
+<a name="ln111">    if ( error )</a>
+<a name="ln112">      goto Exit;</a>
+<a name="ln113"> </a>
+<a name="ln114">    /* We assume that the first segment in a PFB is always encoded as   */</a>
+<a name="ln115">    /* text.  This might be wrong (and the specification doesn't insist */</a>
+<a name="ln116">    /* on that), but we have never seen a counterexample.               */</a>
+<a name="ln117">    if ( tag != 0x8001U &amp;&amp; FT_STREAM_SEEK( 0 ) )</a>
+<a name="ln118">      goto Exit;</a>
+<a name="ln119"> </a>
+<a name="ln120">    if ( !FT_FRAME_ENTER( header_length ) )</a>
+<a name="ln121">    {</a>
+<a name="ln122">      error = FT_Err_Ok;</a>
+<a name="ln123"> </a>
+<a name="ln124">      if ( ft_memcmp( stream-&gt;cursor, header_string, header_length ) != 0 )</a>
+<a name="ln125">        error = FT_THROW( Unknown_File_Format );</a>
+<a name="ln126"> </a>
+<a name="ln127">      FT_FRAME_EXIT();</a>
+<a name="ln128">    }</a>
+<a name="ln129"> </a>
+<a name="ln130">  Exit:</a>
+<a name="ln131">    return error;</a>
+<a name="ln132">  }</a>
+<a name="ln133"> </a>
+<a name="ln134"> </a>
+<a name="ln135">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln136">  T1_New_Parser( T1_Parser      parser,</a>
+<a name="ln137">                 FT_Stream      stream,</a>
+<a name="ln138">                 FT_Memory      memory,</a>
+<a name="ln139">                 PSAux_Service  psaux )</a>
+<a name="ln140">  {</a>
+<a name="ln141">    FT_Error   error;</a>
+<a name="ln142">    FT_UShort  tag;</a>
+<a name="ln143">    FT_ULong   size;</a>
+<a name="ln144"> </a>
+<a name="ln145"> </a>
+<a name="ln146">    psaux-&gt;ps_parser_funcs-&gt;init( &amp;parser-&gt;root, NULL, NULL, memory );</a>
+<a name="ln147"> </a>
+<a name="ln148">    parser-&gt;stream       = stream;</a>
+<a name="ln149">    parser-&gt;base_len     = 0;</a>
+<a name="ln150">    parser-&gt;base_dict    = NULL;</a>
+<a name="ln151">    parser-&gt;private_len  = 0;</a>
+<a name="ln152">    parser-&gt;private_dict = NULL;</a>
+<a name="ln153">    parser-&gt;in_pfb       = 0;</a>
+<a name="ln154">    parser-&gt;in_memory    = 0;</a>
+<a name="ln155">    parser-&gt;single_block = 0;</a>
+<a name="ln156"> </a>
+<a name="ln157">    /* check the header format */</a>
+<a name="ln158">    error = check_type1_format( stream, &quot;%!PS-AdobeFont&quot;, 14 );</a>
+<a name="ln159">    if ( error )</a>
+<a name="ln160">    {</a>
+<a name="ln161">      if ( FT_ERR_NEQ( error, Unknown_File_Format ) )</a>
+<a name="ln162">        goto Exit;</a>
+<a name="ln163"> </a>
+<a name="ln164">      error = check_type1_format( stream, &quot;%!FontType&quot;, 10 );</a>
+<a name="ln165">      if ( error )</a>
+<a name="ln166">      {</a>
+<a name="ln167">        FT_TRACE2(( &quot;  not a Type 1 font\n&quot; ));</a>
+<a name="ln168">        goto Exit;</a>
+<a name="ln169">      }</a>
+<a name="ln170">    }</a>
+<a name="ln171"> </a>
+<a name="ln172">    /******************************************************************/</a>
+<a name="ln173">    /*                                                                */</a>
+<a name="ln174">    /* Here a short summary of what is going on:                      */</a>
+<a name="ln175">    /*                                                                */</a>
+<a name="ln176">    /*   When creating a new Type 1 parser, we try to locate and load */</a>
+<a name="ln177">    /*   the base dictionary if this is possible (i.e., for PFB       */</a>
+<a name="ln178">    /*   files).  Otherwise, we load the whole font into memory.      */</a>
+<a name="ln179">    /*                                                                */</a>
+<a name="ln180">    /*   When `loading' the base dictionary, we only setup pointers   */</a>
+<a name="ln181">    /*   in the case of a memory-based stream.  Otherwise, we         */</a>
+<a name="ln182">    /*   allocate and load the base dictionary in it.                 */</a>
+<a name="ln183">    /*                                                                */</a>
+<a name="ln184">    /*   parser-&gt;in_pfb is set if we are in a binary (`.pfb') font.   */</a>
+<a name="ln185">    /*   parser-&gt;in_memory is set if we have a memory stream.         */</a>
+<a name="ln186">    /*                                                                */</a>
+<a name="ln187"> </a>
+<a name="ln188">    /* try to compute the size of the base dictionary;     */</a>
+<a name="ln189">    /* look for a Postscript binary file tag, i.e., 0x8001 */</a>
+<a name="ln190">    if ( FT_STREAM_SEEK( 0L ) )</a>
+<a name="ln191">      goto Exit;</a>
+<a name="ln192"> </a>
+<a name="ln193">    error = read_pfb_tag( stream, &amp;tag, &amp;size );</a>
+<a name="ln194">    if ( error )</a>
+<a name="ln195">      goto Exit;</a>
+<a name="ln196"> </a>
+<a name="ln197">    if ( tag != 0x8001U )</a>
+<a name="ln198">    {</a>
+<a name="ln199">      /* assume that this is a PFA file for now; an error will */</a>
+<a name="ln200">      /* be produced later when more things are checked        */</a>
+<a name="ln201">      if ( FT_STREAM_SEEK( 0L ) )</a>
+<a name="ln202">        goto Exit;</a>
+<a name="ln203">      size = stream-&gt;size;</a>
+<a name="ln204">    }</a>
+<a name="ln205">    else</a>
+<a name="ln206">      parser-&gt;in_pfb = 1;</a>
+<a name="ln207"> </a>
+<a name="ln208">    /* now, try to load `size' bytes of the `base' dictionary we */</a>
+<a name="ln209">    /* found previously                                          */</a>
+<a name="ln210"> </a>
+<a name="ln211">    /* if it is a memory-based resource, set up pointers */</a>
+<a name="ln212">    if ( !stream-&gt;read )</a>
+<a name="ln213">    {</a>
+<a name="ln214">      parser-&gt;base_dict = (FT_Byte*)stream-&gt;base + stream-&gt;pos;</a>
+<a name="ln215">      parser-&gt;base_len  = size;</a>
+<a name="ln216">      parser-&gt;in_memory = 1;</a>
+<a name="ln217"> </a>
+<a name="ln218">      /* check that the `size' field is valid */</a>
+<a name="ln219">      if ( FT_STREAM_SKIP( size ) )</a>
+<a name="ln220">        goto Exit;</a>
+<a name="ln221">    }</a>
+<a name="ln222">    else</a>
+<a name="ln223">    {</a>
+<a name="ln224">      /* read segment in memory -- this is clumsy, but so does the format */</a>
+<a name="ln225">      if ( FT_ALLOC( parser-&gt;base_dict, size )       ||</a>
+<a name="ln226">           FT_STREAM_READ( parser-&gt;base_dict, size ) )</a>
+<a name="ln227">        goto Exit;</a>
+<a name="ln228">      parser-&gt;base_len = size;</a>
+<a name="ln229">    }</a>
+<a name="ln230"> </a>
+<a name="ln231">    parser-&gt;root.base   = parser-&gt;base_dict;</a>
+<a name="ln232">    parser-&gt;root.cursor = parser-&gt;base_dict;</a>
+<a name="ln233">    parser-&gt;root.limit  = parser-&gt;root.cursor + parser-&gt;base_len;</a>
+<a name="ln234"> </a>
+<a name="ln235">  Exit:</a>
+<a name="ln236">    if ( error &amp;&amp; !parser-&gt;in_memory )</a>
+<a name="ln237">      FT_FREE( parser-&gt;base_dict );</a>
+<a name="ln238"> </a>
+<a name="ln239">    return error;</a>
+<a name="ln240">  }</a>
+<a name="ln241"> </a>
+<a name="ln242"> </a>
+<a name="ln243">  FT_LOCAL_DEF( void )</a>
+<a name="ln244">  T1_Finalize_Parser( T1_Parser  parser )</a>
+<a name="ln245">  {</a>
+<a name="ln246">    FT_Memory  memory = parser-&gt;root.memory;</a>
+<a name="ln247"> </a>
+<a name="ln248"> </a>
+<a name="ln249">    /* always free the private dictionary */</a>
+<a name="ln250">    FT_FREE( parser-&gt;private_dict );</a>
+<a name="ln251"> </a>
+<a name="ln252">    /* free the base dictionary only when we have a disk stream */</a>
+<a name="ln253">    if ( !parser-&gt;in_memory )</a>
+<a name="ln254">      FT_FREE( parser-&gt;base_dict );</a>
+<a name="ln255"> </a>
+<a name="ln256">    parser-&gt;root.funcs.done( &amp;parser-&gt;root );</a>
+<a name="ln257">  }</a>
+<a name="ln258"> </a>
+<a name="ln259"> </a>
+<a name="ln260">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln261">  T1_Get_Private_Dict( T1_Parser      parser,</a>
+<a name="ln262">                       PSAux_Service  psaux )</a>
+<a name="ln263">  {</a>
+<a name="ln264">    FT_Stream  stream = parser-&gt;stream;</a>
+<a name="ln265">    FT_Memory  memory = parser-&gt;root.memory;</a>
+<a name="ln266">    FT_Error   error  = FT_Err_Ok;</a>
+<a name="ln267">    FT_ULong   size;</a>
+<a name="ln268"> </a>
+<a name="ln269"> </a>
+<a name="ln270">    if ( parser-&gt;in_pfb )</a>
+<a name="ln271">    {</a>
+<a name="ln272">      /* in the case of the PFB format, the private dictionary can be  */</a>
+<a name="ln273">      /* made of several segments.  We thus first read the number of   */</a>
+<a name="ln274">      /* segments to compute the total size of the private dictionary  */</a>
+<a name="ln275">      /* then re-read them into memory.                                */</a>
+<a name="ln276">      FT_ULong   start_pos = FT_STREAM_POS();</a>
+<a name="ln277">      FT_UShort  tag;</a>
+<a name="ln278"> </a>
+<a name="ln279"> </a>
+<a name="ln280">      parser-&gt;private_len = 0;</a>
+<a name="ln281">      for (;;)</a>
+<a name="ln282">      {</a>
+<a name="ln283">        error = read_pfb_tag( stream, &amp;tag, &amp;size );</a>
+<a name="ln284">        if ( error )</a>
+<a name="ln285">          goto Fail;</a>
+<a name="ln286"> </a>
+<a name="ln287">        if ( tag != 0x8002U )</a>
+<a name="ln288">          break;</a>
+<a name="ln289"> </a>
+<a name="ln290">        parser-&gt;private_len += size;</a>
+<a name="ln291"> </a>
+<a name="ln292">        if ( FT_STREAM_SKIP( size ) )</a>
+<a name="ln293">          goto Fail;</a>
+<a name="ln294">      }</a>
+<a name="ln295"> </a>
+<a name="ln296">      /* Check that we have a private dictionary there */</a>
+<a name="ln297">      /* and allocate private dictionary buffer        */</a>
+<a name="ln298">      if ( parser-&gt;private_len == 0 )</a>
+<a name="ln299">      {</a>
+<a name="ln300">        FT_ERROR(( &quot;T1_Get_Private_Dict:&quot;</a>
+<a name="ln301">                   &quot; invalid private dictionary section\n&quot; ));</a>
+<a name="ln302">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln303">        goto Fail;</a>
+<a name="ln304">      }</a>
+<a name="ln305"> </a>
+<a name="ln306">      if ( FT_STREAM_SEEK( start_pos )                           ||</a>
+<a name="ln307">           FT_ALLOC( parser-&gt;private_dict, parser-&gt;private_len ) )</a>
+<a name="ln308">        goto Fail;</a>
+<a name="ln309"> </a>
+<a name="ln310">      parser-&gt;private_len = 0;</a>
+<a name="ln311">      for (;;)</a>
+<a name="ln312">      {</a>
+<a name="ln313">        error = read_pfb_tag( stream, &amp;tag, &amp;size );</a>
+<a name="ln314">        if ( error || tag != 0x8002U )</a>
+<a name="ln315">        {</a>
+<a name="ln316">          error = FT_Err_Ok;</a>
+<a name="ln317">          break;</a>
+<a name="ln318">        }</a>
+<a name="ln319"> </a>
+<a name="ln320">        if ( FT_STREAM_READ( parser-&gt;private_dict + parser-&gt;private_len,</a>
+<a name="ln321">                             size ) )</a>
+<a name="ln322">          goto Fail;</a>
+<a name="ln323"> </a>
+<a name="ln324">        parser-&gt;private_len += size;</a>
+<a name="ln325">      }</a>
+<a name="ln326">    }</a>
+<a name="ln327">    else</a>
+<a name="ln328">    {</a>
+<a name="ln329">      /* We have already `loaded' the whole PFA font file into memory; */</a>
+<a name="ln330">      /* if this is a memory resource, allocate a new block to hold    */</a>
+<a name="ln331">      /* the private dict.  Otherwise, simply overwrite into the base  */</a>
+<a name="ln332">      /* dictionary block in the heap.                                 */</a>
+<a name="ln333"> </a>
+<a name="ln334">      /* first of all, look at the `eexec' keyword */</a>
+<a name="ln335">      FT_Byte*    cur   = parser-&gt;base_dict;</a>
+<a name="ln336">      FT_Byte*    limit = cur + parser-&gt;base_len;</a>
+<a name="ln337">      FT_Pointer  pos_lf;</a>
+<a name="ln338">      FT_Bool     test_cr;</a>
+<a name="ln339"> </a>
+<a name="ln340"> </a>
+<a name="ln341">    Again:</a>
+<a name="ln342">      for (;;)</a>
+<a name="ln343">      {</a>
+<a name="ln344">        if ( cur[0] == 'e'   &amp;&amp;</a>
+<a name="ln345">             cur + 9 &lt; limit )      /* 9 = 5 letters for `eexec' + */</a>
+<a name="ln346">                                    /* whitespace + 4 chars        */</a>
+<a name="ln347">        {</a>
+<a name="ln348">          if ( cur[1] == 'e' &amp;&amp;</a>
+<a name="ln349">               cur[2] == 'x' &amp;&amp;</a>
+<a name="ln350">               cur[3] == 'e' &amp;&amp;</a>
+<a name="ln351">               cur[4] == 'c' )</a>
+<a name="ln352">            break;</a>
+<a name="ln353">        }</a>
+<a name="ln354">        cur++;</a>
+<a name="ln355">        if ( cur &gt;= limit )</a>
+<a name="ln356">        {</a>
+<a name="ln357">          FT_ERROR(( &quot;T1_Get_Private_Dict:&quot;</a>
+<a name="ln358">                     &quot; could not find `eexec' keyword\n&quot; ));</a>
+<a name="ln359">          error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln360">          goto Exit;</a>
+<a name="ln361">        }</a>
+<a name="ln362">      }</a>
+<a name="ln363"> </a>
+<a name="ln364">      /* check whether `eexec' was real -- it could be in a comment */</a>
+<a name="ln365">      /* or string (as e.g. in u003043t.gsf from ghostscript)       */</a>
+<a name="ln366"> </a>
+<a name="ln367">      parser-&gt;root.cursor = parser-&gt;base_dict;</a>
+<a name="ln368">      /* set limit to `eexec' + whitespace + 4 characters */</a>
+<a name="ln369">      parser-&gt;root.limit  = cur + 10;</a>
+<a name="ln370"> </a>
+<a name="ln371">      cur   = parser-&gt;root.cursor;</a>
+<a name="ln372">      limit = parser-&gt;root.limit;</a>
+<a name="ln373"> </a>
+<a name="ln374">      while ( cur &lt; limit )</a>
+<a name="ln375">      {</a>
+<a name="ln376">        if ( cur[0] == 'e'   &amp;&amp;</a>
+<a name="ln377">             cur + 5 &lt; limit )</a>
+<a name="ln378">        {</a>
+<a name="ln379">          if ( cur[1] == 'e' &amp;&amp;</a>
+<a name="ln380">               cur[2] == 'x' &amp;&amp;</a>
+<a name="ln381">               cur[3] == 'e' &amp;&amp;</a>
+<a name="ln382">               cur[4] == 'c' )</a>
+<a name="ln383">            goto Found;</a>
+<a name="ln384">        }</a>
+<a name="ln385"> </a>
+<a name="ln386">        T1_Skip_PS_Token( parser );</a>
+<a name="ln387">        if ( parser-&gt;root.error )</a>
+<a name="ln388">          break;</a>
+<a name="ln389">        T1_Skip_Spaces  ( parser );</a>
+<a name="ln390">        cur = parser-&gt;root.cursor;</a>
+<a name="ln391">      }</a>
+<a name="ln392"> </a>
+<a name="ln393">      /* we haven't found the correct `eexec'; go back and continue */</a>
+<a name="ln394">      /* searching                                                  */</a>
+<a name="ln395"> </a>
+<a name="ln396">      cur   = limit;</a>
+<a name="ln397">      limit = parser-&gt;base_dict + parser-&gt;base_len;</a>
+<a name="ln398"> </a>
+<a name="ln399">      if ( cur &gt;= limit )</a>
+<a name="ln400">      {</a>
+<a name="ln401">        FT_ERROR(( &quot;T1_Get_Private_Dict:&quot;</a>
+<a name="ln402">                   &quot; premature end in private dictionary\n&quot; ));</a>
+<a name="ln403">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln404">        goto Exit;</a>
+<a name="ln405">      }</a>
+<a name="ln406"> </a>
+<a name="ln407">      goto Again;</a>
+<a name="ln408"> </a>
+<a name="ln409">      /* now determine where to write the _encrypted_ binary private  */</a>
+<a name="ln410">      /* dictionary.  We overwrite the base dictionary for disk-based */</a>
+<a name="ln411">      /* resources and allocate a new block otherwise                 */</a>
+<a name="ln412"> </a>
+<a name="ln413">    Found:</a>
+<a name="ln414">      parser-&gt;root.limit = parser-&gt;base_dict + parser-&gt;base_len;</a>
+<a name="ln415"> </a>
+<a name="ln416">      T1_Skip_PS_Token( parser );</a>
+<a name="ln417">      cur   = parser-&gt;root.cursor;</a>
+<a name="ln418">      limit = parser-&gt;root.limit;</a>
+<a name="ln419"> </a>
+<a name="ln420">      /* According to the Type 1 spec, the first cipher byte must not be */</a>
+<a name="ln421">      /* an ASCII whitespace character code (blank, tab, carriage return */</a>
+<a name="ln422">      /* or line feed).  We have seen Type 1 fonts with two line feed    */</a>
+<a name="ln423">      /* characters...  So skip now all whitespace character codes.      */</a>
+<a name="ln424">      /*                                                                 */</a>
+<a name="ln425">      /* On the other hand, Adobe's Type 1 parser handles fonts just     */</a>
+<a name="ln426">      /* fine that are violating this limitation, so we add a heuristic  */</a>
+<a name="ln427">      /* test to stop at \r only if it is not used for EOL.              */</a>
+<a name="ln428"> </a>
+<a name="ln429">      pos_lf  = ft_memchr( cur, '\n', (size_t)( limit - cur ) );</a>
+<a name="ln430">      test_cr = FT_BOOL( !pos_lf                                       ||</a>
+<a name="ln431">                         pos_lf &gt; ft_memchr( cur,</a>
+<a name="ln432">                                             '\r',</a>
+<a name="ln433">                                             (size_t)( limit - cur ) ) );</a>
+<a name="ln434"> </a>
+<a name="ln435">      while ( cur &lt; limit                    &amp;&amp;</a>
+<a name="ln436">              ( *cur == ' '                ||</a>
+<a name="ln437">                *cur == '\t'               ||</a>
+<a name="ln438">                (test_cr &amp;&amp; *cur == '\r' ) ||</a>
+<a name="ln439">                *cur == '\n'               ) )</a>
+<a name="ln440">        ++cur;</a>
+<a name="ln441">      if ( cur &gt;= limit )</a>
+<a name="ln442">      {</a>
+<a name="ln443">        FT_ERROR(( &quot;T1_Get_Private_Dict:&quot;</a>
+<a name="ln444">                   &quot; `eexec' not properly terminated\n&quot; ));</a>
+<a name="ln445">        error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln446">        goto Exit;</a>
+<a name="ln447">      }</a>
+<a name="ln448"> </a>
+<a name="ln449">      size = parser-&gt;base_len - (FT_ULong)( cur - parser-&gt;base_dict );</a>
+<a name="ln450"> </a>
+<a name="ln451">      if ( parser-&gt;in_memory )</a>
+<a name="ln452">      {</a>
+<a name="ln453">        /* note that we allocate one more byte to put a terminating `0' */</a>
+<a name="ln454">        if ( FT_ALLOC( parser-&gt;private_dict, size + 1 ) )</a>
+<a name="ln455">          goto Fail;</a>
+<a name="ln456">        parser-&gt;private_len = size;</a>
+<a name="ln457">      }</a>
+<a name="ln458">      else</a>
+<a name="ln459">      {</a>
+<a name="ln460">        parser-&gt;single_block = 1;</a>
+<a name="ln461">        parser-&gt;private_dict = parser-&gt;base_dict;</a>
+<a name="ln462">        parser-&gt;private_len  = size;</a>
+<a name="ln463">        parser-&gt;base_dict    = NULL;</a>
+<a name="ln464">        parser-&gt;base_len     = 0;</a>
+<a name="ln465">      }</a>
+<a name="ln466"> </a>
+<a name="ln467">      /* now determine whether the private dictionary is encoded in binary */</a>
+<a name="ln468">      /* or hexadecimal ASCII format -- decode it accordingly              */</a>
+<a name="ln469"> </a>
+<a name="ln470">      /* we need to access the next 4 bytes (after the final whitespace */</a>
+<a name="ln471">      /* following the `eexec' keyword); if they all are hexadecimal    */</a>
+<a name="ln472">      /* digits, then we have a case of ASCII storage                   */</a>
+<a name="ln473"> </a>
+<a name="ln474">      if ( cur + 3 &lt; limit                                &amp;&amp;</a>
+<a name="ln475">           ft_isxdigit( cur[0] ) &amp;&amp; ft_isxdigit( cur[1] ) &amp;&amp;</a>
+<a name="ln476">           ft_isxdigit( cur[2] ) &amp;&amp; ft_isxdigit( cur[3] ) )</a>
+<a name="ln477">      {</a>
+<a name="ln478">        /* ASCII hexadecimal encoding */</a>
+<a name="ln479">        FT_ULong  len;</a>
+<a name="ln480"> </a>
+<a name="ln481"> </a>
+<a name="ln482">        parser-&gt;root.cursor = cur;</a>
+<a name="ln483">        (void)psaux-&gt;ps_parser_funcs-&gt;to_bytes( &amp;parser-&gt;root,</a>
+<a name="ln484">                                                parser-&gt;private_dict,</a>
+<a name="ln485">                                                parser-&gt;private_len,</a>
+<a name="ln486">                                                &amp;len,</a>
+<a name="ln487">                                                0 );</a>
+<a name="ln488">        parser-&gt;private_len = len;</a>
+<a name="ln489"> </a>
+<a name="ln490">        /* put a safeguard */</a>
+<a name="ln491">        parser-&gt;private_dict[len] = '\0';</a>
+<a name="ln492">      }</a>
+<a name="ln493">      else</a>
+<a name="ln494">        /* binary encoding -- copy the private dict */</a>
+<a name="ln495">        FT_MEM_MOVE( parser-&gt;private_dict, cur, size );</a>
+<a name="ln496">    }</a>
+<a name="ln497"> </a>
+<a name="ln498">    /* we now decrypt the encoded binary private dictionary */</a>
+<a name="ln499">    psaux-&gt;t1_decrypt( parser-&gt;private_dict, parser-&gt;private_len, 55665U );</a>
+<a name="ln500"> </a>
+<a name="ln501">    if ( parser-&gt;private_len &lt; 4 )</a>
+<a name="ln502">    {</a>
+<a name="ln503">      FT_ERROR(( &quot;T1_Get_Private_Dict:&quot;</a>
+<a name="ln504">                 &quot; invalid private dictionary section\n&quot; ));</a>
+<a name="ln505">      error = FT_THROW( Invalid_File_Format );</a>
+<a name="ln506">      goto Fail;</a>
+<a name="ln507">    }</a>
+<a name="ln508"> </a>
+<a name="ln509">    /* replace the four random bytes at the beginning with whitespace */</a>
+<a name="ln510">    parser-&gt;private_dict[0] = ' ';</a>
+<a name="ln511">    parser-&gt;private_dict[1] = ' ';</a>
+<a name="ln512">    parser-&gt;private_dict[2] = ' ';</a>
+<a name="ln513">    parser-&gt;private_dict[3] = ' ';</a>
+<a name="ln514"> </a>
+<a name="ln515">    parser-&gt;root.base   = parser-&gt;private_dict;</a>
+<a name="ln516">    parser-&gt;root.cursor = parser-&gt;private_dict;</a>
+<a name="ln517">    parser-&gt;root.limit  = parser-&gt;root.cursor + parser-&gt;private_len;</a>
+<a name="ln518"> </a>
+<a name="ln519">  Fail:</a>
+<a name="ln520">  Exit:</a>
+<a name="ln521">    return error;</a>
+<a name="ln522">  }</a>
+<a name="ln523"> </a>
+<a name="ln524"> </a>
+<a name="ln525">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="122"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'error' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

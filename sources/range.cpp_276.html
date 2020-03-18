@@ -1,0 +1,846 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>range.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2012-2016 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;range.h&quot;</a>
+<a name="ln14">#include &quot;measure.h&quot;</a>
+<a name="ln15">#include &quot;segment.h&quot;</a>
+<a name="ln16">#include &quot;rest.h&quot;</a>
+<a name="ln17">#include &quot;chord.h&quot;</a>
+<a name="ln18">#include &quot;score.h&quot;</a>
+<a name="ln19">#include &quot;slur.h&quot;</a>
+<a name="ln20">#include &quot;tie.h&quot;</a>
+<a name="ln21">#include &quot;note.h&quot;</a>
+<a name="ln22">#include &quot;tuplet.h&quot;</a>
+<a name="ln23">#include &quot;barline.h&quot;</a>
+<a name="ln24">#include &quot;utils.h&quot;</a>
+<a name="ln25">#include &quot;staff.h&quot;</a>
+<a name="ln26">#include &quot;excerpt.h&quot;</a>
+<a name="ln27">#include &quot;repeat.h&quot;</a>
+<a name="ln28">#include &quot;tremolo.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">namespace Ms {</a>
+<a name="ln31"> </a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33">//   cleanupTuplet</a>
+<a name="ln34">//---------------------------------------------------------</a>
+<a name="ln35"> </a>
+<a name="ln36">static void cleanupTuplet(Tuplet* t)</a>
+<a name="ln37">      {</a>
+<a name="ln38">      const auto elements(t-&gt;elements());</a>
+<a name="ln39">      t-&gt;clear();</a>
+<a name="ln40">      for (DurationElement* e : elements) {</a>
+<a name="ln41">            e-&gt;setTuplet(nullptr); // prevent deleting the top tuplet by its children</a>
+<a name="ln42">            if (e-&gt;isTuplet())</a>
+<a name="ln43">                  cleanupTuplet(toTuplet(e));</a>
+<a name="ln44">            delete e;</a>
+<a name="ln45">            }</a>
+<a name="ln46">      }</a>
+<a name="ln47"> </a>
+<a name="ln48">//---------------------------------------------------------</a>
+<a name="ln49">//   TrackList</a>
+<a name="ln50">//---------------------------------------------------------</a>
+<a name="ln51"> </a>
+<a name="ln52">TrackList::~TrackList()</a>
+<a name="ln53">      {</a>
+<a name="ln54">      int n = size();</a>
+<a name="ln55">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln56">            Element* e = at(i);</a>
+<a name="ln57">            if (e-&gt;isTuplet()) {</a>
+<a name="ln58">                  Tuplet* t = toTuplet(e);</a>
+<a name="ln59">                  cleanupTuplet(t);</a>
+<a name="ln60">                  }</a>
+<a name="ln61">            else</a>
+<a name="ln62">                  delete e;</a>
+<a name="ln63">            }</a>
+<a name="ln64">      }</a>
+<a name="ln65"> </a>
+<a name="ln66">//---------------------------------------------------------</a>
+<a name="ln67">//   appendTuplet</a>
+<a name="ln68">//---------------------------------------------------------</a>
+<a name="ln69"> </a>
+<a name="ln70">void TrackList::appendTuplet(Tuplet* srcTuplet, Tuplet* dstTuplet)</a>
+<a name="ln71">      {</a>
+<a name="ln72">      for (DurationElement* de : srcTuplet-&gt;elements()) {</a>
+<a name="ln73">            DurationElement* e = toDurationElement(de-&gt;clone());</a>
+<a name="ln74">            dstTuplet-&gt;add(e);</a>
+<a name="ln75">            if (de-&gt;isTuplet()) {</a>
+<a name="ln76">                  Tuplet* st = toTuplet(de);</a>
+<a name="ln77">                  Tuplet* dt = toTuplet(e);</a>
+<a name="ln78">                  appendTuplet(st, dt);</a>
+<a name="ln79">                  }</a>
+<a name="ln80">            }</a>
+<a name="ln81">      }</a>
+<a name="ln82"> </a>
+<a name="ln83">//---------------------------------------------------------</a>
+<a name="ln84">//   combineTuplet</a>
+<a name="ln85">//---------------------------------------------------------</a>
+<a name="ln86"> </a>
+<a name="ln87">void TrackList::combineTuplet(Tuplet* dst, Tuplet* src)</a>
+<a name="ln88">      {</a>
+<a name="ln89">      dst-&gt;setTicks(dst-&gt;ticks() * 2);</a>
+<a name="ln90">      dst-&gt;setBaseLen(dst-&gt;baseLen().shift(-1));</a>
+<a name="ln91"> </a>
+<a name="ln92">      // try to combine tie'd notes</a>
+<a name="ln93">      unsigned idx = 0;</a>
+<a name="ln94">      if (dst-&gt;elements().back()-&gt;isChord() &amp;&amp; src-&gt;elements().front()-&gt;isChord()) {</a>
+<a name="ln95">            Chord* chord = toChord(src-&gt;elements().front());</a>
+<a name="ln96">            bool akkumulateChord = true;</a>
+<a name="ln97">            for (Note* n : chord-&gt;notes()) {</a>
+<a name="ln98">                  if (!n-&gt;tieBack() || !n-&gt;tieBack()-&gt;generated()) {</a>
+<a name="ln99">                        akkumulateChord = false;</a>
+<a name="ln100">                        break;</a>
+<a name="ln101">                        }</a>
+<a name="ln102">                  }</a>
+<a name="ln103">            if (akkumulateChord) {</a>
+<a name="ln104">                  Chord* bc  = toChord(dst-&gt;elements().back());</a>
+<a name="ln105">                  bc-&gt;setTicks(bc-&gt;ticks() + chord-&gt;ticks());</a>
+<a name="ln106"> </a>
+<a name="ln107">                  // forward ties</a>
+<a name="ln108">                  int i = 0;</a>
+<a name="ln109">                  for (Note* n : bc-&gt;notes()) {</a>
+<a name="ln110">                        n-&gt;setTieFor(chord-&gt;notes()[i]-&gt;tieFor());</a>
+<a name="ln111">                        ++i;</a>
+<a name="ln112">                        }</a>
+<a name="ln113">                  idx = 1;    // skip first src element</a>
+<a name="ln114">                  }</a>
+<a name="ln115">            }</a>
+<a name="ln116"> </a>
+<a name="ln117">      for (; idx &lt; src-&gt;elements().size(); ++idx) {</a>
+<a name="ln118">            DurationElement* de = src-&gt;elements()[idx];</a>
+<a name="ln119">            DurationElement* e = toDurationElement(de-&gt;clone());</a>
+<a name="ln120">            dst-&gt;add(e);</a>
+<a name="ln121">            if (de-&gt;isTuplet()) {</a>
+<a name="ln122">                  Tuplet* st = toTuplet(de);</a>
+<a name="ln123">                  Tuplet* dt = toTuplet(e);</a>
+<a name="ln124">                  appendTuplet(st, dt);</a>
+<a name="ln125">                  }</a>
+<a name="ln126">            }</a>
+<a name="ln127">      }</a>
+<a name="ln128"> </a>
+<a name="ln129">//---------------------------------------------------------</a>
+<a name="ln130">//   append</a>
+<a name="ln131">//---------------------------------------------------------</a>
+<a name="ln132"> </a>
+<a name="ln133">void TrackList::append(Element* e)</a>
+<a name="ln134">      {</a>
+<a name="ln135">      if (e-&gt;isDurationElement()) {</a>
+<a name="ln136">            _duration += toDurationElement(e)-&gt;ticks();</a>
+<a name="ln137"> </a>
+<a name="ln138">            bool accumulateRest = e-&gt;isRest() &amp;&amp; !empty() &amp;&amp; back()-&gt;isRest();</a>
+<a name="ln139">            Segment* s          = accumulateRest ? toRest(e)-&gt;segment() : 0;</a>
+<a name="ln140"> </a>
+<a name="ln141">            if (s &amp;&amp; !s-&gt;score()-&gt;isSpannerStartEnd(s-&gt;tick(), e-&gt;track()) &amp;&amp; !s-&gt;annotations().size()) {</a>
+<a name="ln142">                  // akkumulate rests</a>
+<a name="ln143">                  Rest* rest  = toRest(back());</a>
+<a name="ln144">                  Fraction du = rest-&gt;ticks();</a>
+<a name="ln145">                  du += toRest(e)-&gt;ticks();</a>
+<a name="ln146">                  rest-&gt;setTicks(du);</a>
+<a name="ln147">                  }</a>
+<a name="ln148">            else {</a>
+<a name="ln149">                  Element* element = 0;</a>
+<a name="ln150">                  if (e-&gt;isTuplet()) {</a>
+<a name="ln151">                        Tuplet* src = toTuplet(e);</a>
+<a name="ln152">                        if (src-&gt;generated() &amp;&amp; !empty() &amp;&amp; back()-&gt;isTuplet()) {</a>
+<a name="ln153">                              Tuplet* b = toTuplet(back());</a>
+<a name="ln154">                              combineTuplet(b, src);</a>
+<a name="ln155">                              }</a>
+<a name="ln156">                        else {</a>
+<a name="ln157">                              element = e-&gt;clone();</a>
+<a name="ln158">                              Tuplet* dst = toTuplet(element);</a>
+<a name="ln159">                              appendTuplet(src, dst);</a>
+<a name="ln160">                              }</a>
+<a name="ln161">                        }</a>
+<a name="ln162">                  else {</a>
+<a name="ln163">                        element = e-&gt;clone();</a>
+<a name="ln164">                        ChordRest* src = toChordRest(e);</a>
+<a name="ln165">                        Segment* s1 = src-&gt;segment();</a>
+<a name="ln166">                        for (Element* ee : s1-&gt;annotations()) {</a>
+<a name="ln167">                              if (ee-&gt;track() == e-&gt;track())</a>
+<a name="ln168">                                    _range-&gt;annotations.push_back({ s1-&gt;tick(), ee-&gt;clone() });</a>
+<a name="ln169">                              }</a>
+<a name="ln170">                        if (e-&gt;isChord()) {</a>
+<a name="ln171">                              Chord* chord = toChord(e);</a>
+<a name="ln172">                              bool akkumulateChord = true;</a>
+<a name="ln173">                              for (Note* n : chord-&gt;notes()) {</a>
+<a name="ln174">                                    if (!n-&gt;tieBack() || !n-&gt;tieBack()-&gt;generated()) {</a>
+<a name="ln175">                                          akkumulateChord = false;</a>
+<a name="ln176">                                          break;</a>
+<a name="ln177">                                          }</a>
+<a name="ln178">                                   }</a>
+<a name="ln179">                              if (akkumulateChord &amp;&amp; !empty() &amp;&amp; back()-&gt;isChord()) {</a>
+<a name="ln180">                                    Chord* bc   = toChord(back());</a>
+<a name="ln181">                                    const Fraction du = bc-&gt;ticks() + chord-&gt;ticks();</a>
+<a name="ln182">                                    bc-&gt;setTicks(du);</a>
+<a name="ln183"> </a>
+<a name="ln184">                                    // forward ties</a>
+<a name="ln185">                                    int idx = 0;</a>
+<a name="ln186">                                    for (Note* n : bc-&gt;notes()) {</a>
+<a name="ln187">                                          n-&gt;setTieFor(chord-&gt;notes()[idx]-&gt;tieFor());</a>
+<a name="ln188">                                          ++idx;</a>
+<a name="ln189">                                          }</a>
+<a name="ln190">                                    delete element;</a>
+<a name="ln191">                                    element = 0;</a>
+<a name="ln192">                                    }</a>
+<a name="ln193">                              }</a>
+<a name="ln194">                        }</a>
+<a name="ln195">                  if (element) {</a>
+<a name="ln196">                        element-&gt;setSelected(false);</a>
+<a name="ln197">                        QList&lt;Element*&gt;::append(element);</a>
+<a name="ln198">                        }</a>
+<a name="ln199">                  }</a>
+<a name="ln200">            }</a>
+<a name="ln201">      else {</a>
+<a name="ln202">            Element* c = e-&gt;clone();</a>
+<a name="ln203">            c-&gt;setParent(0);</a>
+<a name="ln204">            QList&lt;Element*&gt;::append(c);</a>
+<a name="ln205">            }</a>
+<a name="ln206">      }</a>
+<a name="ln207"> </a>
+<a name="ln208">//---------------------------------------------------------</a>
+<a name="ln209">//   appendGap</a>
+<a name="ln210">//---------------------------------------------------------</a>
+<a name="ln211"> </a>
+<a name="ln212">void TrackList::appendGap(const Fraction&amp; du)</a>
+<a name="ln213">      {</a>
+<a name="ln214">      if (du.isZero())</a>
+<a name="ln215">            return;</a>
+<a name="ln216">      Element* e = empty() ? 0 : back();</a>
+<a name="ln217">      if (e &amp;&amp; e-&gt;isRest()) {</a>
+<a name="ln218">            Rest* rest  = toRest(back());</a>
+<a name="ln219">            Fraction dd = rest-&gt;ticks();</a>
+<a name="ln220">            dd          += du;</a>
+<a name="ln221">            _duration   += du;</a>
+<a name="ln222">            rest-&gt;setTicks(dd);</a>
+<a name="ln223">            }</a>
+<a name="ln224">      else {</a>
+<a name="ln225">            Rest* rest = new Rest(0);</a>
+<a name="ln226">            rest-&gt;setTicks(du);</a>
+<a name="ln227">            QList&lt;Element*&gt;::append(rest);</a>
+<a name="ln228">            _duration   += du;</a>
+<a name="ln229">            }</a>
+<a name="ln230">      }</a>
+<a name="ln231"> </a>
+<a name="ln232">//---------------------------------------------------------</a>
+<a name="ln233">//   truncate</a>
+<a name="ln234">//    reduce len of last gap by f</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">bool TrackList::truncate(const Fraction&amp; f)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      if (empty())</a>
+<a name="ln240">            return true;</a>
+<a name="ln241">      Element* e = back();</a>
+<a name="ln242">      if (!e-&gt;isRest())</a>
+<a name="ln243">            return false;</a>
+<a name="ln244">      Rest* r = toRest(e);</a>
+<a name="ln245">      if (r-&gt;ticks() &lt; f)</a>
+<a name="ln246">            return false;</a>
+<a name="ln247">      if (r-&gt;ticks() == f) {</a>
+<a name="ln248">            removeLast();</a>
+<a name="ln249">            delete r;</a>
+<a name="ln250">            }</a>
+<a name="ln251">      else</a>
+<a name="ln252">            r-&gt;setTicks(r-&gt;ticks() - f);</a>
+<a name="ln253">      _duration -= f;</a>
+<a name="ln254">      return true;</a>
+<a name="ln255">      }</a>
+<a name="ln256"> </a>
+<a name="ln257">//---------------------------------------------------------</a>
+<a name="ln258">//   read</a>
+<a name="ln259">//---------------------------------------------------------</a>
+<a name="ln260"> </a>
+<a name="ln261">void TrackList::read(const Segment* fs, const Segment* es)</a>
+<a name="ln262">      {</a>
+<a name="ln263">      Fraction tick = fs-&gt;tick();</a>
+<a name="ln264"> </a>
+<a name="ln265">      const Segment* s;</a>
+<a name="ln266">      for (s = fs; s &amp;&amp; (s != es); s = s-&gt;next1()) {</a>
+<a name="ln267">            if (!s-&gt;enabled())</a>
+<a name="ln268">                  continue;</a>
+<a name="ln269">            Element* e = s-&gt;element(_track);</a>
+<a name="ln270">            if (!e || e-&gt;generated()) {</a>
+<a name="ln271">                  for (Element* ee : s-&gt;annotations()) {</a>
+<a name="ln272">                        if (ee-&gt;track() == _track)</a>
+<a name="ln273">                              _range-&gt;annotations.push_back({ s-&gt;tick(), ee-&gt;clone() });</a>
+<a name="ln274">                        }</a>
+<a name="ln275">                  continue;</a>
+<a name="ln276">                  }</a>
+<a name="ln277">            if (e-&gt;isRepeatMeasure()) {</a>
+<a name="ln278">                  // TODO: copy previous measure contents?</a>
+<a name="ln279">                  RepeatMeasure* rm = toRepeatMeasure(e);</a>
+<a name="ln280">                  Rest r(*rm);</a>
+<a name="ln281">                  append(&amp;r);</a>
+<a name="ln282">                  tick += r.ticks();</a>
+<a name="ln283">                  }</a>
+<a name="ln284">            else if (e-&gt;isChordRest()) {</a>
+<a name="ln285">                  DurationElement* de = toDurationElement(e);</a>
+<a name="ln286">                  Fraction gap = s-&gt;tick() - tick;</a>
+<a name="ln287">                  if (de-&gt;tuplet()) {</a>
+<a name="ln288">                        Tuplet* t = de-&gt;topTuplet();</a>
+<a name="ln289">                        s  = skipTuplet(t);    // continue with first chord/rest after tuplet</a>
+<a name="ln290">                        de = t;</a>
+<a name="ln291">                        }</a>
+<a name="ln292">                  Q_ASSERT(gap &gt;= Fraction(0,1));</a>
+<a name="ln293">                  if (gap.isNotZero()) {</a>
+<a name="ln294">                        appendGap(gap);</a>
+<a name="ln295">                        tick += gap;</a>
+<a name="ln296">                        }</a>
+<a name="ln297">                  append(de);</a>
+<a name="ln298">                  tick += de-&gt;ticks();</a>
+<a name="ln299">                  }</a>
+<a name="ln300">            else if (e-&gt;isBarLine()) {</a>
+<a name="ln301">                  BarLine* bl = toBarLine(e);</a>
+<a name="ln302">                  if (bl-&gt;barLineType() != BarLineType::NORMAL)</a>
+<a name="ln303">                        append(e);</a>
+<a name="ln304">                  }</a>
+<a name="ln305">            else</a>
+<a name="ln306">                  append(e);</a>
+<a name="ln307">            }</a>
+<a name="ln308">      Fraction gap = es-&gt;tick() - tick;</a>
+<a name="ln309">      if (gap.isNotZero())</a>
+<a name="ln310">            appendGap(gap);</a>
+<a name="ln311"> </a>
+<a name="ln312">      //</a>
+<a name="ln313">      // connect ties</a>
+<a name="ln314">      //</a>
+<a name="ln315">      int n = size();</a>
+<a name="ln316">      for (int i = 0; i &lt; n; ++i) {</a>
+<a name="ln317">            Element* e = at(i);</a>
+<a name="ln318">            if (!e-&gt;isChord())</a>
+<a name="ln319">                  continue;</a>
+<a name="ln320">            Chord* chord = toChord(e);</a>
+<a name="ln321">            for (Note* n1 : chord-&gt;notes()) {</a>
+<a name="ln322">                  Tie* tie = n1-&gt;tieFor();</a>
+<a name="ln323">                  if (!tie)</a>
+<a name="ln324">                        continue;</a>
+<a name="ln325">                  for (int k = i+1; k &lt; n; ++k) {</a>
+<a name="ln326">                        Element* ee = at(k);</a>
+<a name="ln327">                        if (!ee-&gt;isChord())</a>
+<a name="ln328">                              continue;</a>
+<a name="ln329">                        Chord* c2 = toChord(ee);</a>
+<a name="ln330">                        bool found = false;</a>
+<a name="ln331">                        for (Note* n2 : c2-&gt;notes()) {</a>
+<a name="ln332">                              if (n1-&gt;pitch() == n2-&gt;pitch()) {</a>
+<a name="ln333">                                    tie-&gt;setEndNote(n2);</a>
+<a name="ln334">                                    n2-&gt;setTieBack(tie);</a>
+<a name="ln335">                                    found = true;</a>
+<a name="ln336">                                    break;</a>
+<a name="ln337">                                    }</a>
+<a name="ln338">                              }</a>
+<a name="ln339">                        if (!found)</a>
+<a name="ln340">                              qDebug(&quot;Tied note not found&quot;);</a>
+<a name="ln341">                        break;</a>
+<a name="ln342">                        }</a>
+<a name="ln343">                  }</a>
+<a name="ln344">            }</a>
+<a name="ln345">      }</a>
+<a name="ln346"> </a>
+<a name="ln347">//---------------------------------------------------------</a>
+<a name="ln348">//   checkRest</a>
+<a name="ln349">//---------------------------------------------------------</a>
+<a name="ln350"> </a>
+<a name="ln351">static void checkRest(Fraction&amp; rest, Measure*&amp; m, const Fraction&amp; d)</a>
+<a name="ln352">      {</a>
+<a name="ln353">      if (rest.isZero()) {</a>
+<a name="ln354">            if (m-&gt;nextMeasure()) {</a>
+<a name="ln355">                  m  = m-&gt;nextMeasure();</a>
+<a name="ln356">                  rest = m-&gt;ticks();</a>
+<a name="ln357">                  }</a>
+<a name="ln358">            else {</a>
+<a name="ln359">                  qFatal(&quot;premature end of measure list, rest %d/%d&quot;, d.numerator(), d.denominator());</a>
+<a name="ln360">                  }</a>
+<a name="ln361">            }</a>
+<a name="ln362">      }</a>
+<a name="ln363"> </a>
+<a name="ln364">//---------------------------------------------------------</a>
+<a name="ln365">//   writeTuplet</a>
+<a name="ln366">//    measure - current measure</a>
+<a name="ln367">//    rest    - available time in measure</a>
+<a name="ln368">//---------------------------------------------------------</a>
+<a name="ln369"> </a>
+<a name="ln370">Tuplet* TrackList::writeTuplet(Tuplet* parent, Tuplet* tuplet, Measure*&amp; measure, Fraction&amp; rest) const</a>
+<a name="ln371">      {</a>
+<a name="ln372">      Score* score = measure-&gt;score();</a>
+<a name="ln373">      Tuplet* dt   = tuplet-&gt;clone();</a>
+<a name="ln374">      dt-&gt;setParent(measure);</a>
+<a name="ln375">      Fraction du  = tuplet-&gt;ticks();</a>
+<a name="ln376">      if (du &gt; rest) {</a>
+<a name="ln377">            // we must split the tuplet</a>
+<a name="ln378">            dt-&gt;setTicks(du * Fraction(1, 2));</a>
+<a name="ln379">            dt-&gt;setBaseLen(tuplet-&gt;baseLen().shift(1));</a>
+<a name="ln380">            }</a>
+<a name="ln381">      if (parent)</a>
+<a name="ln382">            parent-&gt;add(dt);</a>
+<a name="ln383"> </a>
+<a name="ln384">      for (DurationElement* e : tuplet-&gt;elements()) {</a>
+<a name="ln385">            Fraction duration = e-&gt;globalTicks();</a>
+<a name="ln386">            Tuplet* tt        = dt;</a>
+<a name="ln387">            Fraction ratio    = Fraction(1, 1);</a>
+<a name="ln388">            while (tt) {</a>
+<a name="ln389">                  ratio *= tt-&gt;ratio();</a>
+<a name="ln390">                  tt = tt-&gt;tuplet();</a>
+<a name="ln391">                  }</a>
+<a name="ln392"> </a>
+<a name="ln393">            bool firstpart = true;</a>
+<a name="ln394">            while (duration &gt; Fraction(0,1)) {</a>
+<a name="ln395">                  if (rest.isZero()) {</a>
+<a name="ln396">                        if (measure-&gt;nextMeasure()) {</a>
+<a name="ln397">                              measure = measure-&gt;nextMeasure();</a>
+<a name="ln398">                              rest    = measure-&gt;ticks();</a>
+<a name="ln399">                              if (e != tuplet-&gt;elements().back()) {</a>
+<a name="ln400">                                    // create second part of split tuplet</a>
+<a name="ln401">                                    dt = dt-&gt;clone();</a>
+<a name="ln402">                                    dt-&gt;setGenerated(true);</a>
+<a name="ln403">                                    dt-&gt;setParent(measure);</a>
+<a name="ln404">                                    Tuplet* pt = dt;</a>
+<a name="ln405">                                    while (parent) {</a>
+<a name="ln406">                                          Tuplet* tt1 = parent-&gt;clone();</a>
+<a name="ln407">                                          tt1-&gt;setGenerated(true);</a>
+<a name="ln408">                                          tt1-&gt;setParent(measure);</a>
+<a name="ln409">                                          tt1-&gt;add(pt);</a>
+<a name="ln410">                                          pt = tt1;</a>
+<a name="ln411">                                          parent = parent-&gt;tuplet();</a>
+<a name="ln412">                                          }</a>
+<a name="ln413">                                    }</a>
+<a name="ln414">                              }</a>
+<a name="ln415">                        else {</a>
+<a name="ln416">                              qFatal(&quot;premature end of measure list in track %d, rest %d/%d&quot;,</a>
+<a name="ln417">                                 _track, duration.numerator(), duration.denominator());</a>
+<a name="ln418">                              }</a>
+<a name="ln419">                        }</a>
+<a name="ln420">                  if (e-&gt;isChordRest()) {</a>
+<a name="ln421">                        Fraction dd = qMin(rest, duration) * ratio;</a>
+<a name="ln422">                        std::vector&lt;TDuration&gt; dl = toDurationList(dd, false);</a>
+<a name="ln423">                        for (const TDuration&amp; k : dl) {</a>
+<a name="ln424">                              Segment* segment = measure-&gt;undoGetSegmentR(SegmentType::ChordRest, measure-&gt;ticks() - rest);</a>
+<a name="ln425">                              Fraction gd      = k.fraction() / ratio;</a>
+<a name="ln426">                              ChordRest* cr    = toChordRest(e-&gt;clone());</a>
+<a name="ln427">                              if (!firstpart)</a>
+<a name="ln428">                                    cr-&gt;removeMarkings(true);</a>
+<a name="ln429">                              cr-&gt;setScore(score);</a>
+<a name="ln430">                              cr-&gt;setTrack(_track);</a>
+<a name="ln431">                              segment-&gt;add(cr);</a>
+<a name="ln432">                              cr-&gt;setTicks(k.fraction());</a>
+<a name="ln433">                              cr-&gt;setDurationType(k);</a>
+<a name="ln434">                              rest     -= gd;</a>
+<a name="ln435">                              duration -= gd;</a>
+<a name="ln436"> </a>
+<a name="ln437">                              if (cr-&gt;isChord()) {</a>
+<a name="ln438">                                    for (Note* note : toChord(cr)-&gt;notes()) {</a>
+<a name="ln439">                                          if (!duration.isZero() &amp;&amp; !note-&gt;tieFor()) {</a>
+<a name="ln440">                                                Tie* tie = new Tie(score);</a>
+<a name="ln441">                                                tie-&gt;setGenerated(true);</a>
+<a name="ln442">                                                note-&gt;add(tie);</a>
+<a name="ln443">                                                }</a>
+<a name="ln444">                                          }</a>
+<a name="ln445">                                    }</a>
+<a name="ln446">                              dt-&gt;add(cr);</a>
+<a name="ln447">                              firstpart = false;</a>
+<a name="ln448">                              }</a>
+<a name="ln449">                        }</a>
+<a name="ln450">                  else if (e-&gt;isTuplet()) {</a>
+<a name="ln451">                        Tuplet* tt1 = toTuplet(e);</a>
+<a name="ln452">                        Tuplet* ttt = writeTuplet(dt, tt1, measure, rest);</a>
+<a name="ln453">                        dt          = ttt-&gt;tuplet();</a>
+<a name="ln454">                        parent      = dt-&gt;tuplet();</a>
+<a name="ln455">                        duration    = Fraction();</a>
+<a name="ln456">                        }</a>
+<a name="ln457">                  firstpart = false;</a>
+<a name="ln458">                  }</a>
+<a name="ln459">            }</a>
+<a name="ln460">      return dt;</a>
+<a name="ln461">      }</a>
+<a name="ln462"> </a>
+<a name="ln463">//---------------------------------------------------------</a>
+<a name="ln464">//   write</a>
+<a name="ln465">//    rewrite notes into measure list measure</a>
+<a name="ln466">//---------------------------------------------------------</a>
+<a name="ln467"> </a>
+<a name="ln468">bool TrackList::write(Score* score, const Fraction&amp; tick) const</a>
+<a name="ln469">      {</a>
+<a name="ln470">      if ((_track % VOICES) &amp;&amp; size() == 1 &amp;&amp; at(0)-&gt;isRest())     // don’t write rests in voice &gt; 0</a>
+<a name="ln471">            return true;</a>
+<a name="ln472">      Measure* measure = score-&gt;tick2measure(tick);</a>
+<a name="ln473">      Measure* m       = measure;</a>
+<a name="ln474">      Fraction remains = m-&gt;endTick() - tick;</a>
+<a name="ln475">      Segment* segment = 0;</a>
+<a name="ln476"> </a>
+<a name="ln477">      for (Element* e : *this) {</a>
+<a name="ln478">            if (e-&gt;isDurationElement()) {</a>
+<a name="ln479">                  Fraction duration = toDurationElement(e)-&gt;ticks();</a>
+<a name="ln480">                  checkRest(remains, m, duration);     // go to next measure, if necessary</a>
+<a name="ln481">                  if (duration &gt; remains &amp;&amp; e-&gt;isTuplet()) {</a>
+<a name="ln482">                        // experimental: allow tuplet split in the middle</a>
+<a name="ln483">                        if (duration != remains * 2) {</a>
+<a name="ln484">                              MScore::setError(CANNOT_SPLIT_TUPLET);</a>
+<a name="ln485">                              return false;</a>
+<a name="ln486">                              }</a>
+<a name="ln487">                        }</a>
+<a name="ln488">                  bool firstpart = true;</a>
+<a name="ln489">                  while (duration &gt; Fraction(0,1)) {</a>
+<a name="ln490">                        if ((e-&gt;isRest() || e-&gt;isRepeatMeasure()) &amp;&amp; (duration &gt;= remains || e == back()) &amp;&amp; (remains == m-&gt;ticks())) {</a>
+<a name="ln491">                              //</a>
+<a name="ln492">                              // handle full measure rest</a>
+<a name="ln493">                              //</a>
+<a name="ln494">                              Segment* seg = m-&gt;getSegmentR(SegmentType::ChordRest, m-&gt;ticks() - remains);</a>
+<a name="ln495">                              if ((_track % VOICES) == 0) {</a>
+<a name="ln496">                                    // write only for voice 1</a>
+<a name="ln497">                                    Rest* r = new Rest(score, TDuration::DurationType::V_MEASURE);</a>
+<a name="ln498">                                    // ideally we should be using stretchedLen</a>
+<a name="ln499">                                    // but this is not valid during rewrite when adding time signatures</a>
+<a name="ln500">                                    // since the time signature has not been added yet</a>
+<a name="ln501">                                    //Fraction stretchedLen = m-&gt;stretchedLen(staff);</a>
+<a name="ln502">                                    //r-&gt;setTicks(stretchedLen);</a>
+<a name="ln503">                                    r-&gt;setTicks(m-&gt;ticks());</a>
+<a name="ln504">                                    r-&gt;setTrack(_track);</a>
+<a name="ln505">                                    seg-&gt;add(r);</a>
+<a name="ln506">                                    }</a>
+<a name="ln507">                              duration -= m-&gt;ticks();</a>
+<a name="ln508">                              remains.set(0, 1);</a>
+<a name="ln509">                              }</a>
+<a name="ln510">                        else if (e-&gt;isChordRest()) {</a>
+<a name="ln511">                              Fraction du               = qMin(remains, duration);</a>
+<a name="ln512">                              std::vector&lt;TDuration&gt; dl = toDurationList(du, e-&gt;isChord());</a>
+<a name="ln513">                              Q_ASSERT(!dl.empty());</a>
+<a name="ln514">                              for (const TDuration&amp; k : dl) {</a>
+<a name="ln515">                                    segment       = m-&gt;undoGetSegmentR(SegmentType::ChordRest, m-&gt;ticks() - remains);</a>
+<a name="ln516">                                    ChordRest* cr = toChordRest(e-&gt;clone());</a>
+<a name="ln517">                                    if (!firstpart)</a>
+<a name="ln518">                                          cr-&gt;removeMarkings(true);</a>
+<a name="ln519">                                    cr-&gt;setTrack(_track);</a>
+<a name="ln520">                                    cr-&gt;setScore(score);</a>
+<a name="ln521">                                    Fraction gd = k.fraction();</a>
+<a name="ln522">                                    cr-&gt;setTicks(gd);</a>
+<a name="ln523">                                    cr-&gt;setDurationType(k);</a>
+<a name="ln524"> </a>
+<a name="ln525">                                    segment-&gt;add(cr);</a>
+<a name="ln526">                                    duration -= gd;</a>
+<a name="ln527">                                    remains  -= gd;</a>
+<a name="ln528"> </a>
+<a name="ln529">                                    if (cr-&gt;isChord()) {</a>
+<a name="ln530">                                          if (!firstpart &amp;&amp; toChord(cr)-&gt;tremolo() &amp;&amp; toChord(cr)-&gt;tremolo()-&gt;twoNotes()) { // remove partial two-note tremolo</a>
+<a name="ln531">                                                if (toChord(e)-&gt;tremolo()-&gt;chord1() == toChord(e))</a>
+<a name="ln532">                                                      toChord(cr)-&gt;tremolo()-&gt;setChords(toChord(cr),nullptr);</a>
+<a name="ln533">                                                else</a>
+<a name="ln534">                                                      toChord(cr)-&gt;tremolo()-&gt;setChords(nullptr,toChord(cr));</a>
+<a name="ln535">                                                Tremolo* tremoloPointer = toChord(cr)-&gt;tremolo();</a>
+<a name="ln536">                                                toChord(cr)-&gt;setTremolo(nullptr);</a>
+<a name="ln537">                                                delete tremoloPointer;</a>
+<a name="ln538">                                                }</a>
+<a name="ln539">                                          for (Note* note : toChord(cr)-&gt;notes()) {</a>
+<a name="ln540">                                                if (!duration.isZero() &amp;&amp; !note-&gt;tieFor()) {</a>
+<a name="ln541">                                                      Tie* tie = new Tie(score);</a>
+<a name="ln542">                                                      tie-&gt;setGenerated(true);</a>
+<a name="ln543">                                                      note-&gt;add(tie);</a>
+<a name="ln544">                                                      }</a>
+<a name="ln545">                                                }</a>
+<a name="ln546">                                          }</a>
+<a name="ln547">                                    }</a>
+<a name="ln548">                              }</a>
+<a name="ln549">                        else if (e-&gt;isTuplet()) {</a>
+<a name="ln550">                              writeTuplet(0, toTuplet(e), m, remains);</a>
+<a name="ln551">                              duration = Fraction();</a>
+<a name="ln552">                              }</a>
+<a name="ln553">                        firstpart = false;</a>
+<a name="ln554">                        if (duration &gt; Fraction(0,1))</a>
+<a name="ln555">                              checkRest(remains, m, duration);     // go to next measure, if necessary</a>
+<a name="ln556">                        }</a>
+<a name="ln557">                  }</a>
+<a name="ln558">            else if (e-&gt;isBarLine()) {</a>
+<a name="ln559">//                  if (pos.numerator() == 0 &amp;&amp; m) {</a>
+<a name="ln560">//                        BarLineType t = toBarLine(e)-&gt;barLineType();</a>
+<a name="ln561">//                        Measure* pm = m-&gt;prevMeasure();</a>
+<a name="ln562">//TODO                        if (pm)</a>
+<a name="ln563">//                              pm-&gt;setEndBarLineType(t,0);</a>
+<a name="ln564">//                        }</a>
+<a name="ln565">                  }</a>
+<a name="ln566">            else if (e-&gt;isClef()) {</a>
+<a name="ln567">                  Segment* seg;</a>
+<a name="ln568">                  if (remains == m-&gt;ticks() &amp;&amp; m-&gt;tick() &gt; Fraction(0,1)) {</a>
+<a name="ln569">                        Measure* pm = m-&gt;prevMeasure();</a>
+<a name="ln570">                        seg = pm-&gt;getSegmentR(SegmentType::Clef, pm-&gt;ticks());</a>
+<a name="ln571">                        }</a>
+<a name="ln572">                  else if (remains != m-&gt;ticks())</a>
+<a name="ln573">                        seg = m-&gt;getSegmentR(SegmentType::Clef, m-&gt;ticks() - remains);</a>
+<a name="ln574">                  else</a>
+<a name="ln575">                        seg = m-&gt;getSegmentR(SegmentType::HeaderClef, Fraction(0,1));</a>
+<a name="ln576">                  Element* ne = e-&gt;clone();</a>
+<a name="ln577">                  ne-&gt;setScore(score);</a>
+<a name="ln578">                  ne-&gt;setTrack(_track);</a>
+<a name="ln579">                  seg-&gt;add(ne);</a>
+<a name="ln580">                  }</a>
+<a name="ln581">            else {</a>
+<a name="ln582">                  if (!m)</a>
+<a name="ln583">                        break;</a>
+<a name="ln584">                  // add the element in its own segment;</a>
+<a name="ln585">                  // but KeySig has to be at start of (current) measure</a>
+<a name="ln586"> </a>
+<a name="ln587">                  Segment* seg = m-&gt;getSegmentR(Segment::segmentType(e-&gt;type()), e-&gt;isKeySig() ? Fraction() : m-&gt;ticks() - remains);</a>
+<a name="ln588">                  Element* ne = e-&gt;clone();</a>
+<a name="ln589">                  ne-&gt;setScore(score);</a>
+<a name="ln590">                  ne-&gt;setTrack(_track);</a>
+<a name="ln591">                  seg-&gt;add(ne);</a>
+<a name="ln592">                  }</a>
+<a name="ln593">            }</a>
+<a name="ln594">      //</a>
+<a name="ln595">      // connect ties from measure-&gt;first() to segment</a>
+<a name="ln596">      //</a>
+<a name="ln597"> </a>
+<a name="ln598">      for (Segment* s = measure-&gt;first(); s; s = s-&gt;next1()) {</a>
+<a name="ln599">            Element* e = s-&gt;element(_track);</a>
+<a name="ln600">            if (!e || !e-&gt;isChord())</a>
+<a name="ln601">                  continue;</a>
+<a name="ln602">            Chord* chord = toChord(e);</a>
+<a name="ln603">            for (Note* n : chord-&gt;notes()) {</a>
+<a name="ln604">                  Tie* tie = n-&gt;tieFor();</a>
+<a name="ln605">                  if (!tie)</a>
+<a name="ln606">                        continue;</a>
+<a name="ln607">                  Note* nn = searchTieNote(n);</a>
+<a name="ln608">                  if (nn) {</a>
+<a name="ln609">                        tie-&gt;setEndNote(nn);</a>
+<a name="ln610">                        nn-&gt;setTieBack(tie);</a>
+<a name="ln611">                        }</a>
+<a name="ln612">                  }</a>
+<a name="ln613">            if (s == segment)</a>
+<a name="ln614">                  break;</a>
+<a name="ln615">            }</a>
+<a name="ln616">      return true;</a>
+<a name="ln617">      }</a>
+<a name="ln618"> </a>
+<a name="ln619">//---------------------------------------------------------</a>
+<a name="ln620">//   ScoreRange</a>
+<a name="ln621">//---------------------------------------------------------</a>
+<a name="ln622"> </a>
+<a name="ln623">ScoreRange::~ScoreRange()</a>
+<a name="ln624">      {</a>
+<a name="ln625">      qDeleteAll(tracks);</a>
+<a name="ln626">      }</a>
+<a name="ln627"> </a>
+<a name="ln628">//---------------------------------------------------------</a>
+<a name="ln629">//   read</a>
+<a name="ln630">//---------------------------------------------------------</a>
+<a name="ln631"> </a>
+<a name="ln632">void ScoreRange::read(Segment* first, Segment* last, bool readSpanner)</a>
+<a name="ln633">      {</a>
+<a name="ln634">      _first        = first;</a>
+<a name="ln635">      _last         = last;</a>
+<a name="ln636">      Score* score  = first-&gt;score();</a>
+<a name="ln637">      QList&lt;int&gt; sl = score-&gt;uniqueStaves();</a>
+<a name="ln638"> </a>
+<a name="ln639">      int startTrack = 0;</a>
+<a name="ln640">      int endTrack   = score-&gt;nstaves() * VOICES;</a>
+<a name="ln641"> </a>
+<a name="ln642">      spanner.clear();</a>
+<a name="ln643"> </a>
+<a name="ln644">      if (readSpanner) {</a>
+<a name="ln645">            Fraction stick = first-&gt;tick();</a>
+<a name="ln646">            Fraction etick = last-&gt;tick();</a>
+<a name="ln647">            for (auto i : first-&gt;score()-&gt;spanner()) {</a>
+<a name="ln648">                  Spanner* s = i.second;</a>
+<a name="ln649">                  if (s-&gt;tick() &gt;= stick &amp;&amp; s-&gt;tick() &lt; etick &amp;&amp; s-&gt;track() &gt;= startTrack &amp;&amp; s-&gt;track() &lt; endTrack) {</a>
+<a name="ln650">                        Spanner* ns = toSpanner(s-&gt;clone());</a>
+<a name="ln651">                        ns-&gt;setParent(0);</a>
+<a name="ln652">                        ns-&gt;setStartElement(0);</a>
+<a name="ln653">                        ns-&gt;setEndElement(0);</a>
+<a name="ln654">                        ns-&gt;setTick(ns-&gt;tick() - stick);</a>
+<a name="ln655">                        spanner.push_back(ns);</a>
+<a name="ln656">                        }</a>
+<a name="ln657">                  }</a>
+<a name="ln658">            }</a>
+<a name="ln659">      for (int staffIdx : sl) {</a>
+<a name="ln660">            int sTrack = staffIdx * VOICES;</a>
+<a name="ln661">            int eTrack = sTrack + VOICES;</a>
+<a name="ln662">            for (int track = sTrack; track &lt; eTrack; ++track) {</a>
+<a name="ln663">                  TrackList* dl = new TrackList(this);</a>
+<a name="ln664">                  dl-&gt;setTrack(track);</a>
+<a name="ln665">                  dl-&gt;read(first, last);</a>
+<a name="ln666">                  tracks.append(dl);</a>
+<a name="ln667">                  }</a>
+<a name="ln668">            }</a>
+<a name="ln669">      }</a>
+<a name="ln670"> </a>
+<a name="ln671">//---------------------------------------------------------</a>
+<a name="ln672">//   write</a>
+<a name="ln673">//---------------------------------------------------------</a>
+<a name="ln674"> </a>
+<a name="ln675">bool ScoreRange::write(Score* score, const Fraction&amp; tick) const</a>
+<a name="ln676">      {</a>
+<a name="ln677">      for (TrackList* dl : tracks) {</a>
+<a name="ln678">            int track = dl-&gt;track();</a>
+<a name="ln679">            if (!dl-&gt;write(score, tick))</a>
+<a name="ln680">                  return false;</a>
+<a name="ln681">            if ((track % VOICES) == VOICES - 1)  {</a>
+<a name="ln682">                  // clone staff if appropriate after all voices have been copied</a>
+<a name="ln683">                  int staffIdx = track / VOICES;</a>
+<a name="ln684">                  Staff* ostaff = score-&gt;staff(staffIdx);</a>
+<a name="ln685">                  const LinkedElements* linkedStaves = ostaff-&gt;links();</a>
+<a name="ln686">                  if (linkedStaves) {</a>
+<a name="ln687">                        for (auto le : *linkedStaves) {</a>
+<a name="ln688">                              Staff* nstaff = toStaff(le);</a>
+<a name="ln689">                              if (nstaff == ostaff)</a>
+<a name="ln690">                                    continue;</a>
+<a name="ln691">                              Excerpt::cloneStaff2(ostaff, nstaff, tick, (tick + dl-&gt;ticks()));</a>
+<a name="ln692">                              }</a>
+<a name="ln693">                        }</a>
+<a name="ln694">                  }</a>
+<a name="ln695">            ++track;</a>
+<a name="ln696">            }</a>
+<a name="ln697">      for (Spanner* s : spanner) {</a>
+<a name="ln698">            s-&gt;setTick(s-&gt;tick() + tick);</a>
+<a name="ln699">            if (s-&gt;isSlur()) {</a>
+<a name="ln700">                  Slur* slur = toSlur(s);</a>
+<a name="ln701">                  if (slur-&gt;startCR()-&gt;isGrace()) {</a>
+<a name="ln702">                        Chord* sc = slur-&gt;startChord();</a>
+<a name="ln703">                        int idx   = sc-&gt;graceIndex();</a>
+<a name="ln704">                        Chord* dc = toChord(score-&gt;findCR(s-&gt;tick(), s-&gt;track()));</a>
+<a name="ln705">                        s-&gt;setStartElement(dc-&gt;graceNotes()[idx]);</a>
+<a name="ln706">                        }</a>
+<a name="ln707">                  else</a>
+<a name="ln708">                        s-&gt;setStartElement(0);</a>
+<a name="ln709">                  if (slur-&gt;endCR()-&gt;isGrace()) {</a>
+<a name="ln710">                        Chord* sc = slur-&gt;endChord();</a>
+<a name="ln711">                        int idx   = sc-&gt;graceIndex();</a>
+<a name="ln712">                        Chord* dc = toChord(score-&gt;findCR(s-&gt;tick2(), s-&gt;track2()));</a>
+<a name="ln713">                        s-&gt;setEndElement(dc-&gt;graceNotes()[idx]);</a>
+<a name="ln714">                        }</a>
+<a name="ln715">                  else</a>
+<a name="ln716">                        s-&gt;setEndElement(0);</a>
+<a name="ln717">                  }</a>
+<a name="ln718">            score-&gt;undoAddElement(s);</a>
+<a name="ln719">            }</a>
+<a name="ln720">      for (const Annotation&amp; a : annotations) {</a>
+<a name="ln721">            Measure* tm = score-&gt;tick2measure(a.tick);</a>
+<a name="ln722">            Segment *op = toSegment(a.e-&gt;parent());</a>
+<a name="ln723">            Segment* s = tm-&gt;undoGetSegment(op-&gt;segmentType(), a.tick);</a>
+<a name="ln724">            if (s) {</a>
+<a name="ln725">                  a.e-&gt;setParent(s);</a>
+<a name="ln726">                  score-&gt;undoAddElement(a.e);</a>
+<a name="ln727">                  }</a>
+<a name="ln728">            }</a>
+<a name="ln729">      return true;</a>
+<a name="ln730">      }</a>
+<a name="ln731"> </a>
+<a name="ln732">//---------------------------------------------------------</a>
+<a name="ln733">//   fill</a>
+<a name="ln734">//---------------------------------------------------------</a>
+<a name="ln735"> </a>
+<a name="ln736">void ScoreRange::fill(const Fraction&amp; f)</a>
+<a name="ln737">      {</a>
+<a name="ln738">      const Fraction oldDuration = ticks();</a>
+<a name="ln739">      Fraction oldEndTick = _first-&gt;tick() + oldDuration;</a>
+<a name="ln740">      for (auto t : tracks)</a>
+<a name="ln741">            t-&gt;appendGap(f);</a>
+<a name="ln742"> </a>
+<a name="ln743">      Fraction diff = ticks() - oldDuration;</a>
+<a name="ln744">      for (Spanner* sp : spanner) {</a>
+<a name="ln745">            if (sp-&gt;tick2() &gt;= oldEndTick &amp;&amp; sp-&gt;tick() &lt; oldEndTick)</a>
+<a name="ln746">                  sp-&gt;setTicks(sp-&gt;ticks() + diff);</a>
+<a name="ln747">            }</a>
+<a name="ln748">      }</a>
+<a name="ln749"> </a>
+<a name="ln750">//---------------------------------------------------------</a>
+<a name="ln751">//   truncate</a>
+<a name="ln752">//    reduce len of last gap by f</a>
+<a name="ln753">//---------------------------------------------------------</a>
+<a name="ln754"> </a>
+<a name="ln755">bool ScoreRange::truncate(const Fraction&amp; f)</a>
+<a name="ln756">      {</a>
+<a name="ln757">      for (TrackList* dl : tracks) {</a>
+<a name="ln758">            if (dl-&gt;empty())</a>
+<a name="ln759">                  continue;</a>
+<a name="ln760">            Element* e = dl-&gt;back();</a>
+<a name="ln761">            if (!e-&gt;isRest())</a>
+<a name="ln762">                  return false;</a>
+<a name="ln763">            Rest* r = toRest(e);</a>
+<a name="ln764">            if (r-&gt;ticks() &lt; f)</a>
+<a name="ln765">                  return false;</a>
+<a name="ln766">            }</a>
+<a name="ln767">      for (TrackList* dl : tracks)</a>
+<a name="ln768">            dl-&gt;truncate(f);</a>
+<a name="ln769">      return true;</a>
+<a name="ln770">      }</a>
+<a name="ln771"> </a>
+<a name="ln772">//---------------------------------------------------------</a>
+<a name="ln773">//   ticks</a>
+<a name="ln774">//---------------------------------------------------------</a>
+<a name="ln775"> </a>
+<a name="ln776">Fraction ScoreRange::ticks() const</a>
+<a name="ln777">      {</a>
+<a name="ln778">      return tracks.empty() ? Fraction() : tracks[0]-&gt;ticks();</a>
+<a name="ln779">      }</a>
+<a name="ln780"> </a>
+<a name="ln781">//---------------------------------------------------------</a>
+<a name="ln782">//   dump</a>
+<a name="ln783">//---------------------------------------------------------</a>
+<a name="ln784"> </a>
+<a name="ln785">void TrackList::dump() const</a>
+<a name="ln786">      {</a>
+<a name="ln787">      qDebug(&quot;elements %d, duration %d/%d&quot;, size(), _duration.numerator(), _duration.denominator());</a>
+<a name="ln788">      for (Element* e : *this) {</a>
+<a name="ln789">            if (e-&gt;isDurationElement()) {</a>
+<a name="ln790">                  Fraction du = toDurationElement(e)-&gt;ticks();</a>
+<a name="ln791">                  qDebug(&quot;   %s  %d/%d&quot;, e-&gt;name(), du.numerator(), du.denominator());</a>
+<a name="ln792">                  }</a>
+<a name="ln793">            else</a>
+<a name="ln794">                  qDebug(&quot;   %s&quot;, e-&gt;name());</a>
+<a name="ln795">            }</a>
+<a name="ln796">      }</a>
+<a name="ln797"> </a>
+<a name="ln798">}</a>
+<a name="ln799"> </a>
+
+</code></pre>
+<div class="balloon" rel="794"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,964 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>parser.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  BWW to MusicXML converter</a>
+<a name="ln3">//  Part of MusE Score</a>
+<a name="ln4">//  Linux Music Score Editor</a>
+<a name="ln5">//</a>
+<a name="ln6">//  Copyright (C) 2010 Werner Schweer and others</a>
+<a name="ln7">//</a>
+<a name="ln8">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln9">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln10">//</a>
+<a name="ln11">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln12">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln13">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln14">//  GNU General Public License for more details.</a>
+<a name="ln15">//</a>
+<a name="ln16">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln17">//  along with this program; if not, write to the Free Software</a>
+<a name="ln18">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln19">//=============================================================================</a>
+<a name="ln20"> </a>
+<a name="ln21">/**</a>
+<a name="ln22"> \file</a>
+<a name="ln23"> A simple parser for bww files. The file header is handled one line at a time,</a>
+<a name="ln24"> until a line starting with &quot;&amp;&quot; is found. The parser then builds measures from</a>
+<a name="ln25"> uinterrupted sequences of notes.</a>
+<a name="ln26"> */</a>
+<a name="ln27"> </a>
+<a name="ln28">// #include &lt;iostream&gt;</a>
+<a name="ln29"> </a>
+<a name="ln30">#include &lt;QtCore/QStringList&gt;</a>
+<a name="ln31">#include &lt;QtCore/QtDebug&gt;</a>
+<a name="ln32">#include &lt;QtCore/QMap&gt;</a>
+<a name="ln33"> </a>
+<a name="ln34">#include &quot;lexer.h&quot;</a>
+<a name="ln35">#include &quot;parser.h&quot;</a>
+<a name="ln36">#include &quot;writer.h&quot;</a>
+<a name="ln37"> </a>
+<a name="ln38">// Duration of a whole measure in ticks</a>
+<a name="ln39">static const int WHOLE_MEASURE_DURATION = 192;</a>
+<a name="ln40"> </a>
+<a name="ln41">/**</a>
+<a name="ln42"> Determine if symbol is part of a note sequence</a>
+<a name="ln43"> */</a>
+<a name="ln44"> </a>
+<a name="ln45">static bool isNote(Bww::Symbol sym)</a>
+<a name="ln46">{</a>
+<a name="ln47">  return (sym == Bww::NOTE</a>
+<a name="ln48">          || sym == Bww::TIE</a>
+<a name="ln49">          || sym == Bww::TRIPLET</a>
+<a name="ln50">          || sym == Bww::GRACE);</a>
+<a name="ln51">}</a>
+<a name="ln52"> </a>
+<a name="ln53">/**</a>
+<a name="ln54"> Determine if symbol is part of a non-note sequence</a>
+<a name="ln55"> */</a>
+<a name="ln56"> </a>
+<a name="ln57">static bool isNonNote(Bww::Symbol sym)</a>
+<a name="ln58">{</a>
+<a name="ln59">  return (sym == Bww::CLEF</a>
+<a name="ln60">          || sym == Bww::KEY</a>
+<a name="ln61">          || sym == Bww::TSIG</a>
+<a name="ln62">          || sym == Bww::PART</a>
+<a name="ln63">          || sym == Bww::BAR);</a>
+<a name="ln64">}</a>
+<a name="ln65"> </a>
+<a name="ln66">/**</a>
+<a name="ln67"> Dump beams</a>
+<a name="ln68"> */</a>
+<a name="ln69"> </a>
+<a name="ln70">static void dumpBeams(QList&lt;Bww::MeasureDescription&gt; const&amp; measures)</a>
+<a name="ln71">{</a>
+<a name="ln72">  for (int j = 0; j &lt; measures.size(); ++j)</a>
+<a name="ln73">  {</a>
+<a name="ln74">    QString beams;</a>
+<a name="ln75">    QString beamStates;</a>
+<a name="ln76">    QVector&lt;QString&gt; beamList(3);</a>
+<a name="ln77">    for (int i = 0; i &lt; measures.at(j).notes.size(); ++i)</a>
+<a name="ln78">    {</a>
+<a name="ln79">      QString beam = measures.at(j).notes.at(i).beam;</a>
+<a name="ln80">      if (beam == &quot;&quot;)</a>
+<a name="ln81">        beam = &quot; &quot;;</a>
+<a name="ln82"> </a>
+<a name="ln83">      beams += beam;</a>
+<a name="ln84">      switch (measures.at(j).notes.at(i).beamState)</a>
+<a name="ln85">      {</a>
+<a name="ln86">      case Bww::ST_NONE:     beamStates += &quot; &quot;; break;</a>
+<a name="ln87">      case Bww::ST_START:    beamStates += &quot;[&quot;; break;</a>
+<a name="ln88">      case Bww::ST_CONTINUE: beamStates += &quot;_&quot;; break;</a>
+<a name="ln89">      case Bww::ST_STOP:     beamStates += &quot;]&quot;; break;</a>
+<a name="ln90">      default:               beamStates += &quot; &quot;;</a>
+<a name="ln91">      }</a>
+<a name="ln92">      for (int k = 0; k &lt; 3; k++)</a>
+<a name="ln93">        switch (measures.at(j).notes.at(i).beamList.at(k))</a>
+<a name="ln94">        {</a>
+<a name="ln95">        case Bww::BM_NONE:          beamList[k] += &quot; &quot;; break;</a>
+<a name="ln96">        case Bww::BM_BEGIN:         beamList[k] += &quot;b&quot;; break;</a>
+<a name="ln97">        case Bww::BM_CONTINUE:      beamList[k] += &quot;c&quot;; break;</a>
+<a name="ln98">        case Bww::BM_END:           beamList[k] += &quot;e&quot;; break;</a>
+<a name="ln99">        case Bww::BM_FORWARD_HOOK:  beamList[k] += &quot;&gt;&quot;; break;</a>
+<a name="ln100">        case Bww::BM_BACKWARD_HOOK: beamList[k] += &quot;&lt;&quot;; break;</a>
+<a name="ln101">        default:                    beamList[k] += &quot;?&quot;;</a>
+<a name="ln102">        }</a>
+<a name="ln103">    }</a>
+<a name="ln104">    qDebug() &lt;&lt; &quot;beams measure #&quot; &lt;&lt; j + 1 &lt;&lt; beams;</a>
+<a name="ln105">    qDebug() &lt;&lt; &quot;beams measure #&quot; &lt;&lt; j + 1 &lt;&lt; beamStates;</a>
+<a name="ln106">    for (int k = 0; k &lt; 3; k++)</a>
+<a name="ln107">      qDebug() &lt;&lt; &quot;beams measure #&quot; &lt;&lt; j + 1 &lt;&lt; beamList.at(k);</a>
+<a name="ln108">  }</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">/**</a>
+<a name="ln112"> Dump measure contents</a>
+<a name="ln113"> */</a>
+<a name="ln114"> </a>
+<a name="ln115">static void dumpMeasures(QList&lt;Bww::MeasureDescription&gt; const&amp; measures)</a>
+<a name="ln116">{</a>
+<a name="ln117">  qDebug() &lt;&lt; &quot;dumpMeasures #measures&quot; &lt;&lt; measures.size()</a>
+<a name="ln118">      ;</a>
+<a name="ln119">  for (int j = 0; j &lt; measures.size(); ++j)</a>
+<a name="ln120">  {</a>
+<a name="ln121">    qDebug() &lt;&lt; &quot;measure #&quot; &lt;&lt; j + 1;</a>
+<a name="ln122">    qDebug() &lt;&lt; &quot;Measure contents:&quot;;</a>
+<a name="ln123">    qDebug() &lt;&lt; &quot;mbf:&quot;</a>
+<a name="ln124">        &lt;&lt; &quot;repeatBegin&quot; &lt;&lt; measures.at(j).mbf.repeatBegin</a>
+<a name="ln125">        &lt;&lt; &quot;endingFirst&quot; &lt;&lt; measures.at(j).mbf.endingFirst</a>
+<a name="ln126">        &lt;&lt; &quot;endingSecond&quot; &lt;&lt; measures.at(j).mbf.endingSecond</a>
+<a name="ln127">        &lt;&lt; &quot;firstOfSystem&quot; &lt;&lt; measures.at(j).mbf.firstOfSystem</a>
+<a name="ln128">        &lt;&lt; &quot;irregular&quot; &lt;&lt; measures.at(j).mbf.irregular</a>
+<a name="ln129">        ;</a>
+<a name="ln130">    for (int i = 0; i &lt; measures.at(j).notes.size(); ++i)</a>
+<a name="ln131">    {</a>
+<a name="ln132">      qDebug()</a>
+<a name="ln133">          &lt;&lt; measures.at(j).notes.at(i).pitch</a>
+<a name="ln134">          &lt;&lt; measures.at(j).notes.at(i).beam</a>
+<a name="ln135">          &lt;&lt; measures.at(j).notes.at(i).type</a>
+<a name="ln136">          &lt;&lt; measures.at(j).notes.at(i).dots</a>
+<a name="ln137">          &lt;&lt; measures.at(j).notes.at(i).tieStart</a>
+<a name="ln138">          &lt;&lt; measures.at(j).notes.at(i).tieStop</a>
+<a name="ln139">          &lt;&lt; measures.at(j).notes.at(i).triplet</a>
+<a name="ln140">          &lt;&lt; measures.at(j).notes.at(i).grace</a>
+<a name="ln141">          ;</a>
+<a name="ln142">    }</a>
+<a name="ln143">    qDebug() &lt;&lt; &quot;mef:&quot;</a>
+<a name="ln144">        &lt;&lt; &quot;repeatEnd&quot; &lt;&lt; measures.at(j).mef.repeatEnd</a>
+<a name="ln145">        &lt;&lt; &quot;endingEnd&quot; &lt;&lt; measures.at(j).mef.endingEnd</a>
+<a name="ln146">        &lt;&lt; &quot;lastOfSystem&quot; &lt;&lt; measures.at(j).mef.lastOfSystem</a>
+<a name="ln147">        &lt;&lt; &quot;lastOfPart&quot; &lt;&lt; measures.at(j).mef.lastOfPart</a>
+<a name="ln148">        ;</a>
+<a name="ln149">    qDebug() &lt;&lt; &quot;duration:&quot; &lt;&lt; measures.at(j).duration;</a>
+<a name="ln150">  }</a>
+<a name="ln151">}</a>
+<a name="ln152"> </a>
+<a name="ln153">/**</a>
+<a name="ln154"> Calculate measure durations</a>
+<a name="ln155"> */</a>
+<a name="ln156"> </a>
+<a name="ln157">static void calculateMeasureDurations(QList&lt;Bww::MeasureDescription&gt; &amp; measures)</a>
+<a name="ln158">{</a>
+<a name="ln159">  for (int j = 0; j &lt; measures.size(); ++j)</a>
+<a name="ln160">  {</a>
+<a name="ln161">    int measureDuration = 0;</a>
+<a name="ln162">    for (int i = 0; i &lt; measures.at(j).notes.size(); ++i)</a>
+<a name="ln163">    {</a>
+<a name="ln164">      int ticks = WHOLE_MEASURE_DURATION / measures.at(j).notes.at(i).type.toInt();</a>
+<a name="ln165">      if (measures.at(j).notes.at(i).dots) ticks = 3 * ticks / 2;</a>
+<a name="ln166">      if (measures.at(j).notes.at(i).triplet != Bww::ST_NONE) ticks = 2 * ticks / 3;</a>
+<a name="ln167">      if (measures.at(j).notes.at(i).grace) ticks = 0; // grace notes don't count</a>
+<a name="ln168">      measureDuration += ticks;</a>
+<a name="ln169">      qDebug()</a>
+<a name="ln170">          &lt;&lt; measures.at(j).notes.at(i).pitch</a>
+<a name="ln171">          &lt;&lt; measures.at(j).notes.at(i).beam</a>
+<a name="ln172">          &lt;&lt; measures.at(j).notes.at(i).type</a>
+<a name="ln173">          &lt;&lt; measures.at(j).notes.at(i).dots</a>
+<a name="ln174">          &lt;&lt; measures.at(j).notes.at(i).tieStart</a>
+<a name="ln175">          &lt;&lt; measures.at(j).notes.at(i).tieStop</a>
+<a name="ln176">          &lt;&lt; measures.at(j).notes.at(i).triplet</a>
+<a name="ln177">          &lt;&lt; measures.at(j).notes.at(i).grace</a>
+<a name="ln178">          &lt;&lt; &quot;-&gt;&quot; &lt;&lt; ticks</a>
+<a name="ln179">          ;</a>
+<a name="ln180">    }</a>
+<a name="ln181">    qDebug() &lt;&lt; &quot;measureDuration:&quot; &lt;&lt; measureDuration;</a>
+<a name="ln182">    measures[j].duration = measureDuration;</a>
+<a name="ln183">  }</a>
+<a name="ln184">}</a>
+<a name="ln185"> </a>
+<a name="ln186">/**</a>
+<a name="ln187"> Determine time signature</a>
+<a name="ln188"> */</a>
+<a name="ln189"> </a>
+<a name="ln190">static void determineTimesig(QList&lt;Bww::MeasureDescription&gt; const&amp; measures, int &amp; beats, int &amp; beat)</a>
+<a name="ln191">{</a>
+<a name="ln192">  QMap&lt;int, int&gt; map;</a>
+<a name="ln193">  for (int j = 0; j &lt; measures.size(); ++j)</a>
+<a name="ln194">  {</a>
+<a name="ln195">    int dur = measures[j].duration;</a>
+<a name="ln196">    if (map.contains(dur))</a>
+<a name="ln197">      map[dur]++;</a>
+<a name="ln198">    else</a>
+<a name="ln199">      map.insert(dur, 1);</a>
+<a name="ln200">  }</a>
+<a name="ln201">  // determine most common duration</a>
+<a name="ln202">  int commonDur = 0;</a>
+<a name="ln203">  int max = 0;</a>
+<a name="ln204">  QMap&lt;int, int&gt;::const_iterator i = map.constBegin();</a>
+<a name="ln205">  while (i != map.constEnd())</a>
+<a name="ln206">  {</a>
+<a name="ln207">    qDebug() &lt;&lt; &quot;measureDurations:&quot; &lt;&lt; i.key() &lt;&lt; i.value() &lt;&lt; endl;</a>
+<a name="ln208">    if (i.value() &gt; max)</a>
+<a name="ln209">    {</a>
+<a name="ln210">      commonDur = i.key();</a>
+<a name="ln211">      max = i.value();</a>
+<a name="ln212">    }</a>
+<a name="ln213">    ++i;</a>
+<a name="ln214">  }</a>
+<a name="ln215">  qDebug() &lt;&lt; &quot;measureDuration commonDur:&quot; &lt;&lt; commonDur &lt;&lt; &quot;max:&quot; &lt;&lt; max;</a>
+<a name="ln216">  // determine time signature</a>
+<a name="ln217">  beat = 4;</a>
+<a name="ln218">  beats = 0;</a>
+<a name="ln219">  int divisor = WHOLE_MEASURE_DURATION / 4;</a>
+<a name="ln220">  for (; beat &lt; 64; beat *= 2, divisor /= 2)</a>
+<a name="ln221">  {</a>
+<a name="ln222">    if ((commonDur % divisor) == 0)</a>
+<a name="ln223">    {</a>
+<a name="ln224">      beats = commonDur / divisor;</a>
+<a name="ln225">      qDebug()</a>
+<a name="ln226">          &lt;&lt; &quot;measureDuration found beat:&quot; &lt;&lt; beat</a>
+<a name="ln227">          &lt;&lt; &quot;beats:&quot; &lt;&lt; beats</a>
+<a name="ln228">          &lt;&lt; &quot;divisor:&quot; &lt;&lt; divisor</a>
+<a name="ln229">          ;</a>
+<a name="ln230">      return;</a>
+<a name="ln231">    }</a>
+<a name="ln232">  }</a>
+<a name="ln233">  // could not determine time signature, set default</a>
+<a name="ln234">  beat = 4;</a>
+<a name="ln235">  beats = 4;</a>
+<a name="ln236">}</a>
+<a name="ln237"> </a>
+<a name="ln238">/**</a>
+<a name="ln239"> Find irregular measures</a>
+<a name="ln240"> */</a>
+<a name="ln241"> </a>
+<a name="ln242">static void findIrregularMeasures(QList&lt;Bww::MeasureDescription&gt; &amp; measures, int beats, int beat)</a>
+<a name="ln243">{</a>
+<a name="ln244">  qDebug() &lt;&lt; &quot;findIrregularMeasures&quot; &lt;&lt; measures.size()</a>
+<a name="ln245">      &lt;&lt; &quot;beats&quot; &lt;&lt; beats</a>
+<a name="ln246">      &lt;&lt; &quot;beat&quot; &lt;&lt; beat</a>
+<a name="ln247">      ;</a>
+<a name="ln248"> </a>
+<a name="ln249">  int normalDuration = WHOLE_MEASURE_DURATION * beats / beat;</a>
+<a name="ln250"> </a>
+<a name="ln251">  // need at least one measure</a>
+<a name="ln252">  if (measures.size() == 0) return;</a>
+<a name="ln253"> </a>
+<a name="ln254">  // if the first measure is shorter that normal, it is irregular</a>
+<a name="ln255">  if (measures.at(0).duration &lt; normalDuration) measures[0].mbf.irregular = true;</a>
+<a name="ln256"> </a>
+<a name="ln257">  for (int j = 1; j &lt; measures.size(); ++j)</a>
+<a name="ln258">  {</a>
+<a name="ln259">    // the second measure of a pair where the sum of their duration adds up</a>
+<a name="ln260">    // to the normal duration is also irregular</a>
+<a name="ln261">    const int d1 = measures.at(j - 1).duration;</a>
+<a name="ln262">    const int d2 = measures.at(j).duration;</a>
+<a name="ln263">    if (d1 &gt; 0 &amp;&amp; d2 &gt; 0 &amp;&amp; (d1 + d2) == normalDuration)</a>
+<a name="ln264">      measures[j].mbf.irregular = true;</a>
+<a name="ln265">  }</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">/**</a>
+<a name="ln269"> Set mef.lastOfPart flag on last measure</a>
+<a name="ln270"> */</a>
+<a name="ln271"> </a>
+<a name="ln272">static void setLastOfPart(QList&lt;Bww::MeasureDescription&gt; &amp; measures)</a>
+<a name="ln273">{</a>
+<a name="ln274">  qDebug() &lt;&lt; &quot;dumpMeasures #measures&quot; &lt;&lt; measures.size()</a>
+<a name="ln275">      ;</a>
+<a name="ln276"> </a>
+<a name="ln277">  // need at least one measure</a>
+<a name="ln278">  if (measures.size() == 0) return;</a>
+<a name="ln279"> </a>
+<a name="ln280">  // set lastOfPart flag on last measure</a>
+<a name="ln281">  int j = measures.size() - 1;</a>
+<a name="ln282">  measures[j].mef.lastOfPart = true;</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">static QString findNextNextNoteBeam(QList&lt;Bww::MeasureDescription&gt; const&amp; measures, int measureNr, int noteNr)</a>
+<a name="ln286">{</a>
+<a name="ln287">  for (int i = noteNr + 1; i &lt; measures.at(measureNr).notes.size(); ++i)</a>
+<a name="ln288">  {</a>
+<a name="ln289">    if (measures.at(measureNr).notes.at(i).grace)</a>
+<a name="ln290">      // ignore grace notes</a>
+<a name="ln291">      continue;</a>
+<a name="ln292">    return measures.at(measureNr).notes.at(i).beam;</a>
+<a name="ln293">  }</a>
+<a name="ln294">  return &quot; &quot;; // no next non-grace note found</a>
+<a name="ln295">}</a>
+<a name="ln296"> </a>
+<a name="ln297">static int type2beams(QString type)</a>
+<a name="ln298">{</a>
+<a name="ln299">  if (type == &quot;8&quot;) return 1;</a>
+<a name="ln300">  else if (type == &quot;16&quot;) return 2;</a>
+<a name="ln301">  else if (type == &quot;32&quot;) return 3;</a>
+<a name="ln302">  else return 0;</a>
+<a name="ln303">}</a>
+<a name="ln304"> </a>
+<a name="ln305">static void calculateHigherBeamStates(Bww::MeasureDescription &amp; m)</a>
+<a name="ln306">{</a>
+<a name="ln307">  qDebug() &lt;&lt; &quot;calculateHigherBeamStates&quot;;</a>
+<a name="ln308">  for (int i = 0; i &lt; m.notes.size(); ++i)</a>
+<a name="ln309">  {</a>
+<a name="ln310">    qDebug()</a>
+<a name="ln311">        &lt;&lt; m.notes.at(i).pitch</a>
+<a name="ln312">        &lt;&lt; m.notes.at(i).beam</a>
+<a name="ln313">        &lt;&lt; m.notes.at(i).type</a>
+<a name="ln314">        &lt;&lt; m.notes.at(i).dots</a>
+<a name="ln315">        &lt;&lt; m.notes.at(i).tieStart</a>
+<a name="ln316">        &lt;&lt; m.notes.at(i).tieStop</a>
+<a name="ln317">        &lt;&lt; m.notes.at(i).triplet</a>
+<a name="ln318">        &lt;&lt; m.notes.at(i).grace</a>
+<a name="ln319">        ;</a>
+<a name="ln320"> </a>
+<a name="ln321">    if (m.notes.at(i).grace)</a>
+<a name="ln322">    {</a>
+<a name="ln323">      // just copy beamList[0] into beamList[1] and beamList[2]</a>
+<a name="ln324">      m.notes[i].beamList[1] = m.notes.at(i).beamList[0];</a>
+<a name="ln325">      m.notes[i].beamList[2] = m.notes.at(i).beamList[0];</a>
+<a name="ln326">    }</a>
+<a name="ln327">    else</a>
+<a name="ln328">    {</a>
+<a name="ln329">      int blp = -1; // beam level previous chord</a>
+<a name="ln330">      int blc = -1; // beam level current chord</a>
+<a name="ln331">      int bln = -1; // beam level next chord</a>
+<a name="ln332"> </a>
+<a name="ln333">      // find beam level current note</a>
+<a name="ln334">      blc = type2beams(m.notes.at(i).type);</a>
+<a name="ln335">      if (blc == 0)</a>
+<a name="ln336">        continue; // note does not have a beam</a>
+<a name="ln337"> </a>
+<a name="ln338">      // find beam level previous note</a>
+<a name="ln339">      if (m.notes.at(i).beamList[0] == Bww::BM_CONTINUE</a>
+<a name="ln340">          || m.notes.at(i).beamList[0] == Bww::BM_END)</a>
+<a name="ln341">      {</a>
+<a name="ln342">        for (int j = i - 1; blp == -1 &amp;&amp; j &gt;= 0; --j)</a>
+<a name="ln343">        {</a>
+<a name="ln344">          if (m.notes.at(j).grace)</a>
+<a name="ln345">            continue; // ignore grace notes</a>
+<a name="ln346">          blp = type2beams(m.notes.at(j).type);</a>
+<a name="ln347">        }</a>
+<a name="ln348">      }</a>
+<a name="ln349"> </a>
+<a name="ln350">      // find beam level next note</a>
+<a name="ln351">      if (m.notes.at(i).beamList[0] == Bww::BM_BEGIN</a>
+<a name="ln352">          || m.notes.at(i).beamList[0] == Bww::BM_CONTINUE)</a>
+<a name="ln353">      {</a>
+<a name="ln354">        for (int j = i + 1; bln == -1 &amp;&amp; j &lt; m.notes.size(); ++j)</a>
+<a name="ln355">        {</a>
+<a name="ln356">          if (m.notes.at(j).grace)</a>
+<a name="ln357">            continue; // ignore grace notes</a>
+<a name="ln358">          bln = type2beams(m.notes.at(j).type);</a>
+<a name="ln359">        }</a>
+<a name="ln360">      }</a>
+<a name="ln361"> </a>
+<a name="ln362">      qDebug()</a>
+<a name="ln363">          &lt;&lt; &quot;blp&quot; &lt;&lt; blp</a>
+<a name="ln364">          &lt;&lt; &quot;blc&quot; &lt;&lt; blc</a>
+<a name="ln365">          &lt;&lt; &quot;bln&quot; &lt;&lt; bln;</a>
+<a name="ln366">      for (int j = 2; j &lt;= blc; ++j)</a>
+<a name="ln367">      {</a>
+<a name="ln368">        Bww::BeamType bt = Bww::BM_NONE;</a>
+<a name="ln369">        if (blp &lt; j &amp;&amp; bln &gt;= j) bt = Bww::BM_BEGIN;</a>
+<a name="ln370">        else if (blp &lt; j &amp;&amp; bln &lt; j) {</a>
+<a name="ln371">          if (bln &gt; 0) bt = Bww::BM_FORWARD_HOOK;</a>
+<a name="ln372">          else if (blp &gt; 0) bt = Bww::BM_BACKWARD_HOOK;</a>
+<a name="ln373">        }</a>
+<a name="ln374">        else if (blp &gt;= j &amp;&amp; bln &lt; j) bt = Bww::BM_END;</a>
+<a name="ln375">        else if (blp &gt;= j &amp;&amp; bln &gt;= j) bt = Bww::BM_CONTINUE;</a>
+<a name="ln376">        m.notes[i].beamList[j - 1] = bt;</a>
+<a name="ln377">        qDebug() &lt;&lt; &quot;beamList&quot; &lt;&lt; j - 1 &lt;&lt; &quot;=&quot; &lt;&lt; bt;</a>
+<a name="ln378">      }</a>
+<a name="ln379">    } // else</a>
+<a name="ln380">  } // for (int i = 0; i &lt; m.notes.size(); ++i)</a>
+<a name="ln381">}</a>
+<a name="ln382"> </a>
+<a name="ln383">/**</a>
+<a name="ln384"> Determine all beam states.</a>
+<a name="ln385"> First for normal notes convert &quot;r&quot; and &quot;l&quot; in notes.beam into BM_BEGIN,</a>
+<a name="ln386"> BM_CONTINUE and BM_END in notes.beamList[0]. For grace notes &quot;b&quot;, &quot;c&quot; and</a>
+<a name="ln387"> &quot;e&quot; can be directly converted into the corresponding beam states in</a>
+<a name="ln388"> notes.beamList[0].</a>
+<a name="ln389"> Then calculate the higher level beams.</a>
+<a name="ln390"> */</a>
+<a name="ln391"> </a>
+<a name="ln392">static void determineBeamStates(QList&lt;Bww::MeasureDescription&gt; &amp; measures)</a>
+<a name="ln393">{</a>
+<a name="ln394">  enum State { NONE, LEFT, RIGHT };</a>
+<a name="ln395">  for (int j = 0; j &lt; measures.size(); ++j)</a>
+<a name="ln396">  {</a>
+<a name="ln397">    State state = NONE;</a>
+<a name="ln398">    for (int i = 0; i &lt; measures.at(j).notes.size(); ++i)</a>
+<a name="ln399">    {</a>
+<a name="ln400">      QString beam = measures.at(j).notes.at(i).beam;</a>
+<a name="ln401">      // handle normal notes</a>
+<a name="ln402">      if (beam == &quot;&quot;)</a>
+<a name="ln403">      {</a>
+<a name="ln404">        measures[j].notes[i].beamState = Bww::ST_NONE;</a>
+<a name="ln405">        measures[j].notes[i].beamList[0] = Bww::BM_NONE;</a>
+<a name="ln406">        state = NONE;</a>
+<a name="ln407">      }</a>
+<a name="ln408">      else if (beam == &quot;r&quot;)</a>
+<a name="ln409">      {</a>
+<a name="ln410">        if (state == NONE)</a>
+<a name="ln411">        {</a>
+<a name="ln412">          measures[j].notes[i].beamState = Bww::ST_START;</a>
+<a name="ln413">          measures[j].notes[i].beamList[0] = Bww::BM_BEGIN;</a>
+<a name="ln414">          state = LEFT; // now in left part of beam</a>
+<a name="ln415">        }</a>
+<a name="ln416">        else if (state == LEFT)</a>
+<a name="ln417">        {</a>
+<a name="ln418">          measures[j].notes[i].beamState = Bww::ST_CONTINUE;</a>
+<a name="ln419">          measures[j].notes[i].beamList[0] = Bww::BM_CONTINUE;</a>
+<a name="ln420">        }</a>
+<a name="ln421">        else if (state == RIGHT)</a>
+<a name="ln422">        {</a>
+<a name="ln423">          // shouldn't happen TODO report (internal?) error</a>
+<a name="ln424">        }</a>
+<a name="ln425">      }</a>
+<a name="ln426">      else if (beam == &quot;l&quot;)</a>
+<a name="ln427">      {</a>
+<a name="ln428">        if (state == NONE)</a>
+<a name="ln429">        {</a>
+<a name="ln430">          // shouldn't happen TODO report error</a>
+<a name="ln431">        }</a>
+<a name="ln432">        else if (state == LEFT || state == RIGHT)</a>
+<a name="ln433">        {</a>
+<a name="ln434">          // if the beam does not end here (next note has beam &quot;l&quot;)</a>
+<a name="ln435">          // then beamState is CONTINUE else STOP</a>
+<a name="ln436">          if (findNextNextNoteBeam(measures, j, i) == &quot;l&quot;)</a>
+<a name="ln437">          {</a>
+<a name="ln438">            measures[j].notes[i].beamState = Bww::ST_CONTINUE;</a>
+<a name="ln439">            measures[j].notes[i].beamList[0] = Bww::BM_CONTINUE;</a>
+<a name="ln440">            state = RIGHT; // now in right part of beam</a>
+<a name="ln441">          }</a>
+<a name="ln442">          else</a>
+<a name="ln443">          {</a>
+<a name="ln444">            measures[j].notes[i].beamState = Bww::ST_STOP;</a>
+<a name="ln445">            measures[j].notes[i].beamList[0] = Bww::BM_END;</a>
+<a name="ln446">            state = NONE; // now in right part of beam</a>
+<a name="ln447">          }</a>
+<a name="ln448">        }</a>
+<a name="ln449">      }</a>
+<a name="ln450">      // handle grace notes</a>
+<a name="ln451">      else if (beam == &quot;b&quot;) measures[j].notes[i].beamList[0] = Bww::BM_BEGIN;</a>
+<a name="ln452">      else if (beam == &quot;c&quot;) measures[j].notes[i].beamList[0] = Bww::BM_CONTINUE;</a>
+<a name="ln453">      else if (beam == &quot;e&quot;) measures[j].notes[i].beamList[0] = Bww::BM_END;</a>
+<a name="ln454">    }</a>
+<a name="ln455">    calculateHigherBeamStates(measures[j]);</a>
+<a name="ln456">  }</a>
+<a name="ln457">}</a>
+<a name="ln458"> </a>
+<a name="ln459">namespace Bww {</a>
+<a name="ln460"> </a>
+<a name="ln461">  /**</a>
+<a name="ln462">   Parser constructor, using Lexer \a l and Writer \a w.</a>
+<a name="ln463">   */</a>
+<a name="ln464"> </a>
+<a name="ln465">  Parser::Parser(Lexer&amp; l, Writer&amp; w)</a>
+<a name="ln466">    : lex(l),</a>
+<a name="ln467">    wrt(w),</a>
+<a name="ln468">    tempo(0),</a>
+<a name="ln469">    //inMeasure(false),</a>
+<a name="ln470">    //measureNr(0),</a>
+<a name="ln471">    tieStart(false),</a>
+<a name="ln472">    inTie(false),</a>
+<a name="ln473">    tripletStart(false),</a>
+<a name="ln474">    inTriplet(false),</a>
+<a name="ln475">    tsigFound(false)</a>
+<a name="ln476">  {</a>
+<a name="ln477">    qDebug() &lt;&lt; &quot;Parser::Parser()&quot;;</a>
+<a name="ln478">  }</a>
+<a name="ln479"> </a>
+<a name="ln480">  /**</a>
+<a name="ln481">   Parse the input stream and write result.</a>
+<a name="ln482">   */</a>
+<a name="ln483"> </a>
+<a name="ln484">  void Parser::parse()</a>
+<a name="ln485">  {</a>
+<a name="ln486">    // read the header, handling only strings and tune tempo</a>
+<a name="ln487">    while (lex.symType() == COMMENT</a>
+<a name="ln488">           || lex.symType() == STRING</a>
+<a name="ln489">           || lex.symType() == TEMPO)</a>
+<a name="ln490">    {</a>
+<a name="ln491">      if (lex.symType() == STRING)</a>
+<a name="ln492">        parseString();</a>
+<a name="ln493">      else if (lex.symType() == TEMPO)</a>
+<a name="ln494">        parseTempo();</a>
+<a name="ln495">      else if (lex.symType() == COMMENT)</a>
+<a name="ln496">        lex.getSym();</a>
+<a name="ln497">    }</a>
+<a name="ln498">    qDebug() &lt;&lt; &quot;Parser::parse()&quot;</a>
+<a name="ln499">        &lt;&lt; &quot;title:&quot; &lt;&lt; title</a>
+<a name="ln500">        &lt;&lt; &quot;type:&quot; &lt;&lt; type</a>
+<a name="ln501">        &lt;&lt; &quot;composer:&quot; &lt;&lt; composer</a>
+<a name="ln502">        &lt;&lt; &quot;footer:&quot; &lt;&lt; footer</a>
+<a name="ln503">        ;</a>
+<a name="ln504">    wrt.header(title, type, composer, footer, tempo);</a>
+<a name="ln505"> </a>
+<a name="ln506">    // read the actual music</a>
+<a name="ln507">    if (lex.symType() != CLEF)</a>
+<a name="ln508">      errorHandler(&quot;clef ('&amp;') expected&quot;);</a>
+<a name="ln509">    while (lex.symType() != NONE)</a>
+<a name="ln510">    {</a>
+<a name="ln511">      if (isNonNote(lex.symType()))</a>
+<a name="ln512">        parseSeqNonNotes();</a>
+<a name="ln513">      else if (isNote(lex.symType()))</a>
+<a name="ln514">        parseSeqNotes();</a>
+<a name="ln515">      else if (lex.symType() == UNKNOWN)</a>
+<a name="ln516">      {</a>
+<a name="ln517">        errorHandler(&quot;unknown symbol '&quot; + lex.symValue() + &quot;'&quot;);</a>
+<a name="ln518">        lex.getSym();</a>
+<a name="ln519">      }</a>
+<a name="ln520">      else</a>
+<a name="ln521">      {</a>
+<a name="ln522">        ; // others not implemented yet: silently ignored</a>
+<a name="ln523">        lex.getSym();</a>
+<a name="ln524">      }</a>
+<a name="ln525">    }</a>
+<a name="ln526"> </a>
+<a name="ln527">    qDebug() &lt;&lt; &quot;Parser::parse() finished, #measures&quot; &lt;&lt; measures.size()</a>
+<a name="ln528">        ;</a>
+<a name="ln529"> </a>
+<a name="ln530">    calculateMeasureDurations(measures);</a>
+<a name="ln531">    if (!tsigFound)</a>
+<a name="ln532">    {</a>
+<a name="ln533">      determineTimesig(measures, beats, beat);</a>
+<a name="ln534">      wrt.tsig(beats, beat);</a>
+<a name="ln535">    }</a>
+<a name="ln536">    findIrregularMeasures(measures, beats, beat);</a>
+<a name="ln537">    determineBeamStates(measures);</a>
+<a name="ln538">    setLastOfPart(measures);</a>
+<a name="ln539">    dumpMeasures(measures);</a>
+<a name="ln540">    dumpBeams(measures);</a>
+<a name="ln541"> </a>
+<a name="ln542">    for (int j = 0; j &lt; measures.size(); ++j)</a>
+<a name="ln543">    {</a>
+<a name="ln544">      wrt.beginMeasure(measures.at(j).mbf);</a>
+<a name="ln545">      for (int i = 0; i &lt; measures.at(j).notes.size(); ++i)</a>
+<a name="ln546">      {</a>
+<a name="ln547">        wrt.note(measures.at(j).notes.at(i).pitch,</a>
+<a name="ln548">                 measures.at(j).notes.at(i).beamList,</a>
+<a name="ln549">                 measures.at(j).notes.at(i).type,</a>
+<a name="ln550">                 measures.at(j).notes.at(i).dots,</a>
+<a name="ln551">                 measures.at(j).notes.at(i).tieStart,</a>
+<a name="ln552">                 measures.at(j).notes.at(i).tieStop,</a>
+<a name="ln553">                 measures.at(j).notes.at(i).triplet,</a>
+<a name="ln554">                 measures.at(j).notes.at(i).grace</a>
+<a name="ln555">                 );</a>
+<a name="ln556">      }</a>
+<a name="ln557">      wrt.endMeasure(measures.at(j).mef);</a>
+<a name="ln558">    }</a>
+<a name="ln559"> </a>
+<a name="ln560">    // trailer</a>
+<a name="ln561">    wrt.trailer();</a>
+<a name="ln562">  }</a>
+<a name="ln563"> </a>
+<a name="ln564">  /**</a>
+<a name="ln565">   Display error \a s.</a>
+<a name="ln566">   */</a>
+<a name="ln567"> </a>
+<a name="ln568">  void Parser::errorHandler(QString /*s*/)</a>
+<a name="ln569">  {</a>
+<a name="ln570">#if 0 // WS</a>
+<a name="ln571">    std::cerr &lt;&lt; &quot;Parse error line &quot;</a>
+<a name="ln572">        &lt;&lt; lex.symLineNumber() + 1</a>
+<a name="ln573">        &lt;&lt; &quot;: &quot;</a>
+<a name="ln574">        &lt;&lt; qPrintable(s)</a>
+<a name="ln575">        &lt;&lt; std::endl;</a>
+<a name="ln576">#endif</a>
+<a name="ln577">  }</a>
+<a name="ln578"> </a>
+<a name="ln579">  /**</a>
+<a name="ln580">   Parse a bww bar symbol.</a>
+<a name="ln581">   */</a>
+<a name="ln582"> </a>
+<a name="ln583">  void Parser::parseBar(Bww::MeasureEndFlags&amp; mef)</a>
+<a name="ln584">  {</a>
+<a name="ln585">    qDebug() &lt;&lt; &quot;Parser::parseBar() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln586">    if (lex.symValue() == &quot;!!t&quot;) mef.doubleBarLine = true;</a>
+<a name="ln587">    lex.getSym();</a>
+<a name="ln588">  }</a>
+<a name="ln589"> </a>
+<a name="ln590">  /**</a>
+<a name="ln591">   Parse a bww note.</a>
+<a name="ln592">   */</a>
+<a name="ln593"> </a>
+<a name="ln594">  void Parser::parseNote()</a>
+<a name="ln595">  {</a>
+<a name="ln596">    qDebug() &lt;&lt; &quot;Parser::parseNote() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln597"> </a>
+<a name="ln598">    QRegExp rNotes(&quot;(LG|LA|[B-F]|HG|HA)([lr]?)_(1|2|4|8|16|32)&quot;);</a>
+<a name="ln599"> </a>
+<a name="ln600">    QStringList caps;</a>
+<a name="ln601">    if (rNotes.exactMatch(lex.symValue()))</a>
+<a name="ln602">    {</a>
+<a name="ln603">      caps = rNotes.capturedTexts();</a>
+<a name="ln604">      qDebug() &lt;&lt; &quot; match&quot; &lt;&lt; caps.size();</a>
+<a name="ln605">      if (caps.size() == 4)</a>
+<a name="ln606">      {</a>
+<a name="ln607">        qDebug()</a>
+<a name="ln608">            &lt;&lt; &quot;caps[1]&quot; &lt;&lt; caps.at(1)</a>
+<a name="ln609">            &lt;&lt; &quot;caps[2]&quot; &lt;&lt; caps.at(2)</a>
+<a name="ln610">            &lt;&lt; &quot;caps[3]&quot; &lt;&lt; caps.at(3)</a>
+<a name="ln611">            ;</a>
+<a name="ln612">      }</a>
+<a name="ln613">    }</a>
+<a name="ln614">    lex.getSym();</a>
+<a name="ln615"> </a>
+<a name="ln616">    int dots = 0;</a>
+<a name="ln617">    bool tieStop = false;</a>
+<a name="ln618">    if (tieStart) inTie = true;</a>
+<a name="ln619">    bool tripletStop = false;</a>
+<a name="ln620">    if (tripletStart) inTriplet = true;</a>
+<a name="ln621">    if (lex.symType() == DOT)</a>
+<a name="ln622">    {</a>
+<a name="ln623">      qDebug() &lt;&lt; &quot; dot&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln624">      ++dots;</a>
+<a name="ln625">      lex.getSym();</a>
+<a name="ln626">    }</a>
+<a name="ln627">    else if (lex.symType() == TIE)</a>
+<a name="ln628">    {</a>
+<a name="ln629">      qDebug() &lt;&lt; &quot; tie&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln630">      if (lex.symValue() == &quot;^ts&quot;)</a>
+<a name="ln631">      {</a>
+<a name="ln632">        if (inTie) errorHandler(&quot;tie start ('^ts') unexpected&quot;);</a>
+<a name="ln633">      }</a>
+<a name="ln634">      else</a>
+<a name="ln635">      {</a>
+<a name="ln636">        if (!inTie) errorHandler(&quot;tie end ('^te') unexpected&quot;);</a>
+<a name="ln637">        else</a>
+<a name="ln638">        {</a>
+<a name="ln639">          tieStop = true;</a>
+<a name="ln640">          inTie = false;</a>
+<a name="ln641">          lex.getSym();</a>
+<a name="ln642">        }</a>
+<a name="ln643">      }</a>
+<a name="ln644">    }</a>
+<a name="ln645">    else if (lex.symType() == TRIPLET)</a>
+<a name="ln646">    {</a>
+<a name="ln647">      qDebug() &lt;&lt; &quot; triplet&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln648">      if (lex.symValue() == &quot;^3s&quot;)</a>
+<a name="ln649">      {</a>
+<a name="ln650">        if (inTriplet) errorHandler(&quot;triplet start ('^3s') unexpected&quot;);</a>
+<a name="ln651">      }</a>
+<a name="ln652">      else</a>
+<a name="ln653">      {</a>
+<a name="ln654">        if (!inTriplet) errorHandler(&quot;triplet end ('^3e') unexpected&quot;);</a>
+<a name="ln655">        else</a>
+<a name="ln656">        {</a>
+<a name="ln657">          tripletStop = true;</a>
+<a name="ln658">        }</a>
+<a name="ln659">      }</a>
+<a name="ln660">      lex.getSym();</a>
+<a name="ln661">    }</a>
+<a name="ln662"> </a>
+<a name="ln663">    StartStop triplet = ST_NONE;</a>
+<a name="ln664">    if (inTriplet)</a>
+<a name="ln665">    {</a>
+<a name="ln666">      if (tripletStart) triplet = ST_START;</a>
+<a name="ln667">      else if (tripletStop) triplet = ST_STOP;</a>
+<a name="ln668">      else triplet = ST_CONTINUE;</a>
+<a name="ln669">    }</a>
+<a name="ln670">    qDebug() &lt;&lt; &quot; tie start&quot; &lt;&lt; tieStart &lt;&lt; &quot; tie stop&quot; &lt;&lt; tieStop;</a>
+<a name="ln671">    qDebug() &lt;&lt; &quot; triplet start&quot; &lt;&lt; tripletStart &lt;&lt; &quot; triplet stop&quot; &lt;&lt; tripletStop;</a>
+<a name="ln672">    NoteDescription noteDesc(caps[1], caps[2], caps[3], dots, tieStart, tieStop, triplet);</a>
+<a name="ln673"> </a>
+<a name="ln674">    if (measures.isEmpty())</a>
+<a name="ln675">    {</a>
+<a name="ln676">      errorHandler(&quot;cannot append note: no measure&quot;);</a>
+<a name="ln677">    }</a>
+<a name="ln678">    else</a>
+<a name="ln679">    {</a>
+<a name="ln680">      measures.last().notes.append(noteDesc);</a>
+<a name="ln681">    }</a>
+<a name="ln682">    tieStart = false;</a>
+<a name="ln683">    tripletStart = false;</a>
+<a name="ln684">    if (tripletStop)</a>
+<a name="ln685">    {</a>
+<a name="ln686">      inTriplet = false;</a>
+<a name="ln687">      tripletStop = false;</a>
+<a name="ln688">    }</a>
+<a name="ln689">  }</a>
+<a name="ln690"> </a>
+<a name="ln691">  /**</a>
+<a name="ln692">   Determine beam for grace note \a index in a group of \a size grace notes.</a>
+<a name="ln693">   */</a>
+<a name="ln694"> </a>
+<a name="ln695">  static QString graceBeam(const int size, const int index)</a>
+<a name="ln696">  {</a>
+<a name="ln697">    if (size &lt;= 1) return &quot; &quot;;                // no beam</a>
+<a name="ln698">    if (index &lt; 0) return &quot; &quot;;                // no beam (but should not happen)</a>
+<a name="ln699">    if (index == 0) return &quot;b&quot;;               // begin</a>
+<a name="ln700">    else if (index == (size - 1)) return &quot;e&quot;; // end</a>
+<a name="ln701">    else if (index &gt;= size) return &quot; &quot;;       // no beam (but should not happen)</a>
+<a name="ln702">    else return &quot;c&quot;;                          // continue</a>
+<a name="ln703">  }</a>
+<a name="ln704"> </a>
+<a name="ln705">  /**</a>
+<a name="ln706">   Parse a bww embellishment.</a>
+<a name="ln707">   */</a>
+<a name="ln708"> </a>
+<a name="ln709">  void Parser::parseGraces()</a>
+<a name="ln710">  {</a>
+<a name="ln711">    qDebug() &lt;&lt; &quot;Parser::parseGraces() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln712"> </a>
+<a name="ln713">    const QString c_type = &quot;32&quot;;</a>
+<a name="ln714">    const int dots = 0;</a>
+<a name="ln715">    QStringList graces = lex.symValue().split(&quot; &quot;);</a>
+<a name="ln716">    for (int i = 0; i &lt; graces.size(); ++i)</a>
+<a name="ln717">    {</a>
+<a name="ln718">      const QString beam = graceBeam(graces.size(), i);</a>
+<a name="ln719">      NoteDescription noteDesc(graces.at(i), beam, c_type, dots, false, false, ST_NONE, true);</a>
+<a name="ln720">      if (measures.isEmpty())</a>
+<a name="ln721">      {</a>
+<a name="ln722">        errorHandler(&quot;cannot append note: no measure&quot;);</a>
+<a name="ln723">      }</a>
+<a name="ln724">      else</a>
+<a name="ln725">      {</a>
+<a name="ln726">        measures.last().notes.append(noteDesc);</a>
+<a name="ln727">      }</a>
+<a name="ln728">    }</a>
+<a name="ln729">    lex.getSym();</a>
+<a name="ln730">  }</a>
+<a name="ln731"> </a>
+<a name="ln732">  /**</a>
+<a name="ln733">   Parse a bww part symbol.</a>
+<a name="ln734">   */</a>
+<a name="ln735"> </a>
+<a name="ln736">  void Parser::parsePart(Bww::MeasureBeginFlags&amp; mbf, Bww::MeasureEndFlags&amp; mef)</a>
+<a name="ln737">  {</a>
+<a name="ln738">    qDebug() &lt;&lt; &quot;Parser::parsePart() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln739">    if (lex.symValue() == &quot;I!''&quot;)</a>
+<a name="ln740">    {</a>
+<a name="ln741">      mbf.repeatBegin = true;</a>
+<a name="ln742">    }</a>
+<a name="ln743">    else if (lex.symValue() == &quot;'1&quot;)</a>
+<a name="ln744">    {</a>
+<a name="ln745">      mbf.endingFirst = true;</a>
+<a name="ln746">    }</a>
+<a name="ln747">    else if (lex.symValue() == &quot;'2&quot;)</a>
+<a name="ln748">    {</a>
+<a name="ln749">      mbf.endingSecond = true;</a>
+<a name="ln750">    }</a>
+<a name="ln751">    else if (lex.symValue() == &quot;''!I&quot;)</a>
+<a name="ln752">    {</a>
+<a name="ln753">      mef.repeatEnd = true;</a>
+<a name="ln754">    }</a>
+<a name="ln755">    else if (lex.symValue() == &quot;_'&quot;)</a>
+<a name="ln756">    {</a>
+<a name="ln757">      mef.endingEnd = true;</a>
+<a name="ln758">    }</a>
+<a name="ln759">    else</a>
+<a name="ln760">    {</a>
+<a name="ln761">      ; // other silently ignored</a>
+<a name="ln762">    }</a>
+<a name="ln763">    lex.getSym();</a>
+<a name="ln764">  }</a>
+<a name="ln765"> </a>
+<a name="ln766">  /**</a>
+<a name="ln767">   Parse a sequence of non-notes.</a>
+<a name="ln768">   */</a>
+<a name="ln769"> </a>
+<a name="ln770">  void Parser::parseSeqNonNotes()</a>
+<a name="ln771">  {</a>
+<a name="ln772">    qDebug() &lt;&lt; &quot;Parser::parseSeqNonNotes() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln773">    MeasureBeginFlags mbfl;</a>
+<a name="ln774">    MeasureEndFlags mefl;</a>
+<a name="ln775">    while (isNonNote(lex.symType()))</a>
+<a name="ln776">    {</a>
+<a name="ln777">      if (lex.symType() == CLEF)</a>
+<a name="ln778">      {</a>
+<a name="ln779">        mbfl.firstOfSystem = true;</a>
+<a name="ln780">        mefl.lastOfSystem = true;</a>
+<a name="ln781">        lex.getSym();</a>
+<a name="ln782">      }</a>
+<a name="ln783">      else if (lex.symType() == KEY)</a>
+<a name="ln784">        lex.getSym(); // ignore</a>
+<a name="ln785">      else if (lex.symType() == TSIG)</a>
+<a name="ln786">        parseTSig();</a>
+<a name="ln787">      else if (lex.symType() == PART)</a>
+<a name="ln788">        parsePart(mbfl, mefl);</a>
+<a name="ln789">      else if (lex.symType() == BAR)</a>
+<a name="ln790">        parseBar(mefl);</a>
+<a name="ln791">    }</a>
+<a name="ln792">    // First end the previous measure</a>
+<a name="ln793">    if (!measures.isEmpty())</a>
+<a name="ln794">    {</a>
+<a name="ln795">      measures.last().mef = mefl;</a>
+<a name="ln796">    }</a>
+<a name="ln797">    // Then start a new measure, if necessary</a>
+<a name="ln798">    if (isNote(lex.symType()))</a>
+<a name="ln799">    {</a>
+<a name="ln800">      MeasureDescription md;</a>
+<a name="ln801">      md.mbf = mbfl;</a>
+<a name="ln802">      measures.append(md);</a>
+<a name="ln803">    }</a>
+<a name="ln804">  }</a>
+<a name="ln805"> </a>
+<a name="ln806">  /**</a>
+<a name="ln807">   Parse a sequence of notes.</a>
+<a name="ln808">   Includes handling ties and triplets, but without extensive error checking.</a>
+<a name="ln809">   May break on invalid input.</a>
+<a name="ln810">   */</a>
+<a name="ln811"> </a>
+<a name="ln812">  void Parser::parseSeqNotes()</a>
+<a name="ln813">  {</a>
+<a name="ln814">    qDebug() &lt;&lt; &quot;Parser::parseSeqNotes() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln815">    while (lex.symType() == GRACE || lex.symType() == NOTE || lex.symType() == TIE || lex.symType() == TRIPLET)</a>
+<a name="ln816">    {</a>
+<a name="ln817">      if (lex.symType() == GRACE) parseGraces();</a>
+<a name="ln818">      else if (lex.symType() == NOTE) parseNote();</a>
+<a name="ln819">      else if (lex.symType() == TIE)</a>
+<a name="ln820">      {</a>
+<a name="ln821">        if (lex.symValue() == &quot;^ts&quot;)</a>
+<a name="ln822">        {</a>
+<a name="ln823">          if (inTie) errorHandler(&quot;tie start ('^ts') unexpected&quot;);</a>
+<a name="ln824">          else tieStart = true;</a>
+<a name="ln825">        }</a>
+<a name="ln826">        else</a>
+<a name="ln827">        {</a>
+<a name="ln828">          errorHandler(&quot;tie end ('^te') unexpected&quot;);</a>
+<a name="ln829">        }</a>
+<a name="ln830">        lex.getSym();</a>
+<a name="ln831">      }</a>
+<a name="ln832">      else if (lex.symType() == TRIPLET)</a>
+<a name="ln833">      {</a>
+<a name="ln834">        if (lex.symValue() == &quot;^3s&quot;)</a>
+<a name="ln835">        {</a>
+<a name="ln836">          if (inTriplet) errorHandler(&quot;triplet start ('^3s') unexpected&quot;);</a>
+<a name="ln837">          else tripletStart = true;</a>
+<a name="ln838">        }</a>
+<a name="ln839">        else</a>
+<a name="ln840">        {</a>
+<a name="ln841">          errorHandler(&quot;triplet end ('^3e') unexpected&quot;);</a>
+<a name="ln842">        }</a>
+<a name="ln843">        lex.getSym();</a>
+<a name="ln844">      }</a>
+<a name="ln845">    }</a>
+<a name="ln846">  }</a>
+<a name="ln847"> </a>
+<a name="ln848">  /**</a>
+<a name="ln849">   Parse a bww string. Extract text and type.</a>
+<a name="ln850">   Example: &quot;Air&quot;,(Y,C,0,0,Times New Roman,14,400,0,0,18,0,0,0)</a>
+<a name="ln851">   */</a>
+<a name="ln852"> </a>
+<a name="ln853">  void Parser::parseString()</a>
+<a name="ln854">  {</a>
+<a name="ln855">    qDebug() &lt;&lt; &quot;Parser::parseString() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln856"> </a>
+<a name="ln857">    QRegExp rString(&quot;\\\&quot;(.*)\\\&quot;,\\(([A-Z]),.*\\)&quot;);</a>
+<a name="ln858"> </a>
+<a name="ln859">    if (rString.exactMatch(lex.symValue()))</a>
+<a name="ln860">    {</a>
+<a name="ln861">      QStringList caps = rString.capturedTexts();</a>
+<a name="ln862">      if (caps.size() == 3)</a>
+<a name="ln863">      {</a>
+<a name="ln864">        if (caps.at(2) == &quot;T&quot;) title = caps.at(1);</a>
+<a name="ln865">        if (caps.at(2) == &quot;Y&quot;) type = caps.at(1);</a>
+<a name="ln866">        if (caps.at(2) == &quot;M&quot;) composer = caps.at(1);</a>
+<a name="ln867">        if (caps.at(2) == &quot;F&quot;) footer = caps.at(1);</a>
+<a name="ln868">      }</a>
+<a name="ln869">    }</a>
+<a name="ln870">    lex.getSym();</a>
+<a name="ln871">  }</a>
+<a name="ln872"> </a>
+<a name="ln873">  /**</a>
+<a name="ln874">   Parse a bww tempo symbol.</a>
+<a name="ln875">   */</a>
+<a name="ln876"> </a>
+<a name="ln877">  void Parser::parseTempo()</a>
+<a name="ln878">  {</a>
+<a name="ln879">    qDebug() &lt;&lt; &quot;Parser::parseTempo() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln880"> </a>
+<a name="ln881">    QRegExp rTempo(&quot;^TuneTempo,(\\d+)&quot;);</a>
+<a name="ln882"> </a>
+<a name="ln883">    if (rTempo.exactMatch(lex.symValue()))</a>
+<a name="ln884">    {</a>
+<a name="ln885">      QStringList caps = rTempo.capturedTexts();</a>
+<a name="ln886">      if (caps.size() == 2)</a>
+<a name="ln887">      {</a>
+<a name="ln888">        tempo = caps.at(1).toInt();</a>
+<a name="ln889">      }</a>
+<a name="ln890">    }</a>
+<a name="ln891">    lex.getSym();</a>
+<a name="ln892">  }</a>
+<a name="ln893">  /**</a>
+<a name="ln894">   Parse a bww tsig symbol.</a>
+<a name="ln895">   */</a>
+<a name="ln896"> </a>
+<a name="ln897">  void Parser::parseTSig()</a>
+<a name="ln898">  {</a>
+<a name="ln899">    qDebug() &lt;&lt; &quot;Parser::parseTSig() value:&quot; &lt;&lt; qPrintable(lex.symValue());</a>
+<a name="ln900"> </a>
+<a name="ln901">    QRegExp rTSig(&quot;(\\d+)_(1|2|4|8|16|32)&quot;);</a>
+<a name="ln902"> </a>
+<a name="ln903">    if (rTSig.exactMatch(lex.symValue()))</a>
+<a name="ln904">    {</a>
+<a name="ln905">      QStringList caps = rTSig.capturedTexts();</a>
+<a name="ln906">      if (caps.size() == 3)</a>
+<a name="ln907">      {</a>
+<a name="ln908">        beats = caps.at(1).toInt();</a>
+<a name="ln909">        beat  = caps.at(2).toInt();</a>
+<a name="ln910">        tsigFound = true;</a>
+<a name="ln911">        wrt.tsig(beats, beat);</a>
+<a name="ln912">      }</a>
+<a name="ln913">    }</a>
+<a name="ln914">    lex.getSym();</a>
+<a name="ln915">  }</a>
+<a name="ln916"> </a>
+<a name="ln917">} // namespace Bww</a>
+
+</code></pre>
+<div class="balloon" rel="465"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: beat, beats.</p></div>
+<div class="balloon" rel="9"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

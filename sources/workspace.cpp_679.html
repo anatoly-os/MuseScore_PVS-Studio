@@ -1,0 +1,1488 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>workspace.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Linux Music Score Editor</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2011 Werner Schweer and others</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2.</a>
+<a name="ln9">//</a>
+<a name="ln10">//  This program is distributed in the hope that it will be useful,</a>
+<a name="ln11">//  but WITHOUT ANY WARRANTY; without even the implied warranty of</a>
+<a name="ln12">//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the</a>
+<a name="ln13">//  GNU General Public License for more details.</a>
+<a name="ln14">//</a>
+<a name="ln15">//  You should have received a copy of the GNU General Public License</a>
+<a name="ln16">//  along with this program; if not, write to the Free Software</a>
+<a name="ln17">//  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.</a>
+<a name="ln18">//=============================================================================</a>
+<a name="ln19"> </a>
+<a name="ln20">#include &quot;workspace.h&quot;</a>
+<a name="ln21">#include &quot;musescore.h&quot;</a>
+<a name="ln22">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln23">#include &quot;libmscore/imageStore.h&quot;</a>
+<a name="ln24">#include &quot;libmscore/xml.h&quot;</a>
+<a name="ln25">#include &quot;thirdparty/qzip/qzipreader_p.h&quot;</a>
+<a name="ln26">#include &quot;thirdparty/qzip/qzipwriter_p.h&quot;</a>
+<a name="ln27">#include &quot;preferences.h&quot;</a>
+<a name="ln28">#include &quot;palette.h&quot;</a>
+<a name="ln29">#include &quot;palette/paletteworkspace.h&quot;</a>
+<a name="ln30">#include &quot;extension.h&quot;</a>
+<a name="ln31"> </a>
+<a name="ln32">#if defined(FOR_WINSTORE)  // or even just Q_OS_WIN ?</a>
+<a name="ln33">extern Q_CORE_EXPORT int qt_ntfs_permission_lookup;</a>
+<a name="ln34">#else</a>
+<a name="ln35">int qt_ntfs_permission_lookup;</a>
+<a name="ln36">#endif</a>
+<a name="ln37"> </a>
+<a name="ln38">namespace Ms {</a>
+<a name="ln39"> </a>
+<a name="ln40">bool WorkspacesManager::isWorkspacesListDirty = true;</a>
+<a name="ln41">Workspace* WorkspacesManager::m_currentWorkspace = nullptr;</a>
+<a name="ln42">QList&lt;Workspace*&gt; WorkspacesManager::m_workspaces {};</a>
+<a name="ln43">QList&lt;Workspace*&gt; WorkspacesManager::m_visibleWorkspaces {};</a>
+<a name="ln44"> </a>
+<a name="ln45">QList&lt;QPair&lt;QAction*, QString&gt;&gt; Workspace::actionToStringList {};</a>
+<a name="ln46">QList&lt;QPair&lt;QMenu*  , QString&gt;&gt; Workspace::menuToStringList   {};</a>
+<a name="ln47"> </a>
+<a name="ln48">std::vector&lt;QString&gt; WorkspacesManager::defaultWorkspaces {</a>
+<a name="ln49">      QT_TRANSLATE_NOOP(&quot;Ms::Workspace&quot;, &quot;Basic&quot;),</a>
+<a name="ln50">      QT_TRANSLATE_NOOP(&quot;Ms::Workspace&quot;, &quot;Advanced&quot;),</a>
+<a name="ln51">      };</a>
+<a name="ln52"> </a>
+<a name="ln53">std::vector&lt;QString&gt; WorkspacesManager::defaultEditedWorkspaces {</a>
+<a name="ln54">      QT_TRANSLATE_NOOP(&quot;Ms::Workspace&quot;, &quot;Basic edited&quot;),</a>
+<a name="ln55">      QT_TRANSLATE_NOOP(&quot;Ms::Workspace&quot;, &quot;Advanced edited&quot;),</a>
+<a name="ln56">      };</a>
+<a name="ln57"> </a>
+<a name="ln58">//---------------------------------------------------------</a>
+<a name="ln59">//   editedWorkspaceName</a>
+<a name="ln60">//---------------------------------------------------------</a>
+<a name="ln61"> </a>
+<a name="ln62">static QString editedWorkspaceTranslatableName(const QString&amp; oldWorkspaceTranslatableName)</a>
+<a name="ln63">      {</a>
+<a name="ln64">      if (oldWorkspaceTranslatableName.isEmpty())</a>
+<a name="ln65">            return QString();</a>
+<a name="ln66"> </a>
+<a name="ln67">      const auto it = std::find(WorkspacesManager::defaultWorkspaces.begin(), WorkspacesManager::defaultWorkspaces.end(), oldWorkspaceTranslatableName);</a>
+<a name="ln68"> </a>
+<a name="ln69">      if (it != WorkspacesManager::defaultWorkspaces.end()) {</a>
+<a name="ln70">            const int idx = it - WorkspacesManager::defaultWorkspaces.begin();</a>
+<a name="ln71">            if (idx &lt; int(WorkspacesManager::defaultEditedWorkspaces.size()))</a>
+<a name="ln72">                  return WorkspacesManager::defaultEditedWorkspaces[idx];</a>
+<a name="ln73">            }</a>
+<a name="ln74"> </a>
+<a name="ln75">      return QString();</a>
+<a name="ln76">      }</a>
+<a name="ln77"> </a>
+<a name="ln78">//---------------------------------------------------------</a>
+<a name="ln79">//   editedWorkspaceName</a>
+<a name="ln80">//---------------------------------------------------------</a>
+<a name="ln81"> </a>
+<a name="ln82">QString WorkspacesManager::defaultWorkspaceTranslatableName(const QString&amp; editedWorkspaceName)</a>
+<a name="ln83">      {</a>
+<a name="ln84">      const auto it = std::find(WorkspacesManager::defaultEditedWorkspaces.begin(), WorkspacesManager::defaultEditedWorkspaces.end(), editedWorkspaceName);</a>
+<a name="ln85"> </a>
+<a name="ln86">      if (it != WorkspacesManager::defaultEditedWorkspaces.end()) {</a>
+<a name="ln87">            const int idx = it - WorkspacesManager::defaultEditedWorkspaces.begin();</a>
+<a name="ln88">            if (idx &lt; int(WorkspacesManager::defaultWorkspaces.size()))</a>
+<a name="ln89">                  return WorkspacesManager::defaultWorkspaces[idx];</a>
+<a name="ln90">            }</a>
+<a name="ln91"> </a>
+<a name="ln92">      return QString();</a>
+<a name="ln93">      }</a>
+<a name="ln94"> </a>
+<a name="ln95">/**</a>
+<a name="ln96"> *   Reverts current workspace to the state of the `source` workspace</a>
+<a name="ln97"> */</a>
+<a name="ln98">void MuseScore::resetWorkspace()</a>
+<a name="ln99">      {</a>
+<a name="ln100">      //if currentWorkspace is the `edited` Basic or Advanced one, remove the edited and show the source one</a>
+<a name="ln101">      if (WorkspacesManager::isDefaultEditedWorkspace(WorkspacesManager::currentWorkspace())) {</a>
+<a name="ln102">            const QString&amp; currWorkspaceName = WorkspacesManager::currentWorkspace()-&gt;translatableName();</a>
+<a name="ln103">            const QString&amp; defaultWorkspaceName = WorkspacesManager::defaultWorkspaceTranslatableName(currWorkspaceName);</a>
+<a name="ln104">            Q_ASSERT(!defaultWorkspaceName.isEmpty());</a>
+<a name="ln105">            Workspace* defaultWorkspace = WorkspacesManager::findByTranslatableName(defaultWorkspaceName);</a>
+<a name="ln106">            Workspace* currWorkspace = WorkspacesManager::currentWorkspace();</a>
+<a name="ln107">            changeWorkspace(defaultWorkspace);</a>
+<a name="ln108">            WorkspacesManager::remove(currWorkspace);</a>
+<a name="ln109">            }</a>
+<a name="ln110">      //else if currentWorkspace is a custom workspace, reset all palettes, toolbars, menus and GUI to the values defined in the source workspace</a>
+<a name="ln111">      else</a>
+<a name="ln112">            WorkspacesManager::currentWorkspace()-&gt;reset();</a>
+<a name="ln113">      }</a>
+<a name="ln114"> </a>
+<a name="ln115">//---------------------------------------------------------</a>
+<a name="ln116">//   showWorkspaceMenu</a>
+<a name="ln117">//---------------------------------------------------------</a>
+<a name="ln118"> </a>
+<a name="ln119">void MuseScore::showWorkspaceMenu()</a>
+<a name="ln120">      {</a>
+<a name="ln121">      if (workspaces == 0) {</a>
+<a name="ln122">            workspaces = new QActionGroup(this);</a>
+<a name="ln123">            workspaces-&gt;setExclusive(true);</a>
+<a name="ln124">            connect(workspaces, SIGNAL(triggered(QAction*)), SLOT(changeWorkspace(QAction*)));</a>
+<a name="ln125">            }</a>
+<a name="ln126">      else {</a>
+<a name="ln127">            for (QAction* a : workspaces-&gt;actions())</a>
+<a name="ln128">                  workspaces-&gt;removeAction(a);</a>
+<a name="ln129">            }</a>
+<a name="ln130">      menuWorkspaces-&gt;clear();</a>
+<a name="ln131"> </a>
+<a name="ln132">      for (Workspace* p : WorkspacesManager::visibleWorkspaces()) {</a>
+<a name="ln133">            QAction* a = workspaces-&gt;addAction(qApp-&gt;translate(&quot;Ms::Workspace&quot;, p-&gt;name().toUtf8()));</a>
+<a name="ln134">            a-&gt;setCheckable(true);</a>
+<a name="ln135">            a-&gt;setData(p-&gt;path());</a>
+<a name="ln136">            a-&gt;setChecked(p-&gt;name() == preferences.getString(PREF_APP_WORKSPACE));</a>
+<a name="ln137">            menuWorkspaces-&gt;addAction(a);</a>
+<a name="ln138">            }</a>
+<a name="ln139"> </a>
+<a name="ln140">      menuWorkspaces-&gt;addSeparator();</a>
+<a name="ln141">      QAction* a = new QAction(tr(&quot;New…&quot;), this);</a>
+<a name="ln142">      connect(a, SIGNAL(triggered()), SLOT(createNewWorkspace()));</a>
+<a name="ln143">      menuWorkspaces-&gt;addAction(a);</a>
+<a name="ln144"> </a>
+<a name="ln145">      a = new QAction(tr(&quot;Edit&quot;), this);</a>
+<a name="ln146">      a-&gt;setDisabled(WorkspacesManager::currentWorkspace()-&gt;readOnly());</a>
+<a name="ln147">      connect(a, SIGNAL(triggered()), SLOT(editWorkspace()));</a>
+<a name="ln148">      menuWorkspaces-&gt;addAction(a);</a>
+<a name="ln149"> </a>
+<a name="ln150">      a = new QAction(tr(&quot;Delete&quot;), this);</a>
+<a name="ln151">      a-&gt;setDisabled(WorkspacesManager::currentWorkspace()-&gt;readOnly());</a>
+<a name="ln152">      connect(a, SIGNAL(triggered()), SLOT(deleteWorkspace()));</a>
+<a name="ln153">      menuWorkspaces-&gt;addAction(a);</a>
+<a name="ln154"> </a>
+<a name="ln155">      a = new QAction(tr(&quot;Reset workspace&quot;), this);</a>
+<a name="ln156">      connect(a, SIGNAL(triggered()), SLOT(resetWorkspace()));</a>
+<a name="ln157">      menuWorkspaces-&gt;addAction(a);</a>
+<a name="ln158">      }</a>
+<a name="ln159"> </a>
+<a name="ln160">//---------------------------------------------------------</a>
+<a name="ln161">//   deleteWorkspace</a>
+<a name="ln162">//---------------------------------------------------------</a>
+<a name="ln163"> </a>
+<a name="ln164">void MuseScore::deleteWorkspace()</a>
+<a name="ln165">      {</a>
+<a name="ln166">      Workspace* workspace = WorkspacesManager::currentWorkspace();</a>
+<a name="ln167">      if (!workspace)</a>
+<a name="ln168">            return;</a>
+<a name="ln169"> </a>
+<a name="ln170">      QMessageBox::StandardButton reply =</a>
+<a name="ln171">         (MScore::noGui &amp;&amp; MScore::testMode)</a>
+<a name="ln172">         ? QMessageBox::Yes</a>
+<a name="ln173">         : QMessageBox::question(0,</a>
+<a name="ln174">                 QWidget::tr(&quot;Are you sure?&quot;),</a>
+<a name="ln175">                 QWidget::tr(&quot;Do you really want to delete the '%1' workspace?&quot;).arg(workspace-&gt;name()),</a>
+<a name="ln176">                 QMessageBox::Yes | QMessageBox::No,</a>
+<a name="ln177">                 QMessageBox::Yes</a>
+<a name="ln178">                 );</a>
+<a name="ln179">      if (reply != QMessageBox::Yes)</a>
+<a name="ln180">            return;</a>
+<a name="ln181"> </a>
+<a name="ln182">      WorkspacesManager::remove(workspace);</a>
+<a name="ln183">      WorkspacesManager::setCurrentWorkspace(WorkspacesManager::workspaces().first());</a>
+<a name="ln184">      changeWorkspace(WorkspacesManager::currentWorkspace());</a>
+<a name="ln185">      updateIcons();</a>
+<a name="ln186">      }</a>
+<a name="ln187"> </a>
+<a name="ln188">//---------------------------------------------------------</a>
+<a name="ln189">//   changeWorkspace</a>
+<a name="ln190">//---------------------------------------------------------</a>
+<a name="ln191"> </a>
+<a name="ln192">void MuseScore::changeWorkspace(QAction* a)</a>
+<a name="ln193">      {</a>
+<a name="ln194">      changeWorkspace(a-&gt;text());</a>
+<a name="ln195">      }</a>
+<a name="ln196"> </a>
+<a name="ln197">//---------------------------------------------------------</a>
+<a name="ln198">//   changeWorkspace</a>
+<a name="ln199">//---------------------------------------------------------</a>
+<a name="ln200"> </a>
+<a name="ln201">void MuseScore::changeWorkspace(const QString&amp; name)</a>
+<a name="ln202">      {</a>
+<a name="ln203">      for (Workspace* p : WorkspacesManager::workspaces()) {</a>
+<a name="ln204">            if (qApp-&gt;translate(&quot;Ms::Workspace&quot;, p-&gt;name().toUtf8()) == name) {</a>
+<a name="ln205">                  changeWorkspace(p);</a>
+<a name="ln206">                  return;</a>
+<a name="ln207">                  }</a>
+<a name="ln208">            }</a>
+<a name="ln209">      qDebug(&quot;   workspace \&quot;%s\&quot; not found&quot;, qPrintable(name));</a>
+<a name="ln210">      }</a>
+<a name="ln211"> </a>
+<a name="ln212">//---------------------------------------------------------</a>
+<a name="ln213">//   changeWorkspace</a>
+<a name="ln214">//---------------------------------------------------------</a>
+<a name="ln215"> </a>
+<a name="ln216">void MuseScore::changeWorkspace(Workspace* p, bool first)</a>
+<a name="ln217">      {</a>
+<a name="ln218">      if (!first)</a>
+<a name="ln219">            WorkspacesManager::currentWorkspace()-&gt;save();</a>
+<a name="ln220"> </a>
+<a name="ln221">      if (WorkspacesManager::currentWorkspace())</a>
+<a name="ln222">            disconnect(getPaletteWorkspace(), &amp;PaletteWorkspace::userPaletteChanged, WorkspacesManager::currentWorkspace(), QOverload&lt;&gt;::of(&amp;Workspace::setDirty));</a>
+<a name="ln223"> </a>
+<a name="ln224">      p-&gt;read();</a>
+<a name="ln225">      WorkspacesManager::setCurrentWorkspace(p);</a>
+<a name="ln226">      if (!first) {</a>
+<a name="ln227">            updateIcons();</a>
+<a name="ln228">            preferencesChanged(true);</a>
+<a name="ln229">            }</a>
+<a name="ln230"> </a>
+<a name="ln231">      connect(getPaletteWorkspace(), &amp;PaletteWorkspace::userPaletteChanged, WorkspacesManager::currentWorkspace(), QOverload&lt;&gt;::of(&amp;Workspace::setDirty), Qt::UniqueConnection);</a>
+<a name="ln232"> </a>
+<a name="ln233">      preferences.setPreference(PREF_APP_WORKSPACE, p-&gt;name());</a>
+<a name="ln234">      emit mscore-&gt;workspacesChanged();</a>
+<a name="ln235">      }</a>
+<a name="ln236"> </a>
+<a name="ln237">//---------------------------------------------------------</a>
+<a name="ln238">//   updateIcons</a>
+<a name="ln239">//---------------------------------------------------------</a>
+<a name="ln240"> </a>
+<a name="ln241">void MuseScore::updateIcons()</a>
+<a name="ln242">      {</a>
+<a name="ln243">      setIconSize(QSize(preferences.getInt(PREF_UI_THEME_ICONWIDTH) * guiScaling, preferences.getInt(PREF_UI_THEME_ICONHEIGHT) * guiScaling));</a>
+<a name="ln244">      for (QAction* a : fileTools-&gt;actions()) {</a>
+<a name="ln245">            QWidget* widget = fileTools-&gt;widgetForAction(a);</a>
+<a name="ln246">            QString className = widget-&gt;metaObject()-&gt;className();</a>
+<a name="ln247">            if (className != &quot;Ms::AccessibleToolButton&quot; &amp;&amp; className != &quot;QToolBarSeparator&quot;)</a>
+<a name="ln248">                  widget-&gt;setFixedHeight(preferences.getInt(PREF_UI_THEME_ICONHEIGHT) + 8);  // hack</a>
+<a name="ln249">                  // apparently needed for viewModeCombo, see MuseScore::populateFileOperations</a>
+<a name="ln250">            }</a>
+<a name="ln251">      for (QAction* a : cpitchTools-&gt;actions()) {</a>
+<a name="ln252">            QWidget* widget = cpitchTools-&gt;widgetForAction(a);</a>
+<a name="ln253">            if (widget-&gt;property(&quot;iconic-text&quot;) == true)</a>
+<a name="ln254">                  widget-&gt;setFixedHeight(preferences.getInt(PREF_UI_THEME_ICONHEIGHT) + 8);  // hack</a>
+<a name="ln255">                  // so that toolbar buttons with text but no icon can match</a>
+<a name="ln256">                  // the height of other toolbar buttons</a>
+<a name="ln257">            }</a>
+<a name="ln258">      }</a>
+<a name="ln259"> </a>
+<a name="ln260">bool WorkspacesManager::isDefaultWorkspace(Workspace* workspace)</a>
+<a name="ln261">      {</a>
+<a name="ln262">      //returns true if @workspace's name is one of the &quot;Basic/Advanced&quot;</a>
+<a name="ln263">      return std::find(defaultWorkspaces.begin(), defaultWorkspaces.end(), workspace-&gt;translatableName()) != defaultWorkspaces.end();</a>
+<a name="ln264">      }</a>
+<a name="ln265"> </a>
+<a name="ln266">bool WorkspacesManager::isDefaultEditedWorkspace(Workspace* workspace)</a>
+<a name="ln267">      {</a>
+<a name="ln268">      //returns true if @workspace's name is one of the &quot;Basic edited/Advanced edited&quot;</a>
+<a name="ln269">      return std::find(WorkspacesManager::defaultEditedWorkspaces.begin(), WorkspacesManager::defaultEditedWorkspaces.end(), workspace-&gt;translatableName()) != WorkspacesManager::defaultEditedWorkspaces.end();</a>
+<a name="ln270">      }</a>
+<a name="ln271"> </a>
+<a name="ln272">void WorkspacesManager::initCurrentWorkspace()</a>
+<a name="ln273">      {</a>
+<a name="ln274">      initWorkspaces();</a>
+<a name="ln275">      m_currentWorkspace = findByName(preferences.getString(PREF_APP_WORKSPACE));</a>
+<a name="ln276">      Q_ASSERT(!workspaces().empty());</a>
+<a name="ln277">      if (m_currentWorkspace == 0)</a>
+<a name="ln278">            m_currentWorkspace = workspaces().at(0);</a>
+<a name="ln279">      }</a>
+<a name="ln280"> </a>
+<a name="ln281">void WorkspacesManager::remove(Workspace* workspace)</a>
+<a name="ln282">      {</a>
+<a name="ln283">      m_workspaces.removeOne(findByName(workspace-&gt;name()));</a>
+<a name="ln284">      QFile f(workspace-&gt;path());</a>
+<a name="ln285">      f.remove();</a>
+<a name="ln286">      delete workspace;</a>
+<a name="ln287">      isWorkspacesListDirty = true;</a>
+<a name="ln288">      initWorkspaces();</a>
+<a name="ln289">      emit mscore-&gt;workspacesChanged();</a>
+<a name="ln290">      }</a>
+<a name="ln291"> </a>
+<a name="ln292">//---------------------------------------------------------</a>
+<a name="ln293">//   writeFailed</a>
+<a name="ln294">//---------------------------------------------------------</a>
+<a name="ln295"> </a>
+<a name="ln296">static void writeFailed(const QString&amp; _path)</a>
+<a name="ln297">      {</a>
+<a name="ln298">      QString s = qApp-&gt;translate(&quot;Workspace&quot;, &quot;Writing Workspace File\n%1\nfailed: &quot;);</a>
+<a name="ln299">      QMessageBox::critical(mscore, qApp-&gt;translate(&quot;Workspace&quot;, &quot;Writing Workspace File&quot;), s.arg(_path));</a>
+<a name="ln300">      }</a>
+<a name="ln301"> </a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303">//   Workspace</a>
+<a name="ln304">//---------------------------------------------------------</a>
+<a name="ln305"> </a>
+<a name="ln306">Workspace::Workspace()</a>
+<a name="ln307">   : QObject(0)</a>
+<a name="ln308">      {</a>
+<a name="ln309">      _dirty = false;</a>
+<a name="ln310">      _readOnly = false;</a>
+<a name="ln311">      saveComponents = false;</a>
+<a name="ln312">      saveToolbars = false;</a>
+<a name="ln313">      saveMenuBar = false;</a>
+<a name="ln314"> </a>
+<a name="ln315">      _saveTimer.setInterval(0);</a>
+<a name="ln316">      _saveTimer.setSingleShot(true);</a>
+<a name="ln317">      connect(&amp;_saveTimer, &amp;QTimer::timeout, this, &amp;Workspace::ensureWorkspaceSaved);</a>
+<a name="ln318">      }</a>
+<a name="ln319"> </a>
+<a name="ln320">//---------------------------------------------------------</a>
+<a name="ln321">//   makeUserWorkspacePath</a>
+<a name="ln322">///   Returns path for the workspace with the given \p name</a>
+<a name="ln323">///   creating all the necessary directories.</a>
+<a name="ln324">//---------------------------------------------------------</a>
+<a name="ln325"> </a>
+<a name="ln326">QString WorkspacesManager::makeUserWorkspacePath(const QString&amp; name)</a>
+<a name="ln327">      {</a>
+<a name="ln328">      const QString ext(&quot;.workspace&quot;);</a>
+<a name="ln329">      QDir dir;</a>
+<a name="ln330">      dir.mkpath(dataPath);</a>
+<a name="ln331">      QString path(dataPath + &quot;/workspaces&quot;);</a>
+<a name="ln332">      dir.mkpath(path);</a>
+<a name="ln333">      path += &quot;/&quot; + name + ext;</a>
+<a name="ln334">      return path;</a>
+<a name="ln335">      }</a>
+<a name="ln336"> </a>
+<a name="ln337">//---------------------------------------------------------</a>
+<a name="ln338">//   write</a>
+<a name="ln339">//---------------------------------------------------------</a>
+<a name="ln340"> </a>
+<a name="ln341">void Workspace::write()</a>
+<a name="ln342">      {</a>
+<a name="ln343">      if (_path.isEmpty())</a>
+<a name="ln344">            _path = WorkspacesManager::makeUserWorkspacePath(_name);</a>
+<a name="ln345"> </a>
+<a name="ln346">      MQZipWriter f(_path);</a>
+<a name="ln347">      f.setCreationPermissions(</a>
+<a name="ln348">         QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner</a>
+<a name="ln349">         | QFile::ReadUser | QFile::WriteUser | QFile::ExeUser</a>
+<a name="ln350">         | QFile::ReadGroup | QFile::WriteGroup | QFile::ExeGroup</a>
+<a name="ln351">         | QFile::ReadOther | QFile::WriteOther | QFile::ExeOther);</a>
+<a name="ln352"> </a>
+<a name="ln353">      if (f.status() != MQZipWriter::NoError) {</a>
+<a name="ln354">            writeFailed(_path);</a>
+<a name="ln355">            return;</a>
+<a name="ln356">            }</a>
+<a name="ln357"> </a>
+<a name="ln358">      QBuffer cbuf;</a>
+<a name="ln359">      cbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln360">      XmlWriter xml(gscore, &amp;cbuf);</a>
+<a name="ln361">      xml.header();</a>
+<a name="ln362">      xml.stag(&quot;container&quot;);</a>
+<a name="ln363">      xml.stag(&quot;rootfiles&quot;);</a>
+<a name="ln364">      xml.stag(QString(&quot;rootfile full-path=\&quot;%1\&quot;&quot;).arg(XmlWriter::xmlString(&quot;workspace.xml&quot;)));</a>
+<a name="ln365">      xml.etag();</a>
+<a name="ln366">      for (ImageStoreItem* ip : imageStore) {</a>
+<a name="ln367">            if (!ip-&gt;isUsed(gscore))</a>
+<a name="ln368">                  continue;</a>
+<a name="ln369">            QString dstPath = QString(&quot;Pictures/&quot;) + ip-&gt;hashName();</a>
+<a name="ln370">            xml.tag(&quot;file&quot;, dstPath);</a>
+<a name="ln371">            }</a>
+<a name="ln372">      xml.etag();</a>
+<a name="ln373">      xml.etag();</a>
+<a name="ln374">      cbuf.seek(0);</a>
+<a name="ln375">      f.addFile(&quot;META-INF/container.xml&quot;, cbuf.data());</a>
+<a name="ln376"> </a>
+<a name="ln377">      // save images</a>
+<a name="ln378">      for (ImageStoreItem* ip : imageStore) {</a>
+<a name="ln379">            if (!ip-&gt;isUsed(gscore))</a>
+<a name="ln380">                  continue;</a>
+<a name="ln381">            QString dstPath = QString(&quot;Pictures/&quot;) + ip-&gt;hashName();</a>
+<a name="ln382">            f.addFile(dstPath, ip-&gt;buffer());</a>
+<a name="ln383">            }</a>
+<a name="ln384">      {</a>
+<a name="ln385">      xml.setClipboardmode(true);</a>
+<a name="ln386">      xml.header();</a>
+<a name="ln387">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln388">      xml.stag(&quot;Workspace&quot;);</a>
+<a name="ln389">      // xml.tag(&quot;name&quot;, _name);</a>
+<a name="ln390">      if (!_sourceWorkspaceName.isEmpty())</a>
+<a name="ln391">            xml.tag(&quot;source&quot;, _sourceWorkspaceName);</a>
+<a name="ln392">      const PaletteWorkspace* w = mscore-&gt;getPaletteWorkspace();</a>
+<a name="ln393">      w-&gt;write(xml);</a>
+<a name="ln394"> </a>
+<a name="ln395">      // write toolbar settings</a>
+<a name="ln396">      if (saveToolbars) {</a>
+<a name="ln397">            xml.stag(&quot;Toolbar name=\&quot;noteInput\&quot;&quot;);</a>
+<a name="ln398">            for (auto i : *mscore-&gt;noteInputMenuEntries())</a>
+<a name="ln399">                  xml.tag(&quot;action&quot;, i);</a>
+<a name="ln400">            xml.etag();</a>
+<a name="ln401">            xml.stag(&quot;Toolbar name=\&quot;fileOperation\&quot;&quot;);</a>
+<a name="ln402">            for (auto i : *mscore-&gt;fileOperationEntries())</a>
+<a name="ln403">                  xml.tag(&quot;action&quot;, i);</a>
+<a name="ln404">            xml.etag();</a>
+<a name="ln405">            xml.stag(&quot;Toolbar name=\&quot;playbackControl\&quot;&quot;);</a>
+<a name="ln406">            for (auto i : *mscore-&gt;playbackControlEntries())</a>
+<a name="ln407">                  xml.tag(&quot;action&quot;, i);</a>
+<a name="ln408">            xml.etag();</a>
+<a name="ln409">            }</a>
+<a name="ln410">      else {</a>
+<a name="ln411">            writeGlobalToolBar();</a>
+<a name="ln412">            }</a>
+<a name="ln413"> </a>
+<a name="ln414">      if (preferences.getUseLocalPreferences()) {</a>
+<a name="ln415">            xml.stag(&quot;Preferences&quot;);</a>
+<a name="ln416">            for (QString pref : preferences.getLocalPreferences().keys()) {</a>
+<a name="ln417">                  QVariant prefValue = preferences.getLocalPreferences().value(pref);</a>
+<a name="ln418">                  if (prefValue.isValid())</a>
+<a name="ln419">                        xml.tag(&quot;Preference name=\&quot;&quot; + pref + &quot;\&quot;&quot;, preferences.getLocalPreferences().value(pref));</a>
+<a name="ln420">                  }</a>
+<a name="ln421">            xml.etag();</a>
+<a name="ln422">            }</a>
+<a name="ln423"> </a>
+<a name="ln424">      if (saveMenuBar)</a>
+<a name="ln425">            writeMenuBar(xml);</a>
+<a name="ln426"> </a>
+<a name="ln427">      if (saveComponents) {</a>
+<a name="ln428">            QByteArray state_64 = mscore-&gt;saveState().toBase64();</a>
+<a name="ln429">            QString state(state_64);</a>
+<a name="ln430">            xml.tag(&quot;State&quot;, state);</a>
+<a name="ln431">            }</a>
+<a name="ln432">      else {</a>
+<a name="ln433">            writeGlobalGUIState();</a>
+<a name="ln434">            }</a>
+<a name="ln435"> </a>
+<a name="ln436">      xml.etag();</a>
+<a name="ln437">      xml.etag();</a>
+<a name="ln438">      f.addFile(&quot;workspace.xml&quot;, cbuf.data());</a>
+<a name="ln439">      cbuf.close();</a>
+<a name="ln440">      }</a>
+<a name="ln441"> </a>
+<a name="ln442">      if (f.status() != MQZipWriter::NoError)</a>
+<a name="ln443">            writeFailed(_path);</a>
+<a name="ln444">      }</a>
+<a name="ln445"> </a>
+<a name="ln446">//---------------------------------------------------------</a>
+<a name="ln447">//   writeGlobalMenuBar</a>
+<a name="ln448">//   writes global menu bar for workspaces</a>
+<a name="ln449">//---------------------------------------------------------</a>
+<a name="ln450"> </a>
+<a name="ln451">void Workspace::writeGlobalMenuBar(QMenuBar* mb)</a>
+<a name="ln452">      {</a>
+<a name="ln453">      QString default_path = &quot;&quot;;</a>
+<a name="ln454">      QDir dir;</a>
+<a name="ln455">      dir.mkpath(dataPath);</a>
+<a name="ln456">      default_path = dataPath + &quot;/workspaces&quot;;</a>
+<a name="ln457">      dir.mkpath(default_path);</a>
+<a name="ln458">      default_path += &quot;/global&quot;;</a>
+<a name="ln459">      dir.mkpath(default_path);</a>
+<a name="ln460">      default_path += &quot;/menubar.xml&quot;;</a>
+<a name="ln461"> </a>
+<a name="ln462">      QFile default_menubar (default_path);</a>
+<a name="ln463">      default_menubar.open(QIODevice::WriteOnly);</a>
+<a name="ln464"> </a>
+<a name="ln465">      if (!default_menubar.exists()) {</a>
+<a name="ln466">            writeFailed(default_path);</a>
+<a name="ln467">            return;</a>
+<a name="ln468">            }</a>
+<a name="ln469"> </a>
+<a name="ln470">      QBuffer cbuf;</a>
+<a name="ln471">      cbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln472">      XmlWriter xml(gscore, &amp;cbuf);</a>
+<a name="ln473">      xml.setClipboardmode(true);</a>
+<a name="ln474">      xml.header();</a>
+<a name="ln475">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln476"> </a>
+<a name="ln477">      writeMenuBar(xml, mb);</a>
+<a name="ln478"> </a>
+<a name="ln479">      xml.etag();</a>
+<a name="ln480">      default_menubar.write(cbuf.data());</a>
+<a name="ln481">      cbuf.close();</a>
+<a name="ln482">      default_menubar.close();</a>
+<a name="ln483">      }</a>
+<a name="ln484"> </a>
+<a name="ln485">//---------------------------------------------------------</a>
+<a name="ln486">//   writeGlobalToolBar</a>
+<a name="ln487">//   writes global tool bar for workspaces</a>
+<a name="ln488">//---------------------------------------------------------</a>
+<a name="ln489"> </a>
+<a name="ln490">void Workspace::writeGlobalToolBar()</a>
+<a name="ln491">      {</a>
+<a name="ln492">      QString default_path = &quot;&quot;;</a>
+<a name="ln493">      QDir dir;</a>
+<a name="ln494">      dir.mkpath(dataPath);</a>
+<a name="ln495">      default_path = dataPath + &quot;/workspaces&quot;;</a>
+<a name="ln496">      dir.mkpath(default_path);</a>
+<a name="ln497">      default_path += &quot;/global&quot;;</a>
+<a name="ln498">      dir.mkpath(default_path);</a>
+<a name="ln499">      default_path += &quot;/toolbar.xml&quot;;</a>
+<a name="ln500"> </a>
+<a name="ln501">      QFile default_toolbar (default_path);</a>
+<a name="ln502">      default_toolbar.open(QIODevice::WriteOnly);</a>
+<a name="ln503"> </a>
+<a name="ln504">      if (!default_toolbar.exists()) {</a>
+<a name="ln505">            writeFailed(default_path);</a>
+<a name="ln506">            return;</a>
+<a name="ln507">            }</a>
+<a name="ln508"> </a>
+<a name="ln509">      QBuffer cbuf;</a>
+<a name="ln510">      cbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln511">      XmlWriter xml(gscore, &amp;cbuf);</a>
+<a name="ln512">      xml.setClipboardmode(true);</a>
+<a name="ln513">      xml.header();</a>
+<a name="ln514">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln515"> </a>
+<a name="ln516">      xml.stag(&quot;Toolbar name=\&quot;noteInput\&quot;&quot;);</a>
+<a name="ln517">      for (auto i : *mscore-&gt;noteInputMenuEntries())</a>
+<a name="ln518">            xml.tag(&quot;action&quot;, i);</a>
+<a name="ln519">      xml.etag();</a>
+<a name="ln520">      xml.stag(&quot;Toolbar name=\&quot;fileOperation\&quot;&quot;);</a>
+<a name="ln521">      for (auto i : *mscore-&gt;fileOperationEntries())</a>
+<a name="ln522">            xml.tag(&quot;action&quot;, i);</a>
+<a name="ln523">      xml.etag();</a>
+<a name="ln524">      xml.stag(&quot;Toolbar name=\&quot;playbackControl\&quot;&quot;);</a>
+<a name="ln525">      for (auto i : *mscore-&gt;playbackControlEntries())</a>
+<a name="ln526">            xml.tag(&quot;action&quot;, i);</a>
+<a name="ln527">      xml.etag();</a>
+<a name="ln528"> </a>
+<a name="ln529">      xml.etag();</a>
+<a name="ln530">      default_toolbar.write(cbuf.data());</a>
+<a name="ln531">      cbuf.close();</a>
+<a name="ln532">      default_toolbar.close();</a>
+<a name="ln533">      }</a>
+<a name="ln534"> </a>
+<a name="ln535">//---------------------------------------------------------</a>
+<a name="ln536">//   writeGlobalGUIState</a>
+<a name="ln537">//   writes global GUI state for workspaces</a>
+<a name="ln538">//---------------------------------------------------------</a>
+<a name="ln539"> </a>
+<a name="ln540">void Workspace::writeGlobalGUIState()</a>
+<a name="ln541">      {</a>
+<a name="ln542">      QString default_path = &quot;&quot;;</a>
+<a name="ln543">      QDir dir;</a>
+<a name="ln544">      dir.mkpath(dataPath);</a>
+<a name="ln545">      default_path = dataPath + &quot;/workspaces&quot;;</a>
+<a name="ln546">      dir.mkpath(default_path);</a>
+<a name="ln547">      default_path += &quot;/global&quot;;</a>
+<a name="ln548">      dir.mkpath(default_path);</a>
+<a name="ln549">      default_path += &quot;/guistate.xml&quot;;</a>
+<a name="ln550"> </a>
+<a name="ln551">      QFile default_guistate (default_path);</a>
+<a name="ln552">      default_guistate.open(QIODevice::WriteOnly);</a>
+<a name="ln553"> </a>
+<a name="ln554">      if (!default_guistate.exists()) {</a>
+<a name="ln555">            writeFailed(default_path);</a>
+<a name="ln556">            return;</a>
+<a name="ln557">            }</a>
+<a name="ln558"> </a>
+<a name="ln559">      QBuffer cbuf;</a>
+<a name="ln560">      cbuf.open(QIODevice::ReadWrite);</a>
+<a name="ln561">      XmlWriter xml(gscore, &amp;cbuf);</a>
+<a name="ln562">      xml.setClipboardmode(true);</a>
+<a name="ln563">      xml.header();</a>
+<a name="ln564">      xml.stag(&quot;museScore version=\&quot;&quot; MSC_VERSION &quot;\&quot;&quot;);</a>
+<a name="ln565"> </a>
+<a name="ln566">      QByteArray state_64 = mscore-&gt;saveState().toBase64();</a>
+<a name="ln567">      QString state(state_64);</a>
+<a name="ln568">      xml.tag(&quot;State&quot;, state);</a>
+<a name="ln569"> </a>
+<a name="ln570">      xml.etag();</a>
+<a name="ln571">      default_guistate.write(cbuf.data());</a>
+<a name="ln572">      cbuf.close();</a>
+<a name="ln573">      default_guistate.close();</a>
+<a name="ln574">      }</a>
+<a name="ln575"> </a>
+<a name="ln576">//---------------------------------------------------------</a>
+<a name="ln577">//   writeMenuBar</a>
+<a name="ln578">//---------------------------------------------------------</a>
+<a name="ln579"> </a>
+<a name="ln580">void Workspace::writeMenuBar(XmlWriter&amp; xml, QMenuBar* mb)</a>
+<a name="ln581">      {</a>
+<a name="ln582">      // Loop through each menu in menubar. For each menu, call writeMenu.</a>
+<a name="ln583">      xml.stag(&quot;MenuBar&quot;);</a>
+<a name="ln584">      if (!mb)</a>
+<a name="ln585">            mb = mscore-&gt;menuBar();</a>
+<a name="ln586">      for (QAction* action : mb-&gt;actions()) {</a>
+<a name="ln587">            if (action-&gt;isSeparator())</a>
+<a name="ln588">                  xml.tag(&quot;action&quot;, &quot;&quot;);</a>
+<a name="ln589">            else if (action-&gt;menu()) {</a>
+<a name="ln590">                  const QString menuString = findStringFromMenu(action-&gt;menu());</a>
+<a name="ln591">                  if (!menuString.isEmpty()) {</a>
+<a name="ln592">                        xml.stag(&quot;Menu name=\&quot;&quot; + menuString + &quot;\&quot;&quot;);</a>
+<a name="ln593">                        writeMenu(xml, action-&gt;menu());</a>
+<a name="ln594">                        xml.etag();</a>
+<a name="ln595">                        }</a>
+<a name="ln596">                  }</a>
+<a name="ln597">            else {</a>
+<a name="ln598">                  const QString actionString = findStringFromAction(action);</a>
+<a name="ln599">                  if (!actionString.isEmpty())</a>
+<a name="ln600">                        xml.tag(&quot;action&quot;, actionString);</a>
+<a name="ln601">                  }</a>
+<a name="ln602"> </a>
+<a name="ln603">            }</a>
+<a name="ln604">      xml.etag();</a>
+<a name="ln605">      }</a>
+<a name="ln606"> </a>
+<a name="ln607">//---------------------------------------------------------</a>
+<a name="ln608">//   writeMenu</a>
+<a name="ln609">//---------------------------------------------------------</a>
+<a name="ln610"> </a>
+<a name="ln611">void Workspace::writeMenu(XmlWriter&amp; xml, QMenu* menu)</a>
+<a name="ln612">      {</a>
+<a name="ln613">      // Recursively save QMenu</a>
+<a name="ln614">      for (QAction* action : menu-&gt;actions()) {</a>
+<a name="ln615">            if (action-&gt;isSeparator())</a>
+<a name="ln616">                  xml.tag(&quot;action&quot;, &quot;&quot;);</a>
+<a name="ln617">            else if (action-&gt;menu()) {</a>
+<a name="ln618">                  const QString menuString = findStringFromMenu(action-&gt;menu());</a>
+<a name="ln619">                  if (!menuString.isEmpty()) {</a>
+<a name="ln620">                        xml.stag(&quot;Menu name=\&quot;&quot; + menuString + &quot;\&quot;&quot;);</a>
+<a name="ln621">                        writeMenu(xml, action-&gt;menu());</a>
+<a name="ln622">                        xml.etag();</a>
+<a name="ln623">                        }</a>
+<a name="ln624">                  }</a>
+<a name="ln625">            else {</a>
+<a name="ln626">                  const QString actionString = findStringFromAction(action);</a>
+<a name="ln627">                  if (!actionString.isEmpty())</a>
+<a name="ln628">                        xml.tag(&quot;action&quot;, actionString);</a>
+<a name="ln629">                  }</a>
+<a name="ln630">            }</a>
+<a name="ln631">      }</a>
+<a name="ln632"> </a>
+<a name="ln633">extern QString readRootFile(MQZipReader*, QList&lt;QString&gt;&amp;);</a>
+<a name="ln634"> </a>
+<a name="ln635">//---------------------------------------------------------</a>
+<a name="ln636">//   read</a>
+<a name="ln637">//---------------------------------------------------------</a>
+<a name="ln638"> </a>
+<a name="ln639">void WorkspacesManager::readWorkspaceFile(const QString&amp; path, std::function&lt;void(XmlReader&amp;)&gt; readWorkspace)</a>
+<a name="ln640">      {</a>
+<a name="ln641">      MQZipReader f(path);</a>
+<a name="ln642">      QList&lt;QString&gt; images;</a>
+<a name="ln643">      QString rootfile = readRootFile(&amp;f, images);</a>
+<a name="ln644">      //</a>
+<a name="ln645">      // load images</a>
+<a name="ln646">      //</a>
+<a name="ln647">      for (const QString&amp; s : images)</a>
+<a name="ln648">            imageStore.add(s, f.fileData(s));</a>
+<a name="ln649"> </a>
+<a name="ln650">      if (rootfile.isEmpty()) {</a>
+<a name="ln651">            qDebug(&quot;can't find rootfile in: %s&quot;, qPrintable(path));</a>
+<a name="ln652">            return;</a>
+<a name="ln653">            }</a>
+<a name="ln654"> </a>
+<a name="ln655">      QByteArray ba = f.fileData(rootfile);</a>
+<a name="ln656">      XmlReader e(ba);</a>
+<a name="ln657"> </a>
+<a name="ln658">      while (e.readNextStartElement()) {</a>
+<a name="ln659">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln660">                  while (e.readNextStartElement()) {</a>
+<a name="ln661">                        if (e.name() == &quot;Workspace&quot;)</a>
+<a name="ln662">                              readWorkspace(e);</a>
+<a name="ln663">                        else</a>
+<a name="ln664">                              e.unknown();</a>
+<a name="ln665">                        }</a>
+<a name="ln666">                  }</a>
+<a name="ln667">            }</a>
+<a name="ln668">      }</a>
+<a name="ln669"> </a>
+<a name="ln670">void Workspace::read()</a>
+<a name="ln671">      {</a>
+<a name="ln672">      saveToolbars = saveMenuBar = saveComponents = false;</a>
+<a name="ln673">      preferences.setUseLocalPreferences(false);</a>
+<a name="ln674">      if (_path.isEmpty() || !QFile(_path).exists()) {</a>
+<a name="ln675">            qDebug(&quot;cannot read workspace &lt;%s&gt;&quot;, qPrintable(_path));</a>
+<a name="ln676">            mscore-&gt;setDefaultPalette();</a>
+<a name="ln677">            readGlobalMenuBar();</a>
+<a name="ln678">            readGlobalToolBar();</a>
+<a name="ln679">            readGlobalGUIState();</a>
+<a name="ln680">            preferences.updateLocalPreferences();</a>
+<a name="ln681">            return;</a>
+<a name="ln682">            }</a>
+<a name="ln683">      QFileInfo fi(_path);</a>
+<a name="ln684">      qt_ntfs_permission_lookup++;</a>
+<a name="ln685">      _readOnly = !fi.isWritable();</a>
+<a name="ln686">      qt_ntfs_permission_lookup--;</a>
+<a name="ln687"> </a>
+<a name="ln688">      preferences.updateLocalPreferences();</a>
+<a name="ln689"> </a>
+<a name="ln690">      WorkspacesManager::readWorkspaceFile(_path, [this](XmlReader&amp; e) { read(e); });</a>
+<a name="ln691">      }</a>
+<a name="ln692"> </a>
+<a name="ln693">/**</a>
+<a name="ln694">      Reset the workspace to the state of the source workspace.</a>
+<a name="ln695">      Works for Custom workspaces ONLY!</a>
+<a name="ln696"> */</a>
+<a name="ln697">void Workspace::reset()</a>
+<a name="ln698">      {</a>
+<a name="ln699">      saveToolbars = saveMenuBar = saveComponents = false;</a>
+<a name="ln700">      preferences.setUseLocalPreferences(false);</a>
+<a name="ln701">      preferences.updateLocalPreferences();</a>
+<a name="ln702">      const Workspace* srcWorkspace = sourceWorkspace();</a>
+<a name="ln703">      WorkspacesManager::readWorkspaceFile(srcWorkspace-&gt;path(), [this](XmlReader&amp; e) { read(e); });</a>
+<a name="ln704">      save();</a>
+<a name="ln705">      }</a>
+<a name="ln706"> </a>
+<a name="ln707">std::unique_ptr&lt;PaletteTree&gt; Workspace::getPaletteTree() const</a>
+<a name="ln708">      {</a>
+<a name="ln709">      std::unique_ptr&lt;PaletteTree&gt; paletteTree(new PaletteTree);</a>
+<a name="ln710">      WorkspacesManager::readWorkspaceFile(_path, [&amp;](XmlReader&amp; e) {</a>
+<a name="ln711">            while (e.readNextStartElement()) {</a>
+<a name="ln712">                  if (e.name() == &quot;PaletteBox&quot;)</a>
+<a name="ln713">                        paletteTree-&gt;read(e);</a>
+<a name="ln714">                  else</a>
+<a name="ln715">                        e.skipCurrentElement();</a>
+<a name="ln716">                  }</a>
+<a name="ln717">            });</a>
+<a name="ln718">      return paletteTree;</a>
+<a name="ln719">      }</a>
+<a name="ln720"> </a>
+<a name="ln721">void Workspace::read(XmlReader&amp; e)</a>
+<a name="ln722">      {</a>
+<a name="ln723">      bool niToolbar = false;</a>
+<a name="ln724">      bool foToolbar = false;</a>
+<a name="ln725">      bool pcToolbar = false;</a>
+<a name="ln726">      while (e.readNextStartElement()) {</a>
+<a name="ln727">            const QStringRef&amp; tag(e.name());</a>
+<a name="ln728">            if (tag == &quot;name&quot;)</a>
+<a name="ln729">                  e.readElementText();</a>
+<a name="ln730">            else if (tag == &quot;source&quot;)</a>
+<a name="ln731">                  _sourceWorkspaceName = e.readElementText();</a>
+<a name="ln732">            else if (tag == &quot;PaletteBox&quot;) {</a>
+<a name="ln733">                  PaletteWorkspace* w = mscore-&gt;getPaletteWorkspace();</a>
+<a name="ln734">                  w-&gt;read(e);</a>
+<a name="ln735">                  }</a>
+<a name="ln736">            else if (tag == &quot;Toolbar&quot;) {</a>
+<a name="ln737">                  saveToolbars = true;</a>
+<a name="ln738">                  QString name = e.attribute(&quot;name&quot;);</a>
+<a name="ln739">                  std::list&lt;const char *&gt; toolbarEntries;</a>
+<a name="ln740">                  if (name == &quot;noteInput&quot;)</a>
+<a name="ln741">                        toolbarEntries = mscore-&gt;allNoteInputMenuEntries();</a>
+<a name="ln742">                  else if (name == &quot;fileOperation&quot;)</a>
+<a name="ln743">                        toolbarEntries = mscore-&gt;allFileOperationEntries();</a>
+<a name="ln744">                  else if (name == &quot;playbackControl&quot;)</a>
+<a name="ln745">                        toolbarEntries = mscore-&gt;allPlaybackControlEntries();</a>
+<a name="ln746">                  else</a>
+<a name="ln747">                        qDebug() &lt;&lt; &quot;Error in loading workspace: &quot; + name + &quot; is not a toolbar&quot;;</a>
+<a name="ln748"> </a>
+<a name="ln749">                  std::list&lt;const char*&gt; l;</a>
+<a name="ln750">                  while (e.readNextStartElement()) {</a>
+<a name="ln751">                        const QStringRef&amp; t(e.name());</a>
+<a name="ln752">                        if (t == &quot;action&quot;) {</a>
+<a name="ln753">                              QString s = e.readElementText();</a>
+<a name="ln754">                              for (auto k : toolbarEntries) {</a>
+<a name="ln755">                                    if (k == s) {</a>
+<a name="ln756">                                          l.push_back(k);</a>
+<a name="ln757">                                          break;</a>
+<a name="ln758">                                          }</a>
+<a name="ln759">                                    }</a>
+<a name="ln760">                              }</a>
+<a name="ln761">                        else</a>
+<a name="ln762">                              e.unknown();</a>
+<a name="ln763">                        }</a>
+<a name="ln764">                  if (name == &quot;noteInput&quot;) {</a>
+<a name="ln765">                        mscore-&gt;setNoteInputMenuEntries(l);</a>
+<a name="ln766">                        mscore-&gt;populateNoteInputMenu();</a>
+<a name="ln767">                        niToolbar = true;</a>
+<a name="ln768">                        }</a>
+<a name="ln769">                  else if (name == &quot;fileOperation&quot;) {</a>
+<a name="ln770">                        mscore-&gt;setFileOperationEntries(l);</a>
+<a name="ln771">                        mscore-&gt;populateFileOperations();</a>
+<a name="ln772">                        foToolbar = true;</a>
+<a name="ln773">                        }</a>
+<a name="ln774">                  else if (name == &quot;playbackControl&quot;) {</a>
+<a name="ln775">                        mscore-&gt;setPlaybackControlEntries(l);</a>
+<a name="ln776">                        mscore-&gt;populatePlaybackControls();</a>
+<a name="ln777">                        pcToolbar = true;</a>
+<a name="ln778">                        }</a>
+<a name="ln779">                  }</a>
+<a name="ln780">            else if (tag == &quot;Preferences&quot;) {</a>
+<a name="ln781">                  preferences.setUseLocalPreferences(true);</a>
+<a name="ln782">                  while (e.readNextStartElement()) {</a>
+<a name="ln783">                        QString preference_name = e.attribute(&quot;name&quot;);</a>
+<a name="ln784">                        switch (preferences.defaultValue(preference_name).type()) {</a>
+<a name="ln785">                              case QVariant::Int:</a>
+<a name="ln786">                                    {</a>
+<a name="ln787">                                    int new_int = e.readInt();</a>
+<a name="ln788">                                    preferences.setLocalPreference(preference_name, QVariant(new_int));</a>
+<a name="ln789">                                    }</a>
+<a name="ln790">                                    break;</a>
+<a name="ln791">                              case QVariant::Color:</a>
+<a name="ln792">                                    {</a>
+<a name="ln793">                                    QColor new_color = e.readColor();</a>
+<a name="ln794">                                    preferences.setLocalPreference(preference_name, QVariant(new_color));</a>
+<a name="ln795">                                    }</a>
+<a name="ln796">                                    break;</a>
+<a name="ln797">                              case QVariant::String:</a>
+<a name="ln798">                                    {</a>
+<a name="ln799">                                    QString new_string = e.readXml();</a>
+<a name="ln800">                                    preferences.setLocalPreference(preference_name, QVariant(new_string));</a>
+<a name="ln801">                                    }</a>
+<a name="ln802">                                    break;</a>
+<a name="ln803">                              case QVariant::Bool:</a>
+<a name="ln804">                                    {</a>
+<a name="ln805">                                    bool new_bool = e.readBool();</a>
+<a name="ln806">                                    preferences.setLocalPreference(preference_name, QVariant(new_bool));</a>
+<a name="ln807">                                    }</a>
+<a name="ln808">                                    break;</a>
+<a name="ln809">                              case QVariant::LongLong:</a>
+<a name="ln810">                                    {</a>
+<a name="ln811">                                    bool new_longlong = e.readLongLong();</a>
+<a name="ln812">                                    preferences.setLocalPreference(preference_name, QVariant(new_longlong));</a>
+<a name="ln813">                                    break;</a>
+<a name="ln814">                                    }</a>
+<a name="ln815">                              default:</a>
+<a name="ln816">                                    qDebug() &lt;&lt; preferences.defaultValue(preference_name).type() &lt;&lt; &quot; not handled.&quot;;</a>
+<a name="ln817">                                    e.unknown();</a>
+<a name="ln818">                              }</a>
+<a name="ln819">                        }</a>
+<a name="ln820">                  }</a>
+<a name="ln821">            else if (tag == &quot;MenuBar&quot;) {</a>
+<a name="ln822">                  saveMenuBar = true;</a>
+<a name="ln823">                  QMenuBar* mb = mscore-&gt;menuBar();</a>
+<a name="ln824">                  const QObjectList menus(mb-&gt;children()); // need a copy</a>
+<a name="ln825">                  for (QObject* m : menus) {</a>
+<a name="ln826">                        QMenu* menu = qobject_cast&lt;QMenu*&gt;(m);</a>
+<a name="ln827">                        if (menu) {</a>
+<a name="ln828">                              menu-&gt;setParent(nullptr);</a>
+<a name="ln829">                              menu-&gt;deleteLater();</a>
+<a name="ln830">                              }</a>
+<a name="ln831">                        }</a>
+<a name="ln832">                  mb-&gt;clear();</a>
+<a name="ln833">                  menuToStringList.clear();</a>
+<a name="ln834">                  while (e.readNextStartElement()) {</a>
+<a name="ln835">                        if (e.hasAttribute(&quot;name&quot;)) { // is a menu</a>
+<a name="ln836">                              QString menu_id = e.attribute(&quot;name&quot;);</a>
+<a name="ln837">                              QMenu* menu = mb-&gt;addMenu(menu_id);</a>
+<a name="ln838">                              addMenuAndString(menu, menu_id);</a>
+<a name="ln839">                              readMenu(e, menu);</a>
+<a name="ln840">                              }</a>
+<a name="ln841">                        else { // is an action</a>
+<a name="ln842">                              QString action_id = e.readXml();</a>
+<a name="ln843">                              if (action_id.isEmpty())</a>
+<a name="ln844">                                    mb-&gt;addSeparator();</a>
+<a name="ln845">                              else {</a>
+<a name="ln846">                                    QAction* action = findActionFromString(action_id);</a>
+<a name="ln847">                                    mb-&gt;addAction(action);</a>
+<a name="ln848">                                    }</a>
+<a name="ln849">                              }</a>
+<a name="ln850">                        }</a>
+<a name="ln851">                  mscore-&gt;updateMenus();</a>
+<a name="ln852">                  }</a>
+<a name="ln853">            else if (tag == &quot;State&quot;) {</a>
+<a name="ln854">                  saveComponents = true;</a>
+<a name="ln855">                  QString state_string = e.readXml();</a>
+<a name="ln856">                  QByteArray state_byte_array_64(state_string.toUtf8());</a>
+<a name="ln857">                  QByteArray state_byte_array = QByteArray::fromBase64(state_byte_array_64);</a>
+<a name="ln858">                  mscore-&gt;restoreState(state_byte_array);</a>
+<a name="ln859">                  }</a>
+<a name="ln860">            else</a>
+<a name="ln861">                  e.unknown();</a>
+<a name="ln862">            }</a>
+<a name="ln863">      if (saveToolbars) {</a>
+<a name="ln864">            if (!niToolbar) {</a>
+<a name="ln865">                  mscore-&gt;setNoteInputMenuEntries(mscore-&gt;allNoteInputMenuEntries());</a>
+<a name="ln866">                  mscore-&gt;populateNoteInputMenu();</a>
+<a name="ln867">                  }</a>
+<a name="ln868">            if (!foToolbar) {</a>
+<a name="ln869">                  mscore-&gt;setFileOperationEntries(mscore-&gt;allFileOperationEntries());</a>
+<a name="ln870">                  mscore-&gt;populateFileOperations();</a>
+<a name="ln871">                  }</a>
+<a name="ln872">            if (!pcToolbar) {</a>
+<a name="ln873">                  mscore-&gt;setPlaybackControlEntries(mscore-&gt;allPlaybackControlEntries());</a>
+<a name="ln874">                  mscore-&gt;populatePlaybackControls();</a>
+<a name="ln875">                  }</a>
+<a name="ln876">            }</a>
+<a name="ln877">      else {</a>
+<a name="ln878">            readGlobalToolBar();</a>
+<a name="ln879">            }</a>
+<a name="ln880">      if (!saveMenuBar)</a>
+<a name="ln881">            readGlobalMenuBar();</a>
+<a name="ln882">      if (!saveComponents)</a>
+<a name="ln883">            readGlobalGUIState();</a>
+<a name="ln884"> </a>
+<a name="ln885">      if (const Workspace* src = sourceWorkspace())</a>
+<a name="ln886">            mscore-&gt;getPaletteWorkspace()-&gt;setDefaultPaletteTree(src-&gt;getPaletteTree());</a>
+<a name="ln887">      }</a>
+<a name="ln888"> </a>
+<a name="ln889">//---------------------------------------------------------</a>
+<a name="ln890">//   readMenu</a>
+<a name="ln891">//---------------------------------------------------------</a>
+<a name="ln892"> </a>
+<a name="ln893">void Workspace::readMenu(XmlReader&amp; e, QMenu* menu)</a>
+<a name="ln894">      {</a>
+<a name="ln895">      while (e.readNextStartElement()) {</a>
+<a name="ln896">            if (e.hasAttribute(&quot;name&quot;)) { // is a menu</a>
+<a name="ln897">                  QString menu_id = e.attribute(&quot;name&quot;);</a>
+<a name="ln898">                  QMenu* new_menu = menu-&gt;addMenu(menu_id);</a>
+<a name="ln899">                  addMenuAndString(new_menu, menu_id);</a>
+<a name="ln900">                  readMenu(e, new_menu);</a>
+<a name="ln901">                  }</a>
+<a name="ln902">            else { // is an action</a>
+<a name="ln903">                  QString action_id = e.readXml();</a>
+<a name="ln904">                  if (action_id.isEmpty())</a>
+<a name="ln905">                        menu-&gt;addSeparator();</a>
+<a name="ln906">                  else {</a>
+<a name="ln907">                        QAction* action = findActionFromString(action_id);</a>
+<a name="ln908">                        menu-&gt;addAction(action);</a>
+<a name="ln909">                        }</a>
+<a name="ln910">                  }</a>
+<a name="ln911">            }</a>
+<a name="ln912">      }</a>
+<a name="ln913"> </a>
+<a name="ln914">//---------------------------------------------------------</a>
+<a name="ln915">//   readGlobalMenuBar</a>
+<a name="ln916">//---------------------------------------------------------</a>
+<a name="ln917"> </a>
+<a name="ln918">void Workspace::readGlobalMenuBar()</a>
+<a name="ln919">      {</a>
+<a name="ln920">      QString default_path = dataPath + &quot;/workspaces/global/menubar.xml&quot;;</a>
+<a name="ln921"> </a>
+<a name="ln922">      QFile default_menubar(default_path);</a>
+<a name="ln923">      default_menubar.open(QIODevice::ReadOnly);</a>
+<a name="ln924"> </a>
+<a name="ln925">      QByteArray ba (default_menubar.readAll());</a>
+<a name="ln926">      XmlReader e(ba);</a>
+<a name="ln927"> </a>
+<a name="ln928">      while (e.readNextStartElement()) {</a>
+<a name="ln929">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln930">                  while (e.readNextStartElement()) {</a>
+<a name="ln931">                        if (e.name() == &quot;MenuBar&quot;) {</a>
+<a name="ln932">                              QMenuBar* mb = mscore-&gt;menuBar();</a>
+<a name="ln933">                              const QObjectList menus(mb-&gt;children()); // need a copy</a>
+<a name="ln934">                              for (QObject* m : menus) {</a>
+<a name="ln935">                                    QMenu* menu = qobject_cast&lt;QMenu*&gt;(m);</a>
+<a name="ln936">                                    if (menu) {</a>
+<a name="ln937">                                          menu-&gt;setParent(nullptr);</a>
+<a name="ln938">                                          menu-&gt;deleteLater();</a>
+<a name="ln939">                                          }</a>
+<a name="ln940">                                    }</a>
+<a name="ln941">                              mb-&gt;clear();</a>
+<a name="ln942">                              menuToStringList.clear();</a>
+<a name="ln943">                              while (e.readNextStartElement()) {</a>
+<a name="ln944">                                    if (e.hasAttribute(&quot;name&quot;)) { // is a menu</a>
+<a name="ln945">                                          QString menu_id = e.attribute(&quot;name&quot;);</a>
+<a name="ln946">                                          QMenu* menu = mb-&gt;addMenu(menu_id);</a>
+<a name="ln947">                                          addMenuAndString(menu, menu_id);</a>
+<a name="ln948">                                          readMenu(e, menu);</a>
+<a name="ln949">                                          }</a>
+<a name="ln950">                                    else { // is an action</a>
+<a name="ln951">                                          QString action_id = e.readXml();</a>
+<a name="ln952">                                          if (action_id.isEmpty())</a>
+<a name="ln953">                                                mb-&gt;addSeparator();</a>
+<a name="ln954">                                          else {</a>
+<a name="ln955">                                                QAction* action = findActionFromString(action_id);</a>
+<a name="ln956">                                                mb-&gt;addAction(action);</a>
+<a name="ln957">                                                }</a>
+<a name="ln958">                                          }</a>
+<a name="ln959">                                    }</a>
+<a name="ln960">                              mscore-&gt;updateMenus();</a>
+<a name="ln961">                              }</a>
+<a name="ln962">                        else</a>
+<a name="ln963">                              e.unknown();</a>
+<a name="ln964">                        }</a>
+<a name="ln965">                  }</a>
+<a name="ln966">            }</a>
+<a name="ln967">      }</a>
+<a name="ln968"> </a>
+<a name="ln969">//---------------------------------------------------------</a>
+<a name="ln970">//   readGlobalToolBar</a>
+<a name="ln971">//---------------------------------------------------------</a>
+<a name="ln972"> </a>
+<a name="ln973">void Workspace::readGlobalToolBar()</a>
+<a name="ln974">      {</a>
+<a name="ln975">      QString default_path = dataPath + &quot;/workspaces/global/toolbar.xml&quot;;</a>
+<a name="ln976"> </a>
+<a name="ln977">      QFile default_toolbar(default_path);</a>
+<a name="ln978">      default_toolbar.open(QIODevice::ReadOnly);</a>
+<a name="ln979"> </a>
+<a name="ln980">      QByteArray ba (default_toolbar.readAll());</a>
+<a name="ln981">      XmlReader e(ba);</a>
+<a name="ln982"> </a>
+<a name="ln983">      while (e.readNextStartElement()) {</a>
+<a name="ln984">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln985">                  while (e.readNextStartElement()) {</a>
+<a name="ln986">                        if (e.name() == &quot;ToolBar&quot;) {</a>
+<a name="ln987">                              QString name = e.attribute(&quot;name&quot;);</a>
+<a name="ln988">                              std::list&lt;const char *&gt; toolbarEntries;</a>
+<a name="ln989">                              if (name == &quot;noteInput&quot;)</a>
+<a name="ln990">                                    toolbarEntries = mscore-&gt;allNoteInputMenuEntries();</a>
+<a name="ln991">                              else if (name == &quot;fileOperation&quot;)</a>
+<a name="ln992">                                    toolbarEntries = mscore-&gt;allFileOperationEntries();</a>
+<a name="ln993">                              else if (name == &quot;playbackControl&quot;)</a>
+<a name="ln994">                                    toolbarEntries = mscore-&gt;allPlaybackControlEntries();</a>
+<a name="ln995">                              else</a>
+<a name="ln996">                                    qDebug() &lt;&lt; &quot;Error in loading workspace: &quot; + name + &quot; is not a toolbar&quot;;</a>
+<a name="ln997"> </a>
+<a name="ln998">                              std::list&lt;const char*&gt; l;</a>
+<a name="ln999">                              while (e.readNextStartElement()) {</a>
+<a name="ln1000">                                    const QStringRef&amp; tag(e.name());</a>
+<a name="ln1001">                                    if (tag == &quot;action&quot;) {</a>
+<a name="ln1002">                                          QString s = e.readElementText();</a>
+<a name="ln1003">                                          for (auto k : toolbarEntries) {</a>
+<a name="ln1004">                                                if (k == s) {</a>
+<a name="ln1005">                                                      l.push_back(k);</a>
+<a name="ln1006">                                                      break;</a>
+<a name="ln1007">                                                      }</a>
+<a name="ln1008">                                                }</a>
+<a name="ln1009">                                          }</a>
+<a name="ln1010">                                    else</a>
+<a name="ln1011">                                          e.unknown();</a>
+<a name="ln1012">                                    }</a>
+<a name="ln1013">                              if (name == &quot;noteInput&quot;) {</a>
+<a name="ln1014">                                    mscore-&gt;setNoteInputMenuEntries(l);</a>
+<a name="ln1015">                                    mscore-&gt;populateNoteInputMenu();</a>
+<a name="ln1016">                                    }</a>
+<a name="ln1017">                              else if (name == &quot;fileOperation&quot;) {</a>
+<a name="ln1018">                                    mscore-&gt;setFileOperationEntries(l);</a>
+<a name="ln1019">                                    mscore-&gt;populateFileOperations();</a>
+<a name="ln1020">                                    }</a>
+<a name="ln1021">                              else if (name == &quot;playbackControl&quot;) {</a>
+<a name="ln1022">                                    mscore-&gt;setPlaybackControlEntries(l);</a>
+<a name="ln1023">                                    mscore-&gt;populatePlaybackControls();</a>
+<a name="ln1024">                                    }</a>
+<a name="ln1025">                              }</a>
+<a name="ln1026">                        else</a>
+<a name="ln1027">                              e.unknown();</a>
+<a name="ln1028">                        }</a>
+<a name="ln1029">                  }</a>
+<a name="ln1030">            }</a>
+<a name="ln1031">      }</a>
+<a name="ln1032"> </a>
+<a name="ln1033">//---------------------------------------------------------</a>
+<a name="ln1034">//   readGlobalGUIState</a>
+<a name="ln1035">//---------------------------------------------------------</a>
+<a name="ln1036"> </a>
+<a name="ln1037">void Workspace::readGlobalGUIState()</a>
+<a name="ln1038">      {</a>
+<a name="ln1039">      QString default_path = dataPath + &quot;/workspaces/global/guistate.xml&quot;;</a>
+<a name="ln1040"> </a>
+<a name="ln1041">      QFile default_toolbar(default_path);</a>
+<a name="ln1042">      default_toolbar.open(QIODevice::ReadOnly);</a>
+<a name="ln1043"> </a>
+<a name="ln1044">      QByteArray ba (default_toolbar.readAll());</a>
+<a name="ln1045">      XmlReader e(ba);</a>
+<a name="ln1046"> </a>
+<a name="ln1047">      while (e.readNextStartElement()) {</a>
+<a name="ln1048">            if (e.name() == &quot;museScore&quot;) {</a>
+<a name="ln1049">                  while (e.readNextStartElement()) {</a>
+<a name="ln1050">                        if (e.name() == &quot;State&quot;) {</a>
+<a name="ln1051">                              QString state_string = e.readXml();</a>
+<a name="ln1052">                              QByteArray state_byte_array_64(state_string.toUtf8());</a>
+<a name="ln1053">                              QByteArray state_byte_array = QByteArray::fromBase64(state_byte_array_64);</a>
+<a name="ln1054">                              mscore-&gt;restoreState(state_byte_array);</a>
+<a name="ln1055">                              }</a>
+<a name="ln1056">                        else</a>
+<a name="ln1057">                              e.unknown();</a>
+<a name="ln1058">                        }</a>
+<a name="ln1059">                  }</a>
+<a name="ln1060">            }</a>
+<a name="ln1061">      }</a>
+<a name="ln1062"> </a>
+<a name="ln1063">//---------------------------------------------------------</a>
+<a name="ln1064">//   ensureWorkspaceSaved</a>
+<a name="ln1065">//---------------------------------------------------------</a>
+<a name="ln1066"> </a>
+<a name="ln1067">void Workspace::ensureWorkspaceSaved()</a>
+<a name="ln1068">      {</a>
+<a name="ln1069">      if (!_dirty)</a>
+<a name="ln1070">            return;</a>
+<a name="ln1071"> </a>
+<a name="ln1072">      if (_readOnly) {</a>
+<a name="ln1073">            setTranslatableName(editedWorkspaceTranslatableName(translatableName()));</a>
+<a name="ln1074"> </a>
+<a name="ln1075">            if (translatableName().isEmpty()) {</a>
+<a name="ln1076">                  /*: Name of the edited read-only workspace, %1 is replaced with the old workspace name */</a>
+<a name="ln1077">                  setName(tr(&quot;%1 edited&quot;).arg(name()));</a>
+<a name="ln1078">                  }</a>
+<a name="ln1079">            else</a>
+<a name="ln1080">                  setName(tr(translatableName().toUtf8()));</a>
+<a name="ln1081"> </a>
+<a name="ln1082">            _path = WorkspacesManager::makeUserWorkspacePath(translatableName().isEmpty() ? name() : translatableName());</a>
+<a name="ln1083"> </a>
+<a name="ln1084">            write();</a>
+<a name="ln1085"> </a>
+<a name="ln1086">            const QFileInfo fi(_path);</a>
+<a name="ln1087">            qt_ntfs_permission_lookup++;</a>
+<a name="ln1088">            _readOnly = !fi.isWritable();</a>
+<a name="ln1089">            qt_ntfs_permission_lookup--;</a>
+<a name="ln1090">            Q_ASSERT(!_readOnly);</a>
+<a name="ln1091"> </a>
+<a name="ln1092">            WorkspacesManager::refreshWorkspaces();</a>
+<a name="ln1093">            preferences.setPreference(PREF_APP_WORKSPACE, name());</a>
+<a name="ln1094">            emit mscore-&gt;workspacesChanged();</a>
+<a name="ln1095">            }</a>
+<a name="ln1096">      else</a>
+<a name="ln1097">            write();</a>
+<a name="ln1098">      }</a>
+<a name="ln1099"> </a>
+<a name="ln1100">//---------------------------------------------------------</a>
+<a name="ln1101">//   setDirty</a>
+<a name="ln1102">//---------------------------------------------------------</a>
+<a name="ln1103"> </a>
+<a name="ln1104">void Workspace::setDirty(bool val)</a>
+<a name="ln1105">      {</a>
+<a name="ln1106">      _dirty = val;</a>
+<a name="ln1107">      _saveTimer.start();</a>
+<a name="ln1108">      }</a>
+<a name="ln1109"> </a>
+<a name="ln1110">//---------------------------------------------------------</a>
+<a name="ln1111">//   save</a>
+<a name="ln1112">//---------------------------------------------------------</a>
+<a name="ln1113"> </a>
+<a name="ln1114">void Workspace::save()</a>
+<a name="ln1115">      {</a>
+<a name="ln1116">      if (!saveComponents)</a>
+<a name="ln1117">            writeGlobalGUIState();</a>
+<a name="ln1118">      if (!saveToolbars)</a>
+<a name="ln1119">            writeGlobalToolBar();</a>
+<a name="ln1120"> </a>
+<a name="ln1121">      if (_readOnly)</a>
+<a name="ln1122">            return;</a>
+<a name="ln1123"> </a>
+<a name="ln1124">      write();</a>
+<a name="ln1125">      }</a>
+<a name="ln1126"> </a>
+<a name="ln1127">static QStringList findWorkspaceFiles()</a>
+<a name="ln1128">      {</a>
+<a name="ln1129">      QStringList path;</a>
+<a name="ln1130">      path &lt;&lt; mscoreGlobalShare + &quot;workspaces&quot;;</a>
+<a name="ln1131">      path &lt;&lt; dataPath + &quot;/workspaces&quot;;</a>
+<a name="ln1132"> </a>
+<a name="ln1133">      QStringList extensionsDir = Extension::getDirectoriesByType(Extension::workspacesDir);</a>
+<a name="ln1134">      path.append(extensionsDir);</a>
+<a name="ln1135"> </a>
+<a name="ln1136">      QStringList nameFilters;</a>
+<a name="ln1137">      nameFilters &lt;&lt; &quot;*.workspace&quot;;</a>
+<a name="ln1138"> </a>
+<a name="ln1139">      QStringList workspaces;</a>
+<a name="ln1140"> </a>
+<a name="ln1141">      for (const QString&amp; s : path) {</a>
+<a name="ln1142">            QDir dir(s);</a>
+<a name="ln1143">            QStringList pl = dir.entryList(nameFilters, QDir::Files, QDir::Name);</a>
+<a name="ln1144"> </a>
+<a name="ln1145">            for (const QString&amp; entry : pl) {</a>
+<a name="ln1146">                  const QString workspacePath(s + &quot;/&quot; + entry);</a>
+<a name="ln1147">                  workspaces &lt;&lt; workspacePath;</a>
+<a name="ln1148">                  }</a>
+<a name="ln1149">            }</a>
+<a name="ln1150"> </a>
+<a name="ln1151">      return workspaces;</a>
+<a name="ln1152">      }</a>
+<a name="ln1153"> </a>
+<a name="ln1154">void WorkspacesManager::initWorkspaces()</a>
+<a name="ln1155">      {</a>
+<a name="ln1156">      if (!isWorkspacesListDirty)</a>
+<a name="ln1157">            return;</a>
+<a name="ln1158">      </a>
+<a name="ln1159">      QList&lt;Workspace*&gt; oldWorkspaces(m_workspaces);</a>
+<a name="ln1160">      QList&lt;Workspace*&gt; editedWorkpaces;</a>
+<a name="ln1161">      </a>
+<a name="ln1162">      for (const QString&amp; path : findWorkspaceFiles()) {</a>
+<a name="ln1163">            Workspace* p = 0;</a>
+<a name="ln1164">            QFileInfo fi(path);</a>
+<a name="ln1165">            QString name(fi.completeBaseName());</a>
+<a name="ln1166"> </a>
+<a name="ln1167">            const bool isDefault = std::find(WorkspacesManager::defaultWorkspaces.begin(), WorkspacesManager::defaultWorkspaces.end(), name) != WorkspacesManager::defaultWorkspaces.end();</a>
+<a name="ln1168">            const bool isEditedDefault = std::find(WorkspacesManager::defaultEditedWorkspaces.begin(), WorkspacesManager::defaultEditedWorkspaces.end(), name) != WorkspacesManager::defaultEditedWorkspaces.end();</a>
+<a name="ln1169"> </a>
+<a name="ln1170">            const bool translate = isDefault || isEditedDefault;</a>
+<a name="ln1171"> </a>
+<a name="ln1172">            for (Workspace* w : m_workspaces) {</a>
+<a name="ln1173">                  if (w-&gt;name() == name || (translate &amp;&amp; w-&gt;translatableName() == name)) {</a>
+<a name="ln1174">                        p = w;</a>
+<a name="ln1175">                        break;</a>
+<a name="ln1176">                        }</a>
+<a name="ln1177">                  }</a>
+<a name="ln1178"> </a>
+<a name="ln1179">            if (p)</a>
+<a name="ln1180">                  oldWorkspaces.removeOne(p);</a>
+<a name="ln1181">            else {</a>
+<a name="ln1182">                  p = new Workspace;</a>
+<a name="ln1183">                  m_workspaces.append(p);</a>
+<a name="ln1184">                  }</a>
+<a name="ln1185"> </a>
+<a name="ln1186">            p-&gt;setPath(path);</a>
+<a name="ln1187">            p-&gt;setName(name);</a>
+<a name="ln1188"> </a>
+<a name="ln1189">            if (translate)</a>
+<a name="ln1190">                  p-&gt;setTranslatableName(name);</a>
+<a name="ln1191"> </a>
+<a name="ln1192">            qt_ntfs_permission_lookup++;</a>
+<a name="ln1193">            p-&gt;setReadOnly(!fi.isWritable());</a>
+<a name="ln1194">            qt_ntfs_permission_lookup--;</a>
+<a name="ln1195"> </a>
+<a name="ln1196">            if (isEditedDefault)</a>
+<a name="ln1197">                  editedWorkpaces.push_back(p);</a>
+<a name="ln1198">            }</a>
+<a name="ln1199"> </a>
+<a name="ln1200">      for (Workspace* old : oldWorkspaces)</a>
+<a name="ln1201">            m_workspaces.removeOne(old);</a>
+<a name="ln1202"> </a>
+<a name="ln1203">      if (m_workspaces.empty())</a>
+<a name="ln1204">            qFatal(&quot;No workspaces found&quot;);</a>
+<a name="ln1205"> </a>
+<a name="ln1206">      if (oldWorkspaces.contains(WorkspacesManager::currentWorkspace()))</a>
+<a name="ln1207">            WorkspacesManager::setCurrentWorkspace(m_workspaces.first());</a>
+<a name="ln1208"> </a>
+<a name="ln1209">      qDeleteAll(oldWorkspaces);</a>
+<a name="ln1210"> </a>
+<a name="ln1211">      // hack</a>
+<a name="ln1212">      for (int i = 0; i &lt; m_workspaces.size(); i++) {</a>
+<a name="ln1213">            const QString&amp; trName = m_workspaces[i]-&gt;translatableName();</a>
+<a name="ln1214">            if (trName == WorkspacesManager::defaultWorkspaces[0] || trName == WorkspacesManager::defaultEditedWorkspaces[0]) {</a>
+<a name="ln1215">                  m_workspaces.move(i, 0);</a>
+<a name="ln1216">                  break;</a>
+<a name="ln1217">                  }</a>
+<a name="ln1218">            }</a>
+<a name="ln1219">      </a>
+<a name="ln1220">      retranslate(m_workspaces);</a>
+<a name="ln1221">      </a>
+<a name="ln1222">      // Delete default workspaces if there are corresponding user-edited ones</a>
+<a name="ln1223">      m_visibleWorkspaces = m_workspaces;</a>
+<a name="ln1224">      for (Workspace* ew : editedWorkpaces) {</a>
+<a name="ln1225">            const QString uneditedName = defaultWorkspaceTranslatableName(ew-&gt;translatableName());</a>
+<a name="ln1226">            if (uneditedName.isEmpty())</a>
+<a name="ln1227">                  continue;</a>
+<a name="ln1228"> </a>
+<a name="ln1229">            for (auto it = m_visibleWorkspaces.begin(); it != m_visibleWorkspaces.end(); ++it) {</a>
+<a name="ln1230">                  Workspace* w = *it;</a>
+<a name="ln1231">                  if (w-&gt;translatableName() == uneditedName) {</a>
+<a name="ln1232">                        m_visibleWorkspaces.erase(it);</a>
+<a name="ln1233">                        break;</a>
+<a name="ln1234">                        }</a>
+<a name="ln1235">                  }</a>
+<a name="ln1236">            }</a>
+<a name="ln1237">      </a>
+<a name="ln1238">      isWorkspacesListDirty = false;</a>
+<a name="ln1239">      }</a>
+<a name="ln1240"> </a>
+<a name="ln1241">//---------------------------------------------------------</a>
+<a name="ln1242">//   refreshWorkspaces</a>
+<a name="ln1243">//---------------------------------------------------------</a>
+<a name="ln1244"> </a>
+<a name="ln1245">void WorkspacesManager::refreshWorkspaces()</a>
+<a name="ln1246">      {</a>
+<a name="ln1247">      isWorkspacesListDirty = true;</a>
+<a name="ln1248">      initWorkspaces();</a>
+<a name="ln1249">      }</a>
+<a name="ln1250"> </a>
+<a name="ln1251">const Workspace* Workspace::sourceWorkspace() const</a>
+<a name="ln1252">      {</a>
+<a name="ln1253">      const QString sourceName = _sourceWorkspaceName.isEmpty() ? WorkspacesManager::defaultWorkspaces[0] : _sourceWorkspaceName;</a>
+<a name="ln1254"> </a>
+<a name="ln1255">      if (translatableName() == sourceName || name() == sourceName)</a>
+<a name="ln1256">            return this;</a>
+<a name="ln1257"> </a>
+<a name="ln1258">      Workspace* sourceWorkspace = WorkspacesManager::findByName(sourceName);</a>
+<a name="ln1259">      if (!sourceWorkspace)</a>
+<a name="ln1260">            sourceWorkspace = WorkspacesManager::findByTranslatableName(sourceName);</a>
+<a name="ln1261">      </a>
+<a name="ln1262">      return !!sourceWorkspace ? sourceWorkspace : WorkspacesManager::workspaces()[0];</a>
+<a name="ln1263">      }</a>
+<a name="ln1264"> </a>
+<a name="ln1265">void WorkspacesManager::retranslate(QList&lt;Workspace*&gt;&amp; workspacesList)</a>
+<a name="ln1266">      {</a>
+<a name="ln1267">      for (auto w : workspacesList) {</a>
+<a name="ln1268">            if (!w-&gt;translatableName().isEmpty()) {</a>
+<a name="ln1269">                  auto transName = qApp-&gt;translate(&quot;Ms::Workspace&quot;, w-&gt;translatableName().toLatin1().constData());</a>
+<a name="ln1270">                  w-&gt;setName(transName);</a>
+<a name="ln1271">                  }</a>
+<a name="ln1272">            }</a>
+<a name="ln1273">      }</a>
+<a name="ln1274"> </a>
+<a name="ln1275">void WorkspacesManager::retranslateAll()</a>
+<a name="ln1276">      {</a>
+<a name="ln1277">      retranslate(m_workspaces);</a>
+<a name="ln1278">      }</a>
+<a name="ln1279"> </a>
+<a name="ln1280">//---------------------------------------------------------</a>
+<a name="ln1281">//   createNewWorkspace</a>
+<a name="ln1282">//---------------------------------------------------------</a>
+<a name="ln1283"> </a>
+<a name="ln1284">Workspace* WorkspacesManager::createNewWorkspace(const QString&amp; name)</a>
+<a name="ln1285">      {</a>
+<a name="ln1286">      Workspace* w = new Workspace;</a>
+<a name="ln1287">      w-&gt;setName(name);</a>
+<a name="ln1288">      w-&gt;setPath(&quot;&quot;);</a>
+<a name="ln1289">      w-&gt;setDirty(false);</a>
+<a name="ln1290">      w-&gt;setReadOnly(false);</a>
+<a name="ln1291">      w-&gt;write();</a>
+<a name="ln1292">      w-&gt;setSourceWorkspaceName(WorkspacesManager::currentWorkspace()-&gt;sourceWorkspaceName());</a>
+<a name="ln1293"> </a>
+<a name="ln1294">      m_workspaces.append(w);</a>
+<a name="ln1295">      m_visibleWorkspaces.append(w);</a>
+<a name="ln1296">      return w;</a>
+<a name="ln1297">      }</a>
+<a name="ln1298"> </a>
+<a name="ln1299">//---------------------------------------------------------</a>
+<a name="ln1300">//   clearWorkspaces</a>
+<a name="ln1301">//---------------------------------------------------------</a>
+<a name="ln1302"> </a>
+<a name="ln1303">void WorkspacesManager::clearWorkspaces()</a>
+<a name="ln1304">      {</a>
+<a name="ln1305">      m_currentWorkspace = nullptr;</a>
+<a name="ln1306">      for (Workspace* w : m_workspaces)</a>
+<a name="ln1307">            w-&gt;deleteLater();</a>
+<a name="ln1308">      m_workspaces.clear();</a>
+<a name="ln1309">      m_visibleWorkspaces.clear();</a>
+<a name="ln1310">      isWorkspacesListDirty = true;</a>
+<a name="ln1311">      }</a>
+<a name="ln1312"> </a>
+<a name="ln1313">//---------------------------------------------------------</a>
+<a name="ln1314">//   addActionAndString</a>
+<a name="ln1315">//---------------------------------------------------------</a>
+<a name="ln1316"> </a>
+<a name="ln1317">void Workspace::addActionAndString(QAction* action, QString string)</a>
+<a name="ln1318">      {</a>
+<a name="ln1319">      QPair&lt;QAction*, QString&gt; pair;</a>
+<a name="ln1320">      pair.first = action;</a>
+<a name="ln1321">      pair.second = string;</a>
+<a name="ln1322">      actionToStringList.append(pair);</a>
+<a name="ln1323">      }</a>
+<a name="ln1324"> </a>
+<a name="ln1325">//---------------------------------------------------------</a>
+<a name="ln1326">//   addRemainingFromMenuBar</a>
+<a name="ln1327">//---------------------------------------------------------</a>
+<a name="ln1328"> </a>
+<a name="ln1329">void Workspace::addRemainingFromMenuBar(QMenuBar* mb)</a>
+<a name="ln1330">      {</a>
+<a name="ln1331">      // Loop through each menu in menubar. For each menu, call writeMenu.</a>
+<a name="ln1332">      for (QAction* action : mb-&gt;actions()) {</a>
+<a name="ln1333">            if (action-&gt;isSeparator())</a>
+<a name="ln1334">                  continue;</a>
+<a name="ln1335">            else if (action-&gt;menu())</a>
+<a name="ln1336">                  addRemainingFromMenu(action-&gt;menu());</a>
+<a name="ln1337">            else if (!action-&gt;data().toString().isEmpty())</a>
+<a name="ln1338">                  addActionAndString(action, action-&gt;data().toString());</a>
+<a name="ln1339">            }</a>
+<a name="ln1340">      }</a>
+<a name="ln1341"> </a>
+<a name="ln1342">//---------------------------------------------------------</a>
+<a name="ln1343">//   addRemainingFromMenu</a>
+<a name="ln1344">//---------------------------------------------------------</a>
+<a name="ln1345"> </a>
+<a name="ln1346">void Workspace::addRemainingFromMenu(QMenu* menu)</a>
+<a name="ln1347">      {</a>
+<a name="ln1348">      // Recursively save QMenu</a>
+<a name="ln1349">      for (QAction* action : menu-&gt;actions()) {</a>
+<a name="ln1350">            if (action-&gt;isSeparator())</a>
+<a name="ln1351">                  continue;</a>
+<a name="ln1352">            else if (action-&gt;menu())</a>
+<a name="ln1353">                  addRemainingFromMenu(action-&gt;menu());</a>
+<a name="ln1354">            else if (!action-&gt;data().toString().isEmpty())</a>
+<a name="ln1355">                  addActionAndString(action, action-&gt;data().toString());</a>
+<a name="ln1356">            }</a>
+<a name="ln1357">      }</a>
+<a name="ln1358"> </a>
+<a name="ln1359">//---------------------------------------------------------</a>
+<a name="ln1360">//   findActionFromString</a>
+<a name="ln1361">//---------------------------------------------------------</a>
+<a name="ln1362"> </a>
+<a name="ln1363">QAction* Workspace::findActionFromString(QString string)</a>
+<a name="ln1364">      {</a>
+<a name="ln1365">      for (auto pair : actionToStringList) {</a>
+<a name="ln1366">            if (pair.second == string)</a>
+<a name="ln1367">                  return pair.first;</a>
+<a name="ln1368">            }</a>
+<a name="ln1369">      return 0;</a>
+<a name="ln1370">      }</a>
+<a name="ln1371"> </a>
+<a name="ln1372">//---------------------------------------------------------</a>
+<a name="ln1373">//   findStringFromAction</a>
+<a name="ln1374">//---------------------------------------------------------</a>
+<a name="ln1375"> </a>
+<a name="ln1376">QString Workspace::findStringFromAction(QAction* action)</a>
+<a name="ln1377">      {</a>
+<a name="ln1378">      for (auto pair : actionToStringList) {</a>
+<a name="ln1379">            if (pair.first == action)</a>
+<a name="ln1380">                  return pair.second;</a>
+<a name="ln1381">            }</a>
+<a name="ln1382">      return 0;</a>
+<a name="ln1383">      }</a>
+<a name="ln1384"> </a>
+<a name="ln1385">//---------------------------------------------------------</a>
+<a name="ln1386">//   addMenuAndString</a>
+<a name="ln1387">//---------------------------------------------------------</a>
+<a name="ln1388"> </a>
+<a name="ln1389">void Workspace::addMenuAndString(QMenu* menu, QString string)</a>
+<a name="ln1390">      {</a>
+<a name="ln1391">      QPair&lt;QMenu*, QString&gt; pair;</a>
+<a name="ln1392">      pair.first = menu;</a>
+<a name="ln1393">      pair.second = string;</a>
+<a name="ln1394">      menuToStringList.append(pair);</a>
+<a name="ln1395">      }</a>
+<a name="ln1396"> </a>
+<a name="ln1397">//---------------------------------------------------------</a>
+<a name="ln1398">//   findMenuFromString</a>
+<a name="ln1399">//---------------------------------------------------------</a>
+<a name="ln1400"> </a>
+<a name="ln1401">QMenu* Workspace::findMenuFromString(QString string)</a>
+<a name="ln1402">      {</a>
+<a name="ln1403">      for (auto pair : menuToStringList) {</a>
+<a name="ln1404">            if (pair.second == string)</a>
+<a name="ln1405">                  return pair.first;</a>
+<a name="ln1406">            }</a>
+<a name="ln1407">      return 0;</a>
+<a name="ln1408">      }</a>
+<a name="ln1409"> </a>
+<a name="ln1410">//---------------------------------------------------------</a>
+<a name="ln1411">//   findStringFromMenu</a>
+<a name="ln1412">//---------------------------------------------------------</a>
+<a name="ln1413"> </a>
+<a name="ln1414">QString Workspace::findStringFromMenu(QMenu* menu)</a>
+<a name="ln1415">      {</a>
+<a name="ln1416">      for (auto pair : menuToStringList) {</a>
+<a name="ln1417">            if (pair.first == menu)</a>
+<a name="ln1418">                  return pair.second;</a>
+<a name="ln1419">            }</a>
+<a name="ln1420">      return 0;</a>
+<a name="ln1421">      }</a>
+<a name="ln1422"> </a>
+<a name="ln1423">//---------------------------------------------------------</a>
+<a name="ln1424">//   rename</a>
+<a name="ln1425">//---------------------------------------------------------</a>
+<a name="ln1426"> </a>
+<a name="ln1427">void Workspace::rename(const QString&amp; s)</a>
+<a name="ln1428">      {</a>
+<a name="ln1429">      const QString newPath = WorkspacesManager::makeUserWorkspacePath(s);</a>
+<a name="ln1430"> </a>
+<a name="ln1431">      QFile file(_path);</a>
+<a name="ln1432">      if (file.exists())</a>
+<a name="ln1433">            file.rename(newPath);</a>
+<a name="ln1434"> </a>
+<a name="ln1435">      setName(s);</a>
+<a name="ln1436">      _path = newPath;</a>
+<a name="ln1437">      save();</a>
+<a name="ln1438">      }</a>
+<a name="ln1439">}</a>
+
+</code></pre>
+<div class="balloon" rel="209"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="651"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="675"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'debug' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

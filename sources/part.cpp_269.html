@@ -1,0 +1,645 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>part.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2011 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;part.h&quot;</a>
+<a name="ln14">#include &quot;staff.h&quot;</a>
+<a name="ln15">#include &quot;xml.h&quot;</a>
+<a name="ln16">#include &quot;score.h&quot;</a>
+<a name="ln17">#include &quot;style.h&quot;</a>
+<a name="ln18">#include &quot;note.h&quot;</a>
+<a name="ln19">#include &quot;drumset.h&quot;</a>
+<a name="ln20">#include &quot;instrtemplate.h&quot;</a>
+<a name="ln21">#include &quot;text.h&quot;</a>
+<a name="ln22">#include &quot;measure.h&quot;</a>
+<a name="ln23">#include &quot;stringdata.h&quot;</a>
+<a name="ln24">#include &quot;stafftype.h&quot;</a>
+<a name="ln25">#include &quot;sym.h&quot;</a>
+<a name="ln26">#include &quot;chordrest.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">namespace Ms {</a>
+<a name="ln29"> </a>
+<a name="ln30">//---------------------------------------------------------</a>
+<a name="ln31">//   Part</a>
+<a name="ln32">//---------------------------------------------------------</a>
+<a name="ln33"> </a>
+<a name="ln34">Part::Part(Score* s)</a>
+<a name="ln35">   : ScoreElement(s)</a>
+<a name="ln36">      {</a>
+<a name="ln37">      _color = DEFAULT_COLOR;</a>
+<a name="ln38">      _show  = true;</a>
+<a name="ln39">      _instruments.setInstrument(new Instrument, -1);   // default instrument</a>
+<a name="ln40">      _preferSharpFlat = PreferSharpFlat::DEFAULT;</a>
+<a name="ln41">      }</a>
+<a name="ln42"> </a>
+<a name="ln43">//---------------------------------------------------------</a>
+<a name="ln44">//   initFromInstrTemplate</a>
+<a name="ln45">//---------------------------------------------------------</a>
+<a name="ln46"> </a>
+<a name="ln47">void Part::initFromInstrTemplate(const InstrumentTemplate* t)</a>
+<a name="ln48">      {</a>
+<a name="ln49">      _partName = t-&gt;trackName;</a>
+<a name="ln50">      setInstrument(Instrument::fromTemplate(t));</a>
+<a name="ln51">      }</a>
+<a name="ln52"> </a>
+<a name="ln53">//---------------------------------------------------------</a>
+<a name="ln54">//   staff</a>
+<a name="ln55">//---------------------------------------------------------</a>
+<a name="ln56"> </a>
+<a name="ln57">Staff* Part::staff(int idx) const</a>
+<a name="ln58">      {</a>
+<a name="ln59">      return _staves[idx];</a>
+<a name="ln60">      }</a>
+<a name="ln61"> </a>
+<a name="ln62">//---------------------------------------------------------</a>
+<a name="ln63">//   Part::masterPart</a>
+<a name="ln64">//---------------------------------------------------------</a>
+<a name="ln65"> </a>
+<a name="ln66">const Part* Part::masterPart() const</a>
+<a name="ln67">      {</a>
+<a name="ln68">      if (score()-&gt;isMaster())</a>
+<a name="ln69">            return this;</a>
+<a name="ln70">      if (_staves.empty())</a>
+<a name="ln71">            return this;</a>
+<a name="ln72"> </a>
+<a name="ln73">      Staff* st = _staves[0];</a>
+<a name="ln74">      LinkedElements* links = st-&gt;links();</a>
+<a name="ln75">      if (!links)</a>
+<a name="ln76">            return this;</a>
+<a name="ln77"> </a>
+<a name="ln78">      for (ScoreElement* le : *links) {</a>
+<a name="ln79">            if (le-&gt;isStaff() &amp;&amp; toStaff(le)-&gt;score()-&gt;isMaster()) {</a>
+<a name="ln80">                  if (Part* p = toStaff(le)-&gt;part())</a>
+<a name="ln81">                        return p;</a>
+<a name="ln82">                  }</a>
+<a name="ln83">            }</a>
+<a name="ln84">      return this;</a>
+<a name="ln85">      }</a>
+<a name="ln86"> </a>
+<a name="ln87">//---------------------------------------------------------</a>
+<a name="ln88">//   Part::masterPart</a>
+<a name="ln89">//---------------------------------------------------------</a>
+<a name="ln90"> </a>
+<a name="ln91">Part* Part::masterPart()</a>
+<a name="ln92">      {</a>
+<a name="ln93">      return const_cast&lt;Part*&gt;(const_cast&lt;const Part*&gt;(this)-&gt;masterPart());</a>
+<a name="ln94">      }</a>
+<a name="ln95"> </a>
+<a name="ln96">//---------------------------------------------------------</a>
+<a name="ln97">//   readProperties</a>
+<a name="ln98">//---------------------------------------------------------</a>
+<a name="ln99"> </a>
+<a name="ln100">bool Part::readProperties(XmlReader&amp; e)</a>
+<a name="ln101">      {</a>
+<a name="ln102">      const QStringRef&amp; tag(e.name());</a>
+<a name="ln103">      if (tag == &quot;Staff&quot;) {</a>
+<a name="ln104">            Staff* staff = new Staff(score());</a>
+<a name="ln105">            staff-&gt;setPart(this);</a>
+<a name="ln106">            score()-&gt;staves().push_back(staff);</a>
+<a name="ln107">            _staves.push_back(staff);</a>
+<a name="ln108">            staff-&gt;read(e);</a>
+<a name="ln109">            }</a>
+<a name="ln110">      else if (tag == &quot;Instrument&quot;) {</a>
+<a name="ln111">            Instrument* instr = new Instrument;</a>
+<a name="ln112">            instr-&gt;read(e, this);</a>
+<a name="ln113">            setInstrument(instr, Fraction(-1, 1));</a>
+<a name="ln114">            }</a>
+<a name="ln115">      else if (tag == &quot;name&quot;)</a>
+<a name="ln116">            instrument()-&gt;setLongName(e.readElementText());</a>
+<a name="ln117">      else if (tag == &quot;color&quot;)</a>
+<a name="ln118">            _color = e.readInt();</a>
+<a name="ln119">      else if (tag == &quot;shortName&quot;)</a>
+<a name="ln120">            instrument()-&gt;setShortName(e.readElementText());</a>
+<a name="ln121">      else if (tag == &quot;trackName&quot;)</a>
+<a name="ln122">            _partName = e.readElementText();</a>
+<a name="ln123">      else if (tag == &quot;show&quot;)</a>
+<a name="ln124">            _show = e.readInt();</a>
+<a name="ln125">      else if (tag == &quot;preferSharpFlat&quot;)</a>
+<a name="ln126">            _preferSharpFlat =</a>
+<a name="ln127">               e.readElementText() == &quot;sharps&quot; ? PreferSharpFlat::SHARPS : PreferSharpFlat::FLATS;</a>
+<a name="ln128">      else</a>
+<a name="ln129">            return false;</a>
+<a name="ln130">      return true;</a>
+<a name="ln131">      }</a>
+<a name="ln132"> </a>
+<a name="ln133">//---------------------------------------------------------</a>
+<a name="ln134">//   read</a>
+<a name="ln135">//---------------------------------------------------------</a>
+<a name="ln136"> </a>
+<a name="ln137">void Part::read(XmlReader&amp; e)</a>
+<a name="ln138">      {</a>
+<a name="ln139">      while (e.readNextStartElement()) {</a>
+<a name="ln140">            if (!readProperties(e))</a>
+<a name="ln141">                  e.unknown();</a>
+<a name="ln142">            }</a>
+<a name="ln143">      if (_partName.isEmpty())</a>
+<a name="ln144">            _partName = instrument()-&gt;trackName();</a>
+<a name="ln145">      }</a>
+<a name="ln146"> </a>
+<a name="ln147">//---------------------------------------------------------</a>
+<a name="ln148">//   write</a>
+<a name="ln149">//---------------------------------------------------------</a>
+<a name="ln150"> </a>
+<a name="ln151">void Part::write(XmlWriter&amp; xml) const</a>
+<a name="ln152">      {</a>
+<a name="ln153">      xml.stag(this);</a>
+<a name="ln154">      for (const Staff* staff : _staves)</a>
+<a name="ln155">            staff-&gt;write(xml);</a>
+<a name="ln156">      if (!_show)</a>
+<a name="ln157">            xml.tag(&quot;show&quot;, _show);</a>
+<a name="ln158">      xml.tag(&quot;trackName&quot;, _partName);</a>
+<a name="ln159">      if (_color != DEFAULT_COLOR)</a>
+<a name="ln160">            xml.tag(&quot;color&quot;, _color);</a>
+<a name="ln161">      if (_preferSharpFlat != PreferSharpFlat::DEFAULT)</a>
+<a name="ln162">            xml.tag(&quot;preferSharpFlat&quot;,</a>
+<a name="ln163">               _preferSharpFlat == PreferSharpFlat::SHARPS ? &quot;sharps&quot; : &quot;flats&quot;);</a>
+<a name="ln164">      instrument()-&gt;write(xml, this);</a>
+<a name="ln165">      xml.etag();</a>
+<a name="ln166">      }</a>
+<a name="ln167"> </a>
+<a name="ln168">//---------------------------------------------------------</a>
+<a name="ln169">//   setLongNames</a>
+<a name="ln170">//---------------------------------------------------------</a>
+<a name="ln171"> </a>
+<a name="ln172">void Part::setLongNames(QList&lt;StaffName&gt;&amp; name, const Fraction&amp; tick)</a>
+<a name="ln173">      {</a>
+<a name="ln174">      instrument(tick)-&gt;longNames() = name;</a>
+<a name="ln175">      }</a>
+<a name="ln176"> </a>
+<a name="ln177">void Part::setShortNames(QList&lt;StaffName&gt;&amp; name, const Fraction&amp; tick)</a>
+<a name="ln178">      {</a>
+<a name="ln179">      instrument(tick)-&gt;shortNames() = name;</a>
+<a name="ln180">      }</a>
+<a name="ln181"> </a>
+<a name="ln182">//---------------------------------------------------------</a>
+<a name="ln183">//   setStaves</a>
+<a name="ln184">//---------------------------------------------------------</a>
+<a name="ln185"> </a>
+<a name="ln186">void Part::setStaves(int n)</a>
+<a name="ln187">      {</a>
+<a name="ln188">      int ns = _staves.size();</a>
+<a name="ln189">      if (n &lt; ns) {</a>
+<a name="ln190">            qDebug(&quot;Part::setStaves(): remove staves not implemented!&quot;);</a>
+<a name="ln191">            return;</a>
+<a name="ln192">            }</a>
+<a name="ln193">      int staffIdx = score()-&gt;staffIdx(this) + ns;</a>
+<a name="ln194">      for (int i = ns; i &lt; n; ++i) {</a>
+<a name="ln195">            Staff* staff = new Staff(score());</a>
+<a name="ln196">            staff-&gt;setPart(this);</a>
+<a name="ln197">            _staves.push_back(staff);</a>
+<a name="ln198">            score()-&gt;staves().insert(staffIdx, staff);</a>
+<a name="ln199">            for (Measure* m = score()-&gt;firstMeasure(); m; m = m-&gt;nextMeasure()) {</a>
+<a name="ln200">                  m-&gt;insertStaff(staff, staffIdx);</a>
+<a name="ln201">                  if (m-&gt;hasMMRest())</a>
+<a name="ln202">                        m-&gt;mmRest()-&gt;insertStaff(staff, staffIdx);</a>
+<a name="ln203">                  }</a>
+<a name="ln204">            ++staffIdx;</a>
+<a name="ln205">            }</a>
+<a name="ln206">      }</a>
+<a name="ln207"> </a>
+<a name="ln208">//---------------------------------------------------------</a>
+<a name="ln209">//   insertStaff</a>
+<a name="ln210">//---------------------------------------------------------</a>
+<a name="ln211"> </a>
+<a name="ln212">void Part::insertStaff(Staff* staff, int idx)</a>
+<a name="ln213">      {</a>
+<a name="ln214">      if (idx &lt; 0 || idx &gt; _staves.size())</a>
+<a name="ln215">            idx = _staves.size();</a>
+<a name="ln216">      _staves.insert(idx, staff);</a>
+<a name="ln217">      staff-&gt;setPart(this);</a>
+<a name="ln218">      }</a>
+<a name="ln219"> </a>
+<a name="ln220">//---------------------------------------------------------</a>
+<a name="ln221">//   removeStaff</a>
+<a name="ln222">//---------------------------------------------------------</a>
+<a name="ln223"> </a>
+<a name="ln224">void Part::removeStaff(Staff* staff)</a>
+<a name="ln225">      {</a>
+<a name="ln226">      if (!_staves.removeOne(staff)) {</a>
+<a name="ln227">            qDebug(&quot;Part::removeStaff: not found %p&quot;, staff);</a>
+<a name="ln228">            return;</a>
+<a name="ln229">            }</a>
+<a name="ln230">      }</a>
+<a name="ln231"> </a>
+<a name="ln232">//---------------------------------------------------------</a>
+<a name="ln233">//   setMidiProgram</a>
+<a name="ln234">//    TODO</a>
+<a name="ln235">//---------------------------------------------------------</a>
+<a name="ln236"> </a>
+<a name="ln237">void Part::setMidiProgram(int program, int bank)</a>
+<a name="ln238">      {</a>
+<a name="ln239">      Channel* c = instrument()-&gt;channel(0);</a>
+<a name="ln240">      c-&gt;setProgram(program);</a>
+<a name="ln241">      c-&gt;setBank(bank);</a>
+<a name="ln242">//      instrument()-&gt;setChannel(0, c);</a>
+<a name="ln243">      }</a>
+<a name="ln244"> </a>
+<a name="ln245">//---------------------------------------------------------</a>
+<a name="ln246">//   midiProgram</a>
+<a name="ln247">//---------------------------------------------------------</a>
+<a name="ln248"> </a>
+<a name="ln249">int Part::midiProgram() const</a>
+<a name="ln250">      {</a>
+<a name="ln251">      return instrument()-&gt;playbackChannel(0, masterScore())-&gt;program();</a>
+<a name="ln252">      }</a>
+<a name="ln253"> </a>
+<a name="ln254">//---------------------------------------------------------</a>
+<a name="ln255">//   midiChannel</a>
+<a name="ln256">//---------------------------------------------------------</a>
+<a name="ln257"> </a>
+<a name="ln258">int Part::midiChannel() const</a>
+<a name="ln259">      {</a>
+<a name="ln260">      return masterScore()-&gt;midiChannel(instrument()-&gt;channel(0)-&gt;channel());</a>
+<a name="ln261">      }</a>
+<a name="ln262"> </a>
+<a name="ln263">//---------------------------------------------------------</a>
+<a name="ln264">//   midiPort</a>
+<a name="ln265">//---------------------------------------------------------</a>
+<a name="ln266"> </a>
+<a name="ln267">int Part::midiPort() const</a>
+<a name="ln268">      {</a>
+<a name="ln269">      return masterScore()-&gt;midiPort(instrument()-&gt;channel(0)-&gt;channel());</a>
+<a name="ln270">      }</a>
+<a name="ln271"> </a>
+<a name="ln272">//---------------------------------------------------------</a>
+<a name="ln273">//   setMidiChannel</a>
+<a name="ln274">//   Called from importmusicxml, importMidi and importGtp*.</a>
+<a name="ln275">//   Specify tick to set MIDI channel to an InstrumentChange element.</a>
+<a name="ln276">//   Usage:</a>
+<a name="ln277">//   setMidiChannel(channel)       to set channel</a>
+<a name="ln278">//   setMidiChannel(-1, port)      to set port</a>
+<a name="ln279">//   setMidiChannel(channel, port) to set both</a>
+<a name="ln280">//---------------------------------------------------------</a>
+<a name="ln281"> </a>
+<a name="ln282">void Part::setMidiChannel(int ch, int port, const Fraction&amp; tick)</a>
+<a name="ln283">      {</a>
+<a name="ln284">      Channel* channel = instrument(tick)-&gt;channel(0);</a>
+<a name="ln285">      if (channel-&gt;channel() == -1)</a>
+<a name="ln286">            masterScore()-&gt;addMidiMapping(channel, this, port, ch);</a>
+<a name="ln287">      else</a>
+<a name="ln288">            masterScore()-&gt;updateMidiMapping(channel, this, port, ch);</a>
+<a name="ln289">      }</a>
+<a name="ln290"> </a>
+<a name="ln291">//---------------------------------------------------------</a>
+<a name="ln292">//   setInstrument</a>
+<a name="ln293">//---------------------------------------------------------</a>
+<a name="ln294"> </a>
+<a name="ln295">void Part::setInstrument(Instrument* i, Fraction tick)</a>
+<a name="ln296">      {</a>
+<a name="ln297">      _instruments.setInstrument(i, tick.ticks());</a>
+<a name="ln298">      }</a>
+<a name="ln299"> </a>
+<a name="ln300">void Part::setInstrument(const Instrument&amp;&amp; i, Fraction tick)</a>
+<a name="ln301">      {</a>
+<a name="ln302">      _instruments.setInstrument(new Instrument(i), tick.ticks());</a>
+<a name="ln303">      }</a>
+<a name="ln304"> </a>
+<a name="ln305">void Part::setInstrument(const Instrument&amp; i, Fraction tick)</a>
+<a name="ln306">      {</a>
+<a name="ln307">      _instruments.setInstrument(new Instrument(i), tick.ticks());</a>
+<a name="ln308">      }</a>
+<a name="ln309"> </a>
+<a name="ln310">//---------------------------------------------------------</a>
+<a name="ln311">//   removeInstrument</a>
+<a name="ln312">//---------------------------------------------------------</a>
+<a name="ln313"> </a>
+<a name="ln314">void Part::removeInstrument(const Fraction&amp; tick)</a>
+<a name="ln315">      {</a>
+<a name="ln316">      auto i = _instruments.find(tick.ticks());</a>
+<a name="ln317">      if (i == _instruments.end()) {</a>
+<a name="ln318">            qDebug(&quot;Part::removeInstrument: not found at tick %d&quot;, tick.ticks());</a>
+<a name="ln319">            return;</a>
+<a name="ln320">            }</a>
+<a name="ln321">      _instruments.erase(i);</a>
+<a name="ln322">      }</a>
+<a name="ln323"> </a>
+<a name="ln324">//---------------------------------------------------------</a>
+<a name="ln325">//   instrument</a>
+<a name="ln326">//---------------------------------------------------------</a>
+<a name="ln327"> </a>
+<a name="ln328">Instrument* Part::instrument(Fraction tick)</a>
+<a name="ln329">      {</a>
+<a name="ln330">      return _instruments.instrument(tick.ticks());</a>
+<a name="ln331">      }</a>
+<a name="ln332"> </a>
+<a name="ln333">//---------------------------------------------------------</a>
+<a name="ln334">//   instrument</a>
+<a name="ln335">//---------------------------------------------------------</a>
+<a name="ln336"> </a>
+<a name="ln337">const Instrument* Part::instrument(Fraction tick) const</a>
+<a name="ln338">      {</a>
+<a name="ln339">      return _instruments.instrument(tick.ticks());</a>
+<a name="ln340">      }</a>
+<a name="ln341"> </a>
+<a name="ln342">//---------------------------------------------------------</a>
+<a name="ln343">//   instruments</a>
+<a name="ln344">//---------------------------------------------------------</a>
+<a name="ln345"> </a>
+<a name="ln346">const InstrumentList* Part::instruments() const</a>
+<a name="ln347">      {</a>
+<a name="ln348">      return &amp;_instruments;</a>
+<a name="ln349">      }</a>
+<a name="ln350"> </a>
+<a name="ln351">//---------------------------------------------------------</a>
+<a name="ln352">//   instrumentId</a>
+<a name="ln353">//---------------------------------------------------------</a>
+<a name="ln354"> </a>
+<a name="ln355">QString Part::instrumentId(const Fraction&amp; tick) const</a>
+<a name="ln356">      {</a>
+<a name="ln357">      return instrument(tick)-&gt;instrumentId();</a>
+<a name="ln358">      }</a>
+<a name="ln359"> </a>
+<a name="ln360">//---------------------------------------------------------</a>
+<a name="ln361">//   longName</a>
+<a name="ln362">//---------------------------------------------------------</a>
+<a name="ln363"> </a>
+<a name="ln364">QString Part::longName(const Fraction&amp; tick) const</a>
+<a name="ln365">      {</a>
+<a name="ln366">      const QList&lt;StaffName&gt;&amp; nl = longNames(tick);</a>
+<a name="ln367">      return nl.empty() ? &quot;&quot; : nl[0].name();</a>
+<a name="ln368">      }</a>
+<a name="ln369"> </a>
+<a name="ln370">//---------------------------------------------------------</a>
+<a name="ln371">//   instrumentName</a>
+<a name="ln372">//---------------------------------------------------------</a>
+<a name="ln373"> </a>
+<a name="ln374">QString Part::instrumentName(const Fraction&amp; tick) const</a>
+<a name="ln375">      {</a>
+<a name="ln376">      return instrument(tick)-&gt;trackName();</a>
+<a name="ln377">      }</a>
+<a name="ln378"> </a>
+<a name="ln379">//---------------------------------------------------------</a>
+<a name="ln380">//   shortName</a>
+<a name="ln381">//---------------------------------------------------------</a>
+<a name="ln382"> </a>
+<a name="ln383">QString Part::shortName(const Fraction&amp; tick) const</a>
+<a name="ln384">      {</a>
+<a name="ln385">      const QList&lt;StaffName&gt;&amp; nl = shortNames(tick);</a>
+<a name="ln386">      return nl.empty() ? &quot;&quot; : nl[0].name();</a>
+<a name="ln387">      }</a>
+<a name="ln388"> </a>
+<a name="ln389">//---------------------------------------------------------</a>
+<a name="ln390">//   setLongName</a>
+<a name="ln391">//---------------------------------------------------------</a>
+<a name="ln392"> </a>
+<a name="ln393">void Part::setLongName(const QString&amp; s)</a>
+<a name="ln394">      {</a>
+<a name="ln395">      instrument()-&gt;setLongName(s);</a>
+<a name="ln396">      }</a>
+<a name="ln397"> </a>
+<a name="ln398">//---------------------------------------------------------</a>
+<a name="ln399">//   setShortName</a>
+<a name="ln400">//---------------------------------------------------------</a>
+<a name="ln401"> </a>
+<a name="ln402">void Part::setShortName(const QString&amp; s)</a>
+<a name="ln403">      {</a>
+<a name="ln404">      instrument()-&gt;setShortName(s);</a>
+<a name="ln405">      }</a>
+<a name="ln406"> </a>
+<a name="ln407">//---------------------------------------------------------</a>
+<a name="ln408">//   setPlainLongName</a>
+<a name="ln409">//---------------------------------------------------------</a>
+<a name="ln410"> </a>
+<a name="ln411">void Part::setPlainLongName(const QString&amp; s)</a>
+<a name="ln412">      {</a>
+<a name="ln413">      setLongName(XmlWriter::xmlString(s));</a>
+<a name="ln414">      }</a>
+<a name="ln415"> </a>
+<a name="ln416">//---------------------------------------------------------</a>
+<a name="ln417">//   setPlainShortName</a>
+<a name="ln418">//---------------------------------------------------------</a>
+<a name="ln419"> </a>
+<a name="ln420">void Part::setPlainShortName(const QString&amp; s)</a>
+<a name="ln421">      {</a>
+<a name="ln422">      setShortName(XmlWriter::xmlString(s));</a>
+<a name="ln423">      }</a>
+<a name="ln424"> </a>
+<a name="ln425">//---------------------------------------------------------</a>
+<a name="ln426">//   getProperty</a>
+<a name="ln427">//---------------------------------------------------------</a>
+<a name="ln428"> </a>
+<a name="ln429">QVariant Part::getProperty(Pid id) const</a>
+<a name="ln430">      {</a>
+<a name="ln431">      switch (id) {</a>
+<a name="ln432">            case Pid::VISIBLE:</a>
+<a name="ln433">                  return QVariant(_show);</a>
+<a name="ln434">            case Pid::USE_DRUMSET:</a>
+<a name="ln435">                  return instrument()-&gt;useDrumset();</a>
+<a name="ln436">            case Pid::PREFER_SHARP_FLAT:</a>
+<a name="ln437">                  return int(preferSharpFlat());</a>
+<a name="ln438">            default:</a>
+<a name="ln439">                  return QVariant();</a>
+<a name="ln440">            }</a>
+<a name="ln441">      }</a>
+<a name="ln442"> </a>
+<a name="ln443">//---------------------------------------------------------</a>
+<a name="ln444">//   setProperty</a>
+<a name="ln445">//---------------------------------------------------------</a>
+<a name="ln446"> </a>
+<a name="ln447">bool Part::setProperty(Pid id, const QVariant&amp; property)</a>
+<a name="ln448">      {</a>
+<a name="ln449">      switch (id) {</a>
+<a name="ln450">            case Pid::VISIBLE:</a>
+<a name="ln451">                  setShow(property.toBool());</a>
+<a name="ln452">                  break;</a>
+<a name="ln453">            case Pid::USE_DRUMSET:</a>
+<a name="ln454">                  instrument()-&gt;setUseDrumset(property.toBool());</a>
+<a name="ln455">                  break;</a>
+<a name="ln456">            case Pid::PREFER_SHARP_FLAT:</a>
+<a name="ln457">                  setPreferSharpFlat(PreferSharpFlat(property.toInt()));</a>
+<a name="ln458">            default:</a>
+<a name="ln459">                  qDebug(&quot;Part::setProperty: unknown id %d&quot;, int(id));</a>
+<a name="ln460">                  break;</a>
+<a name="ln461">            }</a>
+<a name="ln462">      score()-&gt;setLayoutAll();</a>
+<a name="ln463">      return true;</a>
+<a name="ln464">      }</a>
+<a name="ln465"> </a>
+<a name="ln466">//---------------------------------------------------------</a>
+<a name="ln467">//   startTrack</a>
+<a name="ln468">//---------------------------------------------------------</a>
+<a name="ln469"> </a>
+<a name="ln470">int Part::startTrack() const</a>
+<a name="ln471">      {</a>
+<a name="ln472">      return _staves.front()-&gt;idx() * VOICES;</a>
+<a name="ln473">      }</a>
+<a name="ln474"> </a>
+<a name="ln475">//---------------------------------------------------------</a>
+<a name="ln476">//   endTrack</a>
+<a name="ln477">//---------------------------------------------------------</a>
+<a name="ln478"> </a>
+<a name="ln479">int Part::endTrack() const</a>
+<a name="ln480">      {</a>
+<a name="ln481">      return _staves.back()-&gt;idx() * VOICES + VOICES;</a>
+<a name="ln482">      }</a>
+<a name="ln483"> </a>
+<a name="ln484">//---------------------------------------------------------</a>
+<a name="ln485">//   insertTime</a>
+<a name="ln486">//---------------------------------------------------------</a>
+<a name="ln487"> </a>
+<a name="ln488">void Part::insertTime(const Fraction&amp; tick, const Fraction&amp; len)</a>
+<a name="ln489">      {</a>
+<a name="ln490">      if (len.isZero())</a>
+<a name="ln491">            return;</a>
+<a name="ln492"> </a>
+<a name="ln493">      // move all instruments</a>
+<a name="ln494"> </a>
+<a name="ln495">      if (len &lt; Fraction(0,1)) {</a>
+<a name="ln496">            // remove instruments between tickpos &gt;= tick and tickpos &lt; (tick+len)</a>
+<a name="ln497">            // ownership goes back to class InstrumentChange()</a>
+<a name="ln498"> </a>
+<a name="ln499">            auto si = _instruments.lower_bound(tick.ticks());</a>
+<a name="ln500">            auto ei = _instruments.lower_bound((tick-len).ticks());</a>
+<a name="ln501">            _instruments.erase(si, ei);</a>
+<a name="ln502">            }</a>
+<a name="ln503"> </a>
+<a name="ln504">      InstrumentList il;</a>
+<a name="ln505">      for (auto i = _instruments.lower_bound(tick.ticks()); i != _instruments.end();) {</a>
+<a name="ln506">            Instrument* instrument = i-&gt;second;</a>
+<a name="ln507">            int t = i-&gt;first;</a>
+<a name="ln508">            _instruments.erase(i++);</a>
+<a name="ln509">            _instruments[t + len.ticks()] = instrument;</a>
+<a name="ln510">            }</a>
+<a name="ln511">      _instruments.insert(il.begin(), il.end());</a>
+<a name="ln512">      }</a>
+<a name="ln513"> </a>
+<a name="ln514">//---------------------------------------------------------</a>
+<a name="ln515">//   lyricCount</a>
+<a name="ln516">//---------------------------------------------------------</a>
+<a name="ln517"> </a>
+<a name="ln518">int Part::lyricCount() const</a>
+<a name="ln519">      {</a>
+<a name="ln520">      if (!score())</a>
+<a name="ln521">            return 0;</a>
+<a name="ln522">      size_t count = 0;</a>
+<a name="ln523">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln524">      for (Segment* seg = score()-&gt;firstMeasure()-&gt;first(st); seg; seg = seg-&gt;next1(st)) {</a>
+<a name="ln525">            for (int i = startTrack(); i &lt; endTrack() ; ++i) {</a>
+<a name="ln526">                  ChordRest* cr = toChordRest(seg-&gt;element(i));</a>
+<a name="ln527">                  if (cr)</a>
+<a name="ln528">                        count += cr-&gt;lyrics().size();</a>
+<a name="ln529">                  }</a>
+<a name="ln530">            }</a>
+<a name="ln531">      return int(count);</a>
+<a name="ln532">      }</a>
+<a name="ln533"> </a>
+<a name="ln534">//---------------------------------------------------------</a>
+<a name="ln535">//   harmonyCount</a>
+<a name="ln536">//---------------------------------------------------------</a>
+<a name="ln537"> </a>
+<a name="ln538">int Part::harmonyCount() const</a>
+<a name="ln539">      {</a>
+<a name="ln540">      if (!score())</a>
+<a name="ln541">            return 0;</a>
+<a name="ln542">      int count = 0;</a>
+<a name="ln543">      SegmentType st = SegmentType::ChordRest;</a>
+<a name="ln544">      for (Segment* seg = score()-&gt;firstMeasure()-&gt;first(st); seg; seg = seg-&gt;next1(st)) {</a>
+<a name="ln545">            for (Element* e : seg-&gt;annotations()) {</a>
+<a name="ln546">                  if (e-&gt;type() == ElementType::HARMONY &amp;&amp; e-&gt;track() &gt;= startTrack() &amp;&amp; e-&gt;track() &lt; endTrack())</a>
+<a name="ln547">                        count++;</a>
+<a name="ln548">                  }</a>
+<a name="ln549">            }</a>
+<a name="ln550">      return count;</a>
+<a name="ln551">      }</a>
+<a name="ln552"> </a>
+<a name="ln553">//---------------------------------------------------------</a>
+<a name="ln554">//   hasPitchedStaff</a>
+<a name="ln555">//---------------------------------------------------------</a>
+<a name="ln556"> </a>
+<a name="ln557">bool Part::hasPitchedStaff() const</a>
+<a name="ln558">      {</a>
+<a name="ln559">      if (!staves())</a>
+<a name="ln560">            return false;</a>
+<a name="ln561">      for (Staff* s : *staves()) {</a>
+<a name="ln562">            if (s &amp;&amp; s-&gt;isPitchedStaff(Fraction(0,1)))</a>
+<a name="ln563">                  return true;</a>
+<a name="ln564">            }</a>
+<a name="ln565">      return false;</a>
+<a name="ln566">      }</a>
+<a name="ln567"> </a>
+<a name="ln568">//---------------------------------------------------------</a>
+<a name="ln569">//   hasTabStaff</a>
+<a name="ln570">//---------------------------------------------------------</a>
+<a name="ln571"> </a>
+<a name="ln572">bool Part::hasTabStaff() const</a>
+<a name="ln573">      {</a>
+<a name="ln574">      if (!staves())</a>
+<a name="ln575">            return false;</a>
+<a name="ln576">      for (Staff* s : *staves()) {</a>
+<a name="ln577">            if (s &amp;&amp; s-&gt;isTabStaff(Fraction(0,1)))</a>
+<a name="ln578">                  return true;</a>
+<a name="ln579">            }</a>
+<a name="ln580">      return false;</a>
+<a name="ln581">      }</a>
+<a name="ln582"> </a>
+<a name="ln583">//---------------------------------------------------------</a>
+<a name="ln584">//   hasDrumStaff</a>
+<a name="ln585">//---------------------------------------------------------</a>
+<a name="ln586"> </a>
+<a name="ln587">bool Part::hasDrumStaff() const</a>
+<a name="ln588">      {</a>
+<a name="ln589">      if (!staves())</a>
+<a name="ln590">            return false;</a>
+<a name="ln591">      for (Staff* s : *staves()) {</a>
+<a name="ln592">            if (s &amp;&amp; s-&gt;isDrumStaff(Fraction(0,1)))</a>
+<a name="ln593">                  return true;</a>
+<a name="ln594">            }</a>
+<a name="ln595">      return false;</a>
+<a name="ln596">      }</a>
+<a name="ln597">}</a>
+<a name="ln598"> </a>
+
+</code></pre>
+<div class="balloon" rel="457"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v796/" target="_blank">V796</a> It is possible that 'break' statement is missing in switch statement.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

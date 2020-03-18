@@ -1,0 +1,969 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>loginmanager.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2014 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;loginmanager.h&quot;</a>
+<a name="ln14">#include &quot;loginmanager_p.h&quot;</a>
+<a name="ln15">#include &quot;musescore.h&quot;</a>
+<a name="ln16">#include &quot;libmscore/score.h&quot;</a>
+<a name="ln17">#include &quot;preferences.h&quot;</a>
+<a name="ln18"> </a>
+<a name="ln19">#ifdef USE_WEBENGINE</a>
+<a name="ln20">#include &lt;QWebEngineCookieStore&gt;</a>
+<a name="ln21">#endif</a>
+<a name="ln22"> </a>
+<a name="ln23">namespace Ms {</a>
+<a name="ln24"> </a>
+<a name="ln25">extern QString dataPath;</a>
+<a name="ln26"> </a>
+<a name="ln27">ApiInfo* ApiInfo::_instance = nullptr;</a>
+<a name="ln28">const QUrl ApiInfo::loginUrl(ApiInfo::loginPage);</a>
+<a name="ln29">const QUrl ApiInfo::loginSuccessUrl(ApiInfo::loginSuccessPage);</a>
+<a name="ln30"> </a>
+<a name="ln31">//---------------------------------------------------------</a>
+<a name="ln32">//   ApiInfo:apiInfoLocation</a>
+<a name="ln33">//---------------------------------------------------------</a>
+<a name="ln34"> </a>
+<a name="ln35">QString ApiInfo::apiInfoLocation()</a>
+<a name="ln36">      {</a>
+<a name="ln37">      return dataPath + &quot;/api.dat&quot;;</a>
+<a name="ln38">      }</a>
+<a name="ln39"> </a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41">//   ApiInfo:genClientId</a>
+<a name="ln42">//---------------------------------------------------------</a>
+<a name="ln43"> </a>
+<a name="ln44">QByteArray ApiInfo::genClientId()</a>
+<a name="ln45">      {</a>
+<a name="ln46">#if (QT_VERSION &gt;= QT_VERSION_CHECK(5, 11, 0))</a>
+<a name="ln47">      QByteArray qtGeneratedId(QSysInfo::machineUniqueId());</a>
+<a name="ln48">      if (!qtGeneratedId.isEmpty())</a>
+<a name="ln49">            return qtGeneratedId;</a>
+<a name="ln50">#endif</a>
+<a name="ln51">      long long randId = qrand();</a>
+<a name="ln52">      constexpr size_t randBytes = sizeof(decltype(qrand()));</a>
+<a name="ln53">      qDebug() &lt;&lt; &quot;randBytes =&quot; &lt;&lt; randBytes &lt;&lt; &quot;sizeof(randId)&quot; &lt;&lt; sizeof(randId);</a>
+<a name="ln54">      for (size_t bytes = randBytes; bytes &lt; sizeof(randId); bytes += randBytes) {</a>
+<a name="ln55">            randId &lt;&lt;= 8 * randBytes;</a>
+<a name="ln56">            randId += qrand();</a>
+<a name="ln57">            }</a>
+<a name="ln58">      qDebug() &lt;&lt; randId &lt;&lt; QString::number(randId, 2) &lt;&lt; QString::number(randId, 16);</a>
+<a name="ln59"> </a>
+<a name="ln60">      return QString::number(randId, 16).toLatin1();</a>
+<a name="ln61">      }</a>
+<a name="ln62"> </a>
+<a name="ln63">//---------------------------------------------------------</a>
+<a name="ln64">//   ApiInfo:createInstance</a>
+<a name="ln65">//---------------------------------------------------------</a>
+<a name="ln66"> </a>
+<a name="ln67">void ApiInfo::createInstance()</a>
+<a name="ln68">      {</a>
+<a name="ln69">      if (_instance)</a>
+<a name="ln70">            return;</a>
+<a name="ln71"> </a>
+<a name="ln72">      QFile f(apiInfoLocation());</a>
+<a name="ln73">      QByteArray clientId;</a>
+<a name="ln74">      if (f.open(QIODevice::ReadOnly)) {</a>
+<a name="ln75">            const QByteArray saveData = f.readAll();</a>
+<a name="ln76">            const QJsonDocument d(QJsonDocument::fromBinaryData(saveData));</a>
+<a name="ln77">            QJsonObject saveObject = d.object();</a>
+<a name="ln78">            clientId = saveObject[&quot;clientId&quot;].toString().toLatin1();</a>
+<a name="ln79">            f.close();</a>
+<a name="ln80">            }</a>
+<a name="ln81">      else {</a>
+<a name="ln82">            clientId = genClientId();</a>
+<a name="ln83">            // Save the generated ID</a>
+<a name="ln84">            if (f.open(QIODevice::WriteOnly)) {</a>
+<a name="ln85">                  QJsonObject saveObject;</a>
+<a name="ln86">                  saveObject[&quot;clientId&quot;] = QString(clientId);</a>
+<a name="ln87">                  QJsonDocument saveDoc(saveObject);</a>
+<a name="ln88">                  f.write(saveDoc.toBinaryData());</a>
+<a name="ln89">                  f.close();</a>
+<a name="ln90">                  }</a>
+<a name="ln91">            }</a>
+<a name="ln92"> </a>
+<a name="ln93">      QByteArray apiKey(&quot;0b19809bab331d70fb9983a0b9866290&quot;);</a>
+<a name="ln94">      _instance = new ApiInfo(clientId, apiKey);</a>
+<a name="ln95">      }</a>
+<a name="ln96"> </a>
+<a name="ln97">//---------------------------------------------------------</a>
+<a name="ln98">//   ApiInfo::getOsInfo</a>
+<a name="ln99">//---------------------------------------------------------</a>
+<a name="ln100"> </a>
+<a name="ln101">QString ApiInfo::getOsInfo()</a>
+<a name="ln102">      {</a>
+<a name="ln103">      QStringList info;</a>
+<a name="ln104">      info  &lt;&lt; QSysInfo::kernelType() &lt;&lt; QSysInfo::kernelVersion()</a>
+<a name="ln105">            &lt;&lt; QSysInfo::productType() &lt;&lt; QSysInfo::productVersion()</a>
+<a name="ln106">            &lt;&lt; QSysInfo::currentCpuArchitecture();</a>
+<a name="ln107">      return info.join(' ');</a>
+<a name="ln108">      }</a>
+<a name="ln109"> </a>
+<a name="ln110">//---------------------------------------------------------</a>
+<a name="ln111">//   ApiInfo</a>
+<a name="ln112">//---------------------------------------------------------</a>
+<a name="ln113"> </a>
+<a name="ln114">ApiInfo::ApiInfo(const QByteArray _clientId, const QByteArray _apiKey)</a>
+<a name="ln115">   : clientId(_clientId),</a>
+<a name="ln116">   apiKey(_apiKey),</a>
+<a name="ln117">   userAgent(QString(userAgentTemplate).arg(VERSION).arg(BUILD_NUMBER).arg(getOsInfo()).toLatin1())</a>
+<a name="ln118">      {</a>
+<a name="ln119">      if (MScore::debugMode) {</a>
+<a name="ln120">            qWarning(&quot;clientId: %s&quot;, clientId.constData());</a>
+<a name="ln121">            qWarning(&quot;apiKey: %s&quot;, apiKey.constData());</a>
+<a name="ln122">            qWarning(&quot;userAgent: %s&quot;, userAgent.constData());</a>
+<a name="ln123">            }</a>
+<a name="ln124">      }</a>
+<a name="ln125"> </a>
+<a name="ln126">//---------------------------------------------------------</a>
+<a name="ln127">//   ApiInfo::getUpdateScoreInfoUrl</a>
+<a name="ln128">//---------------------------------------------------------</a>
+<a name="ln129"> </a>
+<a name="ln130">QUrl ApiInfo::getUpdateScoreInfoUrl(const QString&amp; scoreId, const QString&amp; accessToken, bool newScore, const QString&amp; customPath)</a>
+<a name="ln131">      {</a>
+<a name="ln132">      QUrl url(mscoreHost);</a>
+<a name="ln133">      url.setPath(customPath.isEmpty() ? defaultUpdateScoreInfoPath : customPath);</a>
+<a name="ln134"> </a>
+<a name="ln135">      QUrlQuery query;</a>
+<a name="ln136">      query.addQueryItem(&quot;id&quot;, scoreId);</a>
+<a name="ln137">      query.addQueryItem(&quot;newScore&quot;, QString::number(newScore));</a>
+<a name="ln138"> </a>
+<a name="ln139">#ifdef USE_WEBENGINE</a>
+<a name="ln140">      query.addQueryItem(&quot;_token&quot;, accessToken);</a>
+<a name="ln141">#else</a>
+<a name="ln142">      Q_UNUSED(accessToken); // we'll be redirected to a browser, don't put access token there</a>
+<a name="ln143">#endif</a>
+<a name="ln144"> </a>
+<a name="ln145">      url.setQuery(query);</a>
+<a name="ln146"> </a>
+<a name="ln147">      return url;</a>
+<a name="ln148">      }</a>
+<a name="ln149"> </a>
+<a name="ln150">//---------------------------------------------------------</a>
+<a name="ln151">//   LoginManager</a>
+<a name="ln152">//---------------------------------------------------------</a>
+<a name="ln153"> </a>
+<a name="ln154">LoginManager::LoginManager(QAction* uploadAudioMenuAction, QObject* parent)</a>
+<a name="ln155"> : QObject(parent), _networkManager(new QNetworkAccessManager(this)),</a>
+<a name="ln156">   _uploadAudioMenuAction(uploadAudioMenuAction)</a>
+<a name="ln157">      {</a>
+<a name="ln158">      load();</a>
+<a name="ln159">      _progressDialog = new QProgressDialog(mscore);</a>
+<a name="ln160">      _progressDialog-&gt;setWindowFlags(Qt::WindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::WindowTitleHint));</a>
+<a name="ln161">      _progressDialog-&gt;setWindowModality(Qt::NonModal);</a>
+<a name="ln162">      _progressDialog-&gt;reset(); // required for Qt 5.5, see QTBUG-47042</a>
+<a name="ln163">      }</a>
+<a name="ln164"> </a>
+<a name="ln165">//---------------------------------------------------------</a>
+<a name="ln166">//   save</a>
+<a name="ln167">//---------------------------------------------------------</a>
+<a name="ln168"> </a>
+<a name="ln169">bool LoginManager::save()</a>
+<a name="ln170">      {</a>
+<a name="ln171">      if (_accessToken.isEmpty() &amp;&amp; _refreshToken.isEmpty())</a>
+<a name="ln172">            return true;</a>
+<a name="ln173">      QFile saveFile(dataPath + &quot;/cred.dat&quot;);</a>
+<a name="ln174">      if (!saveFile.open(QIODevice::WriteOnly))</a>
+<a name="ln175">            return false;</a>
+<a name="ln176">      QJsonObject saveObject;</a>
+<a name="ln177">      saveObject[&quot;accessToken&quot;] = _accessToken;</a>
+<a name="ln178">      saveObject[&quot;refreshToken&quot;] = _refreshToken;</a>
+<a name="ln179">      QJsonDocument saveDoc(saveObject);</a>
+<a name="ln180">      saveFile.write(saveDoc.toBinaryData());</a>
+<a name="ln181">      saveFile.close();</a>
+<a name="ln182">      return true;</a>
+<a name="ln183">      }</a>
+<a name="ln184"> </a>
+<a name="ln185">//---------------------------------------------------------</a>
+<a name="ln186">//   load</a>
+<a name="ln187">//---------------------------------------------------------</a>
+<a name="ln188"> </a>
+<a name="ln189">bool LoginManager::load()</a>
+<a name="ln190">      {</a>
+<a name="ln191">      QFile loadFile(dataPath + &quot;/cred.dat&quot;);</a>
+<a name="ln192">      if (!loadFile.open(QIODevice::ReadOnly))</a>
+<a name="ln193">            return false;</a>
+<a name="ln194">      QByteArray saveData = loadFile.readAll();</a>
+<a name="ln195">      QJsonDocument loadDoc(QJsonDocument::fromBinaryData(saveData));</a>
+<a name="ln196">      QJsonObject saveObject = loadDoc.object();</a>
+<a name="ln197">      _accessToken = saveObject[&quot;accessToken&quot;].toString();</a>
+<a name="ln198">      _refreshToken = saveObject[&quot;refreshToken&quot;].toString();</a>
+<a name="ln199">      loadFile.close();</a>
+<a name="ln200">      return true;</a>
+<a name="ln201">      }</a>
+<a name="ln202"> </a>
+<a name="ln203">//---------------------------------------------------------</a>
+<a name="ln204">//   onReplyFinished</a>
+<a name="ln205">//---------------------------------------------------------</a>
+<a name="ln206"> </a>
+<a name="ln207">void LoginManager::onReplyFinished(ApiRequest* request, RequestType requestType)</a>
+<a name="ln208">      {</a>
+<a name="ln209">      if (!request)</a>
+<a name="ln210">            return;</a>
+<a name="ln211">      QNetworkReply* reply = request-&gt;reply();</a>
+<a name="ln212">      if (!reply)</a>
+<a name="ln213">            return;</a>
+<a name="ln214"> </a>
+<a name="ln215">      const int code = reply-&gt;attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();</a>
+<a name="ln216"> </a>
+<a name="ln217">      if (code == HTTP_UNAUTHORIZED &amp;&amp; requestType != RequestType::LOGIN &amp;&amp; requestType != RequestType::LOGIN_REFRESH) {</a>
+<a name="ln218">            if (request-&gt;retryCount() &lt; MAX_REFRESH_LOGIN_RETRY_COUNT) {</a>
+<a name="ln219">                  ApiRequest* refreshRequest = buildLoginRefreshRequest();</a>
+<a name="ln220">                  refreshRequest-&gt;setParent(this);</a>
+<a name="ln221">                  connect(refreshRequest, &amp;ApiRequest::replyFinished, this, [this, request, requestType](ApiRequest* refreshRequest) {</a>
+<a name="ln222">                        _accessToken.clear();</a>
+<a name="ln223">                        onReplyFinished(refreshRequest, RequestType::LOGIN_REFRESH);</a>
+<a name="ln224">                        if (!_accessToken.isEmpty()) {</a>
+<a name="ln225">                              // try to execute the request once more with the new token</a>
+<a name="ln226">                              request-&gt;setToken(_accessToken);</a>
+<a name="ln227">                              request-&gt;executeRequest(_networkManager);</a>
+<a name="ln228">                              }</a>
+<a name="ln229">                        else {</a>
+<a name="ln230">                              handleReply(request-&gt;reply(), requestType);</a>
+<a name="ln231">                              request-&gt;deleteLater();</a>
+<a name="ln232">                              }</a>
+<a name="ln233">                        });</a>
+<a name="ln234">                  refreshRequest-&gt;executeRequest(_networkManager);</a>
+<a name="ln235">                  return;</a>
+<a name="ln236">                  }</a>
+<a name="ln237">            }</a>
+<a name="ln238"> </a>
+<a name="ln239">      handleReply(reply, requestType);</a>
+<a name="ln240"> </a>
+<a name="ln241">      request-&gt;deleteLater();</a>
+<a name="ln242">      }</a>
+<a name="ln243"> </a>
+<a name="ln244">//---------------------------------------------------------</a>
+<a name="ln245">//   handleReply</a>
+<a name="ln246">//---------------------------------------------------------</a>
+<a name="ln247"> </a>
+<a name="ln248">void LoginManager::handleReply(QNetworkReply* reply, RequestType requestType)</a>
+<a name="ln249">      {</a>
+<a name="ln250">      if (!reply)</a>
+<a name="ln251">            return;</a>
+<a name="ln252"> </a>
+<a name="ln253">      const int code = reply-&gt;attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();</a>
+<a name="ln254"> </a>
+<a name="ln255">      QByteArray ba(reply-&gt;readAll());</a>
+<a name="ln256">      QJsonObject obj;</a>
+<a name="ln257">      if (!ba.isEmpty()) {</a>
+<a name="ln258">            QJsonDocument jsonResponse = QJsonDocument::fromJson(ba);</a>
+<a name="ln259">            if (jsonResponse.isObject())</a>
+<a name="ln260">                  obj = jsonResponse.object();</a>
+<a name="ln261">            }</a>
+<a name="ln262"> </a>
+<a name="ln263">      switch (requestType) {</a>
+<a name="ln264">            case RequestType::LOGIN:</a>
+<a name="ln265">                  onLoginReply(reply, code, obj);</a>
+<a name="ln266">                  break;</a>
+<a name="ln267">            case RequestType::LOGIN_REFRESH:</a>
+<a name="ln268">                  onLoginRefreshReply(reply, code, obj);</a>
+<a name="ln269">                  break;</a>
+<a name="ln270">            case RequestType::GET_USER_INFO:</a>
+<a name="ln271">                  onGetUserReply(reply, code, obj);</a>
+<a name="ln272">                  break;</a>
+<a name="ln273">            case RequestType::GET_SCORE_INFO:</a>
+<a name="ln274">                  onGetScoreInfoReply(reply, code, obj);</a>
+<a name="ln275">                  break;</a>
+<a name="ln276">            case RequestType::UPLOAD_SCORE:</a>
+<a name="ln277">                  onUploadReply(reply, code, obj);</a>
+<a name="ln278">                  break;</a>
+<a name="ln279">            case RequestType::GET_MEDIA_URL:</a>
+<a name="ln280">                  onGetMediaUrlReply(reply, code, obj);</a>
+<a name="ln281">                  break;</a>
+<a name="ln282">            }</a>
+<a name="ln283">      }</a>
+<a name="ln284"> </a>
+<a name="ln285">//---------------------------------------------------------</a>
+<a name="ln286">//   getErrorString</a>
+<a name="ln287">//---------------------------------------------------------</a>
+<a name="ln288"> </a>
+<a name="ln289">QString LoginManager::getErrorString(QNetworkReply* reply, const QJsonObject&amp; obj)</a>
+<a name="ln290">      {</a>
+<a name="ln291">      const QString err = reply ? reply-&gt;attribute(QNetworkRequest::HttpReasonPhraseAttribute).toString() : tr(&quot;Error&quot;);</a>
+<a name="ln292">      const QString msg = obj[&quot;message&quot;].toString();</a>
+<a name="ln293">      return QString(&quot;%1 (%2)&quot;).arg(err).arg(msg);</a>
+<a name="ln294">      }</a>
+<a name="ln295"> </a>
+<a name="ln296">/*------- TRY LOGIN ROUTINES ----------------------------*/</a>
+<a name="ln297">/*  Try to get user information, if error,               */</a>
+<a name="ln298">/*  display login form until quit or successful login    */</a>
+<a name="ln299"> </a>
+<a name="ln300">//---------------------------------------------------------</a>
+<a name="ln301">//   tryLogin</a>
+<a name="ln302">//---------------------------------------------------------</a>
+<a name="ln303"> </a>
+<a name="ln304">void LoginManager::tryLogin()</a>
+<a name="ln305">      {</a>
+<a name="ln306">      disconnect(this, SIGNAL(loginSuccess()), this, SLOT(tryLogin()));</a>
+<a name="ln307">      connect(this, SIGNAL(getUserSuccess()), this, SLOT(onTryLoginSuccess()));</a>
+<a name="ln308">      connect(this, SIGNAL(getUserError(QString)), this, SLOT(onTryLoginError(QString)));</a>
+<a name="ln309">      getUser();</a>
+<a name="ln310">      }</a>
+<a name="ln311"> </a>
+<a name="ln312">//---------------------------------------------------------</a>
+<a name="ln313">//   onTryLoginSuccess</a>
+<a name="ln314">//---------------------------------------------------------</a>
+<a name="ln315"> </a>
+<a name="ln316">void LoginManager::onTryLoginSuccess()</a>
+<a name="ln317">      {</a>
+<a name="ln318">      disconnect(this, SIGNAL(getUserSuccess()), this, SLOT(onTryLoginSuccess()));</a>
+<a name="ln319">      disconnect(this, SIGNAL(getUserError(QString)), this, SLOT(onTryLoginError(QString)));</a>
+<a name="ln320">      emit tryLoginSuccess();</a>
+<a name="ln321">      }</a>
+<a name="ln322"> </a>
+<a name="ln323">//---------------------------------------------------------</a>
+<a name="ln324">//   onTryLoginError</a>
+<a name="ln325">//---------------------------------------------------------</a>
+<a name="ln326"> </a>
+<a name="ln327">void LoginManager::onTryLoginError(const QString&amp; error)</a>
+<a name="ln328">      {</a>
+<a name="ln329">      Q_UNUSED(error);</a>
+<a name="ln330">      disconnect(this, SIGNAL(getUserSuccess()), this, SLOT(onTryLoginSuccess()));</a>
+<a name="ln331">      disconnect(this, SIGNAL(getUserError(QString)), this, SLOT(onTryLoginError(QString)));</a>
+<a name="ln332">      connect(this, SIGNAL(loginSuccess()), this, SLOT(tryLogin()));</a>
+<a name="ln333">      logout();</a>
+<a name="ln334">#ifdef USE_WEBENGINE</a>
+<a name="ln335">      loginInteractive();</a>
+<a name="ln336">#else</a>
+<a name="ln337">      mscore-&gt;showLoginDialog();</a>
+<a name="ln338">#endif</a>
+<a name="ln339">      }</a>
+<a name="ln340">/*------- END - TRY LOGIN ROUTINES ----------------------------*/</a>
+<a name="ln341"> </a>
+<a name="ln342">//---------------------------------------------------------</a>
+<a name="ln343">//   clearHttpCacheOnRenderFinish</a>
+<a name="ln344">//---------------------------------------------------------</a>
+<a name="ln345"> </a>
+<a name="ln346">#ifdef USE_WEBENGINE</a>
+<a name="ln347">static void clearHttpCacheOnRenderFinish(QWebEngineView* webView)</a>
+<a name="ln348">      {</a>
+<a name="ln349">      QWebEnginePage* page = webView-&gt;page();</a>
+<a name="ln350">      QWebEngineProfile* profile = page-&gt;profile();</a>
+<a name="ln351"> </a>
+<a name="ln352">      // workaround for the crashes sometimes happening in Chromium on macOS with Qt 5.12</a>
+<a name="ln353">      QObject::connect(webView, &amp;QWebEngineView::renderProcessTerminated, webView, [profile, webView](QWebEnginePage::RenderProcessTerminationStatus terminationStatus, int exitCode)</a>
+<a name="ln354">            {</a>
+<a name="ln355">            qDebug() &lt;&lt; &quot;Login page loading terminated&quot; &lt;&lt; terminationStatus &lt;&lt; &quot; &quot; &lt;&lt; exitCode;</a>
+<a name="ln356">            profile-&gt;clearHttpCache();</a>
+<a name="ln357">            webView-&gt;show();</a>
+<a name="ln358">            });</a>
+<a name="ln359">      }</a>
+<a name="ln360">#endif</a>
+<a name="ln361">//---------------------------------------------------------</a>
+<a name="ln362">//   loginInteractive</a>
+<a name="ln363">//---------------------------------------------------------</a>
+<a name="ln364"> </a>
+<a name="ln365">#ifdef USE_WEBENGINE</a>
+<a name="ln366">void LoginManager::loginInteractive()</a>
+<a name="ln367">      {</a>
+<a name="ln368">      QWebEngineView* webView = new QWebEngineView;</a>
+<a name="ln369">      webView-&gt;setWindowModality(Qt::ApplicationModal);</a>
+<a name="ln370">      webView-&gt;setAttribute(Qt::WA_DeleteOnClose);</a>
+<a name="ln371"> </a>
+<a name="ln372">      QWebEnginePage* page = webView-&gt;page();</a>
+<a name="ln373">      QWebEngineProfile* profile = page-&gt;profile();</a>
+<a name="ln374">      // TODO: logout in editor does not log out in web view</a>
+<a name="ln375">      profile-&gt;setPersistentCookiesPolicy(QWebEngineProfile::NoPersistentCookies);</a>
+<a name="ln376">      profile-&gt;setRequestInterceptor(new ApiWebEngineRequestInterceptor(profile));</a>
+<a name="ln377"> </a>
+<a name="ln378">      clearHttpCacheOnRenderFinish(webView);</a>
+<a name="ln379">      </a>
+<a name="ln380">      connect(page, &amp;QWebEnginePage::loadFinished, this, [this, page, webView](bool ok) {</a>
+<a name="ln381">            if (!ok)</a>
+<a name="ln382">                  return;</a>
+<a name="ln383">            constexpr QUrl::FormattingOptions cmpOpt = QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::StripTrailingSlash;</a>
+<a name="ln384">            if (!page-&gt;url().matches(ApiInfo::loginSuccessUrl, cmpOpt))</a>
+<a name="ln385">                  return;</a>
+<a name="ln386"> </a>
+<a name="ln387">            page-&gt;runJavaScript(&quot;JSON.stringify(muGetAuthInfo())&quot;, [this, page, webView](const QVariant&amp; v) {</a>
+<a name="ln388">                  onLoginReply(nullptr, HTTP_OK, QJsonDocument::fromJson(v.toString().toUtf8()).object());</a>
+<a name="ln389">                  // We have retrieved an access token, do not remain logged</a>
+<a name="ln390">                  // in with web view profile.</a>
+<a name="ln391">                  page-&gt;profile()-&gt;cookieStore()-&gt;deleteAllCookies();</a>
+<a name="ln392">                  webView-&gt;close();</a>
+<a name="ln393">                  });</a>
+<a name="ln394">            });</a>
+<a name="ln395"> </a>
+<a name="ln396">      webView-&gt;load(ApiInfo::loginUrl);</a>
+<a name="ln397">      webView-&gt;show();</a>
+<a name="ln398">      }</a>
+<a name="ln399">#endif</a>
+<a name="ln400"> </a>
+<a name="ln401">//---------------------------------------------------------</a>
+<a name="ln402">//   login</a>
+<a name="ln403">//---------------------------------------------------------</a>
+<a name="ln404"> </a>
+<a name="ln405">void LoginManager::login(QString login, QString password)</a>
+<a name="ln406">      {</a>
+<a name="ln407">      if(login.isEmpty() || password.isEmpty())</a>
+<a name="ln408">           return;</a>
+<a name="ln409"> </a>
+<a name="ln410">      ApiRequest* r = new ApiRequest(this);</a>
+<a name="ln411">      r-&gt;setPath(&quot;/auth/login&quot;)</a>
+<a name="ln412">         .setMethod(ApiRequest::HTTP_PUT)</a>
+<a name="ln413">         .addPostParameter(&quot;field&quot;, login)</a>
+<a name="ln414">         .addPostParameter(&quot;password&quot;, password);</a>
+<a name="ln415"> </a>
+<a name="ln416">      connect(r, &amp;ApiRequest::replyFinished, this, [this](ApiRequest* r) {</a>
+<a name="ln417">            onReplyFinished(r, RequestType::LOGIN);</a>
+<a name="ln418">            });</a>
+<a name="ln419"> </a>
+<a name="ln420">      r-&gt;executeRequest(_networkManager);</a>
+<a name="ln421">      }</a>
+<a name="ln422"> </a>
+<a name="ln423">//---------------------------------------------------------</a>
+<a name="ln424">//   buildLoginRefreshRequest</a>
+<a name="ln425">//---------------------------------------------------------</a>
+<a name="ln426"> </a>
+<a name="ln427">ApiRequest* LoginManager::buildLoginRefreshRequest() const</a>
+<a name="ln428">      {</a>
+<a name="ln429">      ApiRequest* r = new ApiRequest();</a>
+<a name="ln430">      r-&gt;setPath(&quot;/auth/refresh&quot;)</a>
+<a name="ln431">         .setMethod(ApiRequest::HTTP_POST)</a>
+<a name="ln432">         .addGetParameter(&quot;device_id&quot;, ApiInfo::instance().clientId)</a>
+<a name="ln433">         .addPostParameter(&quot;refresh_token&quot;, _refreshToken);</a>
+<a name="ln434"> </a>
+<a name="ln435">      return r;</a>
+<a name="ln436">      }</a>
+<a name="ln437"> </a>
+<a name="ln438">//---------------------------------------------------------</a>
+<a name="ln439">//   onLoginReply</a>
+<a name="ln440">//---------------------------------------------------------</a>
+<a name="ln441"> </a>
+<a name="ln442">void LoginManager::onLoginReply(QNetworkReply* reply, int code, const QJsonObject&amp; obj)</a>
+<a name="ln443">      {</a>
+<a name="ln444">      if (code == HTTP_OK) {</a>
+<a name="ln445">            _accessToken = obj[&quot;token&quot;].toString();</a>
+<a name="ln446">            _refreshToken = obj[&quot;refresh_token&quot;].toString();</a>
+<a name="ln447">            if (!_accessToken.isEmpty())</a>
+<a name="ln448">                  emit loginSuccess();</a>
+<a name="ln449">            else</a>
+<a name="ln450">                  emit loginError(tr(&quot;Wrong response from the server&quot;));</a>
+<a name="ln451">            }</a>
+<a name="ln452">      else</a>
+<a name="ln453">            emit loginError(getErrorString(reply, obj));</a>
+<a name="ln454"> </a>
+<a name="ln455">      save();</a>
+<a name="ln456">      }</a>
+<a name="ln457"> </a>
+<a name="ln458">//---------------------------------------------------------</a>
+<a name="ln459">//   onLoginRefreshReply</a>
+<a name="ln460">//---------------------------------------------------------</a>
+<a name="ln461"> </a>
+<a name="ln462">void LoginManager::onLoginRefreshReply(QNetworkReply* reply, int code, const QJsonObject&amp; obj)</a>
+<a name="ln463">      {</a>
+<a name="ln464">      Q_UNUSED(reply);</a>
+<a name="ln465">      if (code == HTTP_OK) {</a>
+<a name="ln466">            _accessToken = obj[&quot;token&quot;].toString();</a>
+<a name="ln467">            _refreshToken = obj[&quot;refresh_token&quot;].toString();</a>
+<a name="ln468">            }</a>
+<a name="ln469">      else {</a>
+<a name="ln470">            _accessToken.clear();</a>
+<a name="ln471">            _refreshToken.clear();</a>
+<a name="ln472">            }</a>
+<a name="ln473"> </a>
+<a name="ln474">      save();</a>
+<a name="ln475">      }</a>
+<a name="ln476"> </a>
+<a name="ln477">//---------------------------------------------------------</a>
+<a name="ln478">//   getUser</a>
+<a name="ln479">//---------------------------------------------------------</a>
+<a name="ln480"> </a>
+<a name="ln481">void LoginManager::getUser()</a>
+<a name="ln482">      {</a>
+<a name="ln483">      if (_accessToken.isEmpty() &amp;&amp; _refreshToken.isEmpty()) {</a>
+<a name="ln484">            emit getUserError(&quot;getUser - No token&quot;);</a>
+<a name="ln485">            return;</a>
+<a name="ln486">            }</a>
+<a name="ln487"> </a>
+<a name="ln488">      ApiRequest* r = new ApiRequest(this);</a>
+<a name="ln489">      r-&gt;setPath(&quot;/user/me&quot;)</a>
+<a name="ln490">         .setMethod(ApiRequest::HTTP_GET)</a>
+<a name="ln491">         .setToken(_accessToken);</a>
+<a name="ln492"> </a>
+<a name="ln493">      connect(r, &amp;ApiRequest::replyFinished, this, [this](ApiRequest* r) {</a>
+<a name="ln494">            onReplyFinished(r, RequestType::GET_USER_INFO);</a>
+<a name="ln495">            });</a>
+<a name="ln496"> </a>
+<a name="ln497">      r-&gt;executeRequest(_networkManager);</a>
+<a name="ln498">      }</a>
+<a name="ln499"> </a>
+<a name="ln500">//---------------------------------------------------------</a>
+<a name="ln501">//   onGetUserReply</a>
+<a name="ln502">//---------------------------------------------------------</a>
+<a name="ln503"> </a>
+<a name="ln504">void LoginManager::onGetUserReply(QNetworkReply* reply, int code, const QJsonObject&amp; user)</a>
+<a name="ln505">      {</a>
+<a name="ln506">//       qDebug() &lt;&lt; &quot;onGetUserReply&quot; &lt;&lt; code &lt;&lt; reply-&gt;errorString();</a>
+<a name="ln507">      if (code == HTTP_OK) {</a>
+<a name="ln508">            if (user.value(&quot;name&quot;) != QJsonValue::Undefined) {</a>
+<a name="ln509">                  _userName = user.value(&quot;name&quot;).toString();</a>
+<a name="ln510">                  _uid = user.value(&quot;id&quot;).toString().toInt();</a>
+<a name="ln511">                  _avatar = QUrl(user.value(&quot;avatar_url&quot;).toString());</a>
+<a name="ln512">                  emit getUserSuccess();</a>
+<a name="ln513">                  }</a>
+<a name="ln514">            else</a>
+<a name="ln515">                  emit getUserError(tr(&quot;Wrong response from the server&quot;));</a>
+<a name="ln516">            }</a>
+<a name="ln517">      else</a>
+<a name="ln518">            emit getUserError(tr(&quot;Error while getting user info: %1&quot;).arg(getErrorString(reply, user)));</a>
+<a name="ln519">      }</a>
+<a name="ln520"> </a>
+<a name="ln521">//---------------------------------------------------------</a>
+<a name="ln522">//   getScore</a>
+<a name="ln523">//---------------------------------------------------------</a>
+<a name="ln524"> </a>
+<a name="ln525">void LoginManager::getScoreInfo(int nid)</a>
+<a name="ln526">      {</a>
+<a name="ln527">      if (_accessToken.isEmpty() &amp;&amp; _refreshToken.isEmpty()) {</a>
+<a name="ln528">            emit getScoreError(&quot;getScore - No token&quot;);</a>
+<a name="ln529">            return;</a>
+<a name="ln530">            }</a>
+<a name="ln531"> </a>
+<a name="ln532">      ApiRequest* r = new ApiRequest(this);</a>
+<a name="ln533">      r-&gt;setPath(&quot;/score/full-info&quot;)</a>
+<a name="ln534">         .setMethod(ApiRequest::HTTP_GET)</a>
+<a name="ln535">         .setToken(_accessToken)</a>
+<a name="ln536">         .addGetParameter(&quot;score_id&quot;, QString::number(nid));</a>
+<a name="ln537"> </a>
+<a name="ln538">      connect(r, &amp;ApiRequest::replyFinished, this, [this](ApiRequest* r) {</a>
+<a name="ln539">            onReplyFinished(r, RequestType::GET_SCORE_INFO);</a>
+<a name="ln540">            });</a>
+<a name="ln541"> </a>
+<a name="ln542">      r-&gt;executeRequest(_networkManager);</a>
+<a name="ln543">      }</a>
+<a name="ln544"> </a>
+<a name="ln545">//---------------------------------------------------------</a>
+<a name="ln546">//   onGetScoreInfoReply</a>
+<a name="ln547">//---------------------------------------------------------</a>
+<a name="ln548"> </a>
+<a name="ln549">void LoginManager::onGetScoreInfoReply(QNetworkReply* reply, int code, const QJsonObject&amp; score)</a>
+<a name="ln550">      {</a>
+<a name="ln551">      if (code == HTTP_OK) {</a>
+<a name="ln552">            if (score.value(&quot;user&quot;) != QJsonValue::Undefined) {</a>
+<a name="ln553">                  QJsonObject user = score.value(&quot;user&quot;).toObject();</a>
+<a name="ln554">                  QString title = score.value(&quot;title&quot;).toString();</a>
+<a name="ln555">                  QString description = score.value(&quot;description&quot;).toString();</a>
+<a name="ln556">                  QString sharing = score.value(&quot;sharing&quot;).toString();</a>
+<a name="ln557">                  QString license = score.value(&quot;license&quot;).toString();</a>
+<a name="ln558">                  QString tags = score.value(&quot;tags&quot;).toString();</a>
+<a name="ln559">                  QString url = score.value(&quot;custom_url&quot;).toString();</a>
+<a name="ln560">                  if (user.value(&quot;uid&quot;) != QJsonValue::Undefined) {</a>
+<a name="ln561">                        int uid = user.value(&quot;uid&quot;).toString().toInt();</a>
+<a name="ln562">                        if (uid == _uid)</a>
+<a name="ln563">                              emit getScoreSuccess(title, description, (sharing == &quot;private&quot;), license, tags, url);</a>
+<a name="ln564">                        else</a>
+<a name="ln565">                              emit getScoreError(&quot;&quot;);</a>
+<a name="ln566">                        }</a>
+<a name="ln567">                  else {</a>
+<a name="ln568">                       emit getScoreError(&quot;&quot;);</a>
+<a name="ln569">                       }</a>
+<a name="ln570">                  }</a>
+<a name="ln571">            else {</a>
+<a name="ln572">                  emit getScoreError(&quot;&quot;);</a>
+<a name="ln573">                  }</a>
+<a name="ln574">            }</a>
+<a name="ln575">      else</a>
+<a name="ln576">            emit getScoreError(getErrorString(reply, score));</a>
+<a name="ln577">      }</a>
+<a name="ln578"> </a>
+<a name="ln579">//---------------------------------------------------------</a>
+<a name="ln580">//   getMediaUrl</a>
+<a name="ln581">//---------------------------------------------------------</a>
+<a name="ln582"> </a>
+<a name="ln583">void LoginManager::getMediaUrl(const QString&amp; nid, const QString&amp; vid, const QString&amp; encoding)</a>
+<a name="ln584">      {</a>
+<a name="ln585">      Q_UNUSED(encoding);</a>
+<a name="ln586">      ApiRequest* r = new ApiRequest(this);</a>
+<a name="ln587">      r-&gt;setPath(&quot;/score/audio&quot;)</a>
+<a name="ln588">         .setMethod(ApiRequest::HTTP_GET)</a>
+<a name="ln589">         .setToken(_accessToken)</a>
+<a name="ln590">         .addGetParameter(&quot;score_id&quot;, nid)</a>
+<a name="ln591">         .addGetParameter(&quot;revision_id&quot;, vid);</a>
+<a name="ln592"> </a>
+<a name="ln593">      connect(r, &amp;ApiRequest::replyFinished, this, [this](ApiRequest* r) {</a>
+<a name="ln594">            onReplyFinished(r, RequestType::GET_MEDIA_URL);</a>
+<a name="ln595">            });</a>
+<a name="ln596"> </a>
+<a name="ln597">      r-&gt;executeRequest(_networkManager);</a>
+<a name="ln598">      }</a>
+<a name="ln599"> </a>
+<a name="ln600">//---------------------------------------------------------</a>
+<a name="ln601">//   onGetMediaUrlReply</a>
+<a name="ln602">//---------------------------------------------------------</a>
+<a name="ln603">void LoginManager::onGetMediaUrlReply(QNetworkReply* reply, int code, const QJsonObject&amp; response)</a>
+<a name="ln604">      {</a>
+<a name="ln605">      if (code == HTTP_OK) {</a>
+<a name="ln606">            QJsonValue urlValue = response.value(&quot;url&quot;);</a>
+<a name="ln607">            if (urlValue.isString()) {</a>
+<a name="ln608">                  _mediaUrl = urlValue.toString();</a>
+<a name="ln609">                  QString mp3Path = QDir::tempPath() + QString(&quot;/temp_%1.mp3&quot;).arg(qrand() % 100000);</a>
+<a name="ln610">                  _mp3File = new QFile(mp3Path);</a>
+<a name="ln611">                  Score* score = mscore-&gt;currentScore()-&gt;masterScore();</a>
+<a name="ln612">                  int br = preferences.getInt(PREF_EXPORT_MP3_BITRATE);</a>
+<a name="ln613">                  preferences.setPreference(PREF_EXPORT_MP3_BITRATE, 128);</a>
+<a name="ln614">                  if (mscore-&gt;saveMp3(score, mp3Path)) { // no else, error handling is done in saveMp3</a>
+<a name="ln615">                        _uploadTryCount = 0;</a>
+<a name="ln616">                        uploadMedia();</a>
+<a name="ln617">                        }</a>
+<a name="ln618">                  preferences.setPreference(PREF_EXPORT_MP3_BITRATE, br);</a>
+<a name="ln619">                  }</a>
+<a name="ln620">            }</a>
+<a name="ln621">      else // TODO: handle request error properly</a>
+<a name="ln622">            qWarning(&quot;%s&quot;, getErrorString(reply, response).toUtf8().constData());</a>
+<a name="ln623">      }</a>
+<a name="ln624"> </a>
+<a name="ln625">//---------------------------------------------------------</a>
+<a name="ln626">//   uploadMedia</a>
+<a name="ln627">//---------------------------------------------------------</a>
+<a name="ln628"> </a>
+<a name="ln629">void LoginManager::uploadMedia()</a>
+<a name="ln630">      {</a>
+<a name="ln631">      if (_mediaUrl.isEmpty()) {</a>
+<a name="ln632">            _progressDialog-&gt;hide();</a>
+<a name="ln633">            _uploadAudioMenuAction-&gt;setEnabled(true);</a>
+<a name="ln634">            return;</a>
+<a name="ln635">            }</a>
+<a name="ln636">      if (!_mp3File-&gt;exists()) {</a>
+<a name="ln637">            emit mediaUploadSuccess();</a>
+<a name="ln638">            return;</a>
+<a name="ln639">            }</a>
+<a name="ln640">      if (_mp3File-&gt;open(QIODevice::ReadOnly)) { // probably cancelled, no error handling</a>
+<a name="ln641">            QNetworkRequest request;</a>
+<a name="ln642">            request.setUrl(QUrl(_mediaUrl));</a>
+<a name="ln643">            _progressDialog-&gt;reset();</a>
+<a name="ln644">            _progressDialog-&gt;setLabelText(tr(&quot;Uploading…&quot;));</a>
+<a name="ln645">            _progressDialog-&gt;setCancelButtonText(tr(&quot;Cancel&quot;));</a>
+<a name="ln646">            _progressDialog-&gt;show();</a>
+<a name="ln647">            _uploadTryCount++;</a>
+<a name="ln648">            _uploadAudioMenuAction-&gt;setEnabled(false);</a>
+<a name="ln649">            QNetworkReply *reply = mscore-&gt;networkManager()-&gt;put(request, _mp3File);</a>
+<a name="ln650">            connect(_progressDialog, SIGNAL(canceled()), reply, SLOT(abort()));</a>
+<a name="ln651">            connect(reply, SIGNAL(finished()), this, SLOT(mediaUploadFinished()));</a>
+<a name="ln652">            connect(reply, SIGNAL(uploadProgress(qint64,qint64)), this, SLOT(mediaUploadProgress(qint64, qint64)));</a>
+<a name="ln653">            }</a>
+<a name="ln654">      }</a>
+<a name="ln655"> </a>
+<a name="ln656">//---------------------------------------------------------</a>
+<a name="ln657">//   mediaUploadFinished</a>
+<a name="ln658">//---------------------------------------------------------</a>
+<a name="ln659"> </a>
+<a name="ln660">void LoginManager::mediaUploadFinished()</a>
+<a name="ln661">      {</a>
+<a name="ln662">      _uploadAudioMenuAction-&gt;setEnabled(true);</a>
+<a name="ln663">      QNetworkReply* reply = static_cast&lt;QNetworkReply*&gt;(QObject::sender());</a>
+<a name="ln664">      int statusCode = reply-&gt;attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();</a>
+<a name="ln665">      QNetworkReply::NetworkError e = reply-&gt;error();</a>
+<a name="ln666">      reply-&gt;deleteLater();</a>
+<a name="ln667">      _progressDialog-&gt;hide();</a>
+<a name="ln668">      _progressDialog-&gt;reset();</a>
+<a name="ln669">      if ((statusCode == 200 &amp;&amp; reply-&gt;error() == QNetworkReply::NoError) || _progressDialog-&gt;wasCanceled()) {</a>
+<a name="ln670">            _mp3File-&gt;remove();</a>
+<a name="ln671">            delete _mp3File;</a>
+<a name="ln672">            _mediaUrl = &quot;&quot;;</a>
+<a name="ln673">            emit mediaUploadSuccess();</a>
+<a name="ln674">            }</a>
+<a name="ln675">      else if (e == QNetworkReply::RemoteHostClosedError &amp;&amp; _uploadTryCount &lt; MAX_UPLOAD_TRY_COUNT) {</a>
+<a name="ln676">            uploadMedia();</a>
+<a name="ln677">            }</a>
+<a name="ln678">      else {</a>
+<a name="ln679">            qDebug() &lt;&lt; &quot;error uploading media&quot; &lt;&lt; e;</a>
+<a name="ln680">            QMessageBox::warning(0,</a>
+<a name="ln681">                     tr(&quot;Upload Error&quot;),</a>
+<a name="ln682">                     tr(&quot;Sorry, MuseScore couldn't upload the audio file. Error %1&quot;).arg(e),</a>
+<a name="ln683">                     QString(), QString());</a>
+<a name="ln684">            }</a>
+<a name="ln685">      }</a>
+<a name="ln686"> </a>
+<a name="ln687">//---------------------------------------------------------</a>
+<a name="ln688">//   mediaUploadProgress</a>
+<a name="ln689">//---------------------------------------------------------</a>
+<a name="ln690"> </a>
+<a name="ln691">void LoginManager::mediaUploadProgress(qint64 progress, qint64 total)</a>
+<a name="ln692">      {</a>
+<a name="ln693">      if (!_progressDialog-&gt;wasCanceled()) {</a>
+<a name="ln694">            _progressDialog-&gt;setMinimum(0);</a>
+<a name="ln695">            _progressDialog-&gt;setMaximum(total);</a>
+<a name="ln696">            _progressDialog-&gt;setValue(progress);</a>
+<a name="ln697">            }</a>
+<a name="ln698">      }</a>
+<a name="ln699"> </a>
+<a name="ln700">//---------------------------------------------------------</a>
+<a name="ln701">//   upload</a>
+<a name="ln702">//---------------------------------------------------------</a>
+<a name="ln703"> </a>
+<a name="ln704">void LoginManager::upload(const QString&amp; path, int nid, const QString&amp; title)</a>
+<a name="ln705">      {</a>
+<a name="ln706">      qDebug() &lt;&lt; &quot;file upload&quot; &lt;&lt; nid;</a>
+<a name="ln707"> </a>
+<a name="ln708">      ApiRequest* r = new ApiRequest(this);</a>
+<a name="ln709">      r-&gt;setPath(&quot;/score/upload-light&quot;)</a>
+<a name="ln710">         .setToken(_accessToken);</a>
+<a name="ln711"> </a>
+<a name="ln712">      QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType, /* parent */ r);</a>
+<a name="ln713"> </a>
+<a name="ln714">      QHttpPart filePart;</a>
+<a name="ln715">      filePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant(&quot;application/octet-stream&quot;));</a>
+<a name="ln716">      QString contentDisposition = QString(&quot;form-data; name=\&quot;score_data\&quot;; filename=\&quot;temp_%1.mscz\&quot;&quot;).arg(qrand() % 100000);</a>
+<a name="ln717">      filePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(contentDisposition));</a>
+<a name="ln718">      QFile *file = new QFile(path);</a>
+<a name="ln719">      file-&gt;open(QIODevice::ReadOnly);</a>
+<a name="ln720">      filePart.setBodyDevice(file);</a>
+<a name="ln721">      file-&gt;setParent(multiPart); // we cannot delete the file now, so delete it with the multiPart</a>
+<a name="ln722">      multiPart-&gt;append(filePart);</a>
+<a name="ln723"> </a>
+<a name="ln724">      if (nid &gt; 0) {</a>
+<a name="ln725">            QHttpPart idPart;</a>
+<a name="ln726">            idPart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(&quot;form-data; name=\&quot;score_id\&quot;&quot;));</a>
+<a name="ln727">            idPart.setBody(QString::number(nid).toLatin1());</a>
+<a name="ln728">            multiPart-&gt;append(idPart);</a>
+<a name="ln729">            }</a>
+<a name="ln730"> </a>
+<a name="ln731">      QHttpPart titlePart;</a>
+<a name="ln732">      titlePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(&quot;form-data; name=\&quot;title\&quot;&quot;));</a>
+<a name="ln733">      titlePart.setBody(title.toUtf8());</a>
+<a name="ln734">      multiPart-&gt;append(titlePart);</a>
+<a name="ln735"> </a>
+<a name="ln736">      r-&gt;setMultiPartData(multiPart);</a>
+<a name="ln737"> </a>
+<a name="ln738">      if (nid &gt; 0) // score exists, update</a>
+<a name="ln739">            r-&gt;setMethod(ApiRequest::HTTP_PUT);</a>
+<a name="ln740">      else // score doesn't exist, post a new score</a>
+<a name="ln741">            r-&gt;setMethod(ApiRequest::HTTP_POST);</a>
+<a name="ln742"> </a>
+<a name="ln743">      connect(r, &amp;ApiRequest::replyFinished, this, [this](ApiRequest* r) {</a>
+<a name="ln744">            onReplyFinished(r, RequestType::UPLOAD_SCORE);</a>
+<a name="ln745">            });</a>
+<a name="ln746"> </a>
+<a name="ln747">      r-&gt;executeRequest(_networkManager);</a>
+<a name="ln748">      }</a>
+<a name="ln749"> </a>
+<a name="ln750">//---------------------------------------------------------</a>
+<a name="ln751">//   onUploadReply</a>
+<a name="ln752">//---------------------------------------------------------</a>
+<a name="ln753"> </a>
+<a name="ln754">void LoginManager::onUploadReply(QNetworkReply* reply, int code, const QJsonObject&amp; obj)</a>
+<a name="ln755">      {</a>
+<a name="ln756">      qDebug() &lt;&lt; &quot;onUploadReply&quot; &lt;&lt; code &lt;&lt; reply-&gt;errorString();</a>
+<a name="ln757">      if (code == HTTP_OK) {</a>
+<a name="ln758">            constexpr const char* pathKey = &quot;_webview_url&quot;;</a>
+<a name="ln759">            _updateScoreDataPath = obj.contains(pathKey) ? obj.value(pathKey).toString() : QString();</a>
+<a name="ln760"> </a>
+<a name="ln761">            if (obj.value(&quot;permalink&quot;) != QJsonValue::Undefined) {</a>
+<a name="ln762">                  emit uploadSuccess(obj.value(&quot;permalink&quot;).toString(), obj.value(&quot;id&quot;).toString(), obj.value(&quot;vid&quot;).toString());</a>
+<a name="ln763">                  }</a>
+<a name="ln764">            else {</a>
+<a name="ln765">                  emit uploadError(tr(&quot;An error occurred during the file transfer. Please try again&quot;));</a>
+<a name="ln766">                  }</a>
+<a name="ln767">            }</a>
+<a name="ln768">      else</a>
+<a name="ln769">            emit uploadError(tr(&quot;Cannot upload: %1&quot;).arg(getErrorString(reply, obj)));</a>
+<a name="ln770">      }</a>
+<a name="ln771"> </a>
+<a name="ln772">//---------------------------------------------------------</a>
+<a name="ln773">//   updateScoreData</a>
+<a name="ln774">//---------------------------------------------------------</a>
+<a name="ln775"> </a>
+<a name="ln776">void LoginManager::updateScoreData(const QString&amp; nid, bool newScore)</a>
+<a name="ln777">      {</a>
+<a name="ln778">      const QUrl url(ApiInfo::getUpdateScoreInfoUrl(nid, _accessToken, newScore, _updateScoreDataPath));</a>
+<a name="ln779">#ifdef USE_WEBENGINE</a>
+<a name="ln780">      QWebEngineView* webView = new QWebEngineView;</a>
+<a name="ln781">      webView-&gt;setWindowModality(Qt::ApplicationModal);</a>
+<a name="ln782">      webView-&gt;setAttribute(Qt::WA_DeleteOnClose);</a>
+<a name="ln783"> </a>
+<a name="ln784">      QWebEnginePage* page = webView-&gt;page();</a>
+<a name="ln785">      QWebEngineProfile* profile = page-&gt;profile();</a>
+<a name="ln786"> </a>
+<a name="ln787">      profile-&gt;setPersistentCookiesPolicy(QWebEngineProfile::NoPersistentCookies);</a>
+<a name="ln788">      profile-&gt;setRequestInterceptor(new ApiWebEngineRequestInterceptor(profile));</a>
+<a name="ln789"> </a>
+<a name="ln790">      connect(page, &amp;QWebEnginePage::windowCloseRequested, webView, &amp;QWebEngineView::close);</a>
+<a name="ln791"> </a>
+<a name="ln792">      clearHttpCacheOnRenderFinish(webView);</a>
+<a name="ln793"> </a>
+<a name="ln794">      webView-&gt;load(url);</a>
+<a name="ln795">      webView-&gt;show();</a>
+<a name="ln796">#else</a>
+<a name="ln797">      QDesktopServices::openUrl(url);</a>
+<a name="ln798">#endif</a>
+<a name="ln799">      }</a>
+<a name="ln800"> </a>
+<a name="ln801">//---------------------------------------------------------</a>
+<a name="ln802">//   hasAccessToken</a>
+<a name="ln803">//---------------------------------------------------------</a>
+<a name="ln804"> </a>
+<a name="ln805">bool LoginManager::hasAccessToken()</a>
+<a name="ln806">      {</a>
+<a name="ln807">      return !_accessToken.isEmpty();</a>
+<a name="ln808">      }</a>
+<a name="ln809"> </a>
+<a name="ln810">//---------------------------------------------------------</a>
+<a name="ln811">//   logout</a>
+<a name="ln812">//---------------------------------------------------------</a>
+<a name="ln813"> </a>
+<a name="ln814">bool LoginManager::logout()</a>
+<a name="ln815">      {</a>
+<a name="ln816">      if (!_accessToken.isEmpty()) {</a>
+<a name="ln817">            ApiRequest* r = new ApiRequest(this);</a>
+<a name="ln818">            r-&gt;setPath(&quot;/auth/login&quot;)</a>
+<a name="ln819">               .setMethod(ApiRequest::HTTP_DELETE)</a>
+<a name="ln820">               .setToken(_accessToken);</a>
+<a name="ln821"> </a>
+<a name="ln822">            connect(r, &amp;ApiRequest::replyFinished, r, &amp;ApiRequest::deleteLater); // we don't need the reply info here</a>
+<a name="ln823">            r-&gt;executeRequest(_networkManager);</a>
+<a name="ln824">            }</a>
+<a name="ln825"> </a>
+<a name="ln826">      _accessToken.clear();</a>
+<a name="ln827">      _refreshToken.clear();</a>
+<a name="ln828">      QFile loadFile(dataPath + &quot;/cred.dat&quot;);</a>
+<a name="ln829">      if (!loadFile.exists())</a>
+<a name="ln830">            return true;</a>
+<a name="ln831">      return loadFile.remove();</a>
+<a name="ln832">      }</a>
+<a name="ln833"> </a>
+<a name="ln834">//---------------------------------------------------------</a>
+<a name="ln835">//   ApiRequest::setToken</a>
+<a name="ln836">//---------------------------------------------------------</a>
+<a name="ln837"> </a>
+<a name="ln838">ApiRequest&amp; ApiRequest::setToken(const QString&amp; token)</a>
+<a name="ln839">      {</a>
+<a name="ln840">      const QString tokenKey(&quot;token&quot;);</a>
+<a name="ln841">      _urlQuery.removeQueryItem(tokenKey);</a>
+<a name="ln842">      if (!token.isEmpty())</a>
+<a name="ln843">            _urlQuery.addQueryItem(tokenKey, token);</a>
+<a name="ln844">      return *this;</a>
+<a name="ln845">      }</a>
+<a name="ln846"> </a>
+<a name="ln847">//---------------------------------------------------------</a>
+<a name="ln848">//   ApiRequest::buildRequest</a>
+<a name="ln849">//---------------------------------------------------------</a>
+<a name="ln850"> </a>
+<a name="ln851">QNetworkRequest ApiRequest::buildRequest() const</a>
+<a name="ln852">      {</a>
+<a name="ln853">      QNetworkRequest r;</a>
+<a name="ln854"> </a>
+<a name="ln855">      QUrl url(_url);</a>
+<a name="ln856">      url.setQuery(_urlQuery);</a>
+<a name="ln857">      r.setUrl(url);</a>
+<a name="ln858">      r.setRawHeader(&quot;Accept&quot;, &quot;application/json&quot;);</a>
+<a name="ln859">      const ApiInfo&amp; apiInfo = ApiInfo::instance();</a>
+<a name="ln860">      r.setHeader(QNetworkRequest::UserAgentHeader, apiInfo.userAgent);</a>
+<a name="ln861">      r.setRawHeader(apiInfo.clientIdHeader, apiInfo.clientId);</a>
+<a name="ln862">      r.setRawHeader(apiInfo.apiKeyHeader, apiInfo.apiKey);</a>
+<a name="ln863"> </a>
+<a name="ln864">      return r;</a>
+<a name="ln865">      }</a>
+<a name="ln866"> </a>
+<a name="ln867">//---------------------------------------------------------</a>
+<a name="ln868">//   ApiRequest::executeRequest</a>
+<a name="ln869">//---------------------------------------------------------</a>
+<a name="ln870"> </a>
+<a name="ln871">void ApiRequest::executeRequest(QNetworkAccessManager* networkManager)</a>
+<a name="ln872">      {</a>
+<a name="ln873">      ++_retryCount;</a>
+<a name="ln874">      QNetworkRequest request(buildRequest());</a>
+<a name="ln875">      const QByteArray data(_bodyQuery.toString().toLatin1());</a>
+<a name="ln876"> </a>
+<a name="ln877">      switch (_method) {</a>
+<a name="ln878">            case HTTP_GET:</a>
+<a name="ln879">                  _reply = networkManager-&gt;get(request);</a>
+<a name="ln880">                  break;</a>
+<a name="ln881">            case HTTP_POST:</a>
+<a name="ln882">                  if (_multipart)</a>
+<a name="ln883">                        _reply = networkManager-&gt;post(request, _multipart);</a>
+<a name="ln884">                  else</a>
+<a name="ln885">                        _reply = networkManager-&gt;post(request, data);</a>
+<a name="ln886">                  break;</a>
+<a name="ln887">            case HTTP_PUT:</a>
+<a name="ln888">                  if (_multipart)</a>
+<a name="ln889">                        _reply = networkManager-&gt;put(request, _multipart);</a>
+<a name="ln890">                  else</a>
+<a name="ln891">                        _reply = networkManager-&gt;put(request, data);</a>
+<a name="ln892">                  break;</a>
+<a name="ln893">            case HTTP_DELETE:</a>
+<a name="ln894">                  _reply = networkManager-&gt;deleteResource(request);</a>
+<a name="ln895">                  break;</a>
+<a name="ln896">            };</a>
+<a name="ln897"> </a>
+<a name="ln898">      _reply-&gt;setParent(this);</a>
+<a name="ln899">      connect(_reply, &amp;QNetworkReply::finished, this, [this]() { emit replyFinished(this); });</a>
+<a name="ln900">      }</a>
+<a name="ln901"> </a>
+<a name="ln902">//---------------------------------------------------------</a>
+<a name="ln903">//   ApiWebEngineRequestInterceptor::interceptRequest</a>
+<a name="ln904">//    Sets the appropriate API headers for requests to</a>
+<a name="ln905">//    musescore.com</a>
+<a name="ln906">//---------------------------------------------------------</a>
+<a name="ln907"> </a>
+<a name="ln908">#ifdef USE_WEBENGINE</a>
+<a name="ln909">void ApiWebEngineRequestInterceptor::interceptRequest(QWebEngineUrlRequestInfo&amp; request)</a>
+<a name="ln910">      {</a>
+<a name="ln911">      const ApiInfo&amp; apiInfo = ApiInfo::instance();</a>
+<a name="ln912">      request.setHttpHeader(&quot;User-Agent&quot;, apiInfo.userAgent);</a>
+<a name="ln913">      request.setHttpHeader(apiInfo.clientIdHeader, apiInfo.clientId);</a>
+<a name="ln914">      request.setHttpHeader(apiInfo.apiKeyHeader, apiInfo.apiKey);</a>
+<a name="ln915">      }</a>
+<a name="ln916">#endif</a>
+<a name="ln917">}</a>
+
+</code></pre>
+<div class="balloon" rel="120"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="121"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="122"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="137"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v601/" target="_blank">V601</a> The bool type is implicitly cast to the integer type. Inspect the first argument.</p></div>
+<div class="balloon" rel="622"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'warning' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="154"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> It is possible that not all members of a class are initialized inside the constructor. Consider inspecting: _mp3File.</p></div>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

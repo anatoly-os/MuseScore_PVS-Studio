@@ -1,0 +1,172 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>splitMeasure.cpp</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">//=============================================================================</a>
+<a name="ln2">//  MuseScore</a>
+<a name="ln3">//  Music Composition &amp; Notation</a>
+<a name="ln4">//</a>
+<a name="ln5">//  Copyright (C) 2002-2012 Werner Schweer</a>
+<a name="ln6">//</a>
+<a name="ln7">//  This program is free software; you can redistribute it and/or modify</a>
+<a name="ln8">//  it under the terms of the GNU General Public License version 2</a>
+<a name="ln9">//  as published by the Free Software Foundation and appearing in</a>
+<a name="ln10">//  the file LICENCE.GPL</a>
+<a name="ln11">//=============================================================================</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;score.h&quot;</a>
+<a name="ln14">#include &quot;measure.h&quot;</a>
+<a name="ln15">#include &quot;segment.h&quot;</a>
+<a name="ln16">#include &quot;chordrest.h&quot;</a>
+<a name="ln17">#include &quot;range.h&quot;</a>
+<a name="ln18">#include &quot;tuplet.h&quot;</a>
+<a name="ln19">#include &quot;spanner.h&quot;</a>
+<a name="ln20">#include &quot;tie.h&quot;</a>
+<a name="ln21">#include &quot;undo.h&quot;</a>
+<a name="ln22">#include &quot;utils.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">namespace Ms {</a>
+<a name="ln25"> </a>
+<a name="ln26">//---------------------------------------------------------</a>
+<a name="ln27">//   cmdSplitMeasure</a>
+<a name="ln28">//---------------------------------------------------------</a>
+<a name="ln29"> </a>
+<a name="ln30">void Score::cmdSplitMeasure(ChordRest* cr)</a>
+<a name="ln31">      {</a>
+<a name="ln32">      startCmd();</a>
+<a name="ln33">      splitMeasure(cr-&gt;segment());</a>
+<a name="ln34">      endCmd();</a>
+<a name="ln35">      }</a>
+<a name="ln36"> </a>
+<a name="ln37">//---------------------------------------------------------</a>
+<a name="ln38">//   splitMeasure</a>
+<a name="ln39">//    return true on success</a>
+<a name="ln40">//---------------------------------------------------------</a>
+<a name="ln41"> </a>
+<a name="ln42">void Score::splitMeasure(Segment* segment)</a>
+<a name="ln43">      {</a>
+<a name="ln44">      if (segment-&gt;rtick().isZero()) {</a>
+<a name="ln45">            MScore::setError(CANNOT_SPLIT_MEASURE_FIRST_BEAT);</a>
+<a name="ln46">            return;</a>
+<a name="ln47">            }</a>
+<a name="ln48">      if (segment-&gt;splitsTuplet()) {</a>
+<a name="ln49">            MScore::setError(CANNOT_SPLIT_MEASURE_TUPLET);</a>
+<a name="ln50">            return;</a>
+<a name="ln51">            }</a>
+<a name="ln52">      Measure* measure = segment-&gt;measure();</a>
+<a name="ln53"> </a>
+<a name="ln54">      ScoreRange range;</a>
+<a name="ln55">      range.read(measure-&gt;first(), measure-&gt;last());</a>
+<a name="ln56"> </a>
+<a name="ln57">      Fraction stick = measure-&gt;tick();</a>
+<a name="ln58">      Fraction etick = measure-&gt;endTick();</a>
+<a name="ln59"> </a>
+<a name="ln60">      std::list&lt;std::tuple&lt;Spanner*, Fraction, Fraction&gt;&gt; sl;</a>
+<a name="ln61">      for (auto i : spanner()) {</a>
+<a name="ln62">            Spanner* s = i.second;</a>
+<a name="ln63">            Element* start = s-&gt;startElement();</a>
+<a name="ln64">            Element* end = s-&gt;endElement();</a>
+<a name="ln65">            if (s-&gt;tick() &gt;= stick &amp;&amp; s-&gt;tick() &lt; etick)</a>
+<a name="ln66">                  start = nullptr;</a>
+<a name="ln67">            if (s-&gt;tick2() &gt;= stick &amp;&amp; s-&gt;tick2() &lt; etick)</a>
+<a name="ln68">                  end = nullptr;</a>
+<a name="ln69">            if (start != s-&gt;startElement() || end != s-&gt;endElement())</a>
+<a name="ln70">                  undo(new ChangeStartEndSpanner(s, start, end));</a>
+<a name="ln71">            if (s-&gt;tick() &lt; stick &amp;&amp; s-&gt;tick2() &gt; stick)</a>
+<a name="ln72">                  sl.push_back(make_tuple(s, s-&gt;tick(), s-&gt;ticks()));</a>
+<a name="ln73">            }</a>
+<a name="ln74"> </a>
+<a name="ln75">      // Make sure ties are the beginning the split measure are restored.</a>
+<a name="ln76">      std::vector&lt;Tie*&gt; ties;</a>
+<a name="ln77">      for (int track = 0; track &lt; ntracks(); track++) {</a>
+<a name="ln78">            Chord* chord = measure-&gt;findChord(stick, track);</a>
+<a name="ln79">            if (chord)</a>
+<a name="ln80">                  for (Note* note : chord-&gt;notes()) {</a>
+<a name="ln81">                        Tie* tie = note-&gt;tieBack();</a>
+<a name="ln82">                        if (tie)</a>
+<a name="ln83">                              ties.push_back(tie-&gt;clone());</a>
+<a name="ln84">                        }</a>
+<a name="ln85">                  }</a>
+<a name="ln86"> </a>
+<a name="ln87">      MeasureBase* nm = measure-&gt;next();</a>
+<a name="ln88"> </a>
+<a name="ln89">      undoRemoveMeasures(measure, measure);</a>
+<a name="ln90">      undoInsertTime(measure-&gt;tick(), -measure-&gt;ticks());</a>
+<a name="ln91"> </a>
+<a name="ln92">      // create empty measures:</a>
+<a name="ln93">      insertMeasure(ElementType::MEASURE, nm, true, false);</a>
+<a name="ln94">      Measure* m2 = toMeasure(nm ? nm-&gt;prev() : lastMeasure());</a>
+<a name="ln95">      insertMeasure(ElementType::MEASURE, m2, true, false);</a>
+<a name="ln96">      Measure* m1 = toMeasure(m2-&gt;prev());</a>
+<a name="ln97"> </a>
+<a name="ln98">      Fraction tick = segment-&gt;tick();</a>
+<a name="ln99">      m1-&gt;setTick(measure-&gt;tick());</a>
+<a name="ln100">      m2-&gt;setTick(tick);</a>
+<a name="ln101">      Fraction ticks1 = segment-&gt;tick() - measure-&gt;tick();</a>
+<a name="ln102">      Fraction ticks2 = measure-&gt;ticks() - ticks1;</a>
+<a name="ln103">      m1-&gt;setTimesig(measure-&gt;timesig());</a>
+<a name="ln104">      m2-&gt;setTimesig(measure-&gt;timesig());</a>
+<a name="ln105">      m1-&gt;adjustToLen(ticks1.reduced(), false);</a>
+<a name="ln106">      m2-&gt;adjustToLen(ticks2.reduced(), false);</a>
+<a name="ln107">      range.write(this, m1-&gt;tick());</a>
+<a name="ln108"> </a>
+<a name="ln109">      // Restore ties the the beginning of the split measure.</a>
+<a name="ln110">      for (auto tie : ties) {</a>
+<a name="ln111">            tie-&gt;setEndNote(searchTieNote(tie-&gt;startNote()));</a>
+<a name="ln112">            undoAddElement(tie);</a>
+<a name="ln113">            }</a>
+<a name="ln114"> </a>
+<a name="ln115">      for (auto i : sl) {</a>
+<a name="ln116">            Spanner* s      = std::get&lt;0&gt;(i);</a>
+<a name="ln117">            Fraction t      = std::get&lt;1&gt;(i);</a>
+<a name="ln118">            Fraction ticks  = std::get&lt;2&gt;(i);</a>
+<a name="ln119">            if (s-&gt;tick() != t)</a>
+<a name="ln120">                  s-&gt;undoChangeProperty(Pid::SPANNER_TICK, t);</a>
+<a name="ln121">            if (s-&gt;ticks() != ticks)</a>
+<a name="ln122">                  s-&gt;undoChangeProperty(Pid::SPANNER_TICKS, ticks);</a>
+<a name="ln123">            }</a>
+<a name="ln124">      }</a>
+<a name="ln125">}</a>
+<a name="ln126"> </a>
+
+</code></pre>
+<div class="balloon" rel="8"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1042/" target="_blank">V1042</a> This file is marked with copyleft license, which requires you to open the derived source code.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

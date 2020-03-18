@@ -1,0 +1,1670 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>t1decode.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/***************************************************************************/</a>
+<a name="ln2">/*                                                                         */</a>
+<a name="ln3">/*  t1decode.c                                                             */</a>
+<a name="ln4">/*                                                                         */</a>
+<a name="ln5">/*    PostScript Type 1 decoding routines (body).                          */</a>
+<a name="ln6">/*                                                                         */</a>
+<a name="ln7">/*  Copyright 2000-2015 by                                                 */</a>
+<a name="ln8">/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */</a>
+<a name="ln9">/*                                                                         */</a>
+<a name="ln10">/*  This file is part of the FreeType project, and may only be used,       */</a>
+<a name="ln11">/*  modified, and distributed under the terms of the FreeType project      */</a>
+<a name="ln12">/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */</a>
+<a name="ln13">/*  this file you indicate that you have read the license and              */</a>
+<a name="ln14">/*  understand and accept it fully.                                        */</a>
+<a name="ln15">/*                                                                         */</a>
+<a name="ln16">/***************************************************************************/</a>
+<a name="ln17"> </a>
+<a name="ln18"> </a>
+<a name="ln19">#include &lt;ft2build.h&gt;</a>
+<a name="ln20">#include FT_INTERNAL_CALC_H</a>
+<a name="ln21">#include FT_INTERNAL_DEBUG_H</a>
+<a name="ln22">#include FT_INTERNAL_POSTSCRIPT_HINTS_H</a>
+<a name="ln23">#include FT_OUTLINE_H</a>
+<a name="ln24"> </a>
+<a name="ln25">#include &quot;t1decode.h&quot;</a>
+<a name="ln26">#include &quot;psobjs.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">#include &quot;psauxerr.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">/* ensure proper sign extension */</a>
+<a name="ln31">#define Fix2Int( f )  ( (FT_Int)(FT_Short)( (f) &gt;&gt; 16 ) )</a>
+<a name="ln32"> </a>
+<a name="ln33">  /*************************************************************************/</a>
+<a name="ln34">  /*                                                                       */</a>
+<a name="ln35">  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */</a>
+<a name="ln36">  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */</a>
+<a name="ln37">  /* messages during execution.                                            */</a>
+<a name="ln38">  /*                                                                       */</a>
+<a name="ln39">#undef  FT_COMPONENT</a>
+<a name="ln40">#define FT_COMPONENT  trace_t1decode</a>
+<a name="ln41"> </a>
+<a name="ln42"> </a>
+<a name="ln43">  typedef enum  T1_Operator_</a>
+<a name="ln44">  {</a>
+<a name="ln45">    op_none = 0,</a>
+<a name="ln46">    op_endchar,</a>
+<a name="ln47">    op_hsbw,</a>
+<a name="ln48">    op_seac,</a>
+<a name="ln49">    op_sbw,</a>
+<a name="ln50">    op_closepath,</a>
+<a name="ln51">    op_hlineto,</a>
+<a name="ln52">    op_hmoveto,</a>
+<a name="ln53">    op_hvcurveto,</a>
+<a name="ln54">    op_rlineto,</a>
+<a name="ln55">    op_rmoveto,</a>
+<a name="ln56">    op_rrcurveto,</a>
+<a name="ln57">    op_vhcurveto,</a>
+<a name="ln58">    op_vlineto,</a>
+<a name="ln59">    op_vmoveto,</a>
+<a name="ln60">    op_dotsection,</a>
+<a name="ln61">    op_hstem,</a>
+<a name="ln62">    op_hstem3,</a>
+<a name="ln63">    op_vstem,</a>
+<a name="ln64">    op_vstem3,</a>
+<a name="ln65">    op_div,</a>
+<a name="ln66">    op_callothersubr,</a>
+<a name="ln67">    op_callsubr,</a>
+<a name="ln68">    op_pop,</a>
+<a name="ln69">    op_return,</a>
+<a name="ln70">    op_setcurrentpoint,</a>
+<a name="ln71">    op_unknown15,</a>
+<a name="ln72"> </a>
+<a name="ln73">    op_max    /* never remove this one */</a>
+<a name="ln74"> </a>
+<a name="ln75">  } T1_Operator;</a>
+<a name="ln76"> </a>
+<a name="ln77"> </a>
+<a name="ln78">  static</a>
+<a name="ln79">  const FT_Int  t1_args_count[op_max] =</a>
+<a name="ln80">  {</a>
+<a name="ln81">    0, /* none */</a>
+<a name="ln82">    0, /* endchar */</a>
+<a name="ln83">    2, /* hsbw */</a>
+<a name="ln84">    5, /* seac */</a>
+<a name="ln85">    4, /* sbw */</a>
+<a name="ln86">    0, /* closepath */</a>
+<a name="ln87">    1, /* hlineto */</a>
+<a name="ln88">    1, /* hmoveto */</a>
+<a name="ln89">    4, /* hvcurveto */</a>
+<a name="ln90">    2, /* rlineto */</a>
+<a name="ln91">    2, /* rmoveto */</a>
+<a name="ln92">    6, /* rrcurveto */</a>
+<a name="ln93">    4, /* vhcurveto */</a>
+<a name="ln94">    1, /* vlineto */</a>
+<a name="ln95">    1, /* vmoveto */</a>
+<a name="ln96">    0, /* dotsection */</a>
+<a name="ln97">    2, /* hstem */</a>
+<a name="ln98">    6, /* hstem3 */</a>
+<a name="ln99">    2, /* vstem */</a>
+<a name="ln100">    6, /* vstem3 */</a>
+<a name="ln101">    2, /* div */</a>
+<a name="ln102">   -1, /* callothersubr */</a>
+<a name="ln103">    1, /* callsubr */</a>
+<a name="ln104">    0, /* pop */</a>
+<a name="ln105">    0, /* return */</a>
+<a name="ln106">    2, /* setcurrentpoint */</a>
+<a name="ln107">    2  /* opcode 15 (undocumented and obsolete) */</a>
+<a name="ln108">  };</a>
+<a name="ln109"> </a>
+<a name="ln110"> </a>
+<a name="ln111">  /*************************************************************************/</a>
+<a name="ln112">  /*                                                                       */</a>
+<a name="ln113">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln114">  /*    t1_lookup_glyph_by_stdcharcode                                     */</a>
+<a name="ln115">  /*                                                                       */</a>
+<a name="ln116">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln117">  /*    Looks up a given glyph by its StandardEncoding charcode.  Used to  */</a>
+<a name="ln118">  /*    implement the SEAC Type 1 operator.                                */</a>
+<a name="ln119">  /*                                                                       */</a>
+<a name="ln120">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln121">  /*    face     :: The current face object.                               */</a>
+<a name="ln122">  /*                                                                       */</a>
+<a name="ln123">  /*    charcode :: The character code to look for.                        */</a>
+<a name="ln124">  /*                                                                       */</a>
+<a name="ln125">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln126">  /*    A glyph index in the font face.  Returns -1 if the corresponding   */</a>
+<a name="ln127">  /*    glyph wasn't found.                                                */</a>
+<a name="ln128">  /*                                                                       */</a>
+<a name="ln129">  static FT_Int</a>
+<a name="ln130">  t1_lookup_glyph_by_stdcharcode( T1_Decoder  decoder,</a>
+<a name="ln131">                                  FT_Int      charcode )</a>
+<a name="ln132">  {</a>
+<a name="ln133">    FT_UInt             n;</a>
+<a name="ln134">    const FT_String*    glyph_name;</a>
+<a name="ln135">    FT_Service_PsCMaps  psnames = decoder-&gt;psnames;</a>
+<a name="ln136"> </a>
+<a name="ln137"> </a>
+<a name="ln138">    /* check range of standard char code */</a>
+<a name="ln139">    if ( charcode &lt; 0 || charcode &gt; 255 )</a>
+<a name="ln140">      return -1;</a>
+<a name="ln141"> </a>
+<a name="ln142">    glyph_name = psnames-&gt;adobe_std_strings(</a>
+<a name="ln143">                   psnames-&gt;adobe_std_encoding[charcode]);</a>
+<a name="ln144"> </a>
+<a name="ln145">    for ( n = 0; n &lt; decoder-&gt;num_glyphs; n++ )</a>
+<a name="ln146">    {</a>
+<a name="ln147">      FT_String*  name = (FT_String*)decoder-&gt;glyph_names[n];</a>
+<a name="ln148"> </a>
+<a name="ln149"> </a>
+<a name="ln150">      if ( name                               &amp;&amp;</a>
+<a name="ln151">           name[0] == glyph_name[0]           &amp;&amp;</a>
+<a name="ln152">           ft_strcmp( name, glyph_name ) == 0 )</a>
+<a name="ln153">        return (FT_Int)n;</a>
+<a name="ln154">    }</a>
+<a name="ln155"> </a>
+<a name="ln156">    return -1;</a>
+<a name="ln157">  }</a>
+<a name="ln158"> </a>
+<a name="ln159"> </a>
+<a name="ln160">  /*************************************************************************/</a>
+<a name="ln161">  /*                                                                       */</a>
+<a name="ln162">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln163">  /*    t1operator_seac                                                    */</a>
+<a name="ln164">  /*                                                                       */</a>
+<a name="ln165">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln166">  /*    Implements the `seac' Type 1 operator for a Type 1 decoder.        */</a>
+<a name="ln167">  /*                                                                       */</a>
+<a name="ln168">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln169">  /*    decoder :: The current CID decoder.                                */</a>
+<a name="ln170">  /*                                                                       */</a>
+<a name="ln171">  /*    asb     :: The accent's side bearing.                              */</a>
+<a name="ln172">  /*                                                                       */</a>
+<a name="ln173">  /*    adx     :: The horizontal offset of the accent.                    */</a>
+<a name="ln174">  /*                                                                       */</a>
+<a name="ln175">  /*    ady     :: The vertical offset of the accent.                      */</a>
+<a name="ln176">  /*                                                                       */</a>
+<a name="ln177">  /*    bchar   :: The base character's StandardEncoding charcode.         */</a>
+<a name="ln178">  /*                                                                       */</a>
+<a name="ln179">  /*    achar   :: The accent character's StandardEncoding charcode.       */</a>
+<a name="ln180">  /*                                                                       */</a>
+<a name="ln181">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln182">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln183">  /*                                                                       */</a>
+<a name="ln184">  static FT_Error</a>
+<a name="ln185">  t1operator_seac( T1_Decoder  decoder,</a>
+<a name="ln186">                   FT_Pos      asb,</a>
+<a name="ln187">                   FT_Pos      adx,</a>
+<a name="ln188">                   FT_Pos      ady,</a>
+<a name="ln189">                   FT_Int      bchar,</a>
+<a name="ln190">                   FT_Int      achar )</a>
+<a name="ln191">  {</a>
+<a name="ln192">    FT_Error     error;</a>
+<a name="ln193">    FT_Int       bchar_index, achar_index;</a>
+<a name="ln194">#if 0</a>
+<a name="ln195">    FT_Int       n_base_points;</a>
+<a name="ln196">    FT_Outline*  base = decoder-&gt;builder.base;</a>
+<a name="ln197">#endif</a>
+<a name="ln198">    FT_Vector    left_bearing, advance;</a>
+<a name="ln199"> </a>
+<a name="ln200">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln201">    T1_Face      face  = (T1_Face)decoder-&gt;builder.face;</a>
+<a name="ln202">#endif</a>
+<a name="ln203"> </a>
+<a name="ln204"> </a>
+<a name="ln205">    if ( decoder-&gt;seac )</a>
+<a name="ln206">    {</a>
+<a name="ln207">      FT_ERROR(( &quot;t1operator_seac: invalid nested seac\n&quot; ));</a>
+<a name="ln208">      return FT_THROW( Syntax_Error );</a>
+<a name="ln209">    }</a>
+<a name="ln210"> </a>
+<a name="ln211">    if ( decoder-&gt;builder.metrics_only )</a>
+<a name="ln212">    {</a>
+<a name="ln213">      FT_ERROR(( &quot;t1operator_seac: unexpected seac\n&quot; ));</a>
+<a name="ln214">      return FT_THROW( Syntax_Error );</a>
+<a name="ln215">    }</a>
+<a name="ln216"> </a>
+<a name="ln217">    /* seac weirdness */</a>
+<a name="ln218">    adx += decoder-&gt;builder.left_bearing.x;</a>
+<a name="ln219"> </a>
+<a name="ln220">    /* `glyph_names' is set to 0 for CID fonts which do not */</a>
+<a name="ln221">    /* include an encoding.  How can we deal with these?    */</a>
+<a name="ln222">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln223">    if ( decoder-&gt;glyph_names == 0                   &amp;&amp;</a>
+<a name="ln224">         !face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln225">#else</a>
+<a name="ln226">    if ( decoder-&gt;glyph_names == 0 )</a>
+<a name="ln227">#endif /* FT_CONFIG_OPTION_INCREMENTAL */</a>
+<a name="ln228">    {</a>
+<a name="ln229">      FT_ERROR(( &quot;t1operator_seac:&quot;</a>
+<a name="ln230">                 &quot; glyph names table not available in this font\n&quot; ));</a>
+<a name="ln231">      return FT_THROW( Syntax_Error );</a>
+<a name="ln232">    }</a>
+<a name="ln233"> </a>
+<a name="ln234">#ifdef FT_CONFIG_OPTION_INCREMENTAL</a>
+<a name="ln235">    if ( face-&gt;root.internal-&gt;incremental_interface )</a>
+<a name="ln236">    {</a>
+<a name="ln237">      /* the caller must handle the font encoding also */</a>
+<a name="ln238">      bchar_index = bchar;</a>
+<a name="ln239">      achar_index = achar;</a>
+<a name="ln240">    }</a>
+<a name="ln241">    else</a>
+<a name="ln242">#endif</a>
+<a name="ln243">    {</a>
+<a name="ln244">      bchar_index = t1_lookup_glyph_by_stdcharcode( decoder, bchar );</a>
+<a name="ln245">      achar_index = t1_lookup_glyph_by_stdcharcode( decoder, achar );</a>
+<a name="ln246">    }</a>
+<a name="ln247"> </a>
+<a name="ln248">    if ( bchar_index &lt; 0 || achar_index &lt; 0 )</a>
+<a name="ln249">    {</a>
+<a name="ln250">      FT_ERROR(( &quot;t1operator_seac:&quot;</a>
+<a name="ln251">                 &quot; invalid seac character code arguments\n&quot; ));</a>
+<a name="ln252">      return FT_THROW( Syntax_Error );</a>
+<a name="ln253">    }</a>
+<a name="ln254"> </a>
+<a name="ln255">    /* if we are trying to load a composite glyph, do not load the */</a>
+<a name="ln256">    /* accent character and return the array of subglyphs.         */</a>
+<a name="ln257">    if ( decoder-&gt;builder.no_recurse )</a>
+<a name="ln258">    {</a>
+<a name="ln259">      FT_GlyphSlot    glyph  = (FT_GlyphSlot)decoder-&gt;builder.glyph;</a>
+<a name="ln260">      FT_GlyphLoader  loader = glyph-&gt;internal-&gt;loader;</a>
+<a name="ln261">      FT_SubGlyph     subg;</a>
+<a name="ln262"> </a>
+<a name="ln263"> </a>
+<a name="ln264">      /* reallocate subglyph array if necessary */</a>
+<a name="ln265">      error = FT_GlyphLoader_CheckSubGlyphs( loader, 2 );</a>
+<a name="ln266">      if ( error )</a>
+<a name="ln267">        goto Exit;</a>
+<a name="ln268"> </a>
+<a name="ln269">      subg = loader-&gt;current.subglyphs;</a>
+<a name="ln270"> </a>
+<a name="ln271">      /* subglyph 0 = base character */</a>
+<a name="ln272">      subg-&gt;index = bchar_index;</a>
+<a name="ln273">      subg-&gt;flags = FT_SUBGLYPH_FLAG_ARGS_ARE_XY_VALUES |</a>
+<a name="ln274">                    FT_SUBGLYPH_FLAG_USE_MY_METRICS;</a>
+<a name="ln275">      subg-&gt;arg1  = 0;</a>
+<a name="ln276">      subg-&gt;arg2  = 0;</a>
+<a name="ln277">      subg++;</a>
+<a name="ln278"> </a>
+<a name="ln279">      /* subglyph 1 = accent character */</a>
+<a name="ln280">      subg-&gt;index = achar_index;</a>
+<a name="ln281">      subg-&gt;flags = FT_SUBGLYPH_FLAG_ARGS_ARE_XY_VALUES;</a>
+<a name="ln282">      subg-&gt;arg1  = (FT_Int)FIXED_TO_INT( adx - asb );</a>
+<a name="ln283">      subg-&gt;arg2  = (FT_Int)FIXED_TO_INT( ady );</a>
+<a name="ln284"> </a>
+<a name="ln285">      /* set up remaining glyph fields */</a>
+<a name="ln286">      glyph-&gt;num_subglyphs = 2;</a>
+<a name="ln287">      glyph-&gt;subglyphs     = loader-&gt;base.subglyphs;</a>
+<a name="ln288">      glyph-&gt;format        = FT_GLYPH_FORMAT_COMPOSITE;</a>
+<a name="ln289"> </a>
+<a name="ln290">      loader-&gt;current.num_subglyphs = 2;</a>
+<a name="ln291">      goto Exit;</a>
+<a name="ln292">    }</a>
+<a name="ln293"> </a>
+<a name="ln294">    /* First load `bchar' in builder */</a>
+<a name="ln295">    /* now load the unscaled outline */</a>
+<a name="ln296"> </a>
+<a name="ln297">    FT_GlyphLoader_Prepare( decoder-&gt;builder.loader );  /* prepare loader */</a>
+<a name="ln298"> </a>
+<a name="ln299">    /* the seac operator must not be nested */</a>
+<a name="ln300">    decoder-&gt;seac = TRUE;</a>
+<a name="ln301">    error = t1_decoder_parse_glyph( decoder, (FT_UInt)bchar_index );</a>
+<a name="ln302">    decoder-&gt;seac = FALSE;</a>
+<a name="ln303">    if ( error )</a>
+<a name="ln304">      goto Exit;</a>
+<a name="ln305"> </a>
+<a name="ln306">    /* save the left bearing and width of the base character */</a>
+<a name="ln307">    /* as they will be erased by the next load.              */</a>
+<a name="ln308"> </a>
+<a name="ln309">    left_bearing = decoder-&gt;builder.left_bearing;</a>
+<a name="ln310">    advance      = decoder-&gt;builder.advance;</a>
+<a name="ln311"> </a>
+<a name="ln312">    decoder-&gt;builder.left_bearing.x = 0;</a>
+<a name="ln313">    decoder-&gt;builder.left_bearing.y = 0;</a>
+<a name="ln314"> </a>
+<a name="ln315">    decoder-&gt;builder.pos_x = adx - asb;</a>
+<a name="ln316">    decoder-&gt;builder.pos_y = ady;</a>
+<a name="ln317"> </a>
+<a name="ln318">    /* Now load `achar' on top of */</a>
+<a name="ln319">    /* the base outline           */</a>
+<a name="ln320"> </a>
+<a name="ln321">    /* the seac operator must not be nested */</a>
+<a name="ln322">    decoder-&gt;seac = TRUE;</a>
+<a name="ln323">    error = t1_decoder_parse_glyph( decoder, (FT_UInt)achar_index );</a>
+<a name="ln324">    decoder-&gt;seac = FALSE;</a>
+<a name="ln325">    if ( error )</a>
+<a name="ln326">      goto Exit;</a>
+<a name="ln327"> </a>
+<a name="ln328">    /* restore the left side bearing and   */</a>
+<a name="ln329">    /* advance width of the base character */</a>
+<a name="ln330"> </a>
+<a name="ln331">    decoder-&gt;builder.left_bearing = left_bearing;</a>
+<a name="ln332">    decoder-&gt;builder.advance      = advance;</a>
+<a name="ln333"> </a>
+<a name="ln334">    decoder-&gt;builder.pos_x = 0;</a>
+<a name="ln335">    decoder-&gt;builder.pos_y = 0;</a>
+<a name="ln336"> </a>
+<a name="ln337">  Exit:</a>
+<a name="ln338">    return error;</a>
+<a name="ln339">  }</a>
+<a name="ln340"> </a>
+<a name="ln341"> </a>
+<a name="ln342">  /*************************************************************************/</a>
+<a name="ln343">  /*                                                                       */</a>
+<a name="ln344">  /* &lt;Function&gt;                                                            */</a>
+<a name="ln345">  /*    t1_decoder_parse_charstrings                                       */</a>
+<a name="ln346">  /*                                                                       */</a>
+<a name="ln347">  /* &lt;Description&gt;                                                         */</a>
+<a name="ln348">  /*    Parses a given Type 1 charstrings program.                         */</a>
+<a name="ln349">  /*                                                                       */</a>
+<a name="ln350">  /* &lt;Input&gt;                                                               */</a>
+<a name="ln351">  /*    decoder         :: The current Type 1 decoder.                     */</a>
+<a name="ln352">  /*                                                                       */</a>
+<a name="ln353">  /*    charstring_base :: The base address of the charstring stream.      */</a>
+<a name="ln354">  /*                                                                       */</a>
+<a name="ln355">  /*    charstring_len  :: The length in bytes of the charstring stream.   */</a>
+<a name="ln356">  /*                                                                       */</a>
+<a name="ln357">  /* &lt;Return&gt;                                                              */</a>
+<a name="ln358">  /*    FreeType error code.  0 means success.                             */</a>
+<a name="ln359">  /*                                                                       */</a>
+<a name="ln360">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln361">  t1_decoder_parse_charstrings( T1_Decoder  decoder,</a>
+<a name="ln362">                                FT_Byte*    charstring_base,</a>
+<a name="ln363">                                FT_UInt     charstring_len )</a>
+<a name="ln364">  {</a>
+<a name="ln365">    FT_Error         error;</a>
+<a name="ln366">    T1_Decoder_Zone  zone;</a>
+<a name="ln367">    FT_Byte*         ip;</a>
+<a name="ln368">    FT_Byte*         limit;</a>
+<a name="ln369">    T1_Builder       builder = &amp;decoder-&gt;builder;</a>
+<a name="ln370">    FT_Pos           x, y, orig_x, orig_y;</a>
+<a name="ln371">    FT_Int           known_othersubr_result_cnt   = 0;</a>
+<a name="ln372">    FT_Int           unknown_othersubr_result_cnt = 0;</a>
+<a name="ln373">    FT_Bool          large_int;</a>
+<a name="ln374">    FT_Fixed         seed;</a>
+<a name="ln375"> </a>
+<a name="ln376">    T1_Hints_Funcs   hinter;</a>
+<a name="ln377"> </a>
+<a name="ln378">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln379">    FT_Bool          bol = TRUE;</a>
+<a name="ln380">#endif</a>
+<a name="ln381"> </a>
+<a name="ln382"> </a>
+<a name="ln383">    /* compute random seed from stack address of parameter */</a>
+<a name="ln384">    seed = (FT_Fixed)( ( (FT_Offset)(char*)&amp;seed            ^</a>
+<a name="ln385">                         (FT_Offset)(char*)&amp;decoder         ^</a>
+<a name="ln386">                         (FT_Offset)(char*)&amp;charstring_base ) &amp;</a>
+<a name="ln387">                         FT_ULONG_MAX                         );</a>
+<a name="ln388">    seed = ( seed ^ ( seed &gt;&gt; 10 ) ^ ( seed &gt;&gt; 20 ) ) &amp; 0xFFFFL;</a>
+<a name="ln389">    if ( seed == 0 )</a>
+<a name="ln390">      seed = 0x7384;</a>
+<a name="ln391"> </a>
+<a name="ln392">    /* First of all, initialize the decoder */</a>
+<a name="ln393">    decoder-&gt;top  = decoder-&gt;stack;</a>
+<a name="ln394">    decoder-&gt;zone = decoder-&gt;zones;</a>
+<a name="ln395">    zone          = decoder-&gt;zones;</a>
+<a name="ln396"> </a>
+<a name="ln397">    builder-&gt;parse_state = T1_Parse_Start;</a>
+<a name="ln398"> </a>
+<a name="ln399">    hinter = (T1_Hints_Funcs)builder-&gt;hints_funcs;</a>
+<a name="ln400"> </a>
+<a name="ln401">    /* a font that reads BuildCharArray without setting */</a>
+<a name="ln402">    /* its values first is buggy, but ...               */</a>
+<a name="ln403">    FT_ASSERT( ( decoder-&gt;len_buildchar == 0 ) ==</a>
+<a name="ln404">               ( decoder-&gt;buildchar == NULL )  );</a>
+<a name="ln405"> </a>
+<a name="ln406">    if ( decoder-&gt;buildchar &amp;&amp; decoder-&gt;len_buildchar &gt; 0 )</a>
+<a name="ln407">      ft_memset( &amp;decoder-&gt;buildchar[0],</a>
+<a name="ln408">                 0,</a>
+<a name="ln409">                 sizeof ( decoder-&gt;buildchar[0] ) * decoder-&gt;len_buildchar );</a>
+<a name="ln410"> </a>
+<a name="ln411">    FT_TRACE4(( &quot;\n&quot;</a>
+<a name="ln412">                &quot;Start charstring\n&quot; ));</a>
+<a name="ln413"> </a>
+<a name="ln414">    zone-&gt;base           = charstring_base;</a>
+<a name="ln415">    limit = zone-&gt;limit  = charstring_base + charstring_len;</a>
+<a name="ln416">    ip    = zone-&gt;cursor = zone-&gt;base;</a>
+<a name="ln417"> </a>
+<a name="ln418">    error = FT_Err_Ok;</a>
+<a name="ln419"> </a>
+<a name="ln420">    x = orig_x = builder-&gt;pos_x;</a>
+<a name="ln421">    y = orig_y = builder-&gt;pos_y;</a>
+<a name="ln422"> </a>
+<a name="ln423">    /* begin hints recording session, if any */</a>
+<a name="ln424">    if ( hinter )</a>
+<a name="ln425">      hinter-&gt;open( hinter-&gt;hints );</a>
+<a name="ln426"> </a>
+<a name="ln427">    large_int = FALSE;</a>
+<a name="ln428"> </a>
+<a name="ln429">    /* now, execute loop */</a>
+<a name="ln430">    while ( ip &lt; limit )</a>
+<a name="ln431">    {</a>
+<a name="ln432">      FT_Long*     top   = decoder-&gt;top;</a>
+<a name="ln433">      T1_Operator  op    = op_none;</a>
+<a name="ln434">      FT_Int32     value = 0;</a>
+<a name="ln435"> </a>
+<a name="ln436"> </a>
+<a name="ln437">      FT_ASSERT( known_othersubr_result_cnt == 0   ||</a>
+<a name="ln438">                 unknown_othersubr_result_cnt == 0 );</a>
+<a name="ln439"> </a>
+<a name="ln440">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln441">      if ( bol )</a>
+<a name="ln442">      {</a>
+<a name="ln443">        FT_TRACE5(( &quot; (%d)&quot;, decoder-&gt;top - decoder-&gt;stack ));</a>
+<a name="ln444">        bol = FALSE;</a>
+<a name="ln445">      }</a>
+<a name="ln446">#endif</a>
+<a name="ln447"> </a>
+<a name="ln448">      /*********************************************************************/</a>
+<a name="ln449">      /*                                                                   */</a>
+<a name="ln450">      /* Decode operator or operand                                        */</a>
+<a name="ln451">      /*                                                                   */</a>
+<a name="ln452">      /*                                                                   */</a>
+<a name="ln453"> </a>
+<a name="ln454">      /* first of all, decompress operator or value */</a>
+<a name="ln455">      switch ( *ip++ )</a>
+<a name="ln456">      {</a>
+<a name="ln457">      case 1:</a>
+<a name="ln458">        op = op_hstem;</a>
+<a name="ln459">        break;</a>
+<a name="ln460"> </a>
+<a name="ln461">      case 3:</a>
+<a name="ln462">        op = op_vstem;</a>
+<a name="ln463">        break;</a>
+<a name="ln464">      case 4:</a>
+<a name="ln465">        op = op_vmoveto;</a>
+<a name="ln466">        break;</a>
+<a name="ln467">      case 5:</a>
+<a name="ln468">        op = op_rlineto;</a>
+<a name="ln469">        break;</a>
+<a name="ln470">      case 6:</a>
+<a name="ln471">        op = op_hlineto;</a>
+<a name="ln472">        break;</a>
+<a name="ln473">      case 7:</a>
+<a name="ln474">        op = op_vlineto;</a>
+<a name="ln475">        break;</a>
+<a name="ln476">      case 8:</a>
+<a name="ln477">        op = op_rrcurveto;</a>
+<a name="ln478">        break;</a>
+<a name="ln479">      case 9:</a>
+<a name="ln480">        op = op_closepath;</a>
+<a name="ln481">        break;</a>
+<a name="ln482">      case 10:</a>
+<a name="ln483">        op = op_callsubr;</a>
+<a name="ln484">        break;</a>
+<a name="ln485">      case 11:</a>
+<a name="ln486">        op = op_return;</a>
+<a name="ln487">        break;</a>
+<a name="ln488"> </a>
+<a name="ln489">      case 13:</a>
+<a name="ln490">        op = op_hsbw;</a>
+<a name="ln491">        break;</a>
+<a name="ln492">      case 14:</a>
+<a name="ln493">        op = op_endchar;</a>
+<a name="ln494">        break;</a>
+<a name="ln495"> </a>
+<a name="ln496">      case 15:          /* undocumented, obsolete operator */</a>
+<a name="ln497">        op = op_unknown15;</a>
+<a name="ln498">        break;</a>
+<a name="ln499"> </a>
+<a name="ln500">      case 21:</a>
+<a name="ln501">        op = op_rmoveto;</a>
+<a name="ln502">        break;</a>
+<a name="ln503">      case 22:</a>
+<a name="ln504">        op = op_hmoveto;</a>
+<a name="ln505">        break;</a>
+<a name="ln506"> </a>
+<a name="ln507">      case 30:</a>
+<a name="ln508">        op = op_vhcurveto;</a>
+<a name="ln509">        break;</a>
+<a name="ln510">      case 31:</a>
+<a name="ln511">        op = op_hvcurveto;</a>
+<a name="ln512">        break;</a>
+<a name="ln513"> </a>
+<a name="ln514">      case 12:</a>
+<a name="ln515">        if ( ip &gt; limit )</a>
+<a name="ln516">        {</a>
+<a name="ln517">          FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln518">                     &quot; invalid escape (12+EOF)\n&quot; ));</a>
+<a name="ln519">          goto Syntax_Error;</a>
+<a name="ln520">        }</a>
+<a name="ln521"> </a>
+<a name="ln522">        switch ( *ip++ )</a>
+<a name="ln523">        {</a>
+<a name="ln524">        case 0:</a>
+<a name="ln525">          op = op_dotsection;</a>
+<a name="ln526">          break;</a>
+<a name="ln527">        case 1:</a>
+<a name="ln528">          op = op_vstem3;</a>
+<a name="ln529">          break;</a>
+<a name="ln530">        case 2:</a>
+<a name="ln531">          op = op_hstem3;</a>
+<a name="ln532">          break;</a>
+<a name="ln533">        case 6:</a>
+<a name="ln534">          op = op_seac;</a>
+<a name="ln535">          break;</a>
+<a name="ln536">        case 7:</a>
+<a name="ln537">          op = op_sbw;</a>
+<a name="ln538">          break;</a>
+<a name="ln539">        case 12:</a>
+<a name="ln540">          op = op_div;</a>
+<a name="ln541">          break;</a>
+<a name="ln542">        case 16:</a>
+<a name="ln543">          op = op_callothersubr;</a>
+<a name="ln544">          break;</a>
+<a name="ln545">        case 17:</a>
+<a name="ln546">          op = op_pop;</a>
+<a name="ln547">          break;</a>
+<a name="ln548">        case 33:</a>
+<a name="ln549">          op = op_setcurrentpoint;</a>
+<a name="ln550">          break;</a>
+<a name="ln551"> </a>
+<a name="ln552">        default:</a>
+<a name="ln553">          FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln554">                     &quot; invalid escape (12+%d)\n&quot;,</a>
+<a name="ln555">                     ip[-1] ));</a>
+<a name="ln556">          goto Syntax_Error;</a>
+<a name="ln557">        }</a>
+<a name="ln558">        break;</a>
+<a name="ln559"> </a>
+<a name="ln560">      case 255:    /* four bytes integer */</a>
+<a name="ln561">        if ( ip + 4 &gt; limit )</a>
+<a name="ln562">        {</a>
+<a name="ln563">          FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln564">                     &quot; unexpected EOF in integer\n&quot; ));</a>
+<a name="ln565">          goto Syntax_Error;</a>
+<a name="ln566">        }</a>
+<a name="ln567"> </a>
+<a name="ln568">        value = (FT_Int32)( ( (FT_UInt32)ip[0] &lt;&lt; 24 ) |</a>
+<a name="ln569">                            ( (FT_UInt32)ip[1] &lt;&lt; 16 ) |</a>
+<a name="ln570">                            ( (FT_UInt32)ip[2] &lt;&lt; 8  ) |</a>
+<a name="ln571">                              (FT_UInt32)ip[3]         );</a>
+<a name="ln572">        ip += 4;</a>
+<a name="ln573"> </a>
+<a name="ln574">        /* According to the specification, values &gt; 32000 or &lt; -32000 must */</a>
+<a name="ln575">        /* be followed by a `div' operator to make the result be in the    */</a>
+<a name="ln576">        /* range [-32000;32000].  We expect that the second argument of    */</a>
+<a name="ln577">        /* `div' is not a large number.  Additionally, we don't handle     */</a>
+<a name="ln578">        /* stuff like `&lt;large1&gt; &lt;large2&gt; &lt;num&gt; div &lt;num&gt; div' or           */</a>
+<a name="ln579">        /* &lt;large1&gt; &lt;large2&gt; &lt;num&gt; div div'.  This is probably not allowed */</a>
+<a name="ln580">        /* anyway.                                                         */</a>
+<a name="ln581">        if ( value &gt; 32000 || value &lt; -32000 )</a>
+<a name="ln582">        {</a>
+<a name="ln583">          if ( large_int )</a>
+<a name="ln584">          {</a>
+<a name="ln585">            FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln586">                       &quot; no `div' after large integer\n&quot; ));</a>
+<a name="ln587">          }</a>
+<a name="ln588">          else</a>
+<a name="ln589">            large_int = TRUE;</a>
+<a name="ln590">        }</a>
+<a name="ln591">        else</a>
+<a name="ln592">        {</a>
+<a name="ln593">          if ( !large_int )</a>
+<a name="ln594">            value = (FT_Int32)( (FT_UInt32)value &lt;&lt; 16 );</a>
+<a name="ln595">        }</a>
+<a name="ln596"> </a>
+<a name="ln597">        break;</a>
+<a name="ln598"> </a>
+<a name="ln599">      default:</a>
+<a name="ln600">        if ( ip[-1] &gt;= 32 )</a>
+<a name="ln601">        {</a>
+<a name="ln602">          if ( ip[-1] &lt; 247 )</a>
+<a name="ln603">            value = (FT_Int32)ip[-1] - 139;</a>
+<a name="ln604">          else</a>
+<a name="ln605">          {</a>
+<a name="ln606">            if ( ++ip &gt; limit )</a>
+<a name="ln607">            {</a>
+<a name="ln608">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln609">                         &quot; unexpected EOF in integer\n&quot; ));</a>
+<a name="ln610">              goto Syntax_Error;</a>
+<a name="ln611">            }</a>
+<a name="ln612"> </a>
+<a name="ln613">            if ( ip[-2] &lt; 251 )</a>
+<a name="ln614">              value =    ( ( ip[-2] - 247 ) * 256 ) + ip[-1] + 108;</a>
+<a name="ln615">            else</a>
+<a name="ln616">              value = -( ( ( ip[-2] - 251 ) * 256 ) + ip[-1] + 108 );</a>
+<a name="ln617">          }</a>
+<a name="ln618"> </a>
+<a name="ln619">          if ( !large_int )</a>
+<a name="ln620">            value = (FT_Int32)( (FT_UInt32)value &lt;&lt; 16 );</a>
+<a name="ln621">        }</a>
+<a name="ln622">        else</a>
+<a name="ln623">        {</a>
+<a name="ln624">          FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln625">                     &quot; invalid byte (%d)\n&quot;, ip[-1] ));</a>
+<a name="ln626">          goto Syntax_Error;</a>
+<a name="ln627">        }</a>
+<a name="ln628">      }</a>
+<a name="ln629"> </a>
+<a name="ln630">      if ( unknown_othersubr_result_cnt &gt; 0 )</a>
+<a name="ln631">      {</a>
+<a name="ln632">        switch ( op )</a>
+<a name="ln633">        {</a>
+<a name="ln634">        case op_callsubr:</a>
+<a name="ln635">        case op_return:</a>
+<a name="ln636">        case op_none:</a>
+<a name="ln637">        case op_pop:</a>
+<a name="ln638">          break;</a>
+<a name="ln639"> </a>
+<a name="ln640">        default:</a>
+<a name="ln641">          /* all operands have been transferred by previous pops */</a>
+<a name="ln642">          unknown_othersubr_result_cnt = 0;</a>
+<a name="ln643">          break;</a>
+<a name="ln644">        }</a>
+<a name="ln645">      }</a>
+<a name="ln646"> </a>
+<a name="ln647">      if ( large_int &amp;&amp; !( op == op_none || op == op_div ) )</a>
+<a name="ln648">      {</a>
+<a name="ln649">        FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln650">                   &quot; no `div' after large integer\n&quot; ));</a>
+<a name="ln651"> </a>
+<a name="ln652">        large_int = FALSE;</a>
+<a name="ln653">      }</a>
+<a name="ln654"> </a>
+<a name="ln655">      /*********************************************************************/</a>
+<a name="ln656">      /*                                                                   */</a>
+<a name="ln657">      /*  Push value on stack, or process operator                         */</a>
+<a name="ln658">      /*                                                                   */</a>
+<a name="ln659">      /*                                                                   */</a>
+<a name="ln660">      if ( op == op_none )</a>
+<a name="ln661">      {</a>
+<a name="ln662">        if ( top - decoder-&gt;stack &gt;= T1_MAX_CHARSTRINGS_OPERANDS )</a>
+<a name="ln663">        {</a>
+<a name="ln664">          FT_ERROR(( &quot;t1_decoder_parse_charstrings: stack overflow\n&quot; ));</a>
+<a name="ln665">          goto Syntax_Error;</a>
+<a name="ln666">        }</a>
+<a name="ln667"> </a>
+<a name="ln668">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln669">        if ( large_int )</a>
+<a name="ln670">          FT_TRACE4(( &quot; %ld&quot;, value ));</a>
+<a name="ln671">        else</a>
+<a name="ln672">          FT_TRACE4(( &quot; %ld&quot;, Fix2Int( value ) ));</a>
+<a name="ln673">#endif</a>
+<a name="ln674"> </a>
+<a name="ln675">        *top++       = value;</a>
+<a name="ln676">        decoder-&gt;top = top;</a>
+<a name="ln677">      }</a>
+<a name="ln678">      else if ( op == op_callothersubr )  /* callothersubr */</a>
+<a name="ln679">      {</a>
+<a name="ln680">        FT_Int  subr_no;</a>
+<a name="ln681">        FT_Int  arg_cnt;</a>
+<a name="ln682"> </a>
+<a name="ln683"> </a>
+<a name="ln684">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln685">        FT_TRACE4(( &quot; callothersubr\n&quot; ));</a>
+<a name="ln686">        bol = TRUE;</a>
+<a name="ln687">#endif</a>
+<a name="ln688"> </a>
+<a name="ln689">        if ( top - decoder-&gt;stack &lt; 2 )</a>
+<a name="ln690">          goto Stack_Underflow;</a>
+<a name="ln691"> </a>
+<a name="ln692">        top -= 2;</a>
+<a name="ln693"> </a>
+<a name="ln694">        subr_no = Fix2Int( top[1] );</a>
+<a name="ln695">        arg_cnt = Fix2Int( top[0] );</a>
+<a name="ln696"> </a>
+<a name="ln697">        /***********************************************************/</a>
+<a name="ln698">        /*                                                         */</a>
+<a name="ln699">        /* remove all operands to callothersubr from the stack     */</a>
+<a name="ln700">        /*                                                         */</a>
+<a name="ln701">        /* for handled othersubrs, where we know the number of     */</a>
+<a name="ln702">        /* arguments, we increase the stack by the value of        */</a>
+<a name="ln703">        /* known_othersubr_result_cnt                              */</a>
+<a name="ln704">        /*                                                         */</a>
+<a name="ln705">        /* for unhandled othersubrs the following pops adjust the  */</a>
+<a name="ln706">        /* stack pointer as necessary                              */</a>
+<a name="ln707"> </a>
+<a name="ln708">        if ( arg_cnt &gt; top - decoder-&gt;stack )</a>
+<a name="ln709">          goto Stack_Underflow;</a>
+<a name="ln710"> </a>
+<a name="ln711">        top -= arg_cnt;</a>
+<a name="ln712"> </a>
+<a name="ln713">        known_othersubr_result_cnt   = 0;</a>
+<a name="ln714">        unknown_othersubr_result_cnt = 0;</a>
+<a name="ln715"> </a>
+<a name="ln716">        /* XXX TODO: The checks to `arg_count == &lt;whatever&gt;'       */</a>
+<a name="ln717">        /* might not be correct; an othersubr expects a certain    */</a>
+<a name="ln718">        /* number of operands on the PostScript stack (as opposed  */</a>
+<a name="ln719">        /* to the T1 stack) but it doesn't have to put them there  */</a>
+<a name="ln720">        /* by itself; previous othersubrs might have left the      */</a>
+<a name="ln721">        /* operands there if they were not followed by an          */</a>
+<a name="ln722">        /* appropriate number of pops                              */</a>
+<a name="ln723">        /*                                                         */</a>
+<a name="ln724">        /* On the other hand, Adobe Reader 7.0.8 for Linux doesn't */</a>
+<a name="ln725">        /* accept a font that contains charstrings like            */</a>
+<a name="ln726">        /*                                                         */</a>
+<a name="ln727">        /*     100 200 2 20 callothersubr                          */</a>
+<a name="ln728">        /*     300 1 20 callothersubr pop                          */</a>
+<a name="ln729">        /*                                                         */</a>
+<a name="ln730">        /* Perhaps this is the reason why BuildCharArray exists.   */</a>
+<a name="ln731"> </a>
+<a name="ln732">        switch ( subr_no )</a>
+<a name="ln733">        {</a>
+<a name="ln734">        case 0:                     /* end flex feature */</a>
+<a name="ln735">          if ( arg_cnt != 3 )</a>
+<a name="ln736">            goto Unexpected_OtherSubr;</a>
+<a name="ln737"> </a>
+<a name="ln738">          if ( decoder-&gt;flex_state       == 0 ||</a>
+<a name="ln739">               decoder-&gt;num_flex_vectors != 7 )</a>
+<a name="ln740">          {</a>
+<a name="ln741">            FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln742">                       &quot; unexpected flex end\n&quot; ));</a>
+<a name="ln743">            goto Syntax_Error;</a>
+<a name="ln744">          }</a>
+<a name="ln745"> </a>
+<a name="ln746">          /* the two `results' are popped by the following setcurrentpoint */</a>
+<a name="ln747">          top[0] = x;</a>
+<a name="ln748">          top[1] = y;</a>
+<a name="ln749">          known_othersubr_result_cnt = 2;</a>
+<a name="ln750">          break;</a>
+<a name="ln751"> </a>
+<a name="ln752">        case 1:                     /* start flex feature */</a>
+<a name="ln753">          if ( arg_cnt != 0 )</a>
+<a name="ln754">            goto Unexpected_OtherSubr;</a>
+<a name="ln755"> </a>
+<a name="ln756">          decoder-&gt;flex_state        = 1;</a>
+<a name="ln757">          decoder-&gt;num_flex_vectors  = 0;</a>
+<a name="ln758">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln759">                 != FT_Err_Ok                                   ||</a>
+<a name="ln760">               ( error = t1_builder_check_points( builder, 6 ) )</a>
+<a name="ln761">                 != FT_Err_Ok                                   )</a>
+<a name="ln762">            goto Fail;</a>
+<a name="ln763">          break;</a>
+<a name="ln764"> </a>
+<a name="ln765">        case 2:                     /* add flex vectors */</a>
+<a name="ln766">          {</a>
+<a name="ln767">            FT_Int  idx;</a>
+<a name="ln768"> </a>
+<a name="ln769"> </a>
+<a name="ln770">            if ( arg_cnt != 0 )</a>
+<a name="ln771">              goto Unexpected_OtherSubr;</a>
+<a name="ln772"> </a>
+<a name="ln773">            if ( decoder-&gt;flex_state == 0 )</a>
+<a name="ln774">            {</a>
+<a name="ln775">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln776">                         &quot; missing flex start\n&quot; ));</a>
+<a name="ln777">              goto Syntax_Error;</a>
+<a name="ln778">            }</a>
+<a name="ln779"> </a>
+<a name="ln780">            /* note that we should not add a point for index 0; */</a>
+<a name="ln781">            /* this will move our current position to the flex  */</a>
+<a name="ln782">            /* point without adding any point to the outline    */</a>
+<a name="ln783">            idx = decoder-&gt;num_flex_vectors++;</a>
+<a name="ln784">            if ( idx &gt; 0 &amp;&amp; idx &lt; 7 )</a>
+<a name="ln785">              t1_builder_add_point( builder,</a>
+<a name="ln786">                                    x,</a>
+<a name="ln787">                                    y,</a>
+<a name="ln788">                                    (FT_Byte)( idx == 3 || idx == 6 ) );</a>
+<a name="ln789">          }</a>
+<a name="ln790">          break;</a>
+<a name="ln791"> </a>
+<a name="ln792">        case 3:                     /* change hints */</a>
+<a name="ln793">          if ( arg_cnt != 1 )</a>
+<a name="ln794">            goto Unexpected_OtherSubr;</a>
+<a name="ln795"> </a>
+<a name="ln796">          known_othersubr_result_cnt = 1;</a>
+<a name="ln797"> </a>
+<a name="ln798">          if ( hinter )</a>
+<a name="ln799">            hinter-&gt;reset( hinter-&gt;hints,</a>
+<a name="ln800">                           (FT_UInt)builder-&gt;current-&gt;n_points );</a>
+<a name="ln801">          break;</a>
+<a name="ln802"> </a>
+<a name="ln803">        case 12:</a>
+<a name="ln804">        case 13:</a>
+<a name="ln805">          /* counter control hints, clear stack */</a>
+<a name="ln806">          top = decoder-&gt;stack;</a>
+<a name="ln807">          break;</a>
+<a name="ln808"> </a>
+<a name="ln809">        case 14:</a>
+<a name="ln810">        case 15:</a>
+<a name="ln811">        case 16:</a>
+<a name="ln812">        case 17:</a>
+<a name="ln813">        case 18:                    /* multiple masters */</a>
+<a name="ln814">          {</a>
+<a name="ln815">            PS_Blend  blend = decoder-&gt;blend;</a>
+<a name="ln816">            FT_UInt   num_points, nn, mm;</a>
+<a name="ln817">            FT_Long*  delta;</a>
+<a name="ln818">            FT_Long*  values;</a>
+<a name="ln819"> </a>
+<a name="ln820"> </a>
+<a name="ln821">            if ( !blend )</a>
+<a name="ln822">            {</a>
+<a name="ln823">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln824">                         &quot; unexpected multiple masters operator\n&quot; ));</a>
+<a name="ln825">              goto Syntax_Error;</a>
+<a name="ln826">            }</a>
+<a name="ln827"> </a>
+<a name="ln828">            num_points = (FT_UInt)subr_no - 13 + ( subr_no == 18 );</a>
+<a name="ln829">            if ( arg_cnt != (FT_Int)( num_points * blend-&gt;num_designs ) )</a>
+<a name="ln830">            {</a>
+<a name="ln831">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln832">                         &quot; incorrect number of multiple masters arguments\n&quot; ));</a>
+<a name="ln833">              goto Syntax_Error;</a>
+<a name="ln834">            }</a>
+<a name="ln835"> </a>
+<a name="ln836">            /* We want to compute                                    */</a>
+<a name="ln837">            /*                                                       */</a>
+<a name="ln838">            /*   a0*w0 + a1*w1 + ... + ak*wk                         */</a>
+<a name="ln839">            /*                                                       */</a>
+<a name="ln840">            /* but we only have a0, a1-a0, a2-a0, ..., ak-a0.        */</a>
+<a name="ln841">            /*                                                       */</a>
+<a name="ln842">            /* However, given that w0 + w1 + ... + wk == 1, we can   */</a>
+<a name="ln843">            /* rewrite it easily as                                  */</a>
+<a name="ln844">            /*                                                       */</a>
+<a name="ln845">            /*   a0 + (a1-a0)*w1 + (a2-a0)*w2 + ... + (ak-a0)*wk     */</a>
+<a name="ln846">            /*                                                       */</a>
+<a name="ln847">            /* where k == num_designs-1.                             */</a>
+<a name="ln848">            /*                                                       */</a>
+<a name="ln849">            /* I guess that's why it's written in this `compact'     */</a>
+<a name="ln850">            /* form.                                                 */</a>
+<a name="ln851">            /*                                                       */</a>
+<a name="ln852">            delta  = top + num_points;</a>
+<a name="ln853">            values = top;</a>
+<a name="ln854">            for ( nn = 0; nn &lt; num_points; nn++ )</a>
+<a name="ln855">            {</a>
+<a name="ln856">              FT_Long  tmp = values[0];</a>
+<a name="ln857"> </a>
+<a name="ln858"> </a>
+<a name="ln859">              for ( mm = 1; mm &lt; blend-&gt;num_designs; mm++ )</a>
+<a name="ln860">                tmp += FT_MulFix( *delta++, blend-&gt;weight_vector[mm] );</a>
+<a name="ln861"> </a>
+<a name="ln862">              *values++ = tmp;</a>
+<a name="ln863">            }</a>
+<a name="ln864"> </a>
+<a name="ln865">            known_othersubr_result_cnt = (FT_Int)num_points;</a>
+<a name="ln866">            break;</a>
+<a name="ln867">          }</a>
+<a name="ln868"> </a>
+<a name="ln869">        case 19:</a>
+<a name="ln870">          /* &lt;idx&gt; 1 19 callothersubr                             */</a>
+<a name="ln871">          /* =&gt; replace elements starting from index cvi( &lt;idx&gt; ) */</a>
+<a name="ln872">          /*    of BuildCharArray with WeightVector               */</a>
+<a name="ln873">          {</a>
+<a name="ln874">            FT_Int    idx;</a>
+<a name="ln875">            PS_Blend  blend = decoder-&gt;blend;</a>
+<a name="ln876"> </a>
+<a name="ln877"> </a>
+<a name="ln878">            if ( arg_cnt != 1 || blend == NULL )</a>
+<a name="ln879">              goto Unexpected_OtherSubr;</a>
+<a name="ln880"> </a>
+<a name="ln881">            idx = Fix2Int( top[0] );</a>
+<a name="ln882"> </a>
+<a name="ln883">            if ( idx &lt; 0                                                    ||</a>
+<a name="ln884">                 (FT_UInt)idx + blend-&gt;num_designs &gt; decoder-&gt;len_buildchar )</a>
+<a name="ln885">              goto Unexpected_OtherSubr;</a>
+<a name="ln886"> </a>
+<a name="ln887">            ft_memcpy( &amp;decoder-&gt;buildchar[idx],</a>
+<a name="ln888">                       blend-&gt;weight_vector,</a>
+<a name="ln889">                       blend-&gt;num_designs *</a>
+<a name="ln890">                         sizeof ( blend-&gt;weight_vector[0] ) );</a>
+<a name="ln891">          }</a>
+<a name="ln892">          break;</a>
+<a name="ln893"> </a>
+<a name="ln894">        case 20:</a>
+<a name="ln895">          /* &lt;arg1&gt; &lt;arg2&gt; 2 20 callothersubr pop   */</a>
+<a name="ln896">          /* ==&gt; push &lt;arg1&gt; + &lt;arg2&gt; onto T1 stack */</a>
+<a name="ln897">          if ( arg_cnt != 2 )</a>
+<a name="ln898">            goto Unexpected_OtherSubr;</a>
+<a name="ln899"> </a>
+<a name="ln900">          top[0] += top[1]; /* XXX (over|under)flow */</a>
+<a name="ln901"> </a>
+<a name="ln902">          known_othersubr_result_cnt = 1;</a>
+<a name="ln903">          break;</a>
+<a name="ln904"> </a>
+<a name="ln905">        case 21:</a>
+<a name="ln906">          /* &lt;arg1&gt; &lt;arg2&gt; 2 21 callothersubr pop   */</a>
+<a name="ln907">          /* ==&gt; push &lt;arg1&gt; - &lt;arg2&gt; onto T1 stack */</a>
+<a name="ln908">          if ( arg_cnt != 2 )</a>
+<a name="ln909">            goto Unexpected_OtherSubr;</a>
+<a name="ln910"> </a>
+<a name="ln911">          top[0] -= top[1]; /* XXX (over|under)flow */</a>
+<a name="ln912"> </a>
+<a name="ln913">          known_othersubr_result_cnt = 1;</a>
+<a name="ln914">          break;</a>
+<a name="ln915"> </a>
+<a name="ln916">        case 22:</a>
+<a name="ln917">          /* &lt;arg1&gt; &lt;arg2&gt; 2 22 callothersubr pop   */</a>
+<a name="ln918">          /* ==&gt; push &lt;arg1&gt; * &lt;arg2&gt; onto T1 stack */</a>
+<a name="ln919">          if ( arg_cnt != 2 )</a>
+<a name="ln920">            goto Unexpected_OtherSubr;</a>
+<a name="ln921"> </a>
+<a name="ln922">          top[0] = FT_MulFix( top[0], top[1] );</a>
+<a name="ln923"> </a>
+<a name="ln924">          known_othersubr_result_cnt = 1;</a>
+<a name="ln925">          break;</a>
+<a name="ln926"> </a>
+<a name="ln927">        case 23:</a>
+<a name="ln928">          /* &lt;arg1&gt; &lt;arg2&gt; 2 23 callothersubr pop   */</a>
+<a name="ln929">          /* ==&gt; push &lt;arg1&gt; / &lt;arg2&gt; onto T1 stack */</a>
+<a name="ln930">          if ( arg_cnt != 2 || top[1] == 0 )</a>
+<a name="ln931">            goto Unexpected_OtherSubr;</a>
+<a name="ln932"> </a>
+<a name="ln933">          top[0] = FT_DivFix( top[0], top[1] );</a>
+<a name="ln934"> </a>
+<a name="ln935">          known_othersubr_result_cnt = 1;</a>
+<a name="ln936">          break;</a>
+<a name="ln937"> </a>
+<a name="ln938">        case 24:</a>
+<a name="ln939">          /* &lt;val&gt; &lt;idx&gt; 2 24 callothersubr               */</a>
+<a name="ln940">          /* ==&gt; set BuildCharArray[cvi( &lt;idx&gt; )] = &lt;val&gt; */</a>
+<a name="ln941">          {</a>
+<a name="ln942">            FT_Int    idx;</a>
+<a name="ln943">            PS_Blend  blend = decoder-&gt;blend;</a>
+<a name="ln944"> </a>
+<a name="ln945"> </a>
+<a name="ln946">            if ( arg_cnt != 2 || blend == NULL )</a>
+<a name="ln947">              goto Unexpected_OtherSubr;</a>
+<a name="ln948"> </a>
+<a name="ln949">            idx = Fix2Int( top[1] );</a>
+<a name="ln950"> </a>
+<a name="ln951">            if ( idx &lt; 0 || (FT_UInt) idx &gt;= decoder-&gt;len_buildchar )</a>
+<a name="ln952">              goto Unexpected_OtherSubr;</a>
+<a name="ln953"> </a>
+<a name="ln954">            decoder-&gt;buildchar[idx] = top[0];</a>
+<a name="ln955">          }</a>
+<a name="ln956">          break;</a>
+<a name="ln957"> </a>
+<a name="ln958">        case 25:</a>
+<a name="ln959">          /* &lt;idx&gt; 1 25 callothersubr pop        */</a>
+<a name="ln960">          /* ==&gt; push BuildCharArray[cvi( idx )] */</a>
+<a name="ln961">          /*     onto T1 stack                   */</a>
+<a name="ln962">          {</a>
+<a name="ln963">            FT_Int    idx;</a>
+<a name="ln964">            PS_Blend  blend = decoder-&gt;blend;</a>
+<a name="ln965"> </a>
+<a name="ln966"> </a>
+<a name="ln967">            if ( arg_cnt != 1 || blend == NULL )</a>
+<a name="ln968">              goto Unexpected_OtherSubr;</a>
+<a name="ln969"> </a>
+<a name="ln970">            idx = Fix2Int( top[0] );</a>
+<a name="ln971"> </a>
+<a name="ln972">            if ( idx &lt; 0 || (FT_UInt) idx &gt;= decoder-&gt;len_buildchar )</a>
+<a name="ln973">              goto Unexpected_OtherSubr;</a>
+<a name="ln974"> </a>
+<a name="ln975">            top[0] = decoder-&gt;buildchar[idx];</a>
+<a name="ln976">          }</a>
+<a name="ln977"> </a>
+<a name="ln978">          known_othersubr_result_cnt = 1;</a>
+<a name="ln979">          break;</a>
+<a name="ln980"> </a>
+<a name="ln981">#if 0</a>
+<a name="ln982">        case 26:</a>
+<a name="ln983">          /* &lt;val&gt; mark &lt;idx&gt; ==&gt; set BuildCharArray[cvi( &lt;idx&gt; )] = &lt;val&gt;, */</a>
+<a name="ln984">          /*                      leave mark on T1 stack                    */</a>
+<a name="ln985">          /* &lt;val&gt; &lt;idx&gt;      ==&gt; set BuildCharArray[cvi( &lt;idx&gt; )] = &lt;val&gt;  */</a>
+<a name="ln986">          XXX which routine has left its mark on the (PostScript) stack?;</a>
+<a name="ln987">          break;</a>
+<a name="ln988">#endif</a>
+<a name="ln989"> </a>
+<a name="ln990">        case 27:</a>
+<a name="ln991">          /* &lt;res1&gt; &lt;res2&gt; &lt;val1&gt; &lt;val2&gt; 4 27 callothersubr pop */</a>
+<a name="ln992">          /* ==&gt; push &lt;res1&gt; onto T1 stack if &lt;val1&gt; &lt;= &lt;val2&gt;, */</a>
+<a name="ln993">          /*     otherwise push &lt;res2&gt;                          */</a>
+<a name="ln994">          if ( arg_cnt != 4 )</a>
+<a name="ln995">            goto Unexpected_OtherSubr;</a>
+<a name="ln996"> </a>
+<a name="ln997">          if ( top[2] &gt; top[3] )</a>
+<a name="ln998">            top[0] = top[1];</a>
+<a name="ln999"> </a>
+<a name="ln1000">          known_othersubr_result_cnt = 1;</a>
+<a name="ln1001">          break;</a>
+<a name="ln1002"> </a>
+<a name="ln1003">        case 28:</a>
+<a name="ln1004">          /* 0 28 callothersubr pop                               */</a>
+<a name="ln1005">          /* =&gt; push random value from interval [0, 1) onto stack */</a>
+<a name="ln1006">          if ( arg_cnt != 0 )</a>
+<a name="ln1007">            goto Unexpected_OtherSubr;</a>
+<a name="ln1008"> </a>
+<a name="ln1009">          {</a>
+<a name="ln1010">            FT_Fixed  Rand;</a>
+<a name="ln1011"> </a>
+<a name="ln1012"> </a>
+<a name="ln1013">            Rand = seed;</a>
+<a name="ln1014">            if ( Rand &gt;= 0x8000L )</a>
+<a name="ln1015">              Rand++;</a>
+<a name="ln1016"> </a>
+<a name="ln1017">            top[0] = Rand;</a>
+<a name="ln1018"> </a>
+<a name="ln1019">            seed = FT_MulFix( seed, 0x10000L - seed );</a>
+<a name="ln1020">            if ( seed == 0 )</a>
+<a name="ln1021">              seed += 0x2873;</a>
+<a name="ln1022">          }</a>
+<a name="ln1023"> </a>
+<a name="ln1024">          known_othersubr_result_cnt = 1;</a>
+<a name="ln1025">          break;</a>
+<a name="ln1026"> </a>
+<a name="ln1027">        default:</a>
+<a name="ln1028">          if ( arg_cnt &gt;= 0 &amp;&amp; subr_no &gt;= 0 )</a>
+<a name="ln1029">          {</a>
+<a name="ln1030">            FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1031">                       &quot; unknown othersubr [%d %d], wish me luck\n&quot;,</a>
+<a name="ln1032">                       arg_cnt, subr_no ));</a>
+<a name="ln1033">            unknown_othersubr_result_cnt = arg_cnt;</a>
+<a name="ln1034">            break;</a>
+<a name="ln1035">          }</a>
+<a name="ln1036">          /* fall through */</a>
+<a name="ln1037"> </a>
+<a name="ln1038">        Unexpected_OtherSubr:</a>
+<a name="ln1039">          FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1040">                     &quot; invalid othersubr [%d %d]\n&quot;, arg_cnt, subr_no ));</a>
+<a name="ln1041">          goto Syntax_Error;</a>
+<a name="ln1042">        }</a>
+<a name="ln1043"> </a>
+<a name="ln1044">        top += known_othersubr_result_cnt;</a>
+<a name="ln1045"> </a>
+<a name="ln1046">        decoder-&gt;top = top;</a>
+<a name="ln1047">      }</a>
+<a name="ln1048">      else  /* general operator */</a>
+<a name="ln1049">      {</a>
+<a name="ln1050">        FT_Int  num_args = t1_args_count[op];</a>
+<a name="ln1051"> </a>
+<a name="ln1052"> </a>
+<a name="ln1053">        FT_ASSERT( num_args &gt;= 0 );</a>
+<a name="ln1054"> </a>
+<a name="ln1055">        if ( top - decoder-&gt;stack &lt; num_args )</a>
+<a name="ln1056">          goto Stack_Underflow;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">        /* XXX Operators usually take their operands from the        */</a>
+<a name="ln1059">        /*     bottom of the stack, i.e., the operands are           */</a>
+<a name="ln1060">        /*     decoder-&gt;stack[0], ..., decoder-&gt;stack[num_args - 1]; */</a>
+<a name="ln1061">        /*     only div, callsubr, and callothersubr are different.  */</a>
+<a name="ln1062">        /*     In practice it doesn't matter (?).                    */</a>
+<a name="ln1063"> </a>
+<a name="ln1064">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1065"> </a>
+<a name="ln1066">        switch ( op )</a>
+<a name="ln1067">        {</a>
+<a name="ln1068">        case op_callsubr:</a>
+<a name="ln1069">        case op_div:</a>
+<a name="ln1070">        case op_callothersubr:</a>
+<a name="ln1071">        case op_pop:</a>
+<a name="ln1072">        case op_return:</a>
+<a name="ln1073">          break;</a>
+<a name="ln1074"> </a>
+<a name="ln1075">        default:</a>
+<a name="ln1076">          if ( top - decoder-&gt;stack != num_args )</a>
+<a name="ln1077">            FT_TRACE0(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1078">                        &quot; too much operands on the stack&quot;</a>
+<a name="ln1079">                        &quot; (seen %d, expected %d)\n&quot;,</a>
+<a name="ln1080">                        top - decoder-&gt;stack, num_args ));</a>
+<a name="ln1081">            break;</a>
+<a name="ln1082">        }</a>
+<a name="ln1083"> </a>
+<a name="ln1084">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln1085"> </a>
+<a name="ln1086">        top -= num_args;</a>
+<a name="ln1087"> </a>
+<a name="ln1088">        switch ( op )</a>
+<a name="ln1089">        {</a>
+<a name="ln1090">        case op_endchar:</a>
+<a name="ln1091">          FT_TRACE4(( &quot; endchar\n&quot; ));</a>
+<a name="ln1092"> </a>
+<a name="ln1093">          t1_builder_close_contour( builder );</a>
+<a name="ln1094"> </a>
+<a name="ln1095">          /* close hints recording session */</a>
+<a name="ln1096">          if ( hinter )</a>
+<a name="ln1097">          {</a>
+<a name="ln1098">            if ( hinter-&gt;close( hinter-&gt;hints,</a>
+<a name="ln1099">                                (FT_UInt)builder-&gt;current-&gt;n_points ) )</a>
+<a name="ln1100">              goto Syntax_Error;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">            /* apply hints to the loaded glyph outline now */</a>
+<a name="ln1103">            error = hinter-&gt;apply( hinter-&gt;hints,</a>
+<a name="ln1104">                                   builder-&gt;current,</a>
+<a name="ln1105">                                   (PSH_Globals)builder-&gt;hints_globals,</a>
+<a name="ln1106">                                   decoder-&gt;hint_mode );</a>
+<a name="ln1107">            if ( error )</a>
+<a name="ln1108">              goto Fail;</a>
+<a name="ln1109">          }</a>
+<a name="ln1110"> </a>
+<a name="ln1111">          /* add current outline to the glyph slot */</a>
+<a name="ln1112">          FT_GlyphLoader_Add( builder-&gt;loader );</a>
+<a name="ln1113"> </a>
+<a name="ln1114">          /* the compiler should optimize away this empty loop but ... */</a>
+<a name="ln1115"> </a>
+<a name="ln1116">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1117"> </a>
+<a name="ln1118">          if ( decoder-&gt;len_buildchar &gt; 0 )</a>
+<a name="ln1119">          {</a>
+<a name="ln1120">            FT_UInt  i;</a>
+<a name="ln1121"> </a>
+<a name="ln1122"> </a>
+<a name="ln1123">            FT_TRACE4(( &quot;BuildCharArray = [ &quot; ));</a>
+<a name="ln1124"> </a>
+<a name="ln1125">            for ( i = 0; i &lt; decoder-&gt;len_buildchar; ++i )</a>
+<a name="ln1126">              FT_TRACE4(( &quot;%d &quot;, decoder-&gt;buildchar[i] ));</a>
+<a name="ln1127"> </a>
+<a name="ln1128">            FT_TRACE4(( &quot;]\n&quot; ));</a>
+<a name="ln1129">          }</a>
+<a name="ln1130"> </a>
+<a name="ln1131">#endif /* FT_DEBUG_LEVEL_TRACE */</a>
+<a name="ln1132"> </a>
+<a name="ln1133">          FT_TRACE4(( &quot;\n&quot; ));</a>
+<a name="ln1134"> </a>
+<a name="ln1135">          /* return now! */</a>
+<a name="ln1136">          return FT_Err_Ok;</a>
+<a name="ln1137"> </a>
+<a name="ln1138">        case op_hsbw:</a>
+<a name="ln1139">          FT_TRACE4(( &quot; hsbw&quot; ));</a>
+<a name="ln1140"> </a>
+<a name="ln1141">          builder-&gt;parse_state = T1_Parse_Have_Width;</a>
+<a name="ln1142"> </a>
+<a name="ln1143">          builder-&gt;left_bearing.x += top[0];</a>
+<a name="ln1144">          builder-&gt;advance.x       = top[1];</a>
+<a name="ln1145">          builder-&gt;advance.y       = 0;</a>
+<a name="ln1146"> </a>
+<a name="ln1147">          orig_x = x = builder-&gt;pos_x + top[0];</a>
+<a name="ln1148">          orig_y = y = builder-&gt;pos_y;</a>
+<a name="ln1149"> </a>
+<a name="ln1150">          FT_UNUSED( orig_y );</a>
+<a name="ln1151"> </a>
+<a name="ln1152">          /* the `metrics_only' indicates that we only want to compute */</a>
+<a name="ln1153">          /* the glyph's metrics (lsb + advance width), not load the   */</a>
+<a name="ln1154">          /* rest of it; so exit immediately                           */</a>
+<a name="ln1155">          if ( builder-&gt;metrics_only )</a>
+<a name="ln1156">            return FT_Err_Ok;</a>
+<a name="ln1157"> </a>
+<a name="ln1158">          break;</a>
+<a name="ln1159"> </a>
+<a name="ln1160">        case op_seac:</a>
+<a name="ln1161">          return t1operator_seac( decoder,</a>
+<a name="ln1162">                                  top[0],</a>
+<a name="ln1163">                                  top[1],</a>
+<a name="ln1164">                                  top[2],</a>
+<a name="ln1165">                                  Fix2Int( top[3] ),</a>
+<a name="ln1166">                                  Fix2Int( top[4] ) );</a>
+<a name="ln1167"> </a>
+<a name="ln1168">        case op_sbw:</a>
+<a name="ln1169">          FT_TRACE4(( &quot; sbw&quot; ));</a>
+<a name="ln1170"> </a>
+<a name="ln1171">          builder-&gt;parse_state = T1_Parse_Have_Width;</a>
+<a name="ln1172"> </a>
+<a name="ln1173">          builder-&gt;left_bearing.x += top[0];</a>
+<a name="ln1174">          builder-&gt;left_bearing.y += top[1];</a>
+<a name="ln1175">          builder-&gt;advance.x       = top[2];</a>
+<a name="ln1176">          builder-&gt;advance.y       = top[3];</a>
+<a name="ln1177"> </a>
+<a name="ln1178">          x = builder-&gt;pos_x + top[0];</a>
+<a name="ln1179">          y = builder-&gt;pos_y + top[1];</a>
+<a name="ln1180"> </a>
+<a name="ln1181">          /* the `metrics_only' indicates that we only want to compute */</a>
+<a name="ln1182">          /* the glyph's metrics (lsb + advance width), not load the   */</a>
+<a name="ln1183">          /* rest of it; so exit immediately                           */</a>
+<a name="ln1184">          if ( builder-&gt;metrics_only )</a>
+<a name="ln1185">            return FT_Err_Ok;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">          break;</a>
+<a name="ln1188"> </a>
+<a name="ln1189">        case op_closepath:</a>
+<a name="ln1190">          FT_TRACE4(( &quot; closepath&quot; ));</a>
+<a name="ln1191"> </a>
+<a name="ln1192">          /* if there is no path, `closepath' is a no-op */</a>
+<a name="ln1193">          if ( builder-&gt;parse_state == T1_Parse_Have_Path   ||</a>
+<a name="ln1194">               builder-&gt;parse_state == T1_Parse_Have_Moveto )</a>
+<a name="ln1195">            t1_builder_close_contour( builder );</a>
+<a name="ln1196"> </a>
+<a name="ln1197">          builder-&gt;parse_state = T1_Parse_Have_Width;</a>
+<a name="ln1198">          break;</a>
+<a name="ln1199"> </a>
+<a name="ln1200">        case op_hlineto:</a>
+<a name="ln1201">          FT_TRACE4(( &quot; hlineto&quot; ));</a>
+<a name="ln1202"> </a>
+<a name="ln1203">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln1204">                 != FT_Err_Ok )</a>
+<a name="ln1205">            goto Fail;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">          x += top[0];</a>
+<a name="ln1208">          goto Add_Line;</a>
+<a name="ln1209"> </a>
+<a name="ln1210">        case op_hmoveto:</a>
+<a name="ln1211">          FT_TRACE4(( &quot; hmoveto&quot; ));</a>
+<a name="ln1212"> </a>
+<a name="ln1213">          x += top[0];</a>
+<a name="ln1214">          if ( !decoder-&gt;flex_state )</a>
+<a name="ln1215">          {</a>
+<a name="ln1216">            if ( builder-&gt;parse_state == T1_Parse_Start )</a>
+<a name="ln1217">              goto Syntax_Error;</a>
+<a name="ln1218">            builder-&gt;parse_state = T1_Parse_Have_Moveto;</a>
+<a name="ln1219">          }</a>
+<a name="ln1220">          break;</a>
+<a name="ln1221"> </a>
+<a name="ln1222">        case op_hvcurveto:</a>
+<a name="ln1223">          FT_TRACE4(( &quot; hvcurveto&quot; ));</a>
+<a name="ln1224"> </a>
+<a name="ln1225">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln1226">                 != FT_Err_Ok                                   ||</a>
+<a name="ln1227">               ( error = t1_builder_check_points( builder, 3 ) )</a>
+<a name="ln1228">                 != FT_Err_Ok                                   )</a>
+<a name="ln1229">            goto Fail;</a>
+<a name="ln1230"> </a>
+<a name="ln1231">          x += top[0];</a>
+<a name="ln1232">          t1_builder_add_point( builder, x, y, 0 );</a>
+<a name="ln1233">          x += top[1];</a>
+<a name="ln1234">          y += top[2];</a>
+<a name="ln1235">          t1_builder_add_point( builder, x, y, 0 );</a>
+<a name="ln1236">          y += top[3];</a>
+<a name="ln1237">          t1_builder_add_point( builder, x, y, 1 );</a>
+<a name="ln1238">          break;</a>
+<a name="ln1239"> </a>
+<a name="ln1240">        case op_rlineto:</a>
+<a name="ln1241">          FT_TRACE4(( &quot; rlineto&quot; ));</a>
+<a name="ln1242"> </a>
+<a name="ln1243">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln1244">                 != FT_Err_Ok )</a>
+<a name="ln1245">            goto Fail;</a>
+<a name="ln1246"> </a>
+<a name="ln1247">          x += top[0];</a>
+<a name="ln1248">          y += top[1];</a>
+<a name="ln1249"> </a>
+<a name="ln1250">        Add_Line:</a>
+<a name="ln1251">          if ( ( error = t1_builder_add_point1( builder, x, y ) )</a>
+<a name="ln1252">                 != FT_Err_Ok )</a>
+<a name="ln1253">            goto Fail;</a>
+<a name="ln1254">          break;</a>
+<a name="ln1255"> </a>
+<a name="ln1256">        case op_rmoveto:</a>
+<a name="ln1257">          FT_TRACE4(( &quot; rmoveto&quot; ));</a>
+<a name="ln1258"> </a>
+<a name="ln1259">          x += top[0];</a>
+<a name="ln1260">          y += top[1];</a>
+<a name="ln1261">          if ( !decoder-&gt;flex_state )</a>
+<a name="ln1262">          {</a>
+<a name="ln1263">            if ( builder-&gt;parse_state == T1_Parse_Start )</a>
+<a name="ln1264">              goto Syntax_Error;</a>
+<a name="ln1265">            builder-&gt;parse_state = T1_Parse_Have_Moveto;</a>
+<a name="ln1266">          }</a>
+<a name="ln1267">          break;</a>
+<a name="ln1268"> </a>
+<a name="ln1269">        case op_rrcurveto:</a>
+<a name="ln1270">          FT_TRACE4(( &quot; rrcurveto&quot; ));</a>
+<a name="ln1271"> </a>
+<a name="ln1272">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln1273">                 != FT_Err_Ok                                   ||</a>
+<a name="ln1274">               ( error = t1_builder_check_points( builder, 3 ) )</a>
+<a name="ln1275">                 != FT_Err_Ok                                   )</a>
+<a name="ln1276">            goto Fail;</a>
+<a name="ln1277"> </a>
+<a name="ln1278">          x += top[0];</a>
+<a name="ln1279">          y += top[1];</a>
+<a name="ln1280">          t1_builder_add_point( builder, x, y, 0 );</a>
+<a name="ln1281"> </a>
+<a name="ln1282">          x += top[2];</a>
+<a name="ln1283">          y += top[3];</a>
+<a name="ln1284">          t1_builder_add_point( builder, x, y, 0 );</a>
+<a name="ln1285"> </a>
+<a name="ln1286">          x += top[4];</a>
+<a name="ln1287">          y += top[5];</a>
+<a name="ln1288">          t1_builder_add_point( builder, x, y, 1 );</a>
+<a name="ln1289">          break;</a>
+<a name="ln1290"> </a>
+<a name="ln1291">        case op_vhcurveto:</a>
+<a name="ln1292">          FT_TRACE4(( &quot; vhcurveto&quot; ));</a>
+<a name="ln1293"> </a>
+<a name="ln1294">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln1295">                 != FT_Err_Ok                                   ||</a>
+<a name="ln1296">               ( error = t1_builder_check_points( builder, 3 ) )</a>
+<a name="ln1297">                 != FT_Err_Ok                                   )</a>
+<a name="ln1298">            goto Fail;</a>
+<a name="ln1299"> </a>
+<a name="ln1300">          y += top[0];</a>
+<a name="ln1301">          t1_builder_add_point( builder, x, y, 0 );</a>
+<a name="ln1302">          x += top[1];</a>
+<a name="ln1303">          y += top[2];</a>
+<a name="ln1304">          t1_builder_add_point( builder, x, y, 0 );</a>
+<a name="ln1305">          x += top[3];</a>
+<a name="ln1306">          t1_builder_add_point( builder, x, y, 1 );</a>
+<a name="ln1307">          break;</a>
+<a name="ln1308"> </a>
+<a name="ln1309">        case op_vlineto:</a>
+<a name="ln1310">          FT_TRACE4(( &quot; vlineto&quot; ));</a>
+<a name="ln1311"> </a>
+<a name="ln1312">          if ( ( error = t1_builder_start_point( builder, x, y ) )</a>
+<a name="ln1313">                 != FT_Err_Ok )</a>
+<a name="ln1314">            goto Fail;</a>
+<a name="ln1315"> </a>
+<a name="ln1316">          y += top[0];</a>
+<a name="ln1317">          goto Add_Line;</a>
+<a name="ln1318"> </a>
+<a name="ln1319">        case op_vmoveto:</a>
+<a name="ln1320">          FT_TRACE4(( &quot; vmoveto&quot; ));</a>
+<a name="ln1321"> </a>
+<a name="ln1322">          y += top[0];</a>
+<a name="ln1323">          if ( !decoder-&gt;flex_state )</a>
+<a name="ln1324">          {</a>
+<a name="ln1325">            if ( builder-&gt;parse_state == T1_Parse_Start )</a>
+<a name="ln1326">              goto Syntax_Error;</a>
+<a name="ln1327">            builder-&gt;parse_state = T1_Parse_Have_Moveto;</a>
+<a name="ln1328">          }</a>
+<a name="ln1329">          break;</a>
+<a name="ln1330"> </a>
+<a name="ln1331">        case op_div:</a>
+<a name="ln1332">          FT_TRACE4(( &quot; div&quot; ));</a>
+<a name="ln1333"> </a>
+<a name="ln1334">          /* if `large_int' is set, we divide unscaled numbers; */</a>
+<a name="ln1335">          /* otherwise, we divide numbers in 16.16 format --    */</a>
+<a name="ln1336">          /* in both cases, it is the same operation            */</a>
+<a name="ln1337">          *top = FT_DivFix( top[0], top[1] );</a>
+<a name="ln1338">          ++top;</a>
+<a name="ln1339"> </a>
+<a name="ln1340">          large_int = FALSE;</a>
+<a name="ln1341">          break;</a>
+<a name="ln1342"> </a>
+<a name="ln1343">        case op_callsubr:</a>
+<a name="ln1344">          {</a>
+<a name="ln1345">            FT_Int  idx;</a>
+<a name="ln1346"> </a>
+<a name="ln1347"> </a>
+<a name="ln1348">            FT_TRACE4(( &quot; callsubr&quot; ));</a>
+<a name="ln1349"> </a>
+<a name="ln1350">            idx = Fix2Int( top[0] );</a>
+<a name="ln1351">            if ( idx &lt; 0 || idx &gt;= decoder-&gt;num_subrs )</a>
+<a name="ln1352">            {</a>
+<a name="ln1353">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1354">                         &quot; invalid subrs index\n&quot; ));</a>
+<a name="ln1355">              goto Syntax_Error;</a>
+<a name="ln1356">            }</a>
+<a name="ln1357"> </a>
+<a name="ln1358">            if ( zone - decoder-&gt;zones &gt;= T1_MAX_SUBRS_CALLS )</a>
+<a name="ln1359">            {</a>
+<a name="ln1360">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1361">                         &quot; too many nested subrs\n&quot; ));</a>
+<a name="ln1362">              goto Syntax_Error;</a>
+<a name="ln1363">            }</a>
+<a name="ln1364"> </a>
+<a name="ln1365">            zone-&gt;cursor = ip;  /* save current instruction pointer */</a>
+<a name="ln1366"> </a>
+<a name="ln1367">            zone++;</a>
+<a name="ln1368"> </a>
+<a name="ln1369">            /* The Type 1 driver stores subroutines without the seed bytes. */</a>
+<a name="ln1370">            /* The CID driver stores subroutines with seed bytes.  This     */</a>
+<a name="ln1371">            /* case is taken care of when decoder-&gt;subrs_len == 0.          */</a>
+<a name="ln1372">            zone-&gt;base = decoder-&gt;subrs[idx];</a>
+<a name="ln1373"> </a>
+<a name="ln1374">            if ( decoder-&gt;subrs_len )</a>
+<a name="ln1375">              zone-&gt;limit = zone-&gt;base + decoder-&gt;subrs_len[idx];</a>
+<a name="ln1376">            else</a>
+<a name="ln1377">            {</a>
+<a name="ln1378">              /* We are using subroutines from a CID font.  We must adjust */</a>
+<a name="ln1379">              /* for the seed bytes.                                       */</a>
+<a name="ln1380">              zone-&gt;base  += ( decoder-&gt;lenIV &gt;= 0 ? decoder-&gt;lenIV : 0 );</a>
+<a name="ln1381">              zone-&gt;limit  = decoder-&gt;subrs[idx + 1];</a>
+<a name="ln1382">            }</a>
+<a name="ln1383"> </a>
+<a name="ln1384">            zone-&gt;cursor = zone-&gt;base;</a>
+<a name="ln1385"> </a>
+<a name="ln1386">            if ( !zone-&gt;base )</a>
+<a name="ln1387">            {</a>
+<a name="ln1388">              FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1389">                         &quot; invoking empty subrs\n&quot; ));</a>
+<a name="ln1390">              goto Syntax_Error;</a>
+<a name="ln1391">            }</a>
+<a name="ln1392"> </a>
+<a name="ln1393">            decoder-&gt;zone = zone;</a>
+<a name="ln1394">            ip            = zone-&gt;base;</a>
+<a name="ln1395">            limit         = zone-&gt;limit;</a>
+<a name="ln1396">            break;</a>
+<a name="ln1397">          }</a>
+<a name="ln1398"> </a>
+<a name="ln1399">        case op_pop:</a>
+<a name="ln1400">          FT_TRACE4(( &quot; pop&quot; ));</a>
+<a name="ln1401"> </a>
+<a name="ln1402">          if ( known_othersubr_result_cnt &gt; 0 )</a>
+<a name="ln1403">          {</a>
+<a name="ln1404">            known_othersubr_result_cnt--;</a>
+<a name="ln1405">            /* ignore, we pushed the operands ourselves */</a>
+<a name="ln1406">            break;</a>
+<a name="ln1407">          }</a>
+<a name="ln1408"> </a>
+<a name="ln1409">          if ( unknown_othersubr_result_cnt == 0 )</a>
+<a name="ln1410">          {</a>
+<a name="ln1411">            FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1412">                       &quot; no more operands for othersubr\n&quot; ));</a>
+<a name="ln1413">            goto Syntax_Error;</a>
+<a name="ln1414">          }</a>
+<a name="ln1415"> </a>
+<a name="ln1416">          unknown_othersubr_result_cnt--;</a>
+<a name="ln1417">          top++;   /* `push' the operand to callothersubr onto the stack */</a>
+<a name="ln1418">          break;</a>
+<a name="ln1419"> </a>
+<a name="ln1420">        case op_return:</a>
+<a name="ln1421">          FT_TRACE4(( &quot; return&quot; ));</a>
+<a name="ln1422"> </a>
+<a name="ln1423">          if ( zone &lt;= decoder-&gt;zones )</a>
+<a name="ln1424">          {</a>
+<a name="ln1425">            FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1426">                       &quot; unexpected return\n&quot; ));</a>
+<a name="ln1427">            goto Syntax_Error;</a>
+<a name="ln1428">          }</a>
+<a name="ln1429"> </a>
+<a name="ln1430">          zone--;</a>
+<a name="ln1431">          ip            = zone-&gt;cursor;</a>
+<a name="ln1432">          limit         = zone-&gt;limit;</a>
+<a name="ln1433">          decoder-&gt;zone = zone;</a>
+<a name="ln1434">          break;</a>
+<a name="ln1435"> </a>
+<a name="ln1436">        case op_dotsection:</a>
+<a name="ln1437">          FT_TRACE4(( &quot; dotsection&quot; ));</a>
+<a name="ln1438"> </a>
+<a name="ln1439">          break;</a>
+<a name="ln1440"> </a>
+<a name="ln1441">        case op_hstem:</a>
+<a name="ln1442">          FT_TRACE4(( &quot; hstem&quot; ));</a>
+<a name="ln1443"> </a>
+<a name="ln1444">          /* record horizontal hint */</a>
+<a name="ln1445">          if ( hinter )</a>
+<a name="ln1446">          {</a>
+<a name="ln1447">            /* top[0] += builder-&gt;left_bearing.y; */</a>
+<a name="ln1448">            hinter-&gt;stem( hinter-&gt;hints, 1, top );</a>
+<a name="ln1449">          }</a>
+<a name="ln1450">          break;</a>
+<a name="ln1451"> </a>
+<a name="ln1452">        case op_hstem3:</a>
+<a name="ln1453">          FT_TRACE4(( &quot; hstem3&quot; ));</a>
+<a name="ln1454"> </a>
+<a name="ln1455">          /* record horizontal counter-controlled hints */</a>
+<a name="ln1456">          if ( hinter )</a>
+<a name="ln1457">            hinter-&gt;stem3( hinter-&gt;hints, 1, top );</a>
+<a name="ln1458">          break;</a>
+<a name="ln1459"> </a>
+<a name="ln1460">        case op_vstem:</a>
+<a name="ln1461">          FT_TRACE4(( &quot; vstem&quot; ));</a>
+<a name="ln1462"> </a>
+<a name="ln1463">          /* record vertical hint */</a>
+<a name="ln1464">          if ( hinter )</a>
+<a name="ln1465">          {</a>
+<a name="ln1466">            top[0] += orig_x;</a>
+<a name="ln1467">            hinter-&gt;stem( hinter-&gt;hints, 0, top );</a>
+<a name="ln1468">          }</a>
+<a name="ln1469">          break;</a>
+<a name="ln1470"> </a>
+<a name="ln1471">        case op_vstem3:</a>
+<a name="ln1472">          FT_TRACE4(( &quot; vstem3&quot; ));</a>
+<a name="ln1473"> </a>
+<a name="ln1474">          /* record vertical counter-controlled hints */</a>
+<a name="ln1475">          if ( hinter )</a>
+<a name="ln1476">          {</a>
+<a name="ln1477">            FT_Pos  dx = orig_x;</a>
+<a name="ln1478"> </a>
+<a name="ln1479"> </a>
+<a name="ln1480">            top[0] += dx;</a>
+<a name="ln1481">            top[2] += dx;</a>
+<a name="ln1482">            top[4] += dx;</a>
+<a name="ln1483">            hinter-&gt;stem3( hinter-&gt;hints, 0, top );</a>
+<a name="ln1484">          }</a>
+<a name="ln1485">          break;</a>
+<a name="ln1486"> </a>
+<a name="ln1487">        case op_setcurrentpoint:</a>
+<a name="ln1488">          FT_TRACE4(( &quot; setcurrentpoint&quot; ));</a>
+<a name="ln1489"> </a>
+<a name="ln1490">          /* From the T1 specification, section 6.4:                */</a>
+<a name="ln1491">          /*                                                        */</a>
+<a name="ln1492">          /*   The setcurrentpoint command is used only in          */</a>
+<a name="ln1493">          /*   conjunction with results from OtherSubrs procedures. */</a>
+<a name="ln1494"> </a>
+<a name="ln1495">          /* known_othersubr_result_cnt != 0 is already handled     */</a>
+<a name="ln1496">          /* above.                                                 */</a>
+<a name="ln1497"> </a>
+<a name="ln1498">          /* Note, however, that both Ghostscript and Adobe         */</a>
+<a name="ln1499">          /* Distiller handle this situation by silently ignoring   */</a>
+<a name="ln1500">          /* the inappropriate `setcurrentpoint' instruction.  So   */</a>
+<a name="ln1501">          /* we do the same.                                        */</a>
+<a name="ln1502">#if 0</a>
+<a name="ln1503"> </a>
+<a name="ln1504">          if ( decoder-&gt;flex_state != 1 )</a>
+<a name="ln1505">          {</a>
+<a name="ln1506">            FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1507">                       &quot; unexpected `setcurrentpoint'\n&quot; ));</a>
+<a name="ln1508">            goto Syntax_Error;</a>
+<a name="ln1509">          }</a>
+<a name="ln1510">          else</a>
+<a name="ln1511">            ...</a>
+<a name="ln1512">#endif</a>
+<a name="ln1513"> </a>
+<a name="ln1514">          x = top[0];</a>
+<a name="ln1515">          y = top[1];</a>
+<a name="ln1516">          decoder-&gt;flex_state = 0;</a>
+<a name="ln1517">          break;</a>
+<a name="ln1518"> </a>
+<a name="ln1519">        case op_unknown15:</a>
+<a name="ln1520">          FT_TRACE4(( &quot; opcode_15&quot; ));</a>
+<a name="ln1521">          /* nothing to do except to pop the two arguments */</a>
+<a name="ln1522">          break;</a>
+<a name="ln1523"> </a>
+<a name="ln1524">        default:</a>
+<a name="ln1525">          FT_ERROR(( &quot;t1_decoder_parse_charstrings:&quot;</a>
+<a name="ln1526">                     &quot; unhandled opcode %d\n&quot;, op ));</a>
+<a name="ln1527">          goto Syntax_Error;</a>
+<a name="ln1528">        }</a>
+<a name="ln1529"> </a>
+<a name="ln1530">        /* XXX Operators usually clear the operand stack;  */</a>
+<a name="ln1531">        /*     only div, callsubr, callothersubr, pop, and */</a>
+<a name="ln1532">        /*     return are different.                       */</a>
+<a name="ln1533">        /*     In practice it doesn't matter (?).          */</a>
+<a name="ln1534"> </a>
+<a name="ln1535">        decoder-&gt;top = top;</a>
+<a name="ln1536"> </a>
+<a name="ln1537">#ifdef FT_DEBUG_LEVEL_TRACE</a>
+<a name="ln1538">        FT_TRACE4(( &quot;\n&quot; ));</a>
+<a name="ln1539">        bol = TRUE;</a>
+<a name="ln1540">#endif</a>
+<a name="ln1541"> </a>
+<a name="ln1542">      } /* general operator processing */</a>
+<a name="ln1543"> </a>
+<a name="ln1544">    } /* while ip &lt; limit */</a>
+<a name="ln1545"> </a>
+<a name="ln1546">    FT_TRACE4(( &quot;..end..\n\n&quot; ));</a>
+<a name="ln1547"> </a>
+<a name="ln1548">  Fail:</a>
+<a name="ln1549">    return error;</a>
+<a name="ln1550"> </a>
+<a name="ln1551">  Syntax_Error:</a>
+<a name="ln1552">    return FT_THROW( Syntax_Error );</a>
+<a name="ln1553"> </a>
+<a name="ln1554">  Stack_Underflow:</a>
+<a name="ln1555">    return FT_THROW( Stack_Underflow );</a>
+<a name="ln1556">  }</a>
+<a name="ln1557"> </a>
+<a name="ln1558"> </a>
+<a name="ln1559">  /* parse a single Type 1 glyph */</a>
+<a name="ln1560">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1561">  t1_decoder_parse_glyph( T1_Decoder  decoder,</a>
+<a name="ln1562">                          FT_UInt     glyph )</a>
+<a name="ln1563">  {</a>
+<a name="ln1564">    return decoder-&gt;parse_callback( decoder, glyph );</a>
+<a name="ln1565">  }</a>
+<a name="ln1566"> </a>
+<a name="ln1567"> </a>
+<a name="ln1568">  /* initialize T1 decoder */</a>
+<a name="ln1569">  FT_LOCAL_DEF( FT_Error )</a>
+<a name="ln1570">  t1_decoder_init( T1_Decoder           decoder,</a>
+<a name="ln1571">                   FT_Face              face,</a>
+<a name="ln1572">                   FT_Size              size,</a>
+<a name="ln1573">                   FT_GlyphSlot         slot,</a>
+<a name="ln1574">                   FT_Byte**            glyph_names,</a>
+<a name="ln1575">                   PS_Blend             blend,</a>
+<a name="ln1576">                   FT_Bool              hinting,</a>
+<a name="ln1577">                   FT_Render_Mode       hint_mode,</a>
+<a name="ln1578">                   T1_Decoder_Callback  parse_callback )</a>
+<a name="ln1579">  {</a>
+<a name="ln1580">    FT_MEM_ZERO( decoder, sizeof ( *decoder ) );</a>
+<a name="ln1581"> </a>
+<a name="ln1582">    /* retrieve PSNames interface from list of current modules */</a>
+<a name="ln1583">    {</a>
+<a name="ln1584">      FT_Service_PsCMaps  psnames;</a>
+<a name="ln1585"> </a>
+<a name="ln1586"> </a>
+<a name="ln1587">      FT_FACE_FIND_GLOBAL_SERVICE( face, psnames, POSTSCRIPT_CMAPS );</a>
+<a name="ln1588">      if ( !psnames )</a>
+<a name="ln1589">      {</a>
+<a name="ln1590">        FT_ERROR(( &quot;t1_decoder_init:&quot;</a>
+<a name="ln1591">                   &quot; the `psnames' module is not available\n&quot; ));</a>
+<a name="ln1592">        return FT_THROW( Unimplemented_Feature );</a>
+<a name="ln1593">      }</a>
+<a name="ln1594"> </a>
+<a name="ln1595">      decoder-&gt;psnames = psnames;</a>
+<a name="ln1596">    }</a>
+<a name="ln1597"> </a>
+<a name="ln1598">    t1_builder_init( &amp;decoder-&gt;builder, face, size, slot, hinting );</a>
+<a name="ln1599"> </a>
+<a name="ln1600">    /* decoder-&gt;buildchar and decoder-&gt;len_buildchar have to be  */</a>
+<a name="ln1601">    /* initialized by the caller since we cannot know the length */</a>
+<a name="ln1602">    /* of the BuildCharArray                                     */</a>
+<a name="ln1603"> </a>
+<a name="ln1604">    decoder-&gt;num_glyphs     = (FT_UInt)face-&gt;num_glyphs;</a>
+<a name="ln1605">    decoder-&gt;glyph_names    = glyph_names;</a>
+<a name="ln1606">    decoder-&gt;hint_mode      = hint_mode;</a>
+<a name="ln1607">    decoder-&gt;blend          = blend;</a>
+<a name="ln1608">    decoder-&gt;parse_callback = parse_callback;</a>
+<a name="ln1609"> </a>
+<a name="ln1610">    decoder-&gt;funcs          = t1_decoder_funcs;</a>
+<a name="ln1611"> </a>
+<a name="ln1612">    return FT_Err_Ok;</a>
+<a name="ln1613">  }</a>
+<a name="ln1614"> </a>
+<a name="ln1615"> </a>
+<a name="ln1616">  /* finalize T1 decoder */</a>
+<a name="ln1617">  FT_LOCAL_DEF( void )</a>
+<a name="ln1618">  t1_decoder_done( T1_Decoder  decoder )</a>
+<a name="ln1619">  {</a>
+<a name="ln1620">    t1_builder_done( &amp;decoder-&gt;builder );</a>
+<a name="ln1621">  }</a>
+<a name="ln1622"> </a>
+<a name="ln1623"> </a>
+<a name="ln1624">/* END */</a>
+
+</code></pre>
+<div class="balloon" rel="1437"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1437, 1520</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>
